@@ -1,0 +1,126 @@
+# StoryVR Adapter
+
+This folder implements the canonical StoryVR ingestion boundary. The primary workflow is one story at a time: fetch one story's web resources, then normalize that fetched resource folder into a StoryVR runtime payload.
+
+## Boundary
+
+The adapter entry point is:
+
+```js
+import { importStoryAssets } from "./tools/storyvr-adapter/storyvr-adapter.mjs";
+
+const runtime = await importStoryAssets("/absolute/path/to/story-folder", "dev");
+```
+
+It returns a `StoryVRRuntimeInstance` payload with:
+
+- `contentUnits`: normalized beat-like story units from `beats`, `pages`, `sourceBeats`, `regions`, or Louise `data/beats.json`.
+- `sceneTopology`: normalized route stops, regions, countries, markers, model groups, sections and camera presets.
+- `assets`: normalized model, texture, data, media and remote asset references.
+- `assetRoot`: centralized original/dev/hosted/build/filesystem path conventions.
+- `interactions`: controls, lifecycle, trigger and hotspot metadata.
+- `diagnostics`: non-fatal compatibility findings.
+
+## Commands
+
+```sh
+npm run storyvr:story -- --resource-folder <story-slug>/captures/active
+npm run storyvr:story -- --discovery <nyt_asset_discovery.json> --story-folder <story-slug>
+npm run storyvr:scan
+npm run storyvr:migrate
+npm run storyvr:migrate:build
+```
+
+## Single Story Workflow
+
+### 1. Collect Discovery JSON
+
+Open the NYTimes story in a browser session where you are allowed to view it. Paste `nyt-console-collector.js` into DevTools Console and run:
+
+```js
+NYTAssetCollector.autoRun()
+```
+
+This downloads a file named like:
+
+```text
+nyt_asset_discovery_<story-slug>.json
+```
+
+### 2. Fetch And Normalize One Story
+
+Run the single-story command from the repo root:
+
+```sh
+npm run storyvr:story -- \
+  --discovery ~/Downloads/nyt_asset_discovery_<story-slug>.json \
+  --story-folder <story-slug>
+```
+
+This performs the fetch step through `nyt-asset-downloader.mjs`, writes the fetched resource folder to:
+
+```text
+<story-slug>/captures/active/
+```
+
+Then it writes the canonical StoryVR runtime payload to:
+
+```text
+<story-slug>/discovery/storyvr-runtime.json
+```
+
+If `<story-slug>/captures/active/` already has files, the command refuses to overwrite it. Pass `--replace-active` only when replacing that capture is intentional.
+
+### 3. Normalize An Already Fetched Folder
+
+If the fetched resource folder already exists:
+
+```sh
+npm run storyvr:story -- \
+  --resource-folder <story-slug>/captures/active \
+  --out <story-slug>/discovery/storyvr-runtime.json
+```
+
+This skips fetching and only normalizes the one resource folder supplied.
+
+## Repository Compatibility Commands
+
+`storyvr:scan` is a compatibility helper for the existing multi-story workspace. It writes `tools/storyvr-adapter/out/migration-report.json` without writing per-story runtime files.
+
+`storyvr:migrate` writes dev-mode canonical runtime JSON to:
+
+```text
+tools/storyvr-adapter/out/<family>/<story-slug>/storyvr-runtime.json
+```
+
+`storyvr:migrate:build` writes build-mode canonical runtime JSON to:
+
+```text
+tools/storyvr-adapter/out-build/<family>/<story-slug>/storyvr-runtime.json
+```
+
+## Included Families
+
+- `global-migration`
+- `web2VR-Initial-Adaptations/*`
+- `louise-10-stories/*`
+- `Jingchen-10-stories/Story_*/*`
+
+## Exclusions
+
+Virtual walk stories and sports stories are skipped before parsing. The current scan-time convention uses folder/path names:
+
+- Virtual walk: `virtual-walk`, `walk-tour`, `walking-tour`
+- Sports: `world-cup`, `super-bowl`, `usmnt`, `pulisic`, `kadarius`, `toney`, `richarlison`, `messi`, `mckennie`, `batshuayi`, `spain-germany`, `canada-belgium`
+
+Skipped stories are listed in the migration report with an explicit reason and never enter the adaptation pipeline unless `--include-excluded` is passed manually.
+
+## Structural Conflicts Normalized
+
+- Instance schema divergence: `beats`, `pages`, `sourceBeats`, `regions`, and `data/beats.json` become `contentUnits`.
+- Runtime import divergence: JSON is parsed directly; generated JS is imported only from known story-instance files.
+- Asset-root divergence: original, app-relative, repo-hosted, filesystem and build-base paths are emitted together.
+- Topology divergence: route stops, regions, countries, model groups, markers and object lineups are carried into `sceneTopology`.
+- Interaction divergence: reader actions, transitions, hotspots, controller and keyboard metadata are carried into `interactions`.
+
+Existing per-story runtimes remain untouched. This adapter creates the normalized StoryVR payload that a shared `createScene(...)` renderer can consume next.

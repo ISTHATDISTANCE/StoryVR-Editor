@@ -1,0 +1,35 @@
+{
+  "name": "nytimes-asset-discovery",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Console collector and public downloader for documenting assets from NYTimes visual stories.",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "check": "node --check nyt-console-collector.js && node --check nyt-asset-downloader.mjs && node --check tools/animation-logic-probe/runtime-animation-collector.js && node --check tools/animation-logic-probe/analyze-animation-probe.mjs && node --check tools/storyvr-adapter/storyvr-adapter.mjs && node --check tools/storyvr-adapter/migrate-stories.mjs && node --check tools/storyvr-adapter/process-story.mjs && node --check tools/storyvr-author/engine.mjs && node --check tools/storyvr-author/server.mjs && node --check tools/storyvr-author/reader-template/src/main.js && python3 -m py_compile https_server.py",
+    "test:probe": "node --test tools/animation-logic-probe/runtime-animation-collector.test.mjs && node tools/animation-logic-probe/analyze-animation-probe.mjs --self-test",
+    "test:author": "node --test tools/storyvr-author/*.test.mjs tools/storyvr-adapter/*.test.mjs",
+    "test:https": "python3 -m unittest discover -s tests",
+    "self-test": "node nyt-asset-downloader.mjs --self-test",
+    "storyvr:story": "node tools/storyvr-adapter/process-story.mjs",
+    "storyvr:author": "node tools/storyvr-author/server.mjs",
+    "storyvr:author:classroom": "node tools/storyvr-author/server.mjs --story-folder ../classroom",
+    "storyvr:author:shark": "node tools/storyvr-author/server.mjs --story-folder ../shark",
+    "storyvr:scan": "node tools/storyvr-adapter/migrate-stories.mjs --scan-only --write-report",
+    "storyvr:migrate": "node tools/storyvr-adapter/migrate-stories.mjs --mode dev --generate-missing",
+    "storyvr:migrate:build": "node tools/storyvr-adapter/migrate-stories.mjs --mode build --generate-missing --out tools/storyvr-adapter/out-build",
+    "dev:classroom": "vite ../classroom/webxr-adaptation --host 127.0.0.1",
+    "dev:shark": "vite ../shark/webxr-adaptation --host 127.0.0.1",
+    "build:classroom": "vite build ../classroom/webxr-adaptation --outDir ../dist-webxr-adaptation --base /classroom/dist-webxr-adaptation/ --emptyOutDir",
+    "build:shark": "vite build ../shark/webxr-adaptation --outDir ../dist-webxr-adaptation --base /shark/dist-webxr-adaptation/ --emptyOutDir",
+    "serve:https": "python3 https_server.py --root .. --story-path /classroom/dist-webxr-adaptation/ --story-path /shark/dist-webxr-adaptation/",
+    "serve:https:lan": "python3 https_server.py --root .. --lan --story-path /classroom/dist-webxr-adaptation/ --story-path /shark/dist-webxr-adaptation/"
+  },
+  "dependencies": {
+    "robots-parser": "^3.0.1",
+    "three": "^0.184.0",
+    "vite": "^8.0.16"
+  }
+}

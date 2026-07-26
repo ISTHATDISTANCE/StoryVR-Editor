@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f3eee3" />
+    <meta
+      name="description"
+      content="Search public environment libraries, upload a downloaded asset, tune it, and approve the surrounding for one StoryVR story."
+    />
+    <title>Environment Enhancement · StoryVR</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/vendor/three.module.js",
+          "three/addons/": "/vendor/addons/"
+        }
+      }
+    </script>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#environment-workspace">Skip to environment workspace</a>
+
+    <div class="app-frame">
+      <header class="app-header">
+        <div class="brand-lockup" aria-label="StoryVR Environment Enhancement">
+          <div class="brand-mark" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <div>
+            <p class="eyebrow">StoryVR authoring</p>
+            <p class="brand-title">Environment Enhancement</p>
+          </div>
+        </div>
+
+        <div class="story-heading">
+          <p class="eyebrow">Active story</p>
+          <h1 id="story-title">Loading story…</h1>
+          <p id="story-summary" class="story-summary">Preparing the environment brief.</p>
+        </div>
+
+        <div class="header-status">
+          <div id="provider-status" class="provider-status" aria-label="Environment provider status"></div>
+          <div id="lock-badge" class="lock-badge draft" aria-live="polite">
+            <span class="lock-dot" aria-hidden="true"></span>
+            <span>Draft</span>
+          </div>
+        </div>
+      </header>
+
+      <main id="environment-workspace" class="workspace" aria-busy="true">
+        <section class="catalog-panel panel" aria-labelledby="catalog-title">
+          <div class="panel-heading catalog-heading">
+            <div>
+              <p class="step-label">01 · Find a real setting</p>
+              <h2 id="catalog-title">Public environments</h2>
+            </div>
+            <span id="result-count" class="count-badge">0</span>
+          </div>
+
+          <p id="environment-brief" class="panel-intro">
+            Search licensed public libraries for a setting that surrounds the story assets.
+          </p>
+
+          <form id="search-form" class="search-form" role="search">
+            <label for="search-query">Environment search</label>
+            <div class="search-row">
+              <input
+                id="search-query"
+                name="query"
+                type="search"
+                placeholder="e.g. furnished home interior"
+                enterkeyhint="search"
+                autocomplete="off"
+                required
+              />
+              <button id="search-button" class="button primary" type="submit">
+                <span class="button-icon" aria-hidden="true">⌕</span>
+                <span>Search</span>
+              </button>
+            </div>
+            <p class="field-help">Search describes the surrounding place, not the main story object.</p>
+          </form>
+
+          <div class="catalog-meta">
+            <p id="search-status" class="search-status" role="status" aria-live="polite">
+              Enter a setting to search all available providers.
+            </p>
+          </div>
+
+          <div id="candidate-results" class="candidate-results" aria-label="Environment search results">
+            <div class="empty-state compact">
+              <span class="empty-icon" aria-hidden="true">⌂</span>
+              <strong>No search yet</strong>
+              <p>Results will include source, license, format, and performance evidence.</p>
+            </div>
+          </div>
+
+          <section class="upload-section" aria-labelledby="upload-title">
+            <div class="upload-heading">
+              <div>
+                <p class="step-label">02 · Upload the downloaded asset</p>
+                <h3 id="upload-title">Add it to StoryVR</h3>
+              </div>
+              <span class="format-chip">GLB · glTF · ZIP · HDR · EXR</span>
+            </div>
+
+            <div id="upload-source-context" class="upload-source-context" aria-live="polite">
+              <span class="selection-kicker">Source metadata</span>
+              <strong>No search result linked</strong>
+              <p>You can upload your own environment, or select a result above to preserve its source details.</p>
+            </div>
+
+            <form id="upload-form" class="upload-form">
+              <label for="environment-file">Environment file</label>
+              <div class="upload-row">
+                <input
+                  id="environment-file"
+                  name="environmentFile"
+                  type="file"
+                  accept=".glb,.gltf,.zip,.hdr,.exr,model/gltf-binary,model/gltf+json,application/zip,image/vnd.radiance,image/x-hdr,image/x-exr"
+                  required
+                />
+                <button id="upload-button" class="button primary" type="submit" disabled>
+                  Upload and preview
+                </button>
+              </div>
+              <p class="field-help">
+                Upload a ZIP when a <code>.gltf</code> file depends on separate textures or binary files. Keep those files together with their relative paths.
+              </p>
+              <p id="upload-status" class="upload-status" role="status" aria-live="polite">
+                Choose a supported environment file from your computer.
+              </p>
+            </form>
+          </section>
+        </section>
+
+        <section class="preview-panel panel" aria-labelledby="preview-title">
+          <div class="panel-heading preview-heading">
+            <div>
+              <p class="step-label">03 · Inspect in context</p>
+              <h2 id="preview-title">Persistent environment preview</h2>
+            </div>
+            <div class="preview-actions">
+              <div id="xr-button-slot" class="xr-button-slot"></div>
+              <button id="reset-camera" class="button quiet" type="button" disabled>
+                Reset view
+              </button>
+            </div>
+          </div>
+
+          <div
+            id="environment-viewer"
+            class="environment-viewer"
+            role="img"
+            aria-label="Interactive 3D preview of the selected environment"
+          >
+            <div id="viewer-empty" class="viewer-empty">
+              <div class="viewer-empty-orbit" aria-hidden="true">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+              <strong>Upload an environment</strong>
+              <p>Your downloaded scene or panorama will stay loaded while you inspect and tune it.</p>
+            </div>
+            <div id="viewer-loading" class="viewer-loading" hidden>
+              <span class="spinner" aria-hidden="true"></span>
+              <strong>Loading environment…</strong>
+            </div>
+            <div id="viewer-message" class="viewer-message" role="status" aria-live="polite"></div>
+            <div class="viewer-help">Drag to orbit · Scroll to zoom · Right-drag to pan</div>
+          </div>
+
+          <div class="selection-bar">
+            <div class="selection-copy">
+              <span class="selection-kicker">Selected environment</span>
+              <strong id="selection-title">Nothing uploaded</strong>
+              <span id="selection-subtitle">Download an asset from its source page, then upload it above.</span>
+            </div>
+            <div class="selection-actions">
+              <button id="unlock-button" class="button quiet coral" type="button" hidden>Unlock</button>
+              <button id="lock-button" class="button primary" type="button" disabled>
+                Approve and lock
+              </button>
+            </div>
+          </div>
+
+          <form id="tuning-form" class="tuning-form" aria-labelledby="tuning-title">
+            <div class="tuning-heading">
+              <div>
+                <p class="step-label">04 · Tune the surrounding</p>
+                <h3 id="tuning-title">Placement and atmosphere</h3>
+              </div>
+              <span id="draft-save-state" class="save-state" role="status" aria-live="polite">No draft</span>
+            </div>
+
+            <div class="tuning-groups">
+              <fieldset class="control-group">
+                <legend>Scene placement</legend>
+
+                <label class="range-control" for="position-x">
+                  <span>X position</span>
+                  <output id="position-x-value" for="position-x">0.00 m</output>
+                  <input id="position-x" data-draft-control type="range" min="-20" max="20" step="0.05" value="0" />
+                </label>
+
+                <label class="range-control" for="position-y">
+                  <span>Y position</span>
+                  <output id="position-y-value" for="position-y">0.00 m</output>
+                  <input id="position-y" data-draft-control type="range" min="-20" max="20" step="0.05" value="0" />
+                </label>
+
+                <label class="range-control" for="position-z">
+                  <span>Z position</span>
+                  <output id="position-z-value" for="position-z">0.00 m</output>
+                  <input id="position-z" data-draft-control type="range" min="-20" max="20" step="0.05" value="0" />
+                </label>
+
+                <label class="range-control" for="rotation-y">
+                  <span>Yaw</span>
+                  <output id="rotation-y-value" for="rotation-y">0°</output>
+                  <input id="rotation-y" data-draft-control type="range" min="-180" max="180" step="1" value="0" />
+                </label>
+
+                <label class="range-control" for="environment-scale">
+                  <span>Environment scale</span>
+                  <output id="environment-scale-value" for="environment-scale">1.00×</output>
+                  <input id="environment-scale" data-draft-control type="range" min="0.05" max="12" step="0.05" value="1" />
+                </label>
+              </fieldset>
+
+              <fieldset class="control-group">
+                <legend>Rendering</legend>
+
+                <label class="range-control" for="exposure">
+                  <span>Exposure</span>
+                  <output id="exposure-value" for="exposure">1.00</output>
+                  <input id="exposure" data-draft-control type="range" min="0.1" max="3" step="0.05" value="1" />
+                </label>
+
+                <label class="range-control" for="fog-density">
+                  <span>Fog density</span>
+                  <output id="fog-density-value" for="fog-density">0.000</output>
+                  <input id="fog-density" data-draft-control type="range" min="0" max="0.25" step="0.001" value="0" />
+                </label>
+
+                <div class="compact-control-row">
+                  <label class="compact-control" for="fog-color">
+                    <span>Fog color</span>
+                    <input id="fog-color" data-draft-control type="color" value="#dce8e2" />
+                  </label>
+
+                  <label class="compact-control grow" for="background-mode">
+                    <span>Background</span>
+                    <select id="background-mode" data-draft-control>
+                      <option value="asset">Environment asset</option>
+                      <option value="fog-color">Fog color</option>
+                      <option value="transparent">Transparent</option>
+                    </select>
+                  </label>
+                </div>
+              </fieldset>
+            </div>
+          </form>
+        </section>
+
+        <aside class="inspector-panel panel" aria-labelledby="inspector-title">
+          <div class="panel-heading inspector-heading">
+            <div>
+              <p class="step-label">Supporting evidence</p>
+              <h2 id="inspector-title">Provenance and performance</h2>
+            </div>
+          </div>
+
+          <div id="inspector-content" class="inspector-content">
+            <div class="empty-state inspector-empty">
+              <span class="empty-icon" aria-hidden="true">◎</span>
+              <strong>No uploaded environment</strong>
+              <p>Upload an asset to review its source, license, local file, and headset-readiness evidence.</p>
+            </div>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+    <div id="fatal-error" class="fatal-error" role="alert" hidden>
+      <strong>Environment Enhancement could not start.</strong>
+      <p id="fatal-error-message"></p>
+      <button id="retry-load" class="button primary" type="button">Retry</button>
+    </div>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

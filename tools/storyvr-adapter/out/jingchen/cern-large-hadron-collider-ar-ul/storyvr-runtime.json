@@ -1,0 +1,2991 @@
+{
+  "schemaVersion": "storyvr-runtime/v1",
+  "id": "cern-large-hadron-collider-ar-ul",
+  "family": "jingchen",
+  "slug": "cern-large-hadron-collider-ar-ul",
+  "title": "It’s Intermission for the Large Hadron Collider",
+  "byline": "",
+  "sourceUrl": "https://www.nytimes.com/interactive/2018/12/21/science/cern-large-hadron-collider-ar-ul.html",
+  "source": {
+    "family": "jingchen",
+    "strategy": "jingchen",
+    "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_9/cern-large-hadron-collider-ar-ul",
+    "storyFolderRel": "Jingchen-10-stories/Story_9/cern-large-hadron-collider-ar-ul",
+    "sourcePath": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_9/cern-large-hadron-collider-ar-ul/webxr-adaptation/src/generated/storyInstance.js",
+    "sourcePathRel": "Jingchen-10-stories/Story_9/cern-large-hadron-collider-ar-ul/webxr-adaptation/src/generated/storyInstance.js",
+    "sourceFormat": "generated-js",
+    "originalSchema": {
+      "slug": "string",
+      "captureName": "string",
+      "sourceUrl": "string",
+      "title": "string",
+      "deck": "string",
+      "assetRoot": "string",
+      "generatedAt": "string",
+      "sourceCapture": "string",
+      "stations": "array(6)",
+      "beats": "array(84)",
+      "extractedNodes": "array(78)",
+      "adaptationOutlineBeats": "array(10)"
+    },
+    "generatedAt": "2026-06-24T15:59:05.821Z"
+  },
+  "assetRoot": {
+    "mode": "dev",
+    "original": "../captures/active/cern-large-hadron-collider-ar-ul_20260609T020233Z/",
+    "relativeFromApp": "../captures/active/cern-large-hadron-collider-ar-ul_20260609T020233Z",
+    "hosted": "/Jingchen-10-stories/Story_9/cern-large-hadron-collider-ar-ul/captures/active/cern-large-hadron-collider-ar-ul_20260609T020233Z",
+    "buildBase": "/Jingchen-10-stories/Story_9/cern-large-hadron-collider-ar-ul/dist-webxr-adaptation/",
+    "filesystem": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_9/cern-large-hadron-collider-ar-ul/captures/active/cern-large-hadron-collider-ar-ul_20260609T020233Z",
+    "canonical": "../captures/active/cern-large-hadron-collider-ar-ul_20260609T020233Z"
+  },
+  "style": {
+    "colors": {},
+    "tokens": {}
+  },
+  "contentUnits": [
+    {
+      "id": "opening",
+      "index": 0,
+      "kind": "summary",
+      "section": "Opening",
+      "title": "It’s Intermission for the Large Hadron Collider",
+      "text": "The largest machine ever built is shutting down for two years of upgrades. Take an immersive tour of the collider with AR and 360° photos.",
+      "sourceIds": [
+        "summary"
+      ],
+      "media": {
+        "image": "textures/CERN_HPstill-videoSixteenByNineJumbo1600-v2-cc0a24a6ee5e.png"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-1",
+      "index": 1,
+      "kind": "paragraph",
+      "section": "Opening",
+      "title": "Opening",
+      "text": "MEYRIN, Switzerland — There is silence on the subatomic firing range.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-2",
+      "index": 2,
+      "kind": "paragraph",
+      "section": "Opening",
+      "title": "Opening",
+      "text": "A quarter-century ago, the physicists of CERN, the European Center for Nuclear Research, bet their careers and their political capital on the biggest and most expensive science experiment ever built, the Large Hadron Collider.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-3",
+      "index": 3,
+      "kind": "paragraph",
+      "section": "Opening",
+      "title": "Opening (1/2)",
+      "text": "The collider is a kind of microscope that works by flinging subatomic particles around a 17-mile electromagnetic racetrack beneath the French-Swiss countryside, smashing them together 600 million times a second and sifting through the debris for new particles and forces of nature.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-4",
+      "index": 4,
+      "kind": "paragraph",
+      "section": "Opening",
+      "title": "Opening (2/2)",
+      "text": "The instrument is also a time machine, providing a glimpse of the physics that prevailed in the early moments of the universe and laid the foundation for the cosmos as we see it today.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-5",
+      "index": 5,
+      "kind": "paragraph",
+      "section": "Opening",
+      "title": "Opening",
+      "text": "The reward came in 2012 with the discovery of the Higgs boson, a long-sought particle that helps explain why there is mass, diversity and life in the cosmos. The discovery was celebrated with champagne and a Nobel prize.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-6",
+      "index": 6,
+      "kind": "paragraph",
+      "section": "Opening",
+      "title": "Opening",
+      "text": "The collider will continue smashing particles and expectations for another 20 years. But first, an intermission. On December 3rd, the particle beams stopped humming. The giant magnets that guide the whizzing protons sighed and released their grip. The underground detectors that ring the tunnel stood down from their watch.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-7",
+      "index": 7,
+      "kind": "paragraph",
+      "section": "Opening",
+      "title": "Opening",
+      "text": "Over the next two years, during the first of what will be a series of shutdowns, engineers will upgrade the collider to make its beams more intense and its instruments more sensitive and discerning. And theoretical physicists will pause to make sense of the tantalizing, bewildering mysteries that the Large Hadron Collider has generated so far.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-8",
+      "index": 8,
+      "kind": "caption",
+      "section": "360 photo",
+      "title": "CMS",
+      "text": "Engineers work on the CMS detector.",
+      "sourceIds": [
+        "caption"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-9",
+      "index": 9,
+      "kind": "section",
+      "section": "Section",
+      "title": "When protons collide",
+      "text": "When protons collide",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-10",
+      "index": 10,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide",
+      "text": "The collider gets its mojo from Einstein’s dictum that mass and energy are the same. The more energy that the collider can produce, the more massive are the particles created by the collisions. With every increase in the energy of their collider, CERN physicists are able to edge farther and farther back in time, closer to the physics of the Big Bang, when the universe was much hotter than today.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-11",
+      "index": 11,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide (1/2)",
+      "text": "Inside CERN’s subterranean ring, some 10,000 superconducting electromagnets, powered by a small city’s worth of electricity, guide two beams of protons in opposite directions around the tunnel at 99.99999 percent of the speed of light, or an energy of 7 trillion electron volts. Those protons make the 17-mile circuit 11,000 times a second. (In physics, mass and energy are both expressed in terms of units called electron volts.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-12",
+      "index": 12,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide (2/2)",
+      "text": "A single proton, the building block of ordinary atoms, weighs about a billion electron volts.)",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-13",
+      "index": 13,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide",
+      "text": "The protons enter the collider as atoms in a puff of hydrogen gas squirted from a bottle. As the atoms travel, electrical fields strip them of electrons, leaving bare, positively charged protons. These are sped up by a series of increasingly larger and more energetic electromagnets, until they are ready to enter the main ring of the collider.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-14",
+      "index": 14,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide",
+      "text": "When protons finally enter the main ring, they have been boosted into flying bombs of primordial energy, primed to smash apart — and recombine — when they strike their opposite numbers head-on, coming from the other direction.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-15",
+      "index": 15,
+      "kind": "annotation",
+      "section": "ATLAS collision",
+      "title": "The event that proved the Higgs",
+      "text": "This particle collision happened inside the Atlas detector on June 10, 2012. It is one of many that proved the existence of the Higgs boson.",
+      "sourceIds": [
+        "g-webgl-slide[data-index='0']",
+        "annotation"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-16",
+      "index": 16,
+      "kind": "annotation",
+      "section": "Tracked debris",
+      "title": "Four muons punch through",
+      "text": "Glancing collisions between protons produce sprays of debris that are tracked and stopped in the inner detector. But a head-on collision created something incredibly rare: four muons, which are like electrons but heavier. They punched through lead and iron and exited the detector completely.",
+      "sourceIds": [
+        "g-webgl-slide[data-index='1']",
+        "annotation"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-17",
+      "index": 17,
+      "kind": "annotation",
+      "section": "Backtracking",
+      "title": "A particle seen only by its remains",
+      "text": "Scientists backtracked the two pairs of muons to their source. An elusive and unseen Higgs boson very likely flashed into existence and instantly decayed into two particles, then four.",
+      "sourceIds": [
+        "g-webgl-slide[data-index='2']",
+        "annotation"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-18",
+      "index": 18,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide (1/2)",
+      "text": "The protons circulate inside vacuum pipes – one running clockwise, the other counterclockwise – and these are surrounded by superconducting electromagnets strung together around the tunnel like sausages.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-19",
+      "index": 19,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide (2/2)",
+      "text": "To generate enough force to bend the speeding protons, the magnets must be uncommonly strong: 8.3 Tesla, or more than a hundred thousand times stronger than Earth’s magnetic field — and more than strong enough to wreck a fancy Swiss watch.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-20",
+      "index": 20,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide",
+      "text": "Experience the Large Hadron Collider in virtual reality",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-21",
+      "index": 21,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide",
+      "text": "Such a field in turn requires an electrical current of 12,000 amperes. That’s only feasible if the magnets are superconducting, meaning that electricity flows without expensive resistance. For that to happen, the magnets must be supercold; they are bathed in 150 tons of superfluid helium at a temperature of 1.9 Kelvin, making the Large Hadron Collider literally one of the coldest places in the universe.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-22",
+      "index": 22,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide",
+      "text": "If things go wrong down here, they can go very wrong. In 2008, as the collider was still being tuned up, the link between a pair of magnets exploded, delaying operations for almost two years.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-23",
+      "index": 23,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide",
+      "text": "The energy stored in the magnetic fields is equivalent to a fully loaded jumbo jet going 500 miles per hour; if a magnet loses its cool and heats up, all that energy must go someplace. And the proton beam itself can cut through many feet of steel.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-24",
+      "index": 24,
+      "kind": "section",
+      "section": "Section",
+      "title": "A tale of four detectors",
+      "text": "A tale of four detectors",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-25",
+      "index": 25,
+      "kind": "paragraph",
+      "section": "A tale of four detectors",
+      "title": "A tale of four detectors",
+      "text": "The beams cross at four points around the racetrack.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-26",
+      "index": 26,
+      "kind": "paragraph",
+      "section": "A tale of four detectors",
+      "title": "A tale of four detectors",
+      "text": "At each juncture, gigantic detectors — underground mountains of electronics, cables, computers, pipes, magnets and even more magnets — have been erected. The two biggest and most expensive experiments, CMS (the Compact Muon Solenoid) and Atlas (A Toroidal L.H.C. Apparatus) sit, respectively, at the noon and 6 o’clock positions of the circular track.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/computingcenter-5a74ba73936a.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-27",
+      "index": 27,
+      "kind": "caption",
+      "section": "360 photo",
+      "title": "ATLAS",
+      "text": "The Atlas detector fills an enormous cavern under the Swiss countryside.",
+      "sourceIds": [
+        "caption"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-28",
+      "index": 28,
+      "kind": "paragraph",
+      "section": "A tale of four detectors",
+      "title": "A tale of four detectors (1/2)",
+      "text": "Wrapped around them, like the layers of an onion, are instruments designed to measure every last spark of energy or matter that might spew from the collision. Silicon detectors track the paths of lightweight, charged particles such as electrons. Scintillation crystals capture the energies of gamma rays. Chambers of electrified gas track more far-flung particles.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-29",
+      "index": 29,
+      "kind": "paragraph",
+      "section": "A tale of four detectors",
+      "title": "A tale of four detectors (2/2)",
+      "text": "And powerful magnets bend the paths of these particles so that their charges and masses can be determined.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-30",
+      "index": 30,
+      "kind": "paragraph",
+      "section": "A tale of four detectors",
+      "title": "A tale of four detectors",
+      "text": "The proton beams cross 40 million times per second in each of the four detectors, resulting in about a billion actual collisions every second.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-31",
+      "index": 31,
+      "kind": "section",
+      "section": "Section",
+      "title": "What’s the antimatter?",
+      "text": "What’s the antimatter?",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-32",
+      "index": 32,
+      "kind": "paragraph",
+      "section": "What’s the antimatter?",
+      "title": "What’s the antimatter?",
+      "text": "Why is there something instead of nothing in the universe?",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-33",
+      "index": 33,
+      "kind": "paragraph",
+      "section": "What’s the antimatter?",
+      "title": "What’s the antimatter?",
+      "text": "Answering that question is the mission of the detector known as LHCb, which sits at about 4 o’clock on the collider dial. The “b” stands for beauty — and for the B meson, a subatomic particle that is crucial to the experiment.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-34",
+      "index": 34,
+      "kind": "caption",
+      "section": "360 photo",
+      "title": "LHCb",
+      "text": "The LHCb detector studies the imbalance between matter and antimatter.",
+      "sourceIds": [
+        "caption"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-35",
+      "index": 35,
+      "kind": "paragraph",
+      "section": "What’s the antimatter?",
+      "title": "What’s the antimatter?",
+      "text": "When matter is created — in a collider, in the Big Bang — equal amounts of matter and its opposite, antimatter, should be formed, according to the laws of physics As We Know Them. When matter and antimatter meet, they annihilate each other, producing energy.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-36",
+      "index": 36,
+      "kind": "paragraph",
+      "section": "What’s the antimatter?",
+      "title": "What’s the antimatter?",
+      "text": "By that logic, when matter and antimatter formed in the Big Bang, they should have cancelled out each other, leaving behind an empty universe. But it’s not empty: We are here, and our antimatter is not.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-37",
+      "index": 37,
+      "kind": "paragraph",
+      "section": "What’s the antimatter?",
+      "title": "What’s the antimatter?",
+      "text": "Why not? Physicists suspect that some subtle imbalance between matter and antimatter is responsible. The LHCb experiment looks for that imbalance in the behavior of B mesons, which are often sprayed from the proton collisions.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-38",
+      "index": 38,
+      "kind": "paragraph",
+      "section": "What’s the antimatter?",
+      "title": "What’s the antimatter?",
+      "text": "B mesons have an exotic property: They flicker back and forth between being matter and antimatter. Sensors record their passage through the LHCb room, seeking differences between the particles and their antimatter twins. Any discrepancy between the two could be a clue to why matter flourished billions of years ago and antimatter perished.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-39",
+      "index": 39,
+      "kind": "section",
+      "section": "Section",
+      "title": "Turning back the cosmic clock",
+      "text": "Turning back the cosmic clock",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-40",
+      "index": 40,
+      "kind": "paragraph",
+      "section": "Turning back the cosmic clock",
+      "title": "Turning back the cosmic clock",
+      "text": "At about 8 o’clock on the collider dial is Alice, another detector with a special purpose. It, too, is fixed on the distant past: the brief moment a couple of microseconds after the Big Bang, before the first protons and neutrons congealed out of a “primordial soup” of quarks and gluons.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-41",
+      "index": 41,
+      "kind": "caption",
+      "section": "360 photo",
+      "title": "Alice",
+      "text": "The Alice detector studies the composition of the early universe.",
+      "sourceIds": [
+        "caption"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-42",
+      "index": 42,
+      "kind": "paragraph",
+      "section": "Turning back the cosmic clock",
+      "title": "Turning back the cosmic clock",
+      "text": "Alice’s job is to study tiny droplets of that distant past that are created when the collider bangs together lead ions instead of protons. Researchers expected this material, known in the lingo as a quark-gluon plasma, to behave like a gas, but it turns out to behave more like a liquid.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-43",
+      "index": 43,
+      "kind": "section",
+      "section": "Section",
+      "title": "Sifting the data",
+      "text": "Sifting the data",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-44",
+      "index": 44,
+      "kind": "paragraph",
+      "section": "Sifting the data",
+      "title": "Sifting the data",
+      "text": "The collider’s enormous detectors are like 100 megapixel cameras that take 40 million pictures a second. Most of the data from that deluge is immediately thrown away. Triggers, programmed to pick out events that physicists thought might be interesting, save only about a thousand collision events per second. Even still, an enormous pool of data winds up in the CERN computer banks.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/computingcenter-5a74ba73936a.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-45",
+      "index": 45,
+      "kind": "caption",
+      "section": "360 photo",
+      "title": "Data",
+      "text": "CERN’s data center.",
+      "sourceIds": [
+        "caption"
+      ],
+      "media": {
+        "image": "textures/computingcenter-5a74ba73936a.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-46",
+      "index": 46,
+      "kind": "paragraph",
+      "section": "Sifting the data",
+      "title": "Sifting the data",
+      "text": "According to the casino rules of modern quantum physics, anything that can happen will happen eventually. Before a single proton is fired through the collider, computers have calculated all the possible outcomes of a collision according to known physics. Any unexpected bump in the real data at some energy could be a signal of unknown physics, a new particle.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/computingcenter-5a74ba73936a.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-47",
+      "index": 47,
+      "kind": "paragraph",
+      "section": "Sifting the data",
+      "title": "Sifting the data",
+      "text": "That was how the Higgs was discovered, emerging from the statistical noise in the autumn of 2011. Only one of every 10 billion collisions creates a Higgs boson. The Higgs vanishes instantly and can’t be observed directly, but it decays into fragments that can be measured and identified.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-48",
+      "index": 48,
+      "kind": "paragraph",
+      "section": "Sifting the data",
+      "title": "Sifting the data",
+      "text": "What eventually stood out from the data was evidence for a particle that weighs all by itself as much as an iodine atom: a flake of an invisible force field that permeates space like molasses, impeding motion and assigning mass to objects that pass through it.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-49",
+      "index": 49,
+      "kind": "paragraph",
+      "section": "Sifting the data",
+      "title": "Sifting the data",
+      "text": "And so in 2012, after half a century and billions of dollars, thousands of physicists toasted over champagne. Peter Higgs, for whom the elusive boson was named, shared the Nobel prize with François Englert, who had independently predicted the particle’s existence.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-50",
+      "index": 50,
+      "kind": "section",
+      "section": "Section",
+      "title": "An intermission underground",
+      "text": "An intermission underground",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-51",
+      "index": 51,
+      "kind": "paragraph",
+      "section": "An intermission underground",
+      "title": "An intermission underground",
+      "text": "The current shutdown is the first of a pair of billion-dollar upgrades intended to boost the productivity of the Large Hadron Collider tenfold by the end of the decade.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-52",
+      "index": 52,
+      "kind": "paragraph",
+      "section": "An intermission underground",
+      "title": "An intermission underground",
+      "text": "The first shutdown will last for two years, until 2021; during that time, engineers will improve the series of smaller racetracks that speed up protons and inject them into the main collider. The collider then will run for two years and shut down again, in 2024, for two more years, so that engineers can install new magnets to intensify the proton beams and collisions.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-53",
+      "index": 53,
+      "kind": "paragraph",
+      "section": "An intermission underground",
+      "title": "An intermission underground",
+      "text": "Reincarnated in 2026 as the High Luminosity L.H.C., the collider is scheduled to run for another decade, until 2035 or so, which means its career probing the edge of human knowledge is still beginning. Judging by the collider’s productivity, measured in terms of trillions of subatomic smashups, more than 95 percent of its scientific potential lies ahead.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-54",
+      "index": 54,
+      "kind": "paragraph",
+      "section": "An intermission underground",
+      "title": "An intermission underground",
+      "text": "Both the Atlas and CMS experiments will receive major upgrades during the next two shutdowns, including new silicon trackers, to replace the olds ones burned out by radiation.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-55",
+      "index": 55,
+      "kind": "paragraph",
+      "section": "An intermission underground",
+      "title": "An intermission underground",
+      "text": "To keep up with the increased collision rate, both Atlas and CMS have had to upgrade the finicky trigger systems that decide which collision events to keep and study. Currently, of a billion events per second, they can keep 1,500; the upgrade will raise that figure to 10,000.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/computingcenter-5a74ba73936a.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-56",
+      "index": 56,
+      "kind": "paragraph",
+      "section": "An intermission underground",
+      "title": "An intermission underground",
+      "text": "And what a flow of collisions it will be. Physicists measure the productivity, or luminosity, of their colliders in terms of collisions. It took about 3,000 trillion collisions to confirm the Higgs boson. As of the December shutdown the collider had logged about 20,000 trillion collisions. But those were, and are, early days.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-57",
+      "index": 57,
+      "kind": "paragraph",
+      "section": "An intermission underground",
+      "title": "An intermission underground",
+      "text": "By 2037, the Large Hadron Collider should have produced roughly 4 million trillion primordial fireballs, bristling with who knows what. The whole universe is still up for grabs.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-58",
+      "index": 58,
+      "kind": "caption",
+      "section": "360 photo",
+      "title": "ATLAS",
+      "text": "The office of John Ellis, a theoretical physicist.",
+      "sourceIds": [
+        "caption"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-59",
+      "index": 59,
+      "kind": "section",
+      "section": "Section",
+      "title": "After the Higgs",
+      "text": "After the Higgs",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-60",
+      "index": 60,
+      "kind": "paragraph",
+      "section": "After the Higgs",
+      "title": "After the Higgs",
+      "text": "Discovering the Higgs was an auspicious start. But the champagne came with a mystery.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-61",
+      "index": 61,
+      "kind": "paragraph",
+      "section": "After the Higgs",
+      "title": "After the Higgs",
+      "text": "Over the last century, physicists have learned to explain some of the grandest and subtlest phenomena in nature — the arc of a rainbow, the scent of a gardenia, the twitch of a cat’s whiskers — as a handful of elementary particles interacting through four basic forces, playing a game of catch with force-carrying particles called bosons according to a set of equations called the Standard Model.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-62",
+      "index": 62,
+      "kind": "paragraph",
+      "section": "After the Higgs",
+      "title": "After the Higgs",
+      "text": "But why these particles and these forces? Why is the universe made of matter but not antimatter? What happens at the center of a black hole, or happened at the first instant of the Big Bang? If the Higgs boson determines the masses of particles, what determines the mass of the Higgs?",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-63",
+      "index": 63,
+      "kind": "paragraph",
+      "section": "After the Higgs",
+      "title": "After the Higgs",
+      "text": "Who, in other words, watches the watchman?",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-64",
+      "index": 64,
+      "kind": "paragraph",
+      "section": "After the Higgs",
+      "title": "After the Higgs",
+      "text": "The Standard Model, for all its brilliance and elegance, does not say. Particles that might answer these questions have not shown up yet in the collider. Fabiola Gianotti, the director-general of CERN, expressed surprise. “I would have expected new physics to manifest itself at the energy scale of the Large Hadron Collider,” she said.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-65",
+      "index": 65,
+      "kind": "paragraph",
+      "section": "After the Higgs",
+      "title": "After the Higgs",
+      "text": "Some physicists have responded by speculating about multiple universes and other exotic phenomena. Some clues, Dr. Gianotti said, might come from studying the new particle on the block, the Higgs.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-66",
+      "index": 66,
+      "kind": "paragraph",
+      "section": "After the Higgs",
+      "title": "After the Higgs",
+      "text": "“We physicists are happy when we understand things, but we are even happier when we don’t understand,” she said. “And today we know that we don’t understand everything. We know that we are missing something important and fundamental. And this is very exciting.”",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-67",
+      "index": 67,
+      "kind": "caption",
+      "section": "360 photo",
+      "title": "Tunnel",
+      "text": "The circular tunnel of the Large Hadron Collider.",
+      "sourceIds": [
+        "caption"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-68",
+      "index": 68,
+      "kind": "section",
+      "section": "Section",
+      "title": "Colliders of tomorrow",
+      "text": "Colliders of tomorrow",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-69",
+      "index": 69,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "Humans soon must decide which machines, if any, will be built to augment or replace the Large Hadron Collider. That collider had a “killer app” of sorts: it was designed to achieve an energy at which, according to the prediction of the Standard Model, the Higgs or something like it would become evident and provide an explanation for particle masses.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-70",
+      "index": 70,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "But the Standard Model doesn’t predict a new keystone particle in the next higher energy range. Luckily, nobody believes the Standard Model is the last word about the universe, but as the machines increase in energy, particle physicists will be shooting in the dark.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-71",
+      "index": 71,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow (1/2)",
+      "text": "For a long time, the leading candidate for Next Big Physics Machine has been the International Linear Collider, which would fire electrons and their antimatter opposites, positrons, at each other. The collisions would produce showers of Higgs bosons.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-72",
+      "index": 72,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow (2/2)",
+      "text": "The experiment would be built in Japan, if it is built at all, but Japan has yet to commit to hosting the project, which would require them to pay for about half of the $5.5 billion cost.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-73",
+      "index": 73,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "In the meantime, Europe has convened meetings and workshops to decide on a plan for the future of particle physics there. “If there is no word from Japan by the end of the year, then the I.L.C. will not figure in the next five-year plan for Europe,” Lyn Evans, a CERN physicist who was in charge of building the Large Hadron Collider, said in an email.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-74",
+      "index": 74,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "CERN has proposed its own version of a linear collider, the Compact Linear Collider, that could be scaled up gradually from Higgs bosons to higher energies. Also being considered is a humongous collider, 100 kilometers around, that would lie under Lake Geneva and would reach energies of 100 trillion electron volts — seven times the power of the Large Hadron Collider.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-75",
+      "index": 75,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "And in November the Chinese Academy of Sciences released the design for a next-generation collider of similar size, called the Circular Electron Positron Collider. The machine could be the precursor for a still more powerful machine that has been dubbed the Great Collider. Politics and economics, as well as physics, will decide which, if any, of these machines will see a shovel.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-76",
+      "index": 76,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "“If we want a new machine, nothing is possible before 2035,” Frederick Bordry, CERN’s director of accelerators, said of European plans. Building such a machine is a true human adventure, he said: “Twenty-five years to build and another 25 to operate.”",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-77",
+      "index": 77,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "Noting that he himself is 64, he added, “I’m working for the young people.”",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-78",
+      "index": 78,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "Experience the Large Hadron Collider in virtual reality",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-79",
+      "index": 79,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "Written by Dennis Overbye.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-80",
+      "index": 80,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "360° photographs by Evan Grothjan.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-81",
+      "index": 81,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "Produced by Jonathan Corum, Evan Grothjan, Jon Huang, Yuliya Parshina-Kottas and Karthik Patanjali. Additional work by Destinée-Charisse Royal, Niko Koppel and Alan Burdick.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-82",
+      "index": 82,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "Executive Producers: Graham Roberts and Marcelle Hopkins.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-83",
+      "index": 83,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "Sources: CERN; The Atlas, CMS, Alice and LHCb Collaborations; Fabiola Gianotti, John Ellis, Gian Giudice, Michelangelo Mangano, Kyle Cranmer and Sascha Mehlhase; Atlas collision data from Riccardo Maria Bianchi and Ilija Vukotic.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    }
+  ],
+  "sceneTopology": {
+    "kind": "beat-sequence",
+    "routeStops": [],
+    "regions": [],
+    "markers": [],
+    "bodies": [],
+    "countries": [],
+    "modelGroups": {},
+    "sections": [],
+    "questions": {},
+    "cameraPresets": [],
+    "spatialRelationships": {}
+  },
+  "assets": [
+    {
+      "id": "cover",
+      "path": "textures/CERN_HPstill-videoSixteenByNineJumbo1600-v2-cc0a24a6ee5e.png",
+      "url": null,
+      "type": "texture",
+      "role": "images.cover",
+      "sourceField": "images.cover",
+      "bytes": 1707166
+    },
+    {
+      "id": "cms",
+      "path": "textures/cms-2a39e3801eab.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "images.cms",
+      "sourceField": "images.cms",
+      "bytes": 1612278
+    },
+    {
+      "id": "atlas",
+      "path": "textures/atlas-b2e6f6813b56.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "images.atlas",
+      "sourceField": "images.atlas",
+      "bytes": 1244199
+    },
+    {
+      "id": "lhcb",
+      "path": "textures/lhcb-9cd818d9fa62.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "images.lhcb",
+      "sourceField": "images.lhcb",
+      "bytes": 1671487
+    },
+    {
+      "id": "alice",
+      "path": "textures/alice-e7245da9a18b.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "images.alice",
+      "sourceField": "images.alice",
+      "bytes": 1238081
+    },
+    {
+      "id": "computing",
+      "path": "textures/computingcenter-5a74ba73936a.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "images.computing",
+      "sourceField": "images.computing",
+      "bytes": 1520837
+    },
+    {
+      "id": "office",
+      "path": "textures/office-f639b78ed863.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "images.office",
+      "sourceField": "images.office",
+      "bytes": 1733557
+    },
+    {
+      "id": "tunnel",
+      "path": "textures/tunnels-ec96e546b279.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "images.tunnel",
+      "sourceField": "images.tunnel",
+      "bytes": 1285639
+    },
+    {
+      "id": "vrThumbnail",
+      "path": "textures/vr-thumbnail-9ba6b40c3fce.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "images.vrThumbnail",
+      "sourceField": "images.vrThumbnail",
+      "bytes": 29463
+    },
+    {
+      "id": "model",
+      "path": "models/atlas_181220-20-ds-e53dc038ed84.glb",
+      "url": null,
+      "type": "model",
+      "role": "model",
+      "sourceField": "model",
+      "bytes": 3961456
+    }
+  ],
+  "interactions": {
+    "controls": [
+      "next",
+      "back"
+    ],
+    "keyboard": {},
+    "xrControllers": {},
+    "locomotion": "story-fixed",
+    "lifecycle": {},
+    "triggers": [],
+    "hotspots": []
+  },
+  "compatibility": {
+    "acceptedForTransformation": true,
+    "excludedCategories": [
+      "virtual-walk",
+      "sports"
+    ],
+    "sourceAdapter": "Jingchen stories with generated JS/JSON modules and per-story runtime fields."
+  },
+  "diagnostics": [],
+  "rawSummary": {
+    "beatCount": 84,
+    "storyBeatCount": 0,
+    "pageCount": 0,
+    "sourceBeatCount": 0,
+    "regionCount": 0,
+    "routeStopCount": 0,
+    "frameCount": 0
+  },
+  "beats": [
+    {
+      "id": "opening",
+      "index": 0,
+      "kind": "summary",
+      "section": "Opening",
+      "title": "It’s Intermission for the Large Hadron Collider",
+      "text": "The largest machine ever built is shutting down for two years of upgrades. Take an immersive tour of the collider with AR and 360° photos.",
+      "sourceIds": [
+        "summary"
+      ],
+      "media": {
+        "image": "textures/CERN_HPstill-videoSixteenByNineJumbo1600-v2-cc0a24a6ee5e.png"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-1",
+      "index": 1,
+      "kind": "paragraph",
+      "section": "Opening",
+      "title": "Opening",
+      "text": "MEYRIN, Switzerland — There is silence on the subatomic firing range.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-2",
+      "index": 2,
+      "kind": "paragraph",
+      "section": "Opening",
+      "title": "Opening",
+      "text": "A quarter-century ago, the physicists of CERN, the European Center for Nuclear Research, bet their careers and their political capital on the biggest and most expensive science experiment ever built, the Large Hadron Collider.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-3",
+      "index": 3,
+      "kind": "paragraph",
+      "section": "Opening",
+      "title": "Opening (1/2)",
+      "text": "The collider is a kind of microscope that works by flinging subatomic particles around a 17-mile electromagnetic racetrack beneath the French-Swiss countryside, smashing them together 600 million times a second and sifting through the debris for new particles and forces of nature.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-4",
+      "index": 4,
+      "kind": "paragraph",
+      "section": "Opening",
+      "title": "Opening (2/2)",
+      "text": "The instrument is also a time machine, providing a glimpse of the physics that prevailed in the early moments of the universe and laid the foundation for the cosmos as we see it today.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-5",
+      "index": 5,
+      "kind": "paragraph",
+      "section": "Opening",
+      "title": "Opening",
+      "text": "The reward came in 2012 with the discovery of the Higgs boson, a long-sought particle that helps explain why there is mass, diversity and life in the cosmos. The discovery was celebrated with champagne and a Nobel prize.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-6",
+      "index": 6,
+      "kind": "paragraph",
+      "section": "Opening",
+      "title": "Opening",
+      "text": "The collider will continue smashing particles and expectations for another 20 years. But first, an intermission. On December 3rd, the particle beams stopped humming. The giant magnets that guide the whizzing protons sighed and released their grip. The underground detectors that ring the tunnel stood down from their watch.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-7",
+      "index": 7,
+      "kind": "paragraph",
+      "section": "Opening",
+      "title": "Opening",
+      "text": "Over the next two years, during the first of what will be a series of shutdowns, engineers will upgrade the collider to make its beams more intense and its instruments more sensitive and discerning. And theoretical physicists will pause to make sense of the tantalizing, bewildering mysteries that the Large Hadron Collider has generated so far.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-8",
+      "index": 8,
+      "kind": "caption",
+      "section": "360 photo",
+      "title": "CMS",
+      "text": "Engineers work on the CMS detector.",
+      "sourceIds": [
+        "caption"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-9",
+      "index": 9,
+      "kind": "section",
+      "section": "Section",
+      "title": "When protons collide",
+      "text": "When protons collide",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-10",
+      "index": 10,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide",
+      "text": "The collider gets its mojo from Einstein’s dictum that mass and energy are the same. The more energy that the collider can produce, the more massive are the particles created by the collisions. With every increase in the energy of their collider, CERN physicists are able to edge farther and farther back in time, closer to the physics of the Big Bang, when the universe was much hotter than today.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-11",
+      "index": 11,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide (1/2)",
+      "text": "Inside CERN’s subterranean ring, some 10,000 superconducting electromagnets, powered by a small city’s worth of electricity, guide two beams of protons in opposite directions around the tunnel at 99.99999 percent of the speed of light, or an energy of 7 trillion electron volts. Those protons make the 17-mile circuit 11,000 times a second. (In physics, mass and energy are both expressed in terms of units called electron volts.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-12",
+      "index": 12,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide (2/2)",
+      "text": "A single proton, the building block of ordinary atoms, weighs about a billion electron volts.)",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-13",
+      "index": 13,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide",
+      "text": "The protons enter the collider as atoms in a puff of hydrogen gas squirted from a bottle. As the atoms travel, electrical fields strip them of electrons, leaving bare, positively charged protons. These are sped up by a series of increasingly larger and more energetic electromagnets, until they are ready to enter the main ring of the collider.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-14",
+      "index": 14,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide",
+      "text": "When protons finally enter the main ring, they have been boosted into flying bombs of primordial energy, primed to smash apart — and recombine — when they strike their opposite numbers head-on, coming from the other direction.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-15",
+      "index": 15,
+      "kind": "annotation",
+      "section": "ATLAS collision",
+      "title": "The event that proved the Higgs",
+      "text": "This particle collision happened inside the Atlas detector on June 10, 2012. It is one of many that proved the existence of the Higgs boson.",
+      "sourceIds": [
+        "g-webgl-slide[data-index='0']",
+        "annotation"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-16",
+      "index": 16,
+      "kind": "annotation",
+      "section": "Tracked debris",
+      "title": "Four muons punch through",
+      "text": "Glancing collisions between protons produce sprays of debris that are tracked and stopped in the inner detector. But a head-on collision created something incredibly rare: four muons, which are like electrons but heavier. They punched through lead and iron and exited the detector completely.",
+      "sourceIds": [
+        "g-webgl-slide[data-index='1']",
+        "annotation"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-17",
+      "index": 17,
+      "kind": "annotation",
+      "section": "Backtracking",
+      "title": "A particle seen only by its remains",
+      "text": "Scientists backtracked the two pairs of muons to their source. An elusive and unseen Higgs boson very likely flashed into existence and instantly decayed into two particles, then four.",
+      "sourceIds": [
+        "g-webgl-slide[data-index='2']",
+        "annotation"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-18",
+      "index": 18,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide (1/2)",
+      "text": "The protons circulate inside vacuum pipes – one running clockwise, the other counterclockwise – and these are surrounded by superconducting electromagnets strung together around the tunnel like sausages.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-19",
+      "index": 19,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide (2/2)",
+      "text": "To generate enough force to bend the speeding protons, the magnets must be uncommonly strong: 8.3 Tesla, or more than a hundred thousand times stronger than Earth’s magnetic field — and more than strong enough to wreck a fancy Swiss watch.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-20",
+      "index": 20,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide",
+      "text": "Experience the Large Hadron Collider in virtual reality",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-21",
+      "index": 21,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide",
+      "text": "Such a field in turn requires an electrical current of 12,000 amperes. That’s only feasible if the magnets are superconducting, meaning that electricity flows without expensive resistance. For that to happen, the magnets must be supercold; they are bathed in 150 tons of superfluid helium at a temperature of 1.9 Kelvin, making the Large Hadron Collider literally one of the coldest places in the universe.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-22",
+      "index": 22,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide",
+      "text": "If things go wrong down here, they can go very wrong. In 2008, as the collider was still being tuned up, the link between a pair of magnets exploded, delaying operations for almost two years.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-23",
+      "index": 23,
+      "kind": "paragraph",
+      "section": "When protons collide",
+      "title": "When protons collide",
+      "text": "The energy stored in the magnetic fields is equivalent to a fully loaded jumbo jet going 500 miles per hour; if a magnet loses its cool and heats up, all that energy must go someplace. And the proton beam itself can cut through many feet of steel.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-24",
+      "index": 24,
+      "kind": "section",
+      "section": "Section",
+      "title": "A tale of four detectors",
+      "text": "A tale of four detectors",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-25",
+      "index": 25,
+      "kind": "paragraph",
+      "section": "A tale of four detectors",
+      "title": "A tale of four detectors",
+      "text": "The beams cross at four points around the racetrack.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-26",
+      "index": 26,
+      "kind": "paragraph",
+      "section": "A tale of four detectors",
+      "title": "A tale of four detectors",
+      "text": "At each juncture, gigantic detectors — underground mountains of electronics, cables, computers, pipes, magnets and even more magnets — have been erected. The two biggest and most expensive experiments, CMS (the Compact Muon Solenoid) and Atlas (A Toroidal L.H.C. Apparatus) sit, respectively, at the noon and 6 o’clock positions of the circular track.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/computingcenter-5a74ba73936a.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-27",
+      "index": 27,
+      "kind": "caption",
+      "section": "360 photo",
+      "title": "ATLAS",
+      "text": "The Atlas detector fills an enormous cavern under the Swiss countryside.",
+      "sourceIds": [
+        "caption"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-28",
+      "index": 28,
+      "kind": "paragraph",
+      "section": "A tale of four detectors",
+      "title": "A tale of four detectors (1/2)",
+      "text": "Wrapped around them, like the layers of an onion, are instruments designed to measure every last spark of energy or matter that might spew from the collision. Silicon detectors track the paths of lightweight, charged particles such as electrons. Scintillation crystals capture the energies of gamma rays. Chambers of electrified gas track more far-flung particles.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-29",
+      "index": 29,
+      "kind": "paragraph",
+      "section": "A tale of four detectors",
+      "title": "A tale of four detectors (2/2)",
+      "text": "And powerful magnets bend the paths of these particles so that their charges and masses can be determined.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-30",
+      "index": 30,
+      "kind": "paragraph",
+      "section": "A tale of four detectors",
+      "title": "A tale of four detectors",
+      "text": "The proton beams cross 40 million times per second in each of the four detectors, resulting in about a billion actual collisions every second.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-31",
+      "index": 31,
+      "kind": "section",
+      "section": "Section",
+      "title": "What’s the antimatter?",
+      "text": "What’s the antimatter?",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-32",
+      "index": 32,
+      "kind": "paragraph",
+      "section": "What’s the antimatter?",
+      "title": "What’s the antimatter?",
+      "text": "Why is there something instead of nothing in the universe?",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-33",
+      "index": 33,
+      "kind": "paragraph",
+      "section": "What’s the antimatter?",
+      "title": "What’s the antimatter?",
+      "text": "Answering that question is the mission of the detector known as LHCb, which sits at about 4 o’clock on the collider dial. The “b” stands for beauty — and for the B meson, a subatomic particle that is crucial to the experiment.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-34",
+      "index": 34,
+      "kind": "caption",
+      "section": "360 photo",
+      "title": "LHCb",
+      "text": "The LHCb detector studies the imbalance between matter and antimatter.",
+      "sourceIds": [
+        "caption"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-35",
+      "index": 35,
+      "kind": "paragraph",
+      "section": "What’s the antimatter?",
+      "title": "What’s the antimatter?",
+      "text": "When matter is created — in a collider, in the Big Bang — equal amounts of matter and its opposite, antimatter, should be formed, according to the laws of physics As We Know Them. When matter and antimatter meet, they annihilate each other, producing energy.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-36",
+      "index": 36,
+      "kind": "paragraph",
+      "section": "What’s the antimatter?",
+      "title": "What’s the antimatter?",
+      "text": "By that logic, when matter and antimatter formed in the Big Bang, they should have cancelled out each other, leaving behind an empty universe. But it’s not empty: We are here, and our antimatter is not.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-37",
+      "index": 37,
+      "kind": "paragraph",
+      "section": "What’s the antimatter?",
+      "title": "What’s the antimatter?",
+      "text": "Why not? Physicists suspect that some subtle imbalance between matter and antimatter is responsible. The LHCb experiment looks for that imbalance in the behavior of B mesons, which are often sprayed from the proton collisions.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-38",
+      "index": 38,
+      "kind": "paragraph",
+      "section": "What’s the antimatter?",
+      "title": "What’s the antimatter?",
+      "text": "B mesons have an exotic property: They flicker back and forth between being matter and antimatter. Sensors record their passage through the LHCb room, seeking differences between the particles and their antimatter twins. Any discrepancy between the two could be a clue to why matter flourished billions of years ago and antimatter perished.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-39",
+      "index": 39,
+      "kind": "section",
+      "section": "Section",
+      "title": "Turning back the cosmic clock",
+      "text": "Turning back the cosmic clock",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-40",
+      "index": 40,
+      "kind": "paragraph",
+      "section": "Turning back the cosmic clock",
+      "title": "Turning back the cosmic clock",
+      "text": "At about 8 o’clock on the collider dial is Alice, another detector with a special purpose. It, too, is fixed on the distant past: the brief moment a couple of microseconds after the Big Bang, before the first protons and neutrons congealed out of a “primordial soup” of quarks and gluons.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-41",
+      "index": 41,
+      "kind": "caption",
+      "section": "360 photo",
+      "title": "Alice",
+      "text": "The Alice detector studies the composition of the early universe.",
+      "sourceIds": [
+        "caption"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-42",
+      "index": 42,
+      "kind": "paragraph",
+      "section": "Turning back the cosmic clock",
+      "title": "Turning back the cosmic clock",
+      "text": "Alice’s job is to study tiny droplets of that distant past that are created when the collider bangs together lead ions instead of protons. Researchers expected this material, known in the lingo as a quark-gluon plasma, to behave like a gas, but it turns out to behave more like a liquid.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-43",
+      "index": 43,
+      "kind": "section",
+      "section": "Section",
+      "title": "Sifting the data",
+      "text": "Sifting the data",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-44",
+      "index": 44,
+      "kind": "paragraph",
+      "section": "Sifting the data",
+      "title": "Sifting the data",
+      "text": "The collider’s enormous detectors are like 100 megapixel cameras that take 40 million pictures a second. Most of the data from that deluge is immediately thrown away. Triggers, programmed to pick out events that physicists thought might be interesting, save only about a thousand collision events per second. Even still, an enormous pool of data winds up in the CERN computer banks.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/computingcenter-5a74ba73936a.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-45",
+      "index": 45,
+      "kind": "caption",
+      "section": "360 photo",
+      "title": "Data",
+      "text": "CERN’s data center.",
+      "sourceIds": [
+        "caption"
+      ],
+      "media": {
+        "image": "textures/computingcenter-5a74ba73936a.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-46",
+      "index": 46,
+      "kind": "paragraph",
+      "section": "Sifting the data",
+      "title": "Sifting the data",
+      "text": "According to the casino rules of modern quantum physics, anything that can happen will happen eventually. Before a single proton is fired through the collider, computers have calculated all the possible outcomes of a collision according to known physics. Any unexpected bump in the real data at some energy could be a signal of unknown physics, a new particle.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/computingcenter-5a74ba73936a.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-47",
+      "index": 47,
+      "kind": "paragraph",
+      "section": "Sifting the data",
+      "title": "Sifting the data",
+      "text": "That was how the Higgs was discovered, emerging from the statistical noise in the autumn of 2011. Only one of every 10 billion collisions creates a Higgs boson. The Higgs vanishes instantly and can’t be observed directly, but it decays into fragments that can be measured and identified.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-48",
+      "index": 48,
+      "kind": "paragraph",
+      "section": "Sifting the data",
+      "title": "Sifting the data",
+      "text": "What eventually stood out from the data was evidence for a particle that weighs all by itself as much as an iodine atom: a flake of an invisible force field that permeates space like molasses, impeding motion and assigning mass to objects that pass through it.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-49",
+      "index": 49,
+      "kind": "paragraph",
+      "section": "Sifting the data",
+      "title": "Sifting the data",
+      "text": "And so in 2012, after half a century and billions of dollars, thousands of physicists toasted over champagne. Peter Higgs, for whom the elusive boson was named, shared the Nobel prize with François Englert, who had independently predicted the particle’s existence.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-50",
+      "index": 50,
+      "kind": "section",
+      "section": "Section",
+      "title": "An intermission underground",
+      "text": "An intermission underground",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-51",
+      "index": 51,
+      "kind": "paragraph",
+      "section": "An intermission underground",
+      "title": "An intermission underground",
+      "text": "The current shutdown is the first of a pair of billion-dollar upgrades intended to boost the productivity of the Large Hadron Collider tenfold by the end of the decade.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-52",
+      "index": 52,
+      "kind": "paragraph",
+      "section": "An intermission underground",
+      "title": "An intermission underground",
+      "text": "The first shutdown will last for two years, until 2021; during that time, engineers will improve the series of smaller racetracks that speed up protons and inject them into the main collider. The collider then will run for two years and shut down again, in 2024, for two more years, so that engineers can install new magnets to intensify the proton beams and collisions.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-53",
+      "index": 53,
+      "kind": "paragraph",
+      "section": "An intermission underground",
+      "title": "An intermission underground",
+      "text": "Reincarnated in 2026 as the High Luminosity L.H.C., the collider is scheduled to run for another decade, until 2035 or so, which means its career probing the edge of human knowledge is still beginning. Judging by the collider’s productivity, measured in terms of trillions of subatomic smashups, more than 95 percent of its scientific potential lies ahead.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-54",
+      "index": 54,
+      "kind": "paragraph",
+      "section": "An intermission underground",
+      "title": "An intermission underground",
+      "text": "Both the Atlas and CMS experiments will receive major upgrades during the next two shutdowns, including new silicon trackers, to replace the olds ones burned out by radiation.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-55",
+      "index": 55,
+      "kind": "paragraph",
+      "section": "An intermission underground",
+      "title": "An intermission underground",
+      "text": "To keep up with the increased collision rate, both Atlas and CMS have had to upgrade the finicky trigger systems that decide which collision events to keep and study. Currently, of a billion events per second, they can keep 1,500; the upgrade will raise that figure to 10,000.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {
+        "image": "textures/computingcenter-5a74ba73936a.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-56",
+      "index": 56,
+      "kind": "paragraph",
+      "section": "An intermission underground",
+      "title": "An intermission underground",
+      "text": "And what a flow of collisions it will be. Physicists measure the productivity, or luminosity, of their colliders in terms of collisions. It took about 3,000 trillion collisions to confirm the Higgs boson. As of the December shutdown the collider had logged about 20,000 trillion collisions. But those were, and are, early days.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-57",
+      "index": 57,
+      "kind": "paragraph",
+      "section": "An intermission underground",
+      "title": "An intermission underground",
+      "text": "By 2037, the Large Hadron Collider should have produced roughly 4 million trillion primordial fireballs, bristling with who knows what. The whole universe is still up for grabs.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-58",
+      "index": 58,
+      "kind": "caption",
+      "section": "360 photo",
+      "title": "ATLAS",
+      "text": "The office of John Ellis, a theoretical physicist.",
+      "sourceIds": [
+        "caption"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-59",
+      "index": 59,
+      "kind": "section",
+      "section": "Section",
+      "title": "After the Higgs",
+      "text": "After the Higgs",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-60",
+      "index": 60,
+      "kind": "paragraph",
+      "section": "After the Higgs",
+      "title": "After the Higgs",
+      "text": "Discovering the Higgs was an auspicious start. But the champagne came with a mystery.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-61",
+      "index": 61,
+      "kind": "paragraph",
+      "section": "After the Higgs",
+      "title": "After the Higgs",
+      "text": "Over the last century, physicists have learned to explain some of the grandest and subtlest phenomena in nature — the arc of a rainbow, the scent of a gardenia, the twitch of a cat’s whiskers — as a handful of elementary particles interacting through four basic forces, playing a game of catch with force-carrying particles called bosons according to a set of equations called the Standard Model.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-62",
+      "index": 62,
+      "kind": "paragraph",
+      "section": "After the Higgs",
+      "title": "After the Higgs",
+      "text": "But why these particles and these forces? Why is the universe made of matter but not antimatter? What happens at the center of a black hole, or happened at the first instant of the Big Bang? If the Higgs boson determines the masses of particles, what determines the mass of the Higgs?",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-63",
+      "index": 63,
+      "kind": "paragraph",
+      "section": "After the Higgs",
+      "title": "After the Higgs",
+      "text": "Who, in other words, watches the watchman?",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-64",
+      "index": 64,
+      "kind": "paragraph",
+      "section": "After the Higgs",
+      "title": "After the Higgs",
+      "text": "The Standard Model, for all its brilliance and elegance, does not say. Particles that might answer these questions have not shown up yet in the collider. Fabiola Gianotti, the director-general of CERN, expressed surprise. “I would have expected new physics to manifest itself at the energy scale of the Large Hadron Collider,” she said.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-65",
+      "index": 65,
+      "kind": "paragraph",
+      "section": "After the Higgs",
+      "title": "After the Higgs",
+      "text": "Some physicists have responded by speculating about multiple universes and other exotic phenomena. Some clues, Dr. Gianotti said, might come from studying the new particle on the block, the Higgs.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-66",
+      "index": 66,
+      "kind": "paragraph",
+      "section": "After the Higgs",
+      "title": "After the Higgs",
+      "text": "“We physicists are happy when we understand things, but we are even happier when we don’t understand,” she said. “And today we know that we don’t understand everything. We know that we are missing something important and fundamental. And this is very exciting.”",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-67",
+      "index": 67,
+      "kind": "caption",
+      "section": "360 photo",
+      "title": "Tunnel",
+      "text": "The circular tunnel of the Large Hadron Collider.",
+      "sourceIds": [
+        "caption"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-68",
+      "index": 68,
+      "kind": "section",
+      "section": "Section",
+      "title": "Colliders of tomorrow",
+      "text": "Colliders of tomorrow",
+      "sourceIds": [
+        "section"
+      ],
+      "media": {
+        "image": "textures/tunnels-ec96e546b279.jpg"
+      },
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-69",
+      "index": 69,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "Humans soon must decide which machines, if any, will be built to augment or replace the Large Hadron Collider. That collider had a “killer app” of sorts: it was designed to achieve an energy at which, according to the prediction of the Standard Model, the Higgs or something like it would become evident and provide an explanation for particle masses.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-70",
+      "index": 70,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "But the Standard Model doesn’t predict a new keystone particle in the next higher energy range. Luckily, nobody believes the Standard Model is the last word about the universe, but as the machines increase in energy, particle physicists will be shooting in the dark.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-71",
+      "index": 71,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow (1/2)",
+      "text": "For a long time, the leading candidate for Next Big Physics Machine has been the International Linear Collider, which would fire electrons and their antimatter opposites, positrons, at each other. The collisions would produce showers of Higgs bosons.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-72",
+      "index": 72,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow (2/2)",
+      "text": "The experiment would be built in Japan, if it is built at all, but Japan has yet to commit to hosting the project, which would require them to pay for about half of the $5.5 billion cost.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-73",
+      "index": 73,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "In the meantime, Europe has convened meetings and workshops to decide on a plan for the future of particle physics there. “If there is no word from Japan by the end of the year, then the I.L.C. will not figure in the next five-year plan for Europe,” Lyn Evans, a CERN physicist who was in charge of building the Large Hadron Collider, said in an email.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-74",
+      "index": 74,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "CERN has proposed its own version of a linear collider, the Compact Linear Collider, that could be scaled up gradually from Higgs bosons to higher energies. Also being considered is a humongous collider, 100 kilometers around, that would lie under Lake Geneva and would reach energies of 100 trillion electron volts — seven times the power of the Large Hadron Collider.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-75",
+      "index": 75,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "And in November the Chinese Academy of Sciences released the design for a next-generation collider of similar size, called the Circular Electron Positron Collider. The machine could be the precursor for a still more powerful machine that has been dubbed the Great Collider. Politics and economics, as well as physics, will decide which, if any, of these machines will see a shovel.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-76",
+      "index": 76,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "“If we want a new machine, nothing is possible before 2035,” Frederick Bordry, CERN’s director of accelerators, said of European plans. Building such a machine is a true human adventure, he said: “Twenty-five years to build and another 25 to operate.”",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-77",
+      "index": 77,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "Noting that he himself is 64, he added, “I’m working for the young people.”",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-78",
+      "index": 78,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "Experience the Large Hadron Collider in virtual reality",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-79",
+      "index": 79,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "Written by Dennis Overbye.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-80",
+      "index": 80,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "360° photographs by Evan Grothjan.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-81",
+      "index": 81,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "Produced by Jonathan Corum, Evan Grothjan, Jon Huang, Yuliya Parshina-Kottas and Karthik Patanjali. Additional work by Destinée-Charisse Royal, Niko Koppel and Alan Burdick.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-82",
+      "index": 82,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "Executive Producers: Graham Roberts and Marcelle Hopkins.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "source-83",
+      "index": 83,
+      "kind": "paragraph",
+      "section": "Colliders of tomorrow",
+      "title": "Colliders of tomorrow",
+      "text": "Sources: CERN; The Atlas, CMS, Alice and LHCb Collaborations; Fabiola Gianotti, John Ellis, Gian Giudice, Michelangelo Mangano, Kyle Cranmer and Sascha Mehlhase; Atlas collision data from Riccardo Maria Bianchi and Ilija Vukotic.",
+      "sourceIds": [
+        "paragraph"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    }
+  ]
+}

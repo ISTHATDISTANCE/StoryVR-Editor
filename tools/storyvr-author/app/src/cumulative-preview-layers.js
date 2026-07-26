@@ -1,0 +1,31 @@
+export const CUMULATIVE_PREVIEW_LAYER_ORDER = [
+  "topology",
+  "topology-viewpoint",
+  "environment-enhancement",
+  "spatial-relations",
+  "attention-guidance",
+  "dynamic-geometry",
+  "inter-beat-dynamics",
+  "interaction-control",
+];
+
+const CUMULATIVE_PREVIEW_LAYERS_BY_COMPONENT = {
+  "asset-topology": ["topology", "topology-viewpoint"],
+  "environment-enhancement": ["topology", "topology-viewpoint", "environment-enhancement"],
+  "spatial-relations": ["topology", "topology-viewpoint", "environment-enhancement", "spatial-relations"],
+  "attention-guidance": ["topology", "topology-viewpoint", "environment-enhancement", "spatial-relations", "attention-guidance"],
+  "text-comfort": ["topology", "topology-viewpoint", "environment-enhancement", "spatial-relations"],
+  "dynamic-geometry": ["topology", "topology-viewpoint", "environment-enhancement", "spatial-relations", "attention-guidance", "dynamic-geometry"],
+  "inter-beat-dynamics": ["topology", "topology-viewpoint", "environment-enhancement", "spatial-relations", "attention-guidance", "dynamic-geometry", "inter-beat-dynamics"],
+  "interaction-control": CUMULATIVE_PREVIEW_LAYER_ORDER,
+  "transition-pacing": CUMULATIVE_PREVIEW_LAYER_ORDER,
+};
+
+export function cumulativePreviewLayerIds(componentId) {
+  return [...(CUMULATIVE_PREVIEW_LAYERS_BY_COMPONENT[componentId] || [])];
+}
+
+export function cumulativePreviewLayerMap(componentId) {
+  const ids = new Set(cumulativePreviewLayerIds(componentId));
+  return Object.fromEntries(CUMULATIVE_PREVIEW_LAYER_ORDER.map((id) => [id, ids.has(id)]));
+}

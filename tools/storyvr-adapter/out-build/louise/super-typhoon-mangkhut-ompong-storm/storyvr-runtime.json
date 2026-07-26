@@ -1,0 +1,289 @@
+{
+  "schemaVersion": "storyvr-runtime/v1",
+  "id": "super-typhoon-mangkhut-ompong-storm-storyvr",
+  "family": "louise",
+  "slug": "super-typhoon-mangkhut-ompong-storm",
+  "title": "See Inside Typhoon Mangkhut in 3-D",
+  "byline": "The New York Times — Sept. 15, 2018",
+  "sourceUrl": "https://www.nytimes.com/interactive/2018/09/15/world/asia/super-typhoon-mangkhut-ompong-storm.html",
+  "source": {
+    "family": "louise",
+    "strategy": "louise",
+    "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/super-typhoon-mangkhut-ompong-storm",
+    "storyFolderRel": "louise-10-stories/super-typhoon-mangkhut-ompong-storm",
+    "sourcePath": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/super-typhoon-mangkhut-ompong-storm/webxr-adaptation/data/beats.json",
+    "sourcePathRel": "louise-10-stories/super-typhoon-mangkhut-ompong-storm/webxr-adaptation/data/beats.json",
+    "sourceFormat": "beats-json",
+    "originalSchema": {
+      "headline": "string",
+      "byline": "string",
+      "sourceUrl": "string",
+      "pcd": "string",
+      "beats": "array(7)"
+    },
+    "generatedAt": null
+  },
+  "assetRoot": {
+    "mode": "build",
+    "original": "/louise-10-stories/super-typhoon-mangkhut-ompong-storm/captures/active",
+    "relativeFromApp": "../captures/active",
+    "hosted": "/louise-10-stories/super-typhoon-mangkhut-ompong-storm/captures/active",
+    "buildBase": "/louise-10-stories/super-typhoon-mangkhut-ompong-storm/dist-webxr-adaptation/",
+    "filesystem": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/super-typhoon-mangkhut-ompong-storm/captures/active",
+    "canonical": "/louise-10-stories/super-typhoon-mangkhut-ompong-storm/captures/active"
+  },
+  "style": {
+    "colors": {},
+    "tokens": {}
+  },
+  "contentUnits": [
+    {
+      "id": "beats-01",
+      "index": 0,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 1",
+      "text": "A NASA satellite captured data from a cross section of Typhoon Mangkhut as the storm approached the Philippines early Friday.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-02",
+      "index": 1,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 2",
+      "text": "The satellite’s radar sent out pulses of energy, like camera flashes, and measured how the energy reflected off the rain and ice inside the storm. The resulting 3-D picture shows the amount of rainfall per hour — blue the lightest, red the most intense.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-03",
+      "index": 2,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 3",
+      "text": "At the moment captured here, the typhoon was 550 miles wide and more than six miles tall, with enough cloud cover to blanket an area larger than Texas. The eye alone was 31 miles wide.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-04",
+      "index": 3,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 4",
+      "text": "Rain is heaviest near the center, in the eyewall, visible here in red. Mangkhut’s peak rate reached 11.7 inches per hour. “Like a summertime downpour where you get totally drenched a few seconds after stepping out without an umbrella,” said NASA’s Dr. Owen Kelley.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-05",
+      "index": 4,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 5",
+      "text": "The wind and rain start to taper farther out from the eyewall, becoming more like a thunderstorm.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-06",
+      "index": 5,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 6",
+      "text": "At the storm’s outer edges, it’s more of a drizzle. But once the typhoon hits land, even these areas of lighter rain and wind can be dangerous — with the potential to cause tornadoes, flash floods and landslides.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-07",
+      "index": 6,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 7",
+      "text": "Typhoon Mangkhut was still as strong as a Category 5 storm when it made landfall over Baggao, in Cagayan Province, early Saturday. It uprooted trees and flooded roads and farms. Dozens of deaths were reported.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    }
+  ],
+  "sceneTopology": {
+    "kind": "beat-sequence",
+    "routeStops": [],
+    "regions": [],
+    "markers": [],
+    "bodies": [],
+    "countries": [],
+    "modelGroups": {},
+    "sections": [],
+    "questions": {},
+    "cameraPresets": [],
+    "spatialRelationships": {}
+  },
+  "assets": [],
+  "interactions": {
+    "controls": [
+      "next",
+      "back"
+    ],
+    "keyboard": {},
+    "xrControllers": {},
+    "locomotion": "story-fixed",
+    "lifecycle": {},
+    "triggers": [],
+    "hotspots": []
+  },
+  "compatibility": {
+    "acceptedForTransformation": true,
+    "excludedCategories": [
+      "virtual-walk",
+      "sports"
+    ],
+    "sourceAdapter": "Louise stories, mostly data/beats.json plus several legacy sports summaries."
+  },
+  "diagnostics": [
+    {
+      "severity": "warning",
+      "code": "NO_ASSETS_DISCOVERED",
+      "message": "No recognizable asset references were found in the source artifact."
+    }
+  ],
+  "rawSummary": {
+    "beatCount": 7,
+    "storyBeatCount": 0,
+    "pageCount": 0,
+    "sourceBeatCount": 0,
+    "regionCount": 0,
+    "routeStopCount": 0,
+    "frameCount": 0
+  },
+  "beats": [
+    {
+      "id": "beats-01",
+      "index": 0,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 1",
+      "text": "A NASA satellite captured data from a cross section of Typhoon Mangkhut as the storm approached the Philippines early Friday.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-02",
+      "index": 1,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 2",
+      "text": "The satellite’s radar sent out pulses of energy, like camera flashes, and measured how the energy reflected off the rain and ice inside the storm. The resulting 3-D picture shows the amount of rainfall per hour — blue the lightest, red the most intense.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-03",
+      "index": 2,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 3",
+      "text": "At the moment captured here, the typhoon was 550 miles wide and more than six miles tall, with enough cloud cover to blanket an area larger than Texas. The eye alone was 31 miles wide.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-04",
+      "index": 3,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 4",
+      "text": "Rain is heaviest near the center, in the eyewall, visible here in red. Mangkhut’s peak rate reached 11.7 inches per hour. “Like a summertime downpour where you get totally drenched a few seconds after stepping out without an umbrella,” said NASA’s Dr. Owen Kelley.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-05",
+      "index": 4,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 5",
+      "text": "The wind and rain start to taper farther out from the eyewall, becoming more like a thunderstorm.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-06",
+      "index": 5,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 6",
+      "text": "At the storm’s outer edges, it’s more of a drizzle. But once the typhoon hits land, even these areas of lighter rain and wind can be dangerous — with the potential to cause tornadoes, flash floods and landslides.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-07",
+      "index": 6,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 7",
+      "text": "Typhoon Mangkhut was still as strong as a Category 5 storm when it made landfall over Baggao, in Cagayan Province, early Saturday. It uprooted trees and flooded roads and farms. Dozens of deaths were reported.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    }
+  ]
+}

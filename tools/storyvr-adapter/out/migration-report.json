@@ -1,0 +1,456 @@
+{
+  "schemaVersion": "storyvr-migration-report/v1",
+  "generatedAt": "2026-06-24T15:59:37.319Z",
+  "mode": "dev",
+  "scanOnly": false,
+  "includeExcluded": false,
+  "generateMissing": true,
+  "counts": {
+    "accepted": 23,
+    "migrated": 23,
+    "skipped": 8,
+    "rejected": 0
+  },
+  "conflicts": [
+    {
+      "id": "instance-schema-divergence",
+      "resolution": "Normalize beats/pages/sourceBeats/regions into contentUnits with original references preserved."
+    },
+    {
+      "id": "runtime-import-format",
+      "resolution": "Load JSON directly and generated JS modules via ESM import; never import runtime main.js."
+    },
+    {
+      "id": "asset-root-policy",
+      "resolution": "Emit original, relative-from-app, repo-hosted and filesystem asset roots in one canonical assetRoot object."
+    },
+    {
+      "id": "scene-topology",
+      "resolution": "Map route stops, regions, markers, bodies, countries and model groups into sceneTopology."
+    },
+    {
+      "id": "interaction-lifecycle",
+      "resolution": "Map reader actions, transitions, keyboard/controller controls, hotspots and trigger fields into interactions."
+    },
+    {
+      "id": "folder-conventions",
+      "resolution": "Discover all known generated/story/data/beats locations through family strategies."
+    }
+  ],
+  "accepted": [
+    {
+      "family": "global",
+      "slug": "global-migration",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/global-migration",
+      "storyFolderRel": "global-migration"
+    },
+    {
+      "family": "jingchen",
+      "slug": "bugs-halloween-kids-ar-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_10/bugs-halloween-kids-ar-ul",
+      "storyFolderRel": "Jingchen-10-stories/Story_10/bugs-halloween-kids-ar-ul"
+    },
+    {
+      "family": "jingchen",
+      "slug": "cern-large-hadron-collider-ar-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_9/cern-large-hadron-collider-ar-ul",
+      "storyFolderRel": "Jingchen-10-stories/Story_9/cern-large-hadron-collider-ar-ul"
+    },
+    {
+      "family": "jingchen",
+      "slug": "empire-state-building-reopening-new-york",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_5/empire-state-building-reopening-new-york",
+      "storyFolderRel": "Jingchen-10-stories/Story_5/empire-state-building-reopening-new-york"
+    },
+    {
+      "family": "jingchen",
+      "slug": "notre-dame-cathedral-fire-spread",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_8/notre-dame-cathedral-fire-spread",
+      "storyFolderRel": "Jingchen-10-stories/Story_8/notre-dame-cathedral-fire-spread"
+    },
+    {
+      "family": "jingchen",
+      "slug": "possessed-kara-walker",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_7/possessed-kara-walker",
+      "storyFolderRel": "Jingchen-10-stories/Story_7/possessed-kara-walker"
+    },
+    {
+      "family": "jingchen",
+      "slug": "shark-season-attacks-survival-tips",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_2/shark-season-attacks-survival-tips",
+      "storyFolderRel": "Jingchen-10-stories/Story_2/shark-season-attacks-survival-tips"
+    },
+    {
+      "family": "jingchen",
+      "slug": "titanic-submersible-titan-3d-model",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_3/titanic-submersible-titan-3d-model",
+      "storyFolderRel": "Jingchen-10-stories/Story_3/titanic-submersible-titan-3d-model"
+    },
+    {
+      "family": "jingchen",
+      "slug": "trump-white-house-east-wing-ballroom-design-plan",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_1/trump-white-house-east-wing-ballroom-design-plan",
+      "storyFolderRel": "Jingchen-10-stories/Story_1/trump-white-house-east-wing-ballroom-design-plan"
+    },
+    {
+      "family": "louise",
+      "slug": "apollo-11-moon-landing-photos-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/apollo-11-moon-landing-photos-ul",
+      "storyFolderRel": "louise-10-stories/apollo-11-moon-landing-photos-ul"
+    },
+    {
+      "family": "louise",
+      "slug": "coronavirus-transmission-cough-6-feet-ar-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/coronavirus-transmission-cough-6-feet-ar-ul",
+      "storyFolderRel": "louise-10-stories/coronavirus-transmission-cough-6-feet-ar-ul"
+    },
+    {
+      "family": "louise",
+      "slug": "guatemala-volcano-augmented-reality-ar-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/guatemala-volcano-augmented-reality-ar-ul",
+      "storyFolderRel": "louise-10-stories/guatemala-volcano-augmented-reality-ar-ul"
+    },
+    {
+      "family": "louise",
+      "slug": "mars-nasa-insight-ar-3d-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/mars-nasa-insight-ar-3d-ul",
+      "storyFolderRel": "louise-10-stories/mars-nasa-insight-ar-3d-ul"
+    },
+    {
+      "family": "louise",
+      "slug": "super-typhoon-mangkhut-ompong-storm",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/super-typhoon-mangkhut-ompong-storm",
+      "storyFolderRel": "louise-10-stories/super-typhoon-mangkhut-ompong-storm"
+    },
+    {
+      "family": "louise",
+      "slug": "wear-mask-covid-particles-ul-fr",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/wear-mask-covid-particles-ul-fr",
+      "storyFolderRel": "louise-10-stories/wear-mask-covid-particles-ul-fr"
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "bowie-costumes-ar-3d-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/bowie-costumes-ar-3d-ul",
+      "storyFolderRel": "web2VR-Initial-Adaptations/bowie-costumes-ar-3d-ul"
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "carr-fire-ar-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/carr-fire-ar-ul",
+      "storyFolderRel": "web2VR-Initial-Adaptations/carr-fire-ar-ul"
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "global-migration",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/global-migration",
+      "storyFolderRel": "web2VR-Initial-Adaptations/global-migration"
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "is-pluto-a-planet",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/is-pluto-a-planet",
+      "storyFolderRel": "web2VR-Initial-Adaptations/is-pluto-a-planet"
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "methane-satellite-launch-global-warming",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/methane-satellite-launch-global-warming",
+      "storyFolderRel": "web2VR-Initial-Adaptations/methane-satellite-launch-global-warming"
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "polar-vortex-extreme-cold",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/polar-vortex-extreme-cold",
+      "storyFolderRel": "web2VR-Initial-Adaptations/polar-vortex-extreme-cold"
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "statue-of-liberty-torch-ar-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/statue-of-liberty-torch-ar-ul",
+      "storyFolderRel": "web2VR-Initial-Adaptations/statue-of-liberty-torch-ar-ul"
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "thai-cave-rescue-ar-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/thai-cave-rescue-ar-ul",
+      "storyFolderRel": "web2VR-Initial-Adaptations/thai-cave-rescue-ar-ul"
+    }
+  ],
+  "skipped": [
+    {
+      "family": "jingchen",
+      "slug": "jackson-heights-queens-virtual-walk-tour",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_6/jackson-heights-queens-virtual-walk-tour",
+      "storyFolderRel": "Jingchen-10-stories/Story_6/jackson-heights-queens-virtual-walk-tour",
+      "reason": "virtual walk naming convention",
+      "category": "virtual-walk"
+    },
+    {
+      "family": "jingchen",
+      "slug": "richarlison-messi-pulisic-world-cup-goals",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_4/richarlison-messi-pulisic-world-cup-goals",
+      "storyFolderRel": "Jingchen-10-stories/Story_4/richarlison-messi-pulisic-world-cup-goals",
+      "reason": "sports naming convention",
+      "category": "sports"
+    },
+    {
+      "family": "louise",
+      "slug": "canada-belgium-world-cup-goal-batshuayi",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/canada-belgium-world-cup-goal-batshuayi",
+      "storyFolderRel": "louise-10-stories/canada-belgium-world-cup-goal-batshuayi",
+      "reason": "sports naming convention",
+      "category": "sports"
+    },
+    {
+      "family": "louise",
+      "slug": "chinatown-virtual-walk-tour",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/chinatown-virtual-walk-tour",
+      "storyFolderRel": "louise-10-stories/chinatown-virtual-walk-tour",
+      "reason": "virtual walk naming convention",
+      "category": "virtual-walk"
+    },
+    {
+      "family": "louise",
+      "slug": "spain-germany-world-cup-goal",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/spain-germany-world-cup-goal",
+      "storyFolderRel": "louise-10-stories/spain-germany-world-cup-goal",
+      "reason": "sports naming convention",
+      "category": "sports"
+    },
+    {
+      "family": "louise",
+      "slug": "usa-weston-mckennie-england",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/usa-weston-mckennie-england",
+      "storyFolderRel": "louise-10-stories/usa-weston-mckennie-england",
+      "reason": "sports naming convention",
+      "category": "sports"
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "kadarius-toney-punt-return-super-bowl-chiefs",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/kadarius-toney-punt-return-super-bowl-chiefs",
+      "storyFolderRel": "web2VR-Initial-Adaptations/kadarius-toney-punt-return-super-bowl-chiefs",
+      "reason": "sports naming convention",
+      "category": "sports"
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "wales-usmnt-world-cup-goal-pulisic",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/wales-usmnt-world-cup-goal-pulisic",
+      "storyFolderRel": "web2VR-Initial-Adaptations/wales-usmnt-world-cup-goal-pulisic",
+      "reason": "sports naming convention",
+      "category": "sports"
+    }
+  ],
+  "migrated": [
+    {
+      "family": "global",
+      "slug": "global-migration",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/global-migration",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/global/global-migration/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/global-migration/webxr-adaptation/data/story-instance.json",
+      "contentUnitCount": 38,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "jingchen",
+      "slug": "bugs-halloween-kids-ar-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_10/bugs-halloween-kids-ar-ul",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/jingchen/bugs-halloween-kids-ar-ul/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_10/bugs-halloween-kids-ar-ul/webxr-adaptation/src/generated-story-instance.js",
+      "contentUnitCount": 5,
+      "diagnosticCount": 5
+    },
+    {
+      "family": "jingchen",
+      "slug": "cern-large-hadron-collider-ar-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_9/cern-large-hadron-collider-ar-ul",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/jingchen/cern-large-hadron-collider-ar-ul/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_9/cern-large-hadron-collider-ar-ul/webxr-adaptation/src/generated/storyInstance.js",
+      "contentUnitCount": 84,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "jingchen",
+      "slug": "empire-state-building-reopening-new-york",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_5/empire-state-building-reopening-new-york",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/jingchen/empire-state-building-reopening-new-york/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_5/empire-state-building-reopening-new-york/webxr-adaptation/src/story-instance.js",
+      "contentUnitCount": 31,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "jingchen",
+      "slug": "notre-dame-cathedral-fire-spread",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_8/notre-dame-cathedral-fire-spread",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/jingchen/notre-dame-cathedral-fire-spread/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_8/notre-dame-cathedral-fire-spread/webxr-adaptation/src/generated/story-instance.js",
+      "contentUnitCount": 11,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "jingchen",
+      "slug": "possessed-kara-walker",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_7/possessed-kara-walker",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/jingchen/possessed-kara-walker/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_7/possessed-kara-walker/webxr-adaptation/src/generated/story-instance.js",
+      "contentUnitCount": 7,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "jingchen",
+      "slug": "shark-season-attacks-survival-tips",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_2/shark-season-attacks-survival-tips",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/jingchen/shark-season-attacks-survival-tips/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_2/shark-season-attacks-survival-tips/webxr-adaptation/src/generated/story-instance.json",
+      "contentUnitCount": 8,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "jingchen",
+      "slug": "titanic-submersible-titan-3d-model",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_3/titanic-submersible-titan-3d-model",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/jingchen/titanic-submersible-titan-3d-model/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_3/titanic-submersible-titan-3d-model/webxr-adaptation/src/story-instance.json",
+      "contentUnitCount": 5,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "jingchen",
+      "slug": "trump-white-house-east-wing-ballroom-design-plan",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_1/trump-white-house-east-wing-ballroom-design-plan",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/jingchen/trump-white-house-east-wing-ballroom-design-plan/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_1/trump-white-house-east-wing-ballroom-design-plan/webxr-adaptation/src/generated/story-instance.json",
+      "contentUnitCount": 7,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "louise",
+      "slug": "apollo-11-moon-landing-photos-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/apollo-11-moon-landing-photos-ul",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/louise/apollo-11-moon-landing-photos-ul/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/apollo-11-moon-landing-photos-ul/webxr-adaptation/data/beats.json",
+      "contentUnitCount": 10,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "louise",
+      "slug": "coronavirus-transmission-cough-6-feet-ar-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/coronavirus-transmission-cough-6-feet-ar-ul",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/louise/coronavirus-transmission-cough-6-feet-ar-ul/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/coronavirus-transmission-cough-6-feet-ar-ul/webxr-adaptation/data/beats.json",
+      "contentUnitCount": 13,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "louise",
+      "slug": "guatemala-volcano-augmented-reality-ar-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/guatemala-volcano-augmented-reality-ar-ul",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/louise/guatemala-volcano-augmented-reality-ar-ul/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/guatemala-volcano-augmented-reality-ar-ul/webxr-adaptation/data/beats.json",
+      "contentUnitCount": 5,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "louise",
+      "slug": "mars-nasa-insight-ar-3d-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/mars-nasa-insight-ar-3d-ul",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/louise/mars-nasa-insight-ar-3d-ul/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/mars-nasa-insight-ar-3d-ul/webxr-adaptation/data/beats.json",
+      "contentUnitCount": 12,
+      "diagnosticCount": 1
+    },
+    {
+      "family": "louise",
+      "slug": "super-typhoon-mangkhut-ompong-storm",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/super-typhoon-mangkhut-ompong-storm",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/louise/super-typhoon-mangkhut-ompong-storm/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/super-typhoon-mangkhut-ompong-storm/webxr-adaptation/data/beats.json",
+      "contentUnitCount": 7,
+      "diagnosticCount": 1
+    },
+    {
+      "family": "louise",
+      "slug": "wear-mask-covid-particles-ul-fr",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/wear-mask-covid-particles-ul-fr",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/louise/wear-mask-covid-particles-ul-fr/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/wear-mask-covid-particles-ul-fr/webxr-adaptation/data/beats.json",
+      "contentUnitCount": 23,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "bowie-costumes-ar-3d-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/bowie-costumes-ar-3d-ul",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/web2vr-initial/bowie-costumes-ar-3d-ul/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/bowie-costumes-ar-3d-ul/webxr-adaptation/data/story-instance.json",
+      "contentUnitCount": 10,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "carr-fire-ar-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/carr-fire-ar-ul",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/web2vr-initial/carr-fire-ar-ul/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/carr-fire-ar-ul/webxr-adaptation/data/story-instance.json",
+      "contentUnitCount": 9,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "global-migration",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/global-migration",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/web2vr-initial/global-migration/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/global-migration/webxr-adaptation/data/story-instance.json",
+      "contentUnitCount": 38,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "is-pluto-a-planet",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/is-pluto-a-planet",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/web2vr-initial/is-pluto-a-planet/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/is-pluto-a-planet/webxr-adaptation/data/story-instance.json",
+      "contentUnitCount": 7,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "methane-satellite-launch-global-warming",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/methane-satellite-launch-global-warming",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/web2vr-initial/methane-satellite-launch-global-warming/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/methane-satellite-launch-global-warming/webxr-adaptation/data/story-instance.json",
+      "contentUnitCount": 11,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "polar-vortex-extreme-cold",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/polar-vortex-extreme-cold",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/web2vr-initial/polar-vortex-extreme-cold/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/polar-vortex-extreme-cold/webxr-adaptation/data/story-instance.json",
+      "contentUnitCount": 5,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "statue-of-liberty-torch-ar-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/statue-of-liberty-torch-ar-ul",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/web2vr-initial/statue-of-liberty-torch-ar-ul/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/statue-of-liberty-torch-ar-ul/webxr-adaptation/data/story-instance.json",
+      "contentUnitCount": 10,
+      "diagnosticCount": 0
+    },
+    {
+      "family": "web2vr-initial",
+      "slug": "thai-cave-rescue-ar-ul",
+      "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/thai-cave-rescue-ar-ul",
+      "outputPath": "/Users/lutao/Desktop/web2vr_4/tools/storyvr-adapter/out/web2vr-initial/thai-cave-rescue-ar-ul/storyvr-runtime.json",
+      "sourcePath": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/thai-cave-rescue-ar-ul/webxr-adaptation/data/story-instance.json",
+      "contentUnitCount": 8,
+      "diagnosticCount": 0
+    }
+  ],
+  "rejected": []
+}

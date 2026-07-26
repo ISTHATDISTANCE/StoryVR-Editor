@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>__STORY_TITLE__ - StoryVR Runtime</title>
+    <meta name="description" content="__STORY_DESCRIPTION__">
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="./src/styles.css">
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/node_modules/three/build/three.module.js",
+          "three/addons/": "/node_modules/three/examples/jsm/",
+          "three/examples/jsm/": "/node_modules/three/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body data-story-slug="__STORY_SLUG__">
+    <main class="runtime-shell">
+      <section id="stage" class="stage" aria-label="Compiled StoryVR scene"></section>
+
+      <section class="reader-panel" aria-live="polite">
+        <button
+          id="reader-panel-toggle"
+          class="reader-panel-toggle"
+          type="button"
+          aria-expanded="true"
+          aria-label="Minimize text panel"
+          title="Minimize text panel"
+        >−</button>
+        <p class="kicker">Compiled StoryVR runtime</p>
+        <h1 id="story-title">Loading StoryVR</h1>
+        <div class="decision-row" id="decision-row"></div>
+        <p id="environment-info" class="environment-info" hidden></p>
+        <p class="beat-progress" id="beat-progress">Preparing scene</p>
+        <h2 id="beat-title">Loading</h2>
+        <p id="beat-text" class="beat-text"></p>
+        <div id="variant-controls" class="variant-controls" hidden></div>
+        <div class="reader-actions">
+          <button id="prev-beat" type="button">Previous</button>
+          <div id="xr-button-slot" class="xr-button-slot"></div>
+          <button id="next-beat" type="button">Next</button>
+        </div>
+      </section>
+
+      <nav id="beat-strip" class="beat-strip" aria-label="Story beats"></nav>
+      <div id="runtime-status" class="runtime-status">Loading compiled runtime...</div>
+    </main>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

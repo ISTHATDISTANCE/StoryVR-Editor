@@ -1,0 +1,3656 @@
+{
+  "schemaVersion": "storyvr-runtime/v1",
+  "id": "shark-season-attacks-survival-tips",
+  "family": "jingchen",
+  "slug": "shark-season-attacks-survival-tips",
+  "title": "What to Know About Shark Season: Risks, Attacks and More",
+  "byline": "By Erik Vance",
+  "sourceUrl": "https://www.nytimes.com/interactive/2024/07/26/well/shark-season-attacks-survival-tips.html",
+  "source": {
+    "family": "jingchen",
+    "strategy": "jingchen",
+    "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_2/shark-season-attacks-survival-tips",
+    "storyFolderRel": "Jingchen-10-stories/Story_2/shark-season-attacks-survival-tips",
+    "sourcePath": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_2/shark-season-attacks-survival-tips/webxr-adaptation/src/generated/story-instance.json",
+    "sourcePathRel": "Jingchen-10-stories/Story_2/shark-season-attacks-survival-tips/webxr-adaptation/src/generated/story-instance.json",
+    "sourceFormat": "generated-json",
+    "originalSchema": {
+      "storySlug": "string",
+      "generatedAt": "string",
+      "assetRoot": "string",
+      "concept": "string",
+      "regions": "array(8)",
+      "speciesCards": "array(4)",
+      "activityCards": "array(4)",
+      "safetyCards": "array(4)",
+      "beats": "array(8)",
+      "availableAssets": "array(170)"
+    },
+    "generatedAt": "2026-06-14T00:53:15.494Z"
+  },
+  "assetRoot": {
+    "mode": "build",
+    "original": "../captures/active/",
+    "relativeFromApp": "../captures/active",
+    "hosted": "/Jingchen-10-stories/Story_2/shark-season-attacks-survival-tips/captures/active",
+    "buildBase": "/Jingchen-10-stories/Story_2/shark-season-attacks-survival-tips/dist-webxr-adaptation/",
+    "filesystem": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_2/shark-season-attacks-survival-tips/captures/active",
+    "canonical": "/Jingchen-10-stories/Story_2/shark-season-attacks-survival-tips/captures/active"
+  },
+  "style": {
+    "colors": {},
+    "tokens": {}
+  },
+  "contentUnits": [
+    {
+      "id": "overview",
+      "index": 0,
+      "kind": "lead",
+      "section": "Lead",
+      "title": "Fear is bigger than the baseline risk",
+      "text": "The source story opens by separating shark fear from shark probability: attacks are rare, but risk is not zero. The VR version starts underwater with the source shark nearby, then pulls the viewer back to the larger context.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/26Well-Sharks-videoSixteenByNineJumbo1600-97d152f79b39.jpg",
+        "modelIds": [
+          "source-shark",
+          "great-white"
+        ],
+        "visibleLayer": "lead"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            0.2,
+            1.7,
+            4.7
+          ],
+          "target": [
+            0,
+            0.85,
+            -0.2
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "regions",
+      "index": 1,
+      "kind": "regions",
+      "section": "Geography",
+      "title": "Where and when matters most",
+      "text": "The original interactive asks readers to choose a coast. This beat turns the coast into a ring of risk stations, showing how region and season change the odds.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/151029044145-shark-sign-0bfd52fca15b.jpg",
+        "modelIds": [
+          "great-white",
+          "hammerhead"
+        ],
+        "visibleLayer": "regions"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            0,
+            3.4,
+            4.35
+          ],
+          "target": [
+            0,
+            0.22,
+            0.18
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "hotspots",
+      "index": 2,
+      "kind": "regions",
+      "section": "Regional detail",
+      "title": "Florida counts bites; Hawaii and California carry severity",
+      "text": "The adaptation groups the source regional notes into a concise comparison: Florida is the frequency center, Hawaii has serious tiger-shark encounters, and California/New England are white-shark severity stories.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/190118102340-02-great-white-shark-hawaii-0115-7a273aa7fc46.jpg",
+        "modelIds": [
+          "great-white",
+          "source-shark"
+        ],
+        "visibleLayer": "regions"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            2.55,
+            1.35,
+            3.2
+          ],
+          "target": [
+            0.45,
+            0.5,
+            0.2
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "species",
+      "index": 3,
+      "kind": "species",
+      "section": "Sharks to know",
+      "title": "The story is about a few species, not all sharks",
+      "text": "Rather than surrounding the reader with danger, this beat compares roles: bull and tiger sharks explain many serious warnings, blacktips explain many minor bites, and nurse sharks carry the do-not-harass lesson.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/150616132316-great-white-shark-8c618ab4109f.jpg",
+        "modelIds": [
+          "great-white",
+          "hammerhead",
+          "nurse",
+          "source-shark"
+        ],
+        "visibleLayer": "species"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            -2.9,
+            1.35,
+            3.05
+          ],
+          "target": [
+            -0.15,
+            0.78,
+            -0.05
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "activities",
+      "index": 4,
+      "kind": "activities",
+      "section": "Exposure",
+      "title": "What you do in the water changes the risk",
+      "text": "The original article shifts from place to behavior. The VR beat stages board sports, swimming, fishing, and shark handling as separate exposure stations so the reader sees risk as a set of choices.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/180815212321-cape-cod-surfer-shark-bite-637f0178cd71.jpg",
+        "modelIds": [
+          "great-white",
+          "sardine"
+        ],
+        "visibleLayer": "activities"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            2.9,
+            1.12,
+            2.65
+          ],
+          "target": [
+            0.55,
+            0.56,
+            0.35
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "avoidance",
+      "index": 5,
+      "kind": "safety",
+      "section": "Prevention",
+      "title": "Make yourself clearly not shark food",
+      "text": "The practical guidance becomes a calm checklist in space: group up, avoid low light, stay away from prey activity, skip shiny contrast, and do not bother sharks.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/151029044145-shark-sign-0bfd52fca15b.jpg",
+        "modelIds": [
+          "nurse",
+          "sardine",
+          "hammerhead"
+        ],
+        "visibleLayer": "safety"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            -2.55,
+            1.2,
+            2.5
+          ],
+          "target": [
+            -0.35,
+            0.54,
+            0.1
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "response",
+      "index": 6,
+      "kind": "safety",
+      "section": "If attacked",
+      "title": "Fight hard, get out, control bleeding",
+      "text": "The source story treats an attack as unlikely but actionable. If a shark holds on, strike vulnerable areas, leave the water without panic, and use bleeding-control preparation.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/190704102334-02-shark-bleeding-kit-beach-cape-cod-e6620b94a43b.jpg",
+        "modelIds": [
+          "source-shark"
+        ],
+        "visibleLayer": "safety"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            0.25,
+            1.52,
+            3.65
+          ],
+          "target": [
+            0.05,
+            0.82,
+            -0.2
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "takeaway",
+      "index": 7,
+      "kind": "lead",
+      "section": "Conclusion",
+      "title": "The risk is extremely small, but preparation is real",
+      "text": "The closing beat preserves the article position: knowing the numbers may not erase fear, but clear behavior makes the already-small risk smaller.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/180915172920-cape-cod-shark-attack-ef41ffd0d16c.jpg",
+        "modelIds": [
+          "source-shark",
+          "great-white",
+          "nurse",
+          "sardine"
+        ],
+        "visibleLayer": "lead"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            0,
+            1.95,
+            4.25
+          ],
+          "target": [
+            0,
+            0.82,
+            0
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    }
+  ],
+  "sceneTopology": {
+    "kind": "region-map",
+    "routeStops": [],
+    "regions": [
+      {
+        "id": "california",
+        "label": "California",
+        "risk": 3,
+        "months": "Jul-Oct",
+        "note": "Few bites, but large white sharks make serious outcomes more likely.",
+        "position": [
+          -2.25,
+          0.18,
+          0.95
+        ]
+      },
+      {
+        "id": "carolinas-georgia",
+        "label": "Carolinas + GA",
+        "risk": 3,
+        "months": "Jun-Aug",
+        "note": "Warm months bring sharks and swimmers into the same water.",
+        "position": [
+          0.55,
+          0.18,
+          1.55
+        ]
+      },
+      {
+        "id": "florida",
+        "label": "Florida",
+        "risk": 5,
+        "months": "Apr-Sep",
+        "note": "Highest U.S. bite count; Volusia County is a major hotspot.",
+        "position": [
+          1.35,
+          0.18,
+          0.82
+        ]
+      },
+      {
+        "id": "gulf",
+        "label": "Gulf Coast",
+        "risk": 2,
+        "months": "summer",
+        "note": "Lower incident count; murky water and fishing can raise local risk.",
+        "position": [
+          0.65,
+          0.18,
+          -0.95
+        ]
+      },
+      {
+        "id": "hawaii",
+        "label": "Hawaii",
+        "risk": 5,
+        "months": "Oct",
+        "note": "Fewer bites than Florida but a higher share of serious attacks.",
+        "position": [
+          -2.45,
+          0.18,
+          -0.92
+        ]
+      },
+      {
+        "id": "mid-atlantic",
+        "label": "Mid-Atlantic",
+        "risk": 2,
+        "months": "summer",
+        "note": "Popular beaches, but relatively few recorded attacks.",
+        "position": [
+          1.65,
+          0.18,
+          1.55
+        ]
+      },
+      {
+        "id": "new-england",
+        "label": "New England",
+        "risk": 3,
+        "months": "Aug-Sep",
+        "note": "Seal populations can bring white sharks close to shore.",
+        "position": [
+          2.25,
+          0.18,
+          0.64
+        ]
+      },
+      {
+        "id": "pacific-northwest",
+        "label": "PNW + Alaska",
+        "risk": 1,
+        "months": "rare",
+        "note": "Very few recorded incidents despite long coastlines.",
+        "position": [
+          -2.3,
+          0.18,
+          1.55
+        ]
+      }
+    ],
+    "markers": [],
+    "bodies": [],
+    "countries": [],
+    "modelGroups": {},
+    "sections": [],
+    "questions": {},
+    "cameraPresets": [
+      {
+        "position": [
+          0.2,
+          1.7,
+          4.7
+        ],
+        "target": [
+          0,
+          0.85,
+          -0.2
+        ]
+      },
+      {
+        "position": [
+          0,
+          3.4,
+          4.35
+        ],
+        "target": [
+          0,
+          0.22,
+          0.18
+        ]
+      },
+      {
+        "position": [
+          2.55,
+          1.35,
+          3.2
+        ],
+        "target": [
+          0.45,
+          0.5,
+          0.2
+        ]
+      },
+      {
+        "position": [
+          -2.9,
+          1.35,
+          3.05
+        ],
+        "target": [
+          -0.15,
+          0.78,
+          -0.05
+        ]
+      },
+      {
+        "position": [
+          2.9,
+          1.12,
+          2.65
+        ],
+        "target": [
+          0.55,
+          0.56,
+          0.35
+        ]
+      },
+      {
+        "position": [
+          -2.55,
+          1.2,
+          2.5
+        ],
+        "target": [
+          -0.35,
+          0.54,
+          0.1
+        ]
+      },
+      {
+        "position": [
+          0.25,
+          1.52,
+          3.65
+        ],
+        "target": [
+          0.05,
+          0.82,
+          -0.2
+        ]
+      },
+      {
+        "position": [
+          0,
+          1.95,
+          4.25
+        ],
+        "target": [
+          0,
+          0.82,
+          0
+        ]
+      }
+    ],
+    "spatialRelationships": {}
+  },
+  "assets": [
+    {
+      "id": "26Well-Sharks-videoSixteenByNineJumbo1600-97d152f79b39.jpg",
+      "path": "../captures/active/textures/26Well-Sharks-videoSixteenByNineJumbo1600-97d152f79b39.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "assets.images.hero",
+      "sourceField": "assets.images.hero",
+      "bytes": null
+    },
+    {
+      "id": "150616132316-great-white-shark-8c618ab4109f.jpg",
+      "path": "../captures/active/textures/150616132316-great-white-shark-8c618ab4109f.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "assets.images.whiteShark",
+      "sourceField": "assets.images.whiteShark",
+      "bytes": null
+    },
+    {
+      "id": "151029044145-shark-sign-0bfd52fca15b.jpg",
+      "path": "../captures/active/textures/151029044145-shark-sign-0bfd52fca15b.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "assets.images.beachSign",
+      "sourceField": "assets.images.beachSign",
+      "bytes": null
+    },
+    {
+      "id": "180915172920-cape-cod-shark-attack-ef41ffd0d16c.jpg",
+      "path": "../captures/active/textures/180915172920-cape-cod-shark-attack-ef41ffd0d16c.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "assets.images.capeCod",
+      "sourceField": "assets.images.capeCod",
+      "bytes": null
+    },
+    {
+      "id": "190118102340-02-great-white-shark-hawaii-0115-7a273aa7fc46.jpg",
+      "path": "../captures/active/textures/190118102340-02-great-white-shark-hawaii-0115-7a273aa7fc46.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "assets.images.hawaii",
+      "sourceField": "assets.images.hawaii",
+      "bytes": null
+    },
+    {
+      "id": "180815212321-cape-cod-surfer-shark-bite-637f0178cd71.jpg",
+      "path": "../captures/active/textures/180815212321-cape-cod-surfer-shark-bite-637f0178cd71.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "assets.images.surfer",
+      "sourceField": "assets.images.surfer",
+      "bytes": null
+    },
+    {
+      "id": "190704102334-02-shark-bleeding-kit-beach-cape-cod-e6620b94a43b.jpg",
+      "path": "../captures/active/textures/190704102334-02-shark-bleeding-kit-beach-cape-cod-e6620b94a43b.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "assets.images.bleedingKit",
+      "sourceField": "assets.images.bleedingKit",
+      "bytes": null
+    },
+    {
+      "id": "great-white",
+      "path": "../captures/active/models/white-swimming-v2-small-32c73f146271.glb",
+      "url": null,
+      "type": "model",
+      "role": "Large white shark model for high-consequence but rare encounter beats.",
+      "sourceField": "assets.models.0",
+      "bytes": null
+    },
+    {
+      "id": "hammerhead",
+      "path": "../captures/active/models/hammer-swimming-v1-e323989f134e.glb",
+      "url": null,
+      "type": "model",
+      "role": "Recognizable silhouette for species comparison and low-risk contrast.",
+      "sourceField": "assets.models.1",
+      "bytes": null
+    },
+    {
+      "id": "nurse",
+      "path": "../captures/active/models/nurse-swimming-v1-98bc62f800f5.glb",
+      "url": null,
+      "type": "model",
+      "role": "Resting shark model for the low-threat and do-not-harass safety beat.",
+      "sourceField": "assets.models.2",
+      "bytes": null
+    },
+    {
+      "id": "source-shark",
+      "path": "../captures/active/models/ruru-big-add-idle-report-1dd9b080eec5.glb",
+      "url": null,
+      "type": "model",
+      "role": "Stylized source shark model for the lead scene and conclusion.",
+      "sourceField": "assets.models.3",
+      "bytes": null
+    },
+    {
+      "id": "sardine",
+      "path": "../captures/active/models/swimmingsardine-v1-e48926139be8.glb",
+      "url": null,
+      "type": "model",
+      "role": "Prey cue for \"stay away from shark food\" safety guidance.",
+      "sourceField": "assets.models.4",
+      "bytes": null
+    },
+    {
+      "id": "atlantic-white-shark-conservancy.cnn_ios_5500-8575498ec10e.mp4",
+      "path": "../captures/active/media/atlantic-white-shark-conservancy.cnn_ios_5500-8575498ec10e.mp4",
+      "url": null,
+      "type": "media",
+      "role": "assets.video",
+      "sourceField": "assets.video",
+      "bytes": null
+    },
+    {
+      "id": "index.html",
+      "path": null,
+      "url": "http://www.cnn.com/2019/07/02/us/florida-sharks-aerials-trnd/index.html",
+      "type": "remote",
+      "role": "availableAssets.0.originalUrl",
+      "sourceField": "availableAssets.0.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "atlantic-white-shark-conservancy.cnn_ios_5500-8575498ec10e.mp4",
+      "path": "atlantic-white-shark-conservancy.cnn_ios_5500-8575498ec10e.mp4",
+      "url": null,
+      "type": "video",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.1",
+      "bytes": 28429180
+    },
+    {
+      "id": "atlantic-white-shark-conservancy.cnn_ios_5500.mp4",
+      "path": null,
+      "url": "https://ht.cdn.turner.com/cnn/big/tv/2019/07/03/caption/atlantic-white-shark-conservancy.cnn_ios_5500.mp4",
+      "type": "media",
+      "role": "availableAssets.1.originalUrl",
+      "sourceField": "availableAssets.1.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000-fc993ea50e57.jpg",
+      "path": "140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000-fc993ea50e57.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.2",
+      "bytes": 140827
+    },
+    {
+      "id": "140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000.jpg?q=w_1280,h_720,x_0,y_0,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000.jpg?q=w_1280,h_720,x_0,y_0,c_fill",
+      "type": "remote",
+      "role": "availableAssets.2.originalUrl",
+      "sourceField": "availableAssets.2.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000-ffceb4524c54.jpg",
+      "path": "140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000-ffceb4524c54.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.3",
+      "bytes": 131797
+    },
+    {
+      "id": "140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000.jpg?q=x_42,y_0,h_697,w_1239,c_crop",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000.jpg?q=x_42,y_0,h_697,w_1239,c_crop",
+      "type": "remote",
+      "role": "availableAssets.3.originalUrl",
+      "sourceField": "availableAssets.3.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000-7bff54a2912f.jpg",
+      "path": "140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000-7bff54a2912f.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.4",
+      "bytes": 38092
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000.jpg?q=x_42,y_0,h_697,w_1239,c_crop/w_680/f_webp",
+      "type": "remote",
+      "role": "availableAssets.4.originalUrl",
+      "sourceField": "availableAssets.4.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000-9b71ac1e32b0.jpg",
+      "path": "140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000-9b71ac1e32b0.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.5",
+      "bytes": 77613
+    },
+    {
+      "id": "w_860",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000.jpg?q=x_42,y_0,h_697,w_1239,c_crop/w_860",
+      "type": "remote",
+      "role": "availableAssets.5.originalUrl",
+      "sourceField": "availableAssets.5.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000-a0852b441c0f.jpg",
+      "path": "140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000-a0852b441c0f.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.6",
+      "bytes": 57486
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000.jpg?q=x_42,y_0,h_697,w_1239,c_crop/w_860/f_webp",
+      "type": "remote",
+      "role": "availableAssets.6.originalUrl",
+      "sourceField": "availableAssets.6.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000-097528c625f7.jpg",
+      "path": "140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000-097528c625f7.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.7",
+      "bytes": 63942
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/140707202333-exp-erin-intv-robles-california-shark-attack-speaks-00000000.jpg?q=x_42,y_0,h_697,w_1239,c_crop/w_967/f_webp",
+      "type": "remote",
+      "role": "availableAssets.7.originalUrl",
+      "sourceField": "availableAssets.7.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "150616132316-great-white-shark-8c618ab4109f.jpg",
+      "path": "150616132316-great-white-shark-8c618ab4109f.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.8",
+      "bytes": 1402610
+    },
+    {
+      "id": "150616132316-great-white-shark.jpg?q=w_3500,h_2250,x_0,y_0,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/150616132316-great-white-shark.jpg?q=w_3500,h_2250,x_0,y_0,c_fill",
+      "type": "remote",
+      "role": "availableAssets.8.originalUrl",
+      "sourceField": "availableAssets.8.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "150616132316-great-white-shark-d265def62c6e.jpg",
+      "path": "150616132316-great-white-shark-d265def62c6e.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.9",
+      "bytes": 1337572
+    },
+    {
+      "id": "150616132316-great-white-shark.jpg?q=x_4,y_137,h_1965,w_3492,c_crop",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/150616132316-great-white-shark.jpg?q=x_4,y_137,h_1965,w_3492,c_crop",
+      "type": "remote",
+      "role": "availableAssets.9.originalUrl",
+      "sourceField": "availableAssets.9.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "150616132316-great-white-shark-c8d9c8b25ffd.jpg",
+      "path": "150616132316-great-white-shark-c8d9c8b25ffd.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.10",
+      "bytes": 9711
+    },
+    {
+      "id": "w_250",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/150616132316-great-white-shark.jpg?q=x_4,y_137,h_1965,w_3492,c_crop/w_250",
+      "type": "remote",
+      "role": "availableAssets.10.originalUrl",
+      "sourceField": "availableAssets.10.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "150616132316-great-white-shark-a8beee6fe019.jpg",
+      "path": "150616132316-great-white-shark-a8beee6fe019.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.11",
+      "bytes": 7660
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/150616132316-great-white-shark.jpg?q=x_4,y_137,h_1965,w_3492,c_crop/w_250/f_webp",
+      "type": "remote",
+      "role": "availableAssets.11.originalUrl",
+      "sourceField": "availableAssets.11.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "150616132316-great-white-shark-0afc48df6e34.jpg",
+      "path": "150616132316-great-white-shark-0afc48df6e34.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.12",
+      "bytes": 52986
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/150616132316-great-white-shark.jpg?q=x_4,y_137,h_1965,w_3492,c_crop/w_680/f_webp",
+      "type": "remote",
+      "role": "availableAssets.12.originalUrl",
+      "sourceField": "availableAssets.12.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "150616132316-great-white-shark-49c6494520e8.jpg",
+      "path": "150616132316-great-white-shark-49c6494520e8.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.13",
+      "bytes": 105312
+    },
+    {
+      "id": "w_860",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/150616132316-great-white-shark.jpg?q=x_4,y_137,h_1965,w_3492,c_crop/w_860",
+      "type": "remote",
+      "role": "availableAssets.13.originalUrl",
+      "sourceField": "availableAssets.13.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "150616132316-great-white-shark-12bbf68f745e.jpg",
+      "path": "150616132316-great-white-shark-12bbf68f745e.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.14",
+      "bytes": 96076
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/150616132316-great-white-shark.jpg?q=x_4,y_137,h_1965,w_3492,c_crop/w_860/f_webp",
+      "type": "remote",
+      "role": "availableAssets.14.originalUrl",
+      "sourceField": "availableAssets.14.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "150616132316-great-white-shark-0d73283bc3d8.jpg",
+      "path": "150616132316-great-white-shark-0d73283bc3d8.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.15",
+      "bytes": 120730
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/150616132316-great-white-shark.jpg?q=x_4,y_137,h_1965,w_3492,c_crop/w_967/f_webp",
+      "type": "remote",
+      "role": "availableAssets.15.originalUrl",
+      "sourceField": "availableAssets.15.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "151029044145-shark-sign-0bfd52fca15b.jpg",
+      "path": "151029044145-shark-sign-0bfd52fca15b.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.16",
+      "bytes": 126884
+    },
+    {
+      "id": "151029044145-shark-sign.jpg?q=w_1920,h_1080,x_0,y_0,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/151029044145-shark-sign.jpg?q=w_1920,h_1080,x_0,y_0,c_fill",
+      "type": "remote",
+      "role": "availableAssets.16.originalUrl",
+      "sourceField": "availableAssets.16.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "151029044145-shark-sign-b8427d0a13cc.jpg",
+      "path": "151029044145-shark-sign-b8427d0a13cc.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.17",
+      "bytes": 45024
+    },
+    {
+      "id": "w_800",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/151029044145-shark-sign.jpg?q=x_2,y_0,h_1078,w_1915,c_crop/w_800",
+      "type": "remote",
+      "role": "availableAssets.17.originalUrl",
+      "sourceField": "availableAssets.17.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "160503213424-teens-great-white-shark-encounter-go-pro-florida-dnt-00000317-0c35c4f1997d.jpg",
+      "path": "160503213424-teens-great-white-shark-encounter-go-pro-florida-dnt-00000317-0c35c4f1997d.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.18",
+      "bytes": 2320
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/160503213424-teens-great-white-shark-encounter-go-pro-florida-dnt-00000317.jpg?q=h_1080,w_1100,x_543,y_0,c_crop/h_1100,w_1100,c_lpad,b_rgb:061015/h_479,w_479/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.18.originalUrl",
+      "sourceField": "availableAssets.18.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "160503213424-teens-great-white-shark-encounter-go-pro-florida-dnt-00000317-1a45ba6be176.jpg",
+      "path": "160503213424-teens-great-white-shark-encounter-go-pro-florida-dnt-00000317-1a45ba6be176.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.19",
+      "bytes": 1914
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/160503213424-teens-great-white-shark-encounter-go-pro-florida-dnt-00000317.jpg?q=x_592,y_9,h_723,w_1286,c_crop/h_270,w_480/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.19.originalUrl",
+      "sourceField": "availableAssets.19.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "160503213424-teens-great-white-shark-encounter-go-pro-florida-dnt-00000317-00df5bc6ff8a.jpg",
+      "path": "160503213424-teens-great-white-shark-encounter-go-pro-florida-dnt-00000317-00df5bc6ff8a.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.20",
+      "bytes": 1940
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/160503213424-teens-great-white-shark-encounter-go-pro-florida-dnt-00000317.jpg?q=x_592,y_9,h_723,w_1286,c_crop/h_540,w_960/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.20.originalUrl",
+      "sourceField": "availableAssets.20.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "160503213424-teens-great-white-shark-encounter-go-pro-florida-dnt-00000317-10f5594deed8.jpg",
+      "path": "160503213424-teens-great-white-shark-encounter-go-pro-florida-dnt-00000317-10f5594deed8.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.21",
+      "bytes": 3807
+    },
+    {
+      "id": "w_256",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/160503213424-teens-great-white-shark-encounter-go-pro-florida-dnt-00000317.jpg?q=x_592,y_9,h_723,w_1286,c_crop/h_720,w_1280/w_256",
+      "type": "remote",
+      "role": "availableAssets.21.originalUrl",
+      "sourceField": "availableAssets.21.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "160503213424-teens-great-white-shark-encounter-go-pro-florida-dnt-00000317-3bd5a8e62677.jpg",
+      "path": "160503213424-teens-great-white-shark-encounter-go-pro-florida-dnt-00000317-3bd5a8e62677.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.22",
+      "bytes": 1946
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/160503213424-teens-great-white-shark-encounter-go-pro-florida-dnt-00000317.jpg?q=x_592,y_9,h_723,w_1286,c_crop/h_720,w_1280/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.22.originalUrl",
+      "sourceField": "availableAssets.22.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180702023108-shark-australia-woman-bitten-00003407-88cd5eb4a301.jpg",
+      "path": "180702023108-shark-australia-woman-bitten-00003407-88cd5eb4a301.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.23",
+      "bytes": 159912
+    },
+    {
+      "id": "180702023108-shark-australia-woman-bitten-00003407.jpg?q=w_1920,h_1080,x_0,y_0,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180702023108-shark-australia-woman-bitten-00003407.jpg?q=w_1920,h_1080,x_0,y_0,c_fill",
+      "type": "remote",
+      "role": "availableAssets.23.originalUrl",
+      "sourceField": "availableAssets.23.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180702023108-shark-australia-woman-bitten-00003407-fcf66ed76ddb.jpg",
+      "path": "180702023108-shark-australia-woman-bitten-00003407-fcf66ed76ddb.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.24",
+      "bytes": 115025
+    },
+    {
+      "id": "180702023108-shark-australia-woman-bitten-00003407.jpg?q=x_301,y_42,h_884,w_1572,c_crop",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180702023108-shark-australia-woman-bitten-00003407.jpg?q=x_301,y_42,h_884,w_1572,c_crop",
+      "type": "remote",
+      "role": "availableAssets.24.originalUrl",
+      "sourceField": "availableAssets.24.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180702023108-shark-australia-woman-bitten-00003407-52044cff595d.jpg",
+      "path": "180702023108-shark-australia-woman-bitten-00003407-52044cff595d.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.25",
+      "bytes": 17632
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180702023108-shark-australia-woman-bitten-00003407.jpg?q=x_301,y_42,h_884,w_1572,c_crop/w_680/f_webp",
+      "type": "remote",
+      "role": "availableAssets.25.originalUrl",
+      "sourceField": "availableAssets.25.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180702023108-shark-australia-woman-bitten-00003407-6e594fd07aa6.jpg",
+      "path": "180702023108-shark-australia-woman-bitten-00003407-6e594fd07aa6.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.26",
+      "bytes": 45535
+    },
+    {
+      "id": "w_860",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180702023108-shark-australia-woman-bitten-00003407.jpg?q=x_301,y_42,h_884,w_1572,c_crop/w_860",
+      "type": "remote",
+      "role": "availableAssets.26.originalUrl",
+      "sourceField": "availableAssets.26.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180702023108-shark-australia-woman-bitten-00003407-a42997e37a48.jpg",
+      "path": "180702023108-shark-australia-woman-bitten-00003407-a42997e37a48.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.27",
+      "bytes": 27952
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180702023108-shark-australia-woman-bitten-00003407.jpg?q=x_301,y_42,h_884,w_1572,c_crop/w_860/f_webp",
+      "type": "remote",
+      "role": "availableAssets.27.originalUrl",
+      "sourceField": "availableAssets.27.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180702023108-shark-australia-woman-bitten-00003407-7e95d23c74ee.jpg",
+      "path": "180702023108-shark-australia-woman-bitten-00003407-7e95d23c74ee.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.28",
+      "bytes": 32306
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180702023108-shark-australia-woman-bitten-00003407.jpg?q=x_301,y_42,h_884,w_1572,c_crop/w_967/f_webp",
+      "type": "remote",
+      "role": "availableAssets.28.originalUrl",
+      "sourceField": "availableAssets.28.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180702143511-shark-feeding-woman-pulled-into-water-01-bca5a9cb530e.jpg",
+      "path": "180702143511-shark-feeding-woman-pulled-into-water-01-bca5a9cb530e.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.29",
+      "bytes": 6134
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180702143511-shark-feeding-woman-pulled-into-water-01.jpg?q=h_900,w_1100,x_500,y_0,c_crop/h_1100,w_1100,c_lpad,b_rgb:061015/h_479,w_479/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.29.originalUrl",
+      "sourceField": "availableAssets.29.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180702143511-shark-feeding-woman-pulled-into-water-01-a62a3f1308c7.jpg",
+      "path": "180702143511-shark-feeding-woman-pulled-into-water-01-a62a3f1308c7.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.30",
+      "bytes": 107833
+    },
+    {
+      "id": "180702143511-shark-feeding-woman-pulled-into-water-01.jpg?q=w_1600,h_900,x_0,y_0,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180702143511-shark-feeding-woman-pulled-into-water-01.jpg?q=w_1600,h_900,x_0,y_0,c_fill",
+      "type": "remote",
+      "role": "availableAssets.30.originalUrl",
+      "sourceField": "availableAssets.30.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180702143511-shark-feeding-woman-pulled-into-water-01-cea97e7586d5.jpg",
+      "path": "180702143511-shark-feeding-woman-pulled-into-water-01-cea97e7586d5.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.31",
+      "bytes": 5164
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180702143511-shark-feeding-woman-pulled-into-water-01.jpg?q=x_22,y_16,h_876,w_1556,c_crop/h_270,w_480/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.31.originalUrl",
+      "sourceField": "availableAssets.31.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180702143511-shark-feeding-woman-pulled-into-water-01-d7d36353e652.jpg",
+      "path": "180702143511-shark-feeding-woman-pulled-into-water-01-d7d36353e652.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.32",
+      "bytes": 5300
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180702143511-shark-feeding-woman-pulled-into-water-01.jpg?q=x_22,y_16,h_876,w_1556,c_crop/h_540,w_960/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.32.originalUrl",
+      "sourceField": "availableAssets.32.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180702143511-shark-feeding-woman-pulled-into-water-01-42256d869f9f.jpg",
+      "path": "180702143511-shark-feeding-woman-pulled-into-water-01-42256d869f9f.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.33",
+      "bytes": 8131
+    },
+    {
+      "id": "w_256",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180702143511-shark-feeding-woman-pulled-into-water-01.jpg?q=x_22,y_16,h_876,w_1556,c_crop/h_720,w_1280/w_256",
+      "type": "remote",
+      "role": "availableAssets.33.originalUrl",
+      "sourceField": "availableAssets.33.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180702143511-shark-feeding-woman-pulled-into-water-01-e49eabe34234.jpg",
+      "path": "180702143511-shark-feeding-woman-pulled-into-water-01-e49eabe34234.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.34",
+      "bytes": 5408
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180702143511-shark-feeding-woman-pulled-into-water-01.jpg?q=x_22,y_16,h_876,w_1556,c_crop/h_720,w_1280/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.34.originalUrl",
+      "sourceField": "availableAssets.34.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180702143511-shark-feeding-woman-pulled-into-water-01-220460451503.jpg",
+      "path": "180702143511-shark-feeding-woman-pulled-into-water-01-220460451503.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.35",
+      "bytes": 38517
+    },
+    {
+      "id": "w_800",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180702143511-shark-feeding-woman-pulled-into-water-01.jpg?q=x_22,y_16,h_876,w_1556,c_crop/w_800",
+      "type": "remote",
+      "role": "availableAssets.35.originalUrl",
+      "sourceField": "availableAssets.35.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180815212321-cape-cod-surfer-shark-bite-637f0178cd71.jpg",
+      "path": "180815212321-cape-cod-surfer-shark-bite-637f0178cd71.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.36",
+      "bytes": 457847
+    },
+    {
+      "id": "180815212321-cape-cod-surfer-shark-bite.jpg?q=w_2048,h_1536,x_0,y_0,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180815212321-cape-cod-surfer-shark-bite.jpg?q=w_2048,h_1536,x_0,y_0,c_fill",
+      "type": "remote",
+      "role": "availableAssets.36.originalUrl",
+      "sourceField": "availableAssets.36.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180815212321-cape-cod-surfer-shark-bite-39dae3314bac.jpg",
+      "path": "180815212321-cape-cod-surfer-shark-bite-39dae3314bac.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.37",
+      "bytes": 46529
+    },
+    {
+      "id": "f_avif",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180815212321-cape-cod-surfer-shark-bite.jpg?q=w_2048,h_1536,x_0,y_0,c_fill/w_680/f_avif",
+      "type": "remote",
+      "role": "availableAssets.37.originalUrl",
+      "sourceField": "availableAssets.37.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180815212321-cape-cod-surfer-shark-bite-e4f2a3f444b2.jpg",
+      "path": "180815212321-cape-cod-surfer-shark-bite-e4f2a3f444b2.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.38",
+      "bytes": 94809
+    },
+    {
+      "id": "w_860",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180815212321-cape-cod-surfer-shark-bite.jpg?q=w_2048,h_1536,x_0,y_0,c_fill/w_860",
+      "type": "remote",
+      "role": "availableAssets.38.originalUrl",
+      "sourceField": "availableAssets.38.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180815212321-cape-cod-surfer-shark-bite-257f2a2c5ac4.jpg",
+      "path": "180815212321-cape-cod-surfer-shark-bite-257f2a2c5ac4.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.39",
+      "bytes": 70962
+    },
+    {
+      "id": "f_avif",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180815212321-cape-cod-surfer-shark-bite.jpg?q=w_2048,h_1536,x_0,y_0,c_fill/w_860/f_avif",
+      "type": "remote",
+      "role": "availableAssets.39.originalUrl",
+      "sourceField": "availableAssets.39.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180815212321-cape-cod-surfer-shark-bite-0525d1c4381c.jpg",
+      "path": "180815212321-cape-cod-surfer-shark-bite-0525d1c4381c.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.40",
+      "bytes": 87674
+    },
+    {
+      "id": "f_avif",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180815212321-cape-cod-surfer-shark-bite.jpg?q=w_2048,h_1536,x_0,y_0,c_fill/w_967/f_avif",
+      "type": "remote",
+      "role": "availableAssets.40.originalUrl",
+      "sourceField": "availableAssets.40.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180815212321-cape-cod-surfer-shark-bite-c63191459200.jpg",
+      "path": "180815212321-cape-cod-surfer-shark-bite-c63191459200.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.41",
+      "bytes": 10012
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180815212321-cape-cod-surfer-shark-bite.jpg?q=x_348,y_200,h_1100,w_1100,c_crop/h_479,w_479/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.41.originalUrl",
+      "sourceField": "availableAssets.41.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180815212321-cape-cod-surfer-shark-bite-642ae5683374.jpg",
+      "path": "180815212321-cape-cod-surfer-shark-bite-642ae5683374.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.42",
+      "bytes": 6732
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180815212321-cape-cod-surfer-shark-bite.jpg?q=x_365,y_443,h_619,w_1100,c_crop/h_270,w_480/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.42.originalUrl",
+      "sourceField": "availableAssets.42.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180815212321-cape-cod-surfer-shark-bite-fbee53e19289.jpg",
+      "path": "180815212321-cape-cod-surfer-shark-bite-fbee53e19289.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.43",
+      "bytes": 7174
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180815212321-cape-cod-surfer-shark-bite.jpg?q=x_365,y_443,h_619,w_1100,c_crop/h_540,w_960/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.43.originalUrl",
+      "sourceField": "availableAssets.43.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180815212321-cape-cod-surfer-shark-bite-46784d753dcc.jpg",
+      "path": "180815212321-cape-cod-surfer-shark-bite-46784d753dcc.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.44",
+      "bytes": 8900
+    },
+    {
+      "id": "w_256",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180815212321-cape-cod-surfer-shark-bite.jpg?q=x_365,y_443,h_619,w_1100,c_crop/h_720,w_1280/w_256",
+      "type": "remote",
+      "role": "availableAssets.44.originalUrl",
+      "sourceField": "availableAssets.44.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180815212321-cape-cod-surfer-shark-bite-5656fe181bc8.jpg",
+      "path": "180815212321-cape-cod-surfer-shark-bite-5656fe181bc8.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.45",
+      "bytes": 7400
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180815212321-cape-cod-surfer-shark-bite.jpg?q=x_365,y_443,h_619,w_1100,c_crop/h_720,w_1280/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.45.originalUrl",
+      "sourceField": "availableAssets.45.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180815212321-cape-cod-surfer-shark-bite-f1fa528c21a0.jpg",
+      "path": "180815212321-cape-cod-surfer-shark-bite-f1fa528c21a0.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.46",
+      "bytes": 74926
+    },
+    {
+      "id": "w_800",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180815212321-cape-cod-surfer-shark-bite.jpg?q=x_365,y_443,h_619,w_1100,c_crop/w_800",
+      "type": "remote",
+      "role": "availableAssets.46.originalUrl",
+      "sourceField": "availableAssets.46.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180915172920-cape-cod-shark-attack-f99e1762720f.jpg",
+      "path": "180915172920-cape-cod-shark-attack-f99e1762720f.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.47",
+      "bytes": 1023813
+    },
+    {
+      "id": "180915172920-cape-cod-shark-attack.jpg?q=w_4032,h_3024,x_0,y_0,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180915172920-cape-cod-shark-attack.jpg?q=w_4032,h_3024,x_0,y_0,c_fill",
+      "type": "remote",
+      "role": "availableAssets.47.originalUrl",
+      "sourceField": "availableAssets.47.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180915172920-cape-cod-shark-attack-ef41ffd0d16c.jpg",
+      "path": "180915172920-cape-cod-shark-attack-ef41ffd0d16c.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.48",
+      "bytes": 1076368
+    },
+    {
+      "id": "180915172920-cape-cod-shark-attack.jpg?q=x_4,y_377,h_2264,w_4023,c_crop",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180915172920-cape-cod-shark-attack.jpg?q=x_4,y_377,h_2264,w_4023,c_crop",
+      "type": "remote",
+      "role": "availableAssets.48.originalUrl",
+      "sourceField": "availableAssets.48.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180915172920-cape-cod-shark-attack-8b5fd3a84359.jpg",
+      "path": "180915172920-cape-cod-shark-attack-8b5fd3a84359.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.49",
+      "bytes": 28016
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180915172920-cape-cod-shark-attack.jpg?q=x_4,y_377,h_2264,w_4023,c_crop/w_680/f_webp",
+      "type": "remote",
+      "role": "availableAssets.49.originalUrl",
+      "sourceField": "availableAssets.49.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180915172920-cape-cod-shark-attack-ccef1bf10d2a.jpg",
+      "path": "180915172920-cape-cod-shark-attack-ccef1bf10d2a.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.50",
+      "bytes": 56240
+    },
+    {
+      "id": "w_800",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180915172920-cape-cod-shark-attack.jpg?q=x_4,y_377,h_2264,w_4023,c_crop/w_800",
+      "type": "remote",
+      "role": "availableAssets.50.originalUrl",
+      "sourceField": "availableAssets.50.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180915172920-cape-cod-shark-attack-4be4f9850908.jpg",
+      "path": "180915172920-cape-cod-shark-attack-4be4f9850908.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.51",
+      "bytes": 63952
+    },
+    {
+      "id": "w_860",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180915172920-cape-cod-shark-attack.jpg?q=x_4,y_377,h_2264,w_4023,c_crop/w_860",
+      "type": "remote",
+      "role": "availableAssets.51.originalUrl",
+      "sourceField": "availableAssets.51.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180915172920-cape-cod-shark-attack-8bd8a9f09fde.jpg",
+      "path": "180915172920-cape-cod-shark-attack-8bd8a9f09fde.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.52",
+      "bytes": 50206
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180915172920-cape-cod-shark-attack.jpg?q=x_4,y_377,h_2264,w_4023,c_crop/w_860/f_webp",
+      "type": "remote",
+      "role": "availableAssets.52.originalUrl",
+      "sourceField": "availableAssets.52.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180915172920-cape-cod-shark-attack-81ab9e454c21.jpg",
+      "path": "180915172920-cape-cod-shark-attack-81ab9e454c21.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.53",
+      "bytes": 61158
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180915172920-cape-cod-shark-attack.jpg?q=x_4,y_377,h_2264,w_4023,c_crop/w_967/f_webp",
+      "type": "remote",
+      "role": "availableAssets.53.originalUrl",
+      "sourceField": "availableAssets.53.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180916140526-arthur-medici-shark-attack-9a3a718a947d.jpg",
+      "path": "180916140526-arthur-medici-shark-attack-9a3a718a947d.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.54",
+      "bytes": 192942
+    },
+    {
+      "id": "180916140526-arthur-medici-shark-attack.jpg?q=w_1706,h_960,x_0,y_0,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180916140526-arthur-medici-shark-attack.jpg?q=w_1706,h_960,x_0,y_0,c_fill",
+      "type": "remote",
+      "role": "availableAssets.54.originalUrl",
+      "sourceField": "availableAssets.54.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180916140526-arthur-medici-shark-attack-98b786fd622c.jpg",
+      "path": "180916140526-arthur-medici-shark-attack-98b786fd622c.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.55",
+      "bytes": 42147
+    },
+    {
+      "id": "w_632",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180916140526-arthur-medici-shark-attack.jpg?q=w_1706,h_960,x_0,y_0,c_fill/w_632",
+      "type": "remote",
+      "role": "availableAssets.55.originalUrl",
+      "sourceField": "availableAssets.55.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180916140526-arthur-medici-shark-attack-101fe14aee4a.jpg",
+      "path": "180916140526-arthur-medici-shark-attack-101fe14aee4a.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.56",
+      "bytes": 28928
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180916140526-arthur-medici-shark-attack.jpg?q=w_1706,h_960,x_0,y_0,c_fill/w_632/f_webp",
+      "type": "remote",
+      "role": "availableAssets.56.originalUrl",
+      "sourceField": "availableAssets.56.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "180916140526-arthur-medici-shark-attack-798862158a36.jpg",
+      "path": "180916140526-arthur-medici-shark-attack-798862158a36.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.57",
+      "bytes": 29508
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/180916140526-arthur-medici-shark-attack.jpg?q=w_1706,h_960,x_0,y_0,c_fill/w_639/f_webp",
+      "type": "remote",
+      "role": "availableAssets.57.originalUrl",
+      "sourceField": "availableAssets.57.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190118102340-02-great-white-shark-hawaii-0115-7a273aa7fc46.jpg",
+      "path": "190118102340-02-great-white-shark-hawaii-0115-7a273aa7fc46.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.58",
+      "bytes": 576824
+    },
+    {
+      "id": "190118102340-02-great-white-shark-hawaii-0115.jpg?q=w_3000,h_2000,x_0,y_0,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190118102340-02-great-white-shark-hawaii-0115.jpg?q=w_3000,h_2000,x_0,y_0,c_fill",
+      "type": "remote",
+      "role": "availableAssets.58.originalUrl",
+      "sourceField": "availableAssets.58.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190118102340-02-great-white-shark-hawaii-0115-9dbfa92eef56.jpg",
+      "path": "190118102340-02-great-white-shark-hawaii-0115-9dbfa92eef56.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.59",
+      "bytes": 9008
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190118102340-02-great-white-shark-hawaii-0115.jpg?q=x_260,y_0,h_1999,w_1999,c_crop/h_479,w_479/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.59.originalUrl",
+      "sourceField": "availableAssets.59.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190118102340-02-great-white-shark-hawaii-0115-c95b9c753898.jpg",
+      "path": "190118102340-02-great-white-shark-hawaii-0115-c95b9c753898.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.60",
+      "bytes": 4940
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190118102340-02-great-white-shark-hawaii-0115.jpg?q=x_3,y_156,h_1684,w_2993,c_crop/h_270,w_480/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.60.originalUrl",
+      "sourceField": "availableAssets.60.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190118102340-02-great-white-shark-hawaii-0115-165bbf3f20c0.jpg",
+      "path": "190118102340-02-great-white-shark-hawaii-0115-165bbf3f20c0.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.61",
+      "bytes": 5138
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190118102340-02-great-white-shark-hawaii-0115.jpg?q=x_3,y_156,h_1684,w_2993,c_crop/h_540,w_960/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.61.originalUrl",
+      "sourceField": "availableAssets.61.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190118102340-02-great-white-shark-hawaii-0115-067778059df5.jpg",
+      "path": "190118102340-02-great-white-shark-hawaii-0115-067778059df5.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.62",
+      "bytes": 7246
+    },
+    {
+      "id": "w_256",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190118102340-02-great-white-shark-hawaii-0115.jpg?q=x_3,y_156,h_1684,w_2993,c_crop/h_720,w_1280/w_256",
+      "type": "remote",
+      "role": "availableAssets.62.originalUrl",
+      "sourceField": "availableAssets.62.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190118102340-02-great-white-shark-hawaii-0115-3f705fcfd7a6.jpg",
+      "path": "190118102340-02-great-white-shark-hawaii-0115-3f705fcfd7a6.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.63",
+      "bytes": 5280
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190118102340-02-great-white-shark-hawaii-0115.jpg?q=x_3,y_156,h_1684,w_2993,c_crop/h_720,w_1280/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.63.originalUrl",
+      "sourceField": "availableAssets.63.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190118102340-02-great-white-shark-hawaii-0115-c4a5fbecfb56.jpg",
+      "path": "190118102340-02-great-white-shark-hawaii-0115-c4a5fbecfb56.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.64",
+      "bytes": 53723
+    },
+    {
+      "id": "w_800",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190118102340-02-great-white-shark-hawaii-0115.jpg?q=x_3,y_156,h_1684,w_2993,c_crop/w_800",
+      "type": "remote",
+      "role": "availableAssets.64.originalUrl",
+      "sourceField": "availableAssets.64.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190226160327-tiger-shark-4cf2f89b24da.jpg",
+      "path": "190226160327-tiger-shark-4cf2f89b24da.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.65",
+      "bytes": 1592
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190226160327-tiger-shark.jpg?q=x_695,y_809,h_2085,w_3706,c_crop/h_270,w_480/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.65.originalUrl",
+      "sourceField": "availableAssets.65.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190226160327-tiger-shark-b8d0929c942f.jpg",
+      "path": "190226160327-tiger-shark-b8d0929c942f.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.66",
+      "bytes": 1638
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190226160327-tiger-shark.jpg?q=x_695,y_809,h_2085,w_3706,c_crop/h_540,w_960/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.66.originalUrl",
+      "sourceField": "availableAssets.66.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190226160327-tiger-shark-0d96f8666e04.jpg",
+      "path": "190226160327-tiger-shark-0d96f8666e04.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.67",
+      "bytes": 3268
+    },
+    {
+      "id": "w_256",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190226160327-tiger-shark.jpg?q=x_695,y_809,h_2085,w_3706,c_crop/h_720,w_1280/w_256",
+      "type": "remote",
+      "role": "availableAssets.67.originalUrl",
+      "sourceField": "availableAssets.67.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190226160327-tiger-shark-27138298f446.jpg",
+      "path": "190226160327-tiger-shark-27138298f446.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.68",
+      "bytes": 1638
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190226160327-tiger-shark.jpg?q=x_695,y_809,h_2085,w_3706,c_crop/h_720,w_1280/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.68.originalUrl",
+      "sourceField": "availableAssets.68.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190226160327-tiger-shark-aec16e8b44e1.jpg",
+      "path": "190226160327-tiger-shark-aec16e8b44e1.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.69",
+      "bytes": 3530
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190226160327-tiger-shark.jpg?q=x_726,y_0,h_2946,w_2946,c_crop/h_479,w_479/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.69.originalUrl",
+      "sourceField": "availableAssets.69.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190603022607-shark-attack-348bae5fd269.jpg",
+      "path": "190603022607-shark-attack-348bae5fd269.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.70",
+      "bytes": 6258
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190603022607-shark-attack.jpg?q=h_1080,w_1100,x_408,y_0,c_crop/h_1100,w_1100,c_lpad,b_rgb:061015/h_479,w_479/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.70.originalUrl",
+      "sourceField": "availableAssets.70.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190603022607-shark-attack-6189b86d71d9.jpg",
+      "path": "190603022607-shark-attack-6189b86d71d9.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.71",
+      "bytes": 91390
+    },
+    {
+      "id": "190603022607-shark-attack.jpg?q=w_1920,h_1080,x_0,y_0,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190603022607-shark-attack.jpg?q=w_1920,h_1080,x_0,y_0,c_fill",
+      "type": "remote",
+      "role": "availableAssets.71.originalUrl",
+      "sourceField": "availableAssets.71.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190603022607-shark-attack-ab0880a2ba55.jpg",
+      "path": "190603022607-shark-attack-ab0880a2ba55.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.72",
+      "bytes": 3980
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190603022607-shark-attack.jpg?q=x_2,y_0,h_1078,w_1915,c_crop/h_270,w_480/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.72.originalUrl",
+      "sourceField": "availableAssets.72.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190603022607-shark-attack-36888f15f3a2.jpg",
+      "path": "190603022607-shark-attack-36888f15f3a2.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.73",
+      "bytes": 4174
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190603022607-shark-attack.jpg?q=x_2,y_0,h_1078,w_1915,c_crop/h_540,w_960/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.73.originalUrl",
+      "sourceField": "availableAssets.73.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190603022607-shark-attack-c701a383c7eb.jpg",
+      "path": "190603022607-shark-attack-c701a383c7eb.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.74",
+      "bytes": 5978
+    },
+    {
+      "id": "w_256",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190603022607-shark-attack.jpg?q=x_2,y_0,h_1078,w_1915,c_crop/h_720,w_1280/w_256",
+      "type": "remote",
+      "role": "availableAssets.74.originalUrl",
+      "sourceField": "availableAssets.74.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190603022607-shark-attack-4b9435cf350f.jpg",
+      "path": "190603022607-shark-attack-4b9435cf350f.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.75",
+      "bytes": 4318
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190603022607-shark-attack.jpg?q=x_2,y_0,h_1078,w_1915,c_crop/h_720,w_1280/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.75.originalUrl",
+      "sourceField": "availableAssets.75.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190603022607-shark-attack-4e18fd14c5ab.jpg",
+      "path": "190603022607-shark-attack-4e18fd14c5ab.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.76",
+      "bytes": 45004
+    },
+    {
+      "id": "w_800",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190603022607-shark-attack.jpg?q=x_2,y_0,h_1078,w_1915,c_crop/w_800",
+      "type": "remote",
+      "role": "availableAssets.76.originalUrl",
+      "sourceField": "availableAssets.76.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190605022503-paige-winter-shark-attack-ff20e5bda658.jpg",
+      "path": "190605022503-paige-winter-shark-attack-ff20e5bda658.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.77",
+      "bytes": 107258
+    },
+    {
+      "id": "190605022503-paige-winter-shark-attack.jpg?q=w_1600,h_900,x_0,y_0,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190605022503-paige-winter-shark-attack.jpg?q=w_1600,h_900,x_0,y_0,c_fill",
+      "type": "remote",
+      "role": "availableAssets.77.originalUrl",
+      "sourceField": "availableAssets.77.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190605022503-paige-winter-shark-attack-829b3903a285.jpg",
+      "path": "190605022503-paige-winter-shark-attack-829b3903a285.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.78",
+      "bytes": 18928
+    },
+    {
+      "id": "w_632",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190605022503-paige-winter-shark-attack.jpg?q=w_1600,h_900,x_0,y_0,c_fill/w_632",
+      "type": "remote",
+      "role": "availableAssets.78.originalUrl",
+      "sourceField": "availableAssets.78.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190605022503-paige-winter-shark-attack-deeff966eb0e.jpg",
+      "path": "190605022503-paige-winter-shark-attack-deeff966eb0e.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.79",
+      "bytes": 9452
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190605022503-paige-winter-shark-attack.jpg?q=w_1600,h_900,x_0,y_0,c_fill/w_632/f_webp",
+      "type": "remote",
+      "role": "availableAssets.79.originalUrl",
+      "sourceField": "availableAssets.79.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190605022503-paige-winter-shark-attack-6cc952d573ba.jpg",
+      "path": "190605022503-paige-winter-shark-attack-6cc952d573ba.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.80",
+      "bytes": 9718
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190605022503-paige-winter-shark-attack.jpg?q=w_1600,h_900,x_0,y_0,c_fill/w_639/f_webp",
+      "type": "remote",
+      "role": "availableAssets.80.originalUrl",
+      "sourceField": "availableAssets.80.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab-b5118822d258.jpg",
+      "path": "190702154149-02-daytona-beach-shark-swimmers-grab-b5118822d258.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.81",
+      "bytes": 1636
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=h_1080,w_1100,x_628,y_0,c_crop/h_1100,w_1100,c_lpad,b_rgb:061015/h_479,w_479/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.81.originalUrl",
+      "sourceField": "availableAssets.81.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab-f96e4ca149ee.jpg",
+      "path": "190702154149-02-daytona-beach-shark-swimmers-grab-f96e4ca149ee.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.82",
+      "bytes": 40043
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=w_1920,h_1080,x_0,y_0,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=w_1920,h_1080,x_0,y_0,c_fill",
+      "type": "remote",
+      "role": "availableAssets.82.originalUrl",
+      "sourceField": "availableAssets.82.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab-84fe75299df5.jpg",
+      "path": "190702154149-02-daytona-beach-shark-swimmers-grab-84fe75299df5.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.83",
+      "bytes": 22338
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=x_574,y_281,h_621,w_1104,c_crop",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=x_574,y_281,h_621,w_1104,c_crop",
+      "type": "remote",
+      "role": "availableAssets.83.originalUrl",
+      "sourceField": "availableAssets.83.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab-9972780fb953.jpg",
+      "path": "190702154149-02-daytona-beach-shark-swimmers-grab-9972780fb953.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.84",
+      "bytes": 930
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=x_574,y_281,h_621,w_1104,c_crop/h_270,w_480/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.84.originalUrl",
+      "sourceField": "availableAssets.84.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab-45268831cf10.jpg",
+      "path": "190702154149-02-daytona-beach-shark-swimmers-grab-45268831cf10.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.85",
+      "bytes": 948
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=x_574,y_281,h_621,w_1104,c_crop/h_540,w_960/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.85.originalUrl",
+      "sourceField": "availableAssets.85.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab-f1313ddec65d.jpg",
+      "path": "190702154149-02-daytona-beach-shark-swimmers-grab-f1313ddec65d.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.86",
+      "bytes": 2475
+    },
+    {
+      "id": "w_256",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=x_574,y_281,h_621,w_1104,c_crop/h_720,w_1280/w_256",
+      "type": "remote",
+      "role": "availableAssets.86.originalUrl",
+      "sourceField": "availableAssets.86.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab-4a6e05cfeba6.jpg",
+      "path": "190702154149-02-daytona-beach-shark-swimmers-grab-4a6e05cfeba6.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.87",
+      "bytes": 962
+    },
+    {
+      "id": "w_256,f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=x_574,y_281,h_621,w_1104,c_crop/h_720,w_1280/w_256,f_webp",
+      "type": "remote",
+      "role": "availableAssets.87.originalUrl",
+      "sourceField": "availableAssets.87.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab-526d5db3eb3f.jpg",
+      "path": "190702154149-02-daytona-beach-shark-swimmers-grab-526d5db3eb3f.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.88",
+      "bytes": 2492
+    },
+    {
+      "id": "w_250",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=x_574,y_281,h_621,w_1104,c_crop/w_250",
+      "type": "remote",
+      "role": "availableAssets.88.originalUrl",
+      "sourceField": "availableAssets.88.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab-497c2eeebc4a.jpg",
+      "path": "190702154149-02-daytona-beach-shark-swimmers-grab-497c2eeebc4a.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.89",
+      "bytes": 972
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=x_574,y_281,h_621,w_1104,c_crop/w_250/f_webp",
+      "type": "remote",
+      "role": "availableAssets.89.originalUrl",
+      "sourceField": "availableAssets.89.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab-4b33d30d5ec7.jpg",
+      "path": "190702154149-02-daytona-beach-shark-swimmers-grab-4b33d30d5ec7.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.90",
+      "bytes": 3850
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=x_574,y_281,h_621,w_1104,c_crop/w_680/f_webp",
+      "type": "remote",
+      "role": "availableAssets.90.originalUrl",
+      "sourceField": "availableAssets.90.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab-2a35249ac0a1.jpg",
+      "path": "190702154149-02-daytona-beach-shark-swimmers-grab-2a35249ac0a1.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.91",
+      "bytes": 13017
+    },
+    {
+      "id": "w_800",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=x_574,y_281,h_621,w_1104,c_crop/w_800",
+      "type": "remote",
+      "role": "availableAssets.91.originalUrl",
+      "sourceField": "availableAssets.91.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab-566f83e2dcda.jpg",
+      "path": "190702154149-02-daytona-beach-shark-swimmers-grab-566f83e2dcda.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.92",
+      "bytes": 14651
+    },
+    {
+      "id": "w_860",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=x_574,y_281,h_621,w_1104,c_crop/w_860",
+      "type": "remote",
+      "role": "availableAssets.92.originalUrl",
+      "sourceField": "availableAssets.92.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab-4d46b207a23e.jpg",
+      "path": "190702154149-02-daytona-beach-shark-swimmers-grab-4d46b207a23e.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.93",
+      "bytes": 6658
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=x_574,y_281,h_621,w_1104,c_crop/w_860/f_webp",
+      "type": "remote",
+      "role": "availableAssets.93.originalUrl",
+      "sourceField": "availableAssets.93.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190702154149-02-daytona-beach-shark-swimmers-grab-6567564800d9.jpg",
+      "path": "190702154149-02-daytona-beach-shark-swimmers-grab-6567564800d9.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.94",
+      "bytes": 7892
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190702154149-02-daytona-beach-shark-swimmers-grab.jpg?q=x_574,y_281,h_621,w_1104,c_crop/w_967/f_webp",
+      "type": "remote",
+      "role": "availableAssets.94.originalUrl",
+      "sourceField": "availableAssets.94.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190703152742-atlantic-white-shark-conservancy-00002014-742683d1075f.jpg",
+      "path": "190703152742-atlantic-white-shark-conservancy-00002014-742683d1075f.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.95",
+      "bytes": 41958
+    },
+    {
+      "id": "190703152742-atlantic-white-shark-conservancy-00002014.jpg?q=w_1920,h_1080,x_0,y_0,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190703152742-atlantic-white-shark-conservancy-00002014.jpg?q=w_1920,h_1080,x_0,y_0,c_fill",
+      "type": "remote",
+      "role": "availableAssets.95.originalUrl",
+      "sourceField": "availableAssets.95.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190703152742-atlantic-white-shark-conservancy-00002014-515aa7481dfd.jpg",
+      "path": "190703152742-atlantic-white-shark-conservancy-00002014-515aa7481dfd.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.96",
+      "bytes": 53820
+    },
+    {
+      "id": "190703152742-atlantic-white-shark-conservancy-00002014.jpg?q=x_0,y_0,h_1080,w_1919,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190703152742-atlantic-white-shark-conservancy-00002014.jpg?q=x_0,y_0,h_1080,w_1919,c_fill",
+      "type": "remote",
+      "role": "availableAssets.96.originalUrl",
+      "sourceField": "availableAssets.96.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190703152742-atlantic-white-shark-conservancy-00002014-d5cb11ce50bc.jpg",
+      "path": "190703152742-atlantic-white-shark-conservancy-00002014-d5cb11ce50bc.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.97",
+      "bytes": 3332
+    },
+    {
+      "id": "w_250",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190703152742-atlantic-white-shark-conservancy-00002014.jpg?q=x_0,y_0,h_1080,w_1919,c_fill/w_250",
+      "type": "remote",
+      "role": "availableAssets.97.originalUrl",
+      "sourceField": "availableAssets.97.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190703152742-atlantic-white-shark-conservancy-00002014-04ee2a8c5d71.jpg",
+      "path": "190703152742-atlantic-white-shark-conservancy-00002014-04ee2a8c5d71.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.98",
+      "bytes": 1740
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190703152742-atlantic-white-shark-conservancy-00002014.jpg?q=x_0,y_0,h_1080,w_1919,c_fill/w_250/f_webp",
+      "type": "remote",
+      "role": "availableAssets.98.originalUrl",
+      "sourceField": "availableAssets.98.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190703152742-atlantic-white-shark-conservancy-00002014-f3c53f9be7e2.jpg",
+      "path": "190703152742-atlantic-white-shark-conservancy-00002014-f3c53f9be7e2.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.99",
+      "bytes": 7236
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190703152742-atlantic-white-shark-conservancy-00002014.jpg?q=x_0,y_0,h_1080,w_1919,c_fill/w_680/f_webp",
+      "type": "remote",
+      "role": "availableAssets.99.originalUrl",
+      "sourceField": "availableAssets.99.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190703152742-atlantic-white-shark-conservancy-00002014-86d59215d177.jpg",
+      "path": "190703152742-atlantic-white-shark-conservancy-00002014-86d59215d177.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.100",
+      "bytes": 19688
+    },
+    {
+      "id": "w_860",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190703152742-atlantic-white-shark-conservancy-00002014.jpg?q=x_0,y_0,h_1080,w_1919,c_fill/w_860",
+      "type": "remote",
+      "role": "availableAssets.100.originalUrl",
+      "sourceField": "availableAssets.100.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190703152742-atlantic-white-shark-conservancy-00002014-f75aa5d0a63a.jpg",
+      "path": "190703152742-atlantic-white-shark-conservancy-00002014-f75aa5d0a63a.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.101",
+      "bytes": 11642
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190703152742-atlantic-white-shark-conservancy-00002014.jpg?q=x_0,y_0,h_1080,w_1919,c_fill/w_860/f_webp",
+      "type": "remote",
+      "role": "availableAssets.101.originalUrl",
+      "sourceField": "availableAssets.101.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190703152742-atlantic-white-shark-conservancy-00002014-29e6a4f28657.jpg",
+      "path": "190703152742-atlantic-white-shark-conservancy-00002014-29e6a4f28657.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.102",
+      "bytes": 12996
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190703152742-atlantic-white-shark-conservancy-00002014.jpg?q=x_0,y_0,h_1080,w_1919,c_fill/w_967/f_webp",
+      "type": "remote",
+      "role": "availableAssets.102.originalUrl",
+      "sourceField": "availableAssets.102.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190704102334-02-shark-bleeding-kit-beach-cape-cod-e6620b94a43b.jpg",
+      "path": "190704102334-02-shark-bleeding-kit-beach-cape-cod-e6620b94a43b.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.103",
+      "bytes": 217935
+    },
+    {
+      "id": "190704102334-02-shark-bleeding-kit-beach-cape-cod.jpg?q=w_2194,h_1234,x_0,y_0,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190704102334-02-shark-bleeding-kit-beach-cape-cod.jpg?q=w_2194,h_1234,x_0,y_0,c_fill",
+      "type": "remote",
+      "role": "availableAssets.103.originalUrl",
+      "sourceField": "availableAssets.103.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190704102334-02-shark-bleeding-kit-beach-cape-cod-6fca99b35cf6.jpg",
+      "path": "190704102334-02-shark-bleeding-kit-beach-cape-cod-6fca99b35cf6.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.104",
+      "bytes": 74492
+    },
+    {
+      "id": "w_1093",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190704102334-02-shark-bleeding-kit-beach-cape-cod.jpg?q=w_2194,h_1234,x_0,y_0,c_fill/w_1093",
+      "type": "remote",
+      "role": "availableAssets.104.originalUrl",
+      "sourceField": "availableAssets.104.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190704102334-02-shark-bleeding-kit-beach-cape-cod-6ad3a12563e7.jpg",
+      "path": "190704102334-02-shark-bleeding-kit-beach-cape-cod-6ad3a12563e7.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.105",
+      "bytes": 57204
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190704102334-02-shark-bleeding-kit-beach-cape-cod.jpg?q=w_2194,h_1234,x_0,y_0,c_fill/w_1093/f_webp",
+      "type": "remote",
+      "role": "availableAssets.105.originalUrl",
+      "sourceField": "availableAssets.105.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190704102334-02-shark-bleeding-kit-beach-cape-cod-6d986d568eea.jpg",
+      "path": "190704102334-02-shark-bleeding-kit-beach-cape-cod-6d986d568eea.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.106",
+      "bytes": 68540
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190704102334-02-shark-bleeding-kit-beach-cape-cod.jpg?q=w_2194,h_1234,x_0,y_0,c_fill/w_1159/f_webp",
+      "type": "remote",
+      "role": "availableAssets.106.originalUrl",
+      "sourceField": "availableAssets.106.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190704102334-02-shark-bleeding-kit-beach-cape-cod-c4584104e3fc.jpg",
+      "path": "190704102334-02-shark-bleeding-kit-beach-cape-cod-c4584104e3fc.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.107",
+      "bytes": 83258
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190704102334-02-shark-bleeding-kit-beach-cape-cod.jpg?q=w_2194,h_1234,x_0,y_0,c_fill/w_1316/f_webp",
+      "type": "remote",
+      "role": "availableAssets.107.originalUrl",
+      "sourceField": "availableAssets.107.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190704102334-02-shark-bleeding-kit-beach-cape-cod-c730f4275284.jpg",
+      "path": "190704102334-02-shark-bleeding-kit-beach-cape-cod-c730f4275284.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.108",
+      "bytes": 21466
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190704102334-02-shark-bleeding-kit-beach-cape-cod.jpg?q=w_2194,h_1234,x_0,y_0,c_fill/w_679/f_webp",
+      "type": "remote",
+      "role": "availableAssets.108.originalUrl",
+      "sourceField": "availableAssets.108.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190704102334-02-shark-bleeding-kit-beach-cape-cod-4166b671d64b.jpg",
+      "path": "190704102334-02-shark-bleeding-kit-beach-cape-cod-4166b671d64b.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.109",
+      "bytes": 46034
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190704102334-02-shark-bleeding-kit-beach-cape-cod.jpg?q=w_2194,h_1234,x_0,y_0,c_fill/w_967/f_webp",
+      "type": "remote",
+      "role": "availableAssets.109.originalUrl",
+      "sourceField": "availableAssets.109.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "190704102334-02-shark-bleeding-kit-beach-cape-cod-86a4277094d4.jpg",
+      "path": "190704102334-02-shark-bleeding-kit-beach-cape-cod-86a4277094d4.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.110",
+      "bytes": 42966
+    },
+    {
+      "id": "w_800",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/190704102334-02-shark-bleeding-kit-beach-cape-cod.jpg?q=x_2,y_0,h_1232,w_2189,c_crop/w_800",
+      "type": "remote",
+      "role": "availableAssets.110.originalUrl",
+      "sourceField": "availableAssets.110.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "22693211-suspected-terror-attack-thumb-9559a9a8ffc0.jpg",
+      "path": "22693211-suspected-terror-attack-thumb-9559a9a8ffc0.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.111",
+      "bytes": 11095
+    },
+    {
+      "id": "22693211-suspected-terror-attack-thumb.jpg?c=16x9&q=w_250,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/22693211-suspected-terror-attack-thumb.jpg?c=16x9&q=w_250,c_fill",
+      "type": "remote",
+      "role": "availableAssets.111.originalUrl",
+      "sourceField": "availableAssets.111.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "22693211-suspected-terror-attack-thumb-0ca7f17e1eb8.jpg",
+      "path": "22693211-suspected-terror-attack-thumb-0ca7f17e1eb8.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.112",
+      "bytes": 8852
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/22693211-suspected-terror-attack-thumb.jpg?c=16x9&q=w_250,c_fill/f_webp",
+      "type": "remote",
+      "role": "availableAssets.112.originalUrl",
+      "sourceField": "availableAssets.112.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "22693211-suspected-terror-attack-thumb-df967c1453f9.jpg",
+      "path": "22693211-suspected-terror-attack-thumb-df967c1453f9.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.113",
+      "bytes": 28124
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/22693211-suspected-terror-attack-thumb.jpg?c=16x9&q=w_680,c_fill/f_webp",
+      "type": "remote",
+      "role": "availableAssets.113.originalUrl",
+      "sourceField": "availableAssets.113.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "22693211-suspected-terror-attack-thumb-d78c1e60c314.jpg",
+      "path": "22693211-suspected-terror-attack-thumb-d78c1e60c314.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.114",
+      "bytes": 63875
+    },
+    {
+      "id": "22693211-suspected-terror-attack-thumb.jpg?c=16x9&q=w_860,c_fill",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/22693211-suspected-terror-attack-thumb.jpg?c=16x9&q=w_860,c_fill",
+      "type": "remote",
+      "role": "availableAssets.114.originalUrl",
+      "sourceField": "availableAssets.114.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "22693211-suspected-terror-attack-thumb-c7b319b522b7.jpg",
+      "path": "22693211-suspected-terror-attack-thumb-c7b319b522b7.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.115",
+      "bytes": 44854
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/22693211-suspected-terror-attack-thumb.jpg?c=16x9&q=w_860,c_fill/f_webp",
+      "type": "remote",
+      "role": "availableAssets.115.originalUrl",
+      "sourceField": "availableAssets.115.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "22693211-suspected-terror-attack-thumb-ec738d1be447.jpg",
+      "path": "22693211-suspected-terror-attack-thumb-ec738d1be447.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.116",
+      "bytes": 51830
+    },
+    {
+      "id": "f_webp",
+      "path": null,
+      "url": "https://media.cnn.com/api/v1/images/stellar/prod/22693211-suspected-terror-attack-thumb.jpg?c=16x9&q=w_967,c_fill/f_webp",
+      "type": "remote",
+      "role": "availableAssets.116.originalUrl",
+      "sourceField": "availableAssets.116.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "26Well-Sharks-facebookJumbo-2566297525e3.jpg",
+      "path": "26Well-Sharks-facebookJumbo-2566297525e3.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.117",
+      "bytes": 45446
+    },
+    {
+      "id": "26Well-Sharks-facebookJumbo.jpg?year=2024&h=550&w=1050&s=81ea19c3c4ca3ec941fa9972d0b44e0c025266a4d8c17310a5287c1614a8a0d0&k=ZQJBKqZ0VN",
+      "path": null,
+      "url": "https://static01.nyt.com/images/2024/07/26/well/26Well-Sharks/26Well-Sharks-facebookJumbo.jpg?year=2024&h=550&w=1050&s=81ea19c3c4ca3ec941fa9972d0b44e0c025266a4d8c17310a5287c1614a8a0d0&k=ZQJBKqZ0VN",
+      "type": "remote",
+      "role": "availableAssets.117.originalUrl",
+      "sourceField": "availableAssets.117.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "26Well-Sharks-googleFourByThree-dea92cef8ed7.jpg",
+      "path": "26Well-Sharks-googleFourByThree-dea92cef8ed7.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.118",
+      "bytes": 42237
+    },
+    {
+      "id": "26Well-Sharks-googleFourByThree.jpg",
+      "path": null,
+      "url": "https://static01.nyt.com/images/2024/07/26/well/26Well-Sharks/26Well-Sharks-googleFourByThree.jpg",
+      "type": "texture",
+      "role": "availableAssets.118.originalUrl",
+      "sourceField": "availableAssets.118.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "26Well-Sharks-mediumSquareAt3X-v2-132a9efbdff8.jpg",
+      "path": "26Well-Sharks-mediumSquareAt3X-v2-132a9efbdff8.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.119",
+      "bytes": 119601
+    },
+    {
+      "id": "26Well-Sharks-mediumSquareAt3X-v2.jpg",
+      "path": null,
+      "url": "https://static01.nyt.com/images/2024/07/26/well/26Well-Sharks/26Well-Sharks-mediumSquareAt3X-v2.jpg",
+      "type": "texture",
+      "role": "availableAssets.119.originalUrl",
+      "sourceField": "availableAssets.119.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "26Well-Sharks-videoSixteenByNineJumbo1600-97d152f79b39.jpg",
+      "path": "26Well-Sharks-videoSixteenByNineJumbo1600-97d152f79b39.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.120",
+      "bytes": 91747
+    },
+    {
+      "id": "26Well-Sharks-videoSixteenByNineJumbo1600.jpg",
+      "path": null,
+      "url": "https://static01.nyt.com/images/2024/07/26/well/26Well-Sharks/26Well-Sharks-videoSixteenByNineJumbo1600.jpg",
+      "type": "texture",
+      "role": "availableAssets.120.originalUrl",
+      "sourceField": "availableAssets.120.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "26Well-Sharks-videoSixteenByNineJumbo1600-f276b348b3ad.jpg",
+      "path": "26Well-Sharks-videoSixteenByNineJumbo1600-f276b348b3ad.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.121",
+      "bytes": 82440
+    },
+    {
+      "id": "26Well-Sharks-videoSixteenByNineJumbo1600.jpg?year=2024&h=900&w=1600&s=c3d51866ce1ffce494a36a671ad4564149fe081c065ce49553985590b647ac30&k=ZQJBKqZ0VN&tw=1",
+      "path": null,
+      "url": "https://static01.nyt.com/images/2024/07/26/well/26Well-Sharks/26Well-Sharks-videoSixteenByNineJumbo1600.jpg?year=2024&h=900&w=1600&s=c3d51866ce1ffce494a36a671ad4564149fe081c065ce49553985590b647ac30&k=ZQJBKqZ0VN&tw=1",
+      "type": "remote",
+      "role": "availableAssets.121.originalUrl",
+      "sourceField": "availableAssets.121.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "hammer-swimming-v1-e323989f134e.glb",
+      "path": "hammer-swimming-v1-e323989f134e.glb",
+      "url": null,
+      "type": "model",
+      "role": "core_story",
+      "sourceField": "availableAssets.122",
+      "bytes": 8198572
+    },
+    {
+      "id": "hammer-swimming-v1.glb",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/_big_assets/hammer-swimming-v1.glb",
+      "type": "model",
+      "role": "availableAssets.122.originalUrl",
+      "sourceField": "availableAssets.122.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "hammer-v2-26a1f8b39f47.glb",
+      "path": "hammer-v2-26a1f8b39f47.glb",
+      "url": null,
+      "type": "model",
+      "role": "core_story",
+      "sourceField": "availableAssets.123",
+      "bytes": 1063708
+    },
+    {
+      "id": "hammer-v2.glb",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/_big_assets/hammer-v2.glb",
+      "type": "model",
+      "role": "availableAssets.123.originalUrl",
+      "sourceField": "availableAssets.123.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "nurse-swimming-v1-98bc62f800f5.glb",
+      "path": "nurse-swimming-v1-98bc62f800f5.glb",
+      "url": null,
+      "type": "model",
+      "role": "core_story",
+      "sourceField": "availableAssets.124",
+      "bytes": 5680220
+    },
+    {
+      "id": "nurse-swimming-v1.glb",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/_big_assets/nurse-swimming-v1.glb",
+      "type": "model",
+      "role": "availableAssets.124.originalUrl",
+      "sourceField": "availableAssets.124.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "nurse-v2-4eb82b1af763.glb",
+      "path": "nurse-v2-4eb82b1af763.glb",
+      "url": null,
+      "type": "model",
+      "role": "core_story",
+      "sourceField": "availableAssets.125",
+      "bytes": 854260
+    },
+    {
+      "id": "nurse-v2.glb",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/_big_assets/nurse-v2.glb",
+      "type": "model",
+      "role": "availableAssets.125.originalUrl",
+      "sourceField": "availableAssets.125.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "oceanfloor2-compressed.mov",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/_big_assets/oceanfloor2-compressed.mov",
+      "type": "remote",
+      "role": "availableAssets.126.originalUrl",
+      "sourceField": "availableAssets.126.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "oceanfloor2-compressed-95ad3cfebcec.webm",
+      "path": "oceanfloor2-compressed-95ad3cfebcec.webm",
+      "url": null,
+      "type": "video",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.127",
+      "bytes": 854938
+    },
+    {
+      "id": "oceanfloor2-compressed.webm",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/_big_assets/oceanfloor2-compressed.webm",
+      "type": "media",
+      "role": "availableAssets.127.originalUrl",
+      "sourceField": "availableAssets.127.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "ruru-big-add-idle-report-1dd9b080eec5.glb",
+      "path": "ruru-big-add-idle-report-1dd9b080eec5.glb",
+      "url": null,
+      "type": "model",
+      "role": "core_story",
+      "sourceField": "availableAssets.128",
+      "bytes": 7629440
+    },
+    {
+      "id": "ruru-big-add-idle-report.glb",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/_big_assets/ruru-big-add-idle-report.glb",
+      "type": "model",
+      "role": "availableAssets.128.originalUrl",
+      "sourceField": "availableAssets.128.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "swimmingsardine-v1-e48926139be8.glb",
+      "path": "swimmingsardine-v1-e48926139be8.glb",
+      "url": null,
+      "type": "model",
+      "role": "core_story",
+      "sourceField": "availableAssets.129",
+      "bytes": 1844532
+    },
+    {
+      "id": "swimmingsardine-v1.glb",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/_big_assets/swimmingsardine-v1.glb",
+      "type": "model",
+      "role": "availableAssets.129.originalUrl",
+      "sourceField": "availableAssets.129.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "white-swimming-v1-357c658e11bc.glb",
+      "path": "white-swimming-v1-357c658e11bc.glb",
+      "url": null,
+      "type": "model",
+      "role": "core_story",
+      "sourceField": "availableAssets.130",
+      "bytes": 21026460
+    },
+    {
+      "id": "white-swimming-v1.glb",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/_big_assets/white-swimming-v1.glb",
+      "type": "model",
+      "role": "availableAssets.130.originalUrl",
+      "sourceField": "availableAssets.130.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "white-swimming-v2-small-32c73f146271.glb",
+      "path": "white-swimming-v2-small-32c73f146271.glb",
+      "url": null,
+      "type": "model",
+      "role": "core_story",
+      "sourceField": "availableAssets.131",
+      "bytes": 4539992
+    },
+    {
+      "id": "white-swimming-v2-small.glb",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/_big_assets/white-swimming-v2-small.glb",
+      "type": "model",
+      "role": "availableAssets.131.originalUrl",
+      "sourceField": "availableAssets.131.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "env.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/env.js",
+      "type": "remote",
+      "role": "availableAssets.132.originalUrl",
+      "sourceField": "availableAssets.132.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "_page.CoYn-nD_.css",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/assets/_page.CoYn-nD_.css",
+      "type": "remote",
+      "role": "availableAssets.133.originalUrl",
+      "sourceField": "availableAssets.133.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "2.CoYn-nD_.css",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/assets/2.CoYn-nD_.css",
+      "type": "remote",
+      "role": "availableAssets.134.originalUrl",
+      "sourceField": "availableAssets.134.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "Base.DGpeet4-.css",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/assets/Base.DGpeet4-.css",
+      "type": "remote",
+      "role": "availableAssets.135.originalUrl",
+      "sourceField": "availableAssets.135.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.Ba-yv6k-.css",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/assets/index.Ba-yv6k-.css",
+      "type": "remote",
+      "role": "availableAssets.136.originalUrl",
+      "sourceField": "availableAssets.136.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.BJ3ZKIa2.css",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/assets/index.BJ3ZKIa2.css",
+      "type": "remote",
+      "role": "availableAssets.137.originalUrl",
+      "sourceField": "availableAssets.137.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.Bl53kaU2.css",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/assets/index.Bl53kaU2.css",
+      "type": "remote",
+      "role": "availableAssets.138.originalUrl",
+      "sourceField": "availableAssets.138.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.Cou3JqTE.css",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/assets/index.Cou3JqTE.css",
+      "type": "remote",
+      "role": "availableAssets.139.originalUrl",
+      "sourceField": "availableAssets.139.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.CpJHEG1k.css",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/assets/index.CpJHEG1k.css",
+      "type": "remote",
+      "role": "availableAssets.140.originalUrl",
+      "sourceField": "availableAssets.140.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.DaelAshC.css",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/assets/index.DaelAshC.css",
+      "type": "remote",
+      "role": "availableAssets.141.originalUrl",
+      "sourceField": "availableAssets.141.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "entry.BY7ASN1c.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/chunks/entry.BY7ASN1c.js",
+      "type": "remote",
+      "role": "availableAssets.142.originalUrl",
+      "sourceField": "availableAssets.142.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.BQG0O8bf.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/chunks/index.BQG0O8bf.js",
+      "type": "remote",
+      "role": "availableAssets.143.originalUrl",
+      "sourceField": "availableAssets.143.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.m9wG7gDm.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/chunks/index.m9wG7gDm.js",
+      "type": "remote",
+      "role": "availableAssets.144.originalUrl",
+      "sourceField": "availableAssets.144.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.vQ0rETxz.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/chunks/index.vQ0rETxz.js",
+      "type": "remote",
+      "role": "availableAssets.145.originalUrl",
+      "sourceField": "availableAssets.145.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "preload-helper.BQ24v_F8.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/chunks/preload-helper.BQ24v_F8.js",
+      "type": "remote",
+      "role": "availableAssets.146.originalUrl",
+      "sourceField": "availableAssets.146.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "preprocess.KjwS0j6g.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/chunks/preprocess.KjwS0j6g.js",
+      "type": "remote",
+      "role": "availableAssets.147.originalUrl",
+      "sourceField": "availableAssets.147.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "scheduler.CGi7Wwc4.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/chunks/scheduler.CGi7Wwc4.js",
+      "type": "remote",
+      "role": "availableAssets.148.originalUrl",
+      "sourceField": "availableAssets.148.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "stores.6CPQP1H9.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/chunks/stores.6CPQP1H9.js",
+      "type": "remote",
+      "role": "availableAssets.149.originalUrl",
+      "sourceField": "availableAssets.149.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "app.iBOHpwkx.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/entry/app.iBOHpwkx.js",
+      "type": "remote",
+      "role": "availableAssets.150.originalUrl",
+      "sourceField": "availableAssets.150.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "start.DR4QJYEy.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/entry/start.DR4QJYEy.js",
+      "type": "remote",
+      "role": "availableAssets.151.originalUrl",
+      "sourceField": "availableAssets.151.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "0.TaF7MmsU.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/nodes/0.TaF7MmsU.js",
+      "type": "remote",
+      "role": "availableAssets.152.originalUrl",
+      "sourceField": "availableAssets.152.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "1.ZT7S4Nn2.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/nodes/1.ZT7S4Nn2.js",
+      "type": "remote",
+      "role": "availableAssets.153.originalUrl",
+      "sourceField": "availableAssets.153.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "2.DOeuftup.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/nodes/2.DOeuftup.js",
+      "type": "remote",
+      "role": "availableAssets.154.originalUrl",
+      "sourceField": "availableAssets.154.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "3.zQ_3CU6R.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/nodes/3.zQ_3CU6R.js",
+      "type": "remote",
+      "role": "availableAssets.155.originalUrl",
+      "sourceField": "availableAssets.155.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "4.Cjbn8OE4.js",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/2024-07-01-sharks-risks/2c4bcb6f-27b6-4b07-a3d5-5ed72254d34f/_assets/_app/immutable/nodes/4.Cjbn8OE4.js",
+      "type": "remote",
+      "role": "availableAssets.156.originalUrl",
+      "sourceField": "availableAssets.156.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.html",
+      "path": null,
+      "url": "https://www.cnn.com/2016/06/02/world/shark-attacks-forecast/index.html",
+      "type": "remote",
+      "role": "availableAssets.157.originalUrl",
+      "sourceField": "availableAssets.157.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.html",
+      "path": null,
+      "url": "https://www.cnn.com/2018/07/02/australia/shark-pulls-woman-overboard-intl/index.html",
+      "type": "remote",
+      "role": "availableAssets.158.originalUrl",
+      "sourceField": "availableAssets.158.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.html",
+      "path": null,
+      "url": "https://www.cnn.com/2018/07/18/us/ny-suspected-shark-attack/index.html",
+      "type": "remote",
+      "role": "availableAssets.159.originalUrl",
+      "sourceField": "availableAssets.159.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.html",
+      "path": null,
+      "url": "https://www.cnn.com/2018/08/15/us/cape-cod-massachusetts-shark-attack/index.html",
+      "type": "remote",
+      "role": "availableAssets.160.originalUrl",
+      "sourceField": "availableAssets.160.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.html",
+      "path": null,
+      "url": "https://www.cnn.com/2018/09/15/us/suspected-shark-attack-death-massachusetts/index.html",
+      "type": "remote",
+      "role": "availableAssets.161.originalUrl",
+      "sourceField": "availableAssets.161.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.html",
+      "path": null,
+      "url": "https://www.cnn.com/2019/02/27/health/shark-attack-risk-low-study/index.html",
+      "type": "remote",
+      "role": "availableAssets.162.originalUrl",
+      "sourceField": "availableAssets.162.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.html",
+      "path": null,
+      "url": "https://www.cnn.com/2019/06/03/us/north-carolina-shark-attack/index.html",
+      "type": "remote",
+      "role": "availableAssets.163.originalUrl",
+      "sourceField": "availableAssets.163.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.html",
+      "path": null,
+      "url": "https://www.cnn.com/2019/06/14/us/north-carolina-shark-attack-paige-winter/index.html",
+      "type": "remote",
+      "role": "availableAssets.164.originalUrl",
+      "sourceField": "availableAssets.164.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.html",
+      "path": null,
+      "url": "https://www.cnn.com/2019/06/17/us/nc-shark-attacks-trnd/index.html",
+      "type": "remote",
+      "role": "availableAssets.165.originalUrl",
+      "sourceField": "availableAssets.165.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.html",
+      "path": null,
+      "url": "https://www.cnn.com/2019/06/26/us/bahamas-shark-attack-woman-died/index.html",
+      "type": "remote",
+      "role": "availableAssets.166.originalUrl",
+      "sourceField": "availableAssets.166.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.html",
+      "path": null,
+      "url": "https://www.cnn.com/2019/07/02/us/florida-sharks-aerials-trnd/index.html",
+      "type": "remote",
+      "role": "availableAssets.167.originalUrl",
+      "sourceField": "availableAssets.167.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.html",
+      "path": null,
+      "url": "https://www.cnn.com/2019/07/03/us/sharks-cape-cod-trnd/index.html",
+      "type": "remote",
+      "role": "availableAssets.168.originalUrl",
+      "sourceField": "availableAssets.168.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "index.html",
+      "path": null,
+      "url": "https://www.cnn.com/2019/07/04/us/shark-bleeding-kit-beach-cape-cod-trnd/index.html",
+      "type": "remote",
+      "role": "availableAssets.169.originalUrl",
+      "sourceField": "availableAssets.169.originalUrl",
+      "bytes": null
+    }
+  ],
+  "interactions": {
+    "controls": [
+      "next",
+      "back"
+    ],
+    "keyboard": {},
+    "xrControllers": {},
+    "locomotion": "story-fixed",
+    "lifecycle": {},
+    "triggers": [],
+    "hotspots": []
+  },
+  "compatibility": {
+    "acceptedForTransformation": true,
+    "excludedCategories": [
+      "virtual-walk",
+      "sports"
+    ],
+    "sourceAdapter": "Jingchen stories with generated JS/JSON modules and per-story runtime fields."
+  },
+  "diagnostics": [],
+  "rawSummary": {
+    "beatCount": 8,
+    "storyBeatCount": 0,
+    "pageCount": 0,
+    "sourceBeatCount": 0,
+    "regionCount": 8,
+    "routeStopCount": 0,
+    "frameCount": 0
+  },
+  "beats": [
+    {
+      "id": "overview",
+      "index": 0,
+      "kind": "lead",
+      "section": "Lead",
+      "title": "Fear is bigger than the baseline risk",
+      "text": "The source story opens by separating shark fear from shark probability: attacks are rare, but risk is not zero. The VR version starts underwater with the source shark nearby, then pulls the viewer back to the larger context.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/26Well-Sharks-videoSixteenByNineJumbo1600-97d152f79b39.jpg",
+        "modelIds": [
+          "source-shark",
+          "great-white"
+        ],
+        "visibleLayer": "lead"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            0.2,
+            1.7,
+            4.7
+          ],
+          "target": [
+            0,
+            0.85,
+            -0.2
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "regions",
+      "index": 1,
+      "kind": "regions",
+      "section": "Geography",
+      "title": "Where and when matters most",
+      "text": "The original interactive asks readers to choose a coast. This beat turns the coast into a ring of risk stations, showing how region and season change the odds.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/151029044145-shark-sign-0bfd52fca15b.jpg",
+        "modelIds": [
+          "great-white",
+          "hammerhead"
+        ],
+        "visibleLayer": "regions"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            0,
+            3.4,
+            4.35
+          ],
+          "target": [
+            0,
+            0.22,
+            0.18
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "hotspots",
+      "index": 2,
+      "kind": "regions",
+      "section": "Regional detail",
+      "title": "Florida counts bites; Hawaii and California carry severity",
+      "text": "The adaptation groups the source regional notes into a concise comparison: Florida is the frequency center, Hawaii has serious tiger-shark encounters, and California/New England are white-shark severity stories.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/190118102340-02-great-white-shark-hawaii-0115-7a273aa7fc46.jpg",
+        "modelIds": [
+          "great-white",
+          "source-shark"
+        ],
+        "visibleLayer": "regions"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            2.55,
+            1.35,
+            3.2
+          ],
+          "target": [
+            0.45,
+            0.5,
+            0.2
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "species",
+      "index": 3,
+      "kind": "species",
+      "section": "Sharks to know",
+      "title": "The story is about a few species, not all sharks",
+      "text": "Rather than surrounding the reader with danger, this beat compares roles: bull and tiger sharks explain many serious warnings, blacktips explain many minor bites, and nurse sharks carry the do-not-harass lesson.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/150616132316-great-white-shark-8c618ab4109f.jpg",
+        "modelIds": [
+          "great-white",
+          "hammerhead",
+          "nurse",
+          "source-shark"
+        ],
+        "visibleLayer": "species"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            -2.9,
+            1.35,
+            3.05
+          ],
+          "target": [
+            -0.15,
+            0.78,
+            -0.05
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "activities",
+      "index": 4,
+      "kind": "activities",
+      "section": "Exposure",
+      "title": "What you do in the water changes the risk",
+      "text": "The original article shifts from place to behavior. The VR beat stages board sports, swimming, fishing, and shark handling as separate exposure stations so the reader sees risk as a set of choices.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/180815212321-cape-cod-surfer-shark-bite-637f0178cd71.jpg",
+        "modelIds": [
+          "great-white",
+          "sardine"
+        ],
+        "visibleLayer": "activities"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            2.9,
+            1.12,
+            2.65
+          ],
+          "target": [
+            0.55,
+            0.56,
+            0.35
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "avoidance",
+      "index": 5,
+      "kind": "safety",
+      "section": "Prevention",
+      "title": "Make yourself clearly not shark food",
+      "text": "The practical guidance becomes a calm checklist in space: group up, avoid low light, stay away from prey activity, skip shiny contrast, and do not bother sharks.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/151029044145-shark-sign-0bfd52fca15b.jpg",
+        "modelIds": [
+          "nurse",
+          "sardine",
+          "hammerhead"
+        ],
+        "visibleLayer": "safety"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            -2.55,
+            1.2,
+            2.5
+          ],
+          "target": [
+            -0.35,
+            0.54,
+            0.1
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "response",
+      "index": 6,
+      "kind": "safety",
+      "section": "If attacked",
+      "title": "Fight hard, get out, control bleeding",
+      "text": "The source story treats an attack as unlikely but actionable. If a shark holds on, strike vulnerable areas, leave the water without panic, and use bleeding-control preparation.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/190704102334-02-shark-bleeding-kit-beach-cape-cod-e6620b94a43b.jpg",
+        "modelIds": [
+          "source-shark"
+        ],
+        "visibleLayer": "safety"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            0.25,
+            1.52,
+            3.65
+          ],
+          "target": [
+            0.05,
+            0.82,
+            -0.2
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "takeaway",
+      "index": 7,
+      "kind": "lead",
+      "section": "Conclusion",
+      "title": "The risk is extremely small, but preparation is real",
+      "text": "The closing beat preserves the article position: knowing the numbers may not erase fear, but clear behavior makes the already-small risk smaller.",
+      "sourceIds": [],
+      "media": {
+        "image": "../captures/active/textures/180915172920-cape-cod-shark-attack-ef41ffd0d16c.jpg",
+        "modelIds": [
+          "source-shark",
+          "great-white",
+          "nurse",
+          "sardine"
+        ],
+        "visibleLayer": "lead"
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            0,
+            1.95,
+            4.25
+          ],
+          "target": [
+            0,
+            0.82,
+            0
+          ]
+        }
+      },
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    }
+  ]
+}

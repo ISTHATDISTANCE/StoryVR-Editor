@@ -1,0 +1,560 @@
+{
+  "schemaVersion": "storyvr-runtime/v1",
+  "id": "possessed-kara-walker",
+  "family": "jingchen",
+  "slug": "possessed-kara-walker",
+  "title": "possessed-kara-walker",
+  "byline": "By David Colman Mika Gröndahl Evan Grothjan Jon Huang Anita Leclerc Tracy Ma Karthik Patanjali Umi Syam and Choire Sicha Nov. 14, 2019",
+  "sourceUrl": "https://www.nytimes.com/interactive/2019/11/14/style/possessed-kara-walker.html",
+  "source": {
+    "family": "jingchen",
+    "strategy": "jingchen",
+    "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_7/possessed-kara-walker",
+    "storyFolderRel": "Jingchen-10-stories/Story_7/possessed-kara-walker",
+    "sourcePath": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_7/possessed-kara-walker/webxr-adaptation/src/generated/story-instance.js",
+    "sourcePathRel": "Jingchen-10-stories/Story_7/possessed-kara-walker/webxr-adaptation/src/generated/story-instance.js",
+    "sourceFormat": "generated-js",
+    "originalSchema": {
+      "slug": "string",
+      "generatedAt": "string",
+      "storyBeats": "array(7)",
+      "originalContentBeats": "array(17)"
+    },
+    "generatedAt": "2026-06-14T00:53:35.284Z"
+  },
+  "assetRoot": {
+    "mode": "dev",
+    "original": "/Jingchen-10-stories/Story_7/possessed-kara-walker/captures/active",
+    "relativeFromApp": "../captures/active",
+    "hosted": "/Jingchen-10-stories/Story_7/possessed-kara-walker/captures/active",
+    "buildBase": "/Jingchen-10-stories/Story_7/possessed-kara-walker/dist-webxr-adaptation/",
+    "filesystem": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_7/possessed-kara-walker/captures/active",
+    "canonical": "../captures/active"
+  },
+  "style": {
+    "colors": {},
+    "tokens": {}
+  },
+  "contentUnits": [
+    {
+      "id": "series-premise",
+      "index": 0,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Possessed",
+      "text": "The artist and photographer talks about her favorite piece of heartbreaking art. Possessed is an ongoing series about people and their objects.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {
+        "visualState": {
+          "yaw": -0.35,
+          "distance": 2.4,
+          "lightKey": "cool"
+        }
+      },
+      "lifecycle": {
+        "readerAction": "Begin with the object at human scale.",
+        "visualFocus": "The wagon appears as the owned object at the center of a quiet gallery."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "source-slide-1",
+      "index": 1,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "The Encounter",
+      "text": "On a tour of galleries with Alex Rodriguez, a baseball player but more notably the fiancé of  Jennifer Lopez, Marilyn Minter encountered a sculpture by Kara Walker.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {
+        "visualState": {
+          "yaw": 0.25,
+          "distance": 2.25,
+          "lightKey": "neutral"
+        }
+      },
+      "lifecycle": {
+        "readerAction": "Move from the article setup into the object scene.",
+        "visualFocus": "The sculpture rotates into a three-quarter view, making the wagon body legible."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "seduction-and-danger",
+      "index": 2,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Seduction And Danger",
+      "text": "There is one subgenre of art that has yet to get a catchy name — that is, that hybrid of decorous aesthetics and indecorous import, of the hypnotically beautiful and the polemically lethal. It’s like the luscious, poisonous fruit of belladonna — a.k.a., deadly nightshade — in art form. “You can’t get anyone’s attention unless you seduce them,” said Marilyn Minter, the photographer and painter whose work teeters on a precarious stiletto point between lush images of consumer desire and a condemnation of same.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {
+        "visualState": {
+          "yaw": 0.8,
+          "distance": 2.15,
+          "lightKey": "split"
+        }
+      },
+      "lifecycle": {
+        "readerAction": "Consider how beauty and violence coexist in the piece.",
+        "visualFocus": "A split light casts warmth on the surface and shadow behind it."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "walker-context",
+      "index": 3,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Walker Context",
+      "text": "Kara Walker exploded on the art scene in the 1990s with sweet-looking cut-paper silhouettes recalling wholesome nursery décor, but which actually portray atrocities of slavery in the antebellum South. Over the years, her work has become grander in scale, but it still coolly walks a line between elegance and violence. Last year, Ms. Walker added a musical twist to her repertoire for another public commission. Called “Katastwóf Karavan,” the work was a collaboration with Jason Moran, a multimedia musician, and featured a functioning steam-powered calliope housed in a four-wheeled parade-style wagon decked with Ms. Walker’s dark-drawn silhouettes. While they programmed the calliope to play modern songs from Marvin Gaye and Jimi Hendrix, the calliope’s distinctive sound — think a class of third graders playing recorders — gave the whole thing a disturbing feel and sound.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {
+        "visualState": {
+          "yaw": -0.75,
+          "distance": 2.3,
+          "lightKey": "cool"
+        }
+      },
+      "lifecycle": {
+        "readerAction": "Hold the object in relation to Walker’s wider practice.",
+        "visualFocus": "Silhouette panels behind the object echo the article context without remaking the artwork."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "source-slide-2",
+      "index": 4,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "The Refusal",
+      "text": "“I tried to talk Alex into buying it, but he felt like it was a little violent to have around his kids.”",
+      "sourceIds": [],
+      "media": {},
+      "scene": {
+        "visualState": {
+          "yaw": 1.55,
+          "distance": 2.1,
+          "lightKey": "low"
+        }
+      },
+      "lifecycle": {
+        "readerAction": "Stay with the reason the first buyer rejected the object.",
+        "visualFocus": "The view pulls attention to the wagon’s darker contours."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "minter-buys-it",
+      "index": 5,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Minter Buys It",
+      "text": "“We were looking for something fresh,” Ms. Minter said. “And I fell in love with this the minute I saw it. I had never seen anything like it. So I tried to talk Alex into buying it, but he felt like it was a little violent to have around his kids.” This was not a problem for Ms. Minter. “I said, ‘I’m buying it.’” So she did — for about $20,000. (According to Sikkema Jenkins, the last one sold for $26,000).",
+      "sourceIds": [],
+      "media": {},
+      "scene": {
+        "visualState": {
+          "yaw": -1.2,
+          "distance": 2.2,
+          "lightKey": "warm"
+        }
+      },
+      "lifecycle": {
+        "readerAction": "Register the shift from refused object to chosen possession.",
+        "visualFocus": "The pedestal brightens and the object settles into a domestic, owned scale."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "source-slide-3",
+      "index": 6,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Up Close",
+      "text": "“When you get up close, the images just rip your heart out.”",
+      "sourceIds": [],
+      "media": {},
+      "scene": {
+        "visualState": {
+          "yaw": 2.35,
+          "distance": 1.85,
+          "lightKey": "inspection"
+        }
+      },
+      "lifecycle": {
+        "readerAction": "End with close looking rather than spectacle.",
+        "visualFocus": "The model enlarges slightly for close inspection while the viewer stays still."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    }
+  ],
+  "sceneTopology": {
+    "kind": "beat-sequence",
+    "routeStops": [],
+    "regions": [],
+    "markers": [],
+    "bodies": [],
+    "countries": [],
+    "modelGroups": {},
+    "sections": [],
+    "questions": {},
+    "cameraPresets": [],
+    "spatialRelationships": {
+      "storyBeats": [
+        {
+          "id": "series-premise",
+          "title": "Possessed",
+          "source": "article lead and body",
+          "narration": "The artist and photographer talks about her favorite piece of heartbreaking art. Possessed is an ongoing series about people and their objects.",
+          "visualFocus": "The wagon appears as the owned object at the center of a quiet gallery.",
+          "readerAction": "Begin with the object at human scale.",
+          "visualState": {
+            "yaw": -0.35,
+            "distance": 2.4,
+            "lightKey": "cool"
+          }
+        },
+        {
+          "id": "source-slide-1",
+          "title": "The Encounter",
+          "source": "NYTG.WEBGL_DATA.slides[0]",
+          "sourcePosition": "0.110",
+          "narration": "On a tour of galleries with Alex Rodriguez, a baseball player but more notably the fiancé of  Jennifer Lopez, Marilyn Minter encountered a sculpture by Kara Walker.",
+          "visualFocus": "The sculpture rotates into a three-quarter view, making the wagon body legible.",
+          "readerAction": "Move from the article setup into the object scene.",
+          "visualState": {
+            "yaw": 0.25,
+            "distance": 2.25,
+            "lightKey": "neutral"
+          }
+        },
+        {
+          "id": "seduction-and-danger",
+          "title": "Seduction And Danger",
+          "source": "article body",
+          "narration": "There is one subgenre of art that has yet to get a catchy name — that is, that hybrid of decorous aesthetics and indecorous import, of the hypnotically beautiful and the polemically lethal. It’s like the luscious, poisonous fruit of belladonna — a.k.a., deadly nightshade — in art form. “You can’t get anyone’s attention unless you seduce them,” said Marilyn Minter, the photographer and painter whose work teeters on a precarious stiletto point between lush images of consumer desire and a condemnation of same.",
+          "visualFocus": "A split light casts warmth on the surface and shadow behind it.",
+          "readerAction": "Consider how beauty and violence coexist in the piece.",
+          "visualState": {
+            "yaw": 0.8,
+            "distance": 2.15,
+            "lightKey": "split"
+          }
+        },
+        {
+          "id": "walker-context",
+          "title": "Walker Context",
+          "source": "article body",
+          "narration": "Kara Walker exploded on the art scene in the 1990s with sweet-looking cut-paper silhouettes recalling wholesome nursery décor, but which actually portray atrocities of slavery in the antebellum South. Over the years, her work has become grander in scale, but it still coolly walks a line between elegance and violence. Last year, Ms. Walker added a musical twist to her repertoire for another public commission. Called “Katastwóf Karavan,” the work was a collaboration with Jason Moran, a multimedia musician, and featured a functioning steam-powered calliope housed in a four-wheeled parade-style wagon decked with Ms. Walker’s dark-drawn silhouettes. While they programmed the calliope to play modern songs from Marvin Gaye and Jimi Hendrix, the calliope’s distinctive sound — think a class of third graders playing recorders — gave the whole thing a disturbing feel and sound.",
+          "visualFocus": "Silhouette panels behind the object echo the article context without remaking the artwork.",
+          "readerAction": "Hold the object in relation to Walker’s wider practice.",
+          "visualState": {
+            "yaw": -0.75,
+            "distance": 2.3,
+            "lightKey": "cool"
+          }
+        },
+        {
+          "id": "source-slide-2",
+          "title": "The Refusal",
+          "source": "NYTG.WEBGL_DATA.slides[1]",
+          "sourcePosition": "0.418",
+          "narration": "“I tried to talk Alex into buying it, but he felt like it was a little violent to have around his kids.”",
+          "visualFocus": "The view pulls attention to the wagon’s darker contours.",
+          "readerAction": "Stay with the reason the first buyer rejected the object.",
+          "visualState": {
+            "yaw": 1.55,
+            "distance": 2.1,
+            "lightKey": "low"
+          }
+        },
+        {
+          "id": "minter-buys-it",
+          "title": "Minter Buys It",
+          "source": "article body",
+          "narration": "“We were looking for something fresh,” Ms. Minter said. “And I fell in love with this the minute I saw it. I had never seen anything like it. So I tried to talk Alex into buying it, but he felt like it was a little violent to have around his kids.” This was not a problem for Ms. Minter. “I said, ‘I’m buying it.’” So she did — for about $20,000. (According to Sikkema Jenkins, the last one sold for $26,000).",
+          "visualFocus": "The pedestal brightens and the object settles into a domestic, owned scale.",
+          "readerAction": "Register the shift from refused object to chosen possession.",
+          "visualState": {
+            "yaw": -1.2,
+            "distance": 2.2,
+            "lightKey": "warm"
+          }
+        },
+        {
+          "id": "source-slide-3",
+          "title": "Up Close",
+          "source": "NYTG.WEBGL_DATA.slides[2]",
+          "sourcePosition": "0.705",
+          "narration": "“When you get up close, the images just rip your heart out.”",
+          "visualFocus": "The model enlarges slightly for close inspection while the viewer stays still.",
+          "readerAction": "End with close looking rather than spectacle.",
+          "visualState": {
+            "yaw": 2.35,
+            "distance": 1.85,
+            "lightKey": "inspection"
+          }
+        }
+      ]
+    }
+  },
+  "assets": [
+    {
+      "id": "primaryModel",
+      "path": "../captures/active/models/wagon_cameramoves_3-0ce99f207d23.glb",
+      "url": null,
+      "type": "model",
+      "role": "Main guided WebXR sculpture with source camera animation data retained but not used for comfort.",
+      "sourceField": "assets.primaryModel",
+      "bytes": null
+    },
+    {
+      "id": "wagon_cameramoves_3.glb",
+      "path": "models/wagon_cameramoves_3.glb",
+      "url": null,
+      "type": "model",
+      "role": "assets.primaryModel.originalReference",
+      "sourceField": "assets.primaryModel.originalReference",
+      "bytes": null
+    },
+    {
+      "id": "mobileArModel",
+      "path": "../captures/active/models/wagon_android_1-f7ebbb5fb63f.glb",
+      "url": null,
+      "type": "model",
+      "role": "Original model-viewer AR/mobile asset retained as fallback/reference.",
+      "sourceField": "assets.mobileArModel",
+      "bytes": null
+    },
+    {
+      "id": "wagon_android_1.glb",
+      "path": null,
+      "url": "https://int.nyt.com/newsgraphics/2019/2019-styles-ar-test/android/wagon_android_1.glb",
+      "type": "model",
+      "role": "assets.mobileArModel.originalReference",
+      "sourceField": "assets.mobileArModel.originalReference",
+      "bytes": null
+    },
+    {
+      "id": 0,
+      "path": "wagon_android_1-f7ebbb5fb63f.glb",
+      "url": null,
+      "type": "model",
+      "role": "assets.glbSummaries.0",
+      "sourceField": "assets.glbSummaries.0",
+      "bytes": null
+    },
+    {
+      "id": "wagon_cameramoves_3-0ce99f207d23.glb",
+      "path": "wagon_cameramoves_3-0ce99f207d23.glb",
+      "url": null,
+      "type": "model",
+      "role": "assets.glbSummaries.1",
+      "sourceField": "assets.glbSummaries.1",
+      "bytes": null
+    }
+  ],
+  "interactions": {
+    "controls": [
+      "next",
+      "back"
+    ],
+    "keyboard": {},
+    "xrControllers": {},
+    "locomotion": "story-fixed",
+    "lifecycle": {},
+    "triggers": [],
+    "hotspots": []
+  },
+  "compatibility": {
+    "acceptedForTransformation": true,
+    "excludedCategories": [
+      "virtual-walk",
+      "sports"
+    ],
+    "sourceAdapter": "Jingchen stories with generated JS/JSON modules and per-story runtime fields."
+  },
+  "diagnostics": [],
+  "rawSummary": {
+    "beatCount": 7,
+    "storyBeatCount": 7,
+    "pageCount": 0,
+    "sourceBeatCount": 0,
+    "regionCount": 0,
+    "routeStopCount": 0,
+    "frameCount": 0
+  },
+  "beats": [
+    {
+      "id": "series-premise",
+      "index": 0,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Possessed",
+      "text": "The artist and photographer talks about her favorite piece of heartbreaking art. Possessed is an ongoing series about people and their objects.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {
+        "visualState": {
+          "yaw": -0.35,
+          "distance": 2.4,
+          "lightKey": "cool"
+        }
+      },
+      "lifecycle": {
+        "readerAction": "Begin with the object at human scale.",
+        "visualFocus": "The wagon appears as the owned object at the center of a quiet gallery."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "source-slide-1",
+      "index": 1,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "The Encounter",
+      "text": "On a tour of galleries with Alex Rodriguez, a baseball player but more notably the fiancé of  Jennifer Lopez, Marilyn Minter encountered a sculpture by Kara Walker.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {
+        "visualState": {
+          "yaw": 0.25,
+          "distance": 2.25,
+          "lightKey": "neutral"
+        }
+      },
+      "lifecycle": {
+        "readerAction": "Move from the article setup into the object scene.",
+        "visualFocus": "The sculpture rotates into a three-quarter view, making the wagon body legible."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "seduction-and-danger",
+      "index": 2,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Seduction And Danger",
+      "text": "There is one subgenre of art that has yet to get a catchy name — that is, that hybrid of decorous aesthetics and indecorous import, of the hypnotically beautiful and the polemically lethal. It’s like the luscious, poisonous fruit of belladonna — a.k.a., deadly nightshade — in art form. “You can’t get anyone’s attention unless you seduce them,” said Marilyn Minter, the photographer and painter whose work teeters on a precarious stiletto point between lush images of consumer desire and a condemnation of same.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {
+        "visualState": {
+          "yaw": 0.8,
+          "distance": 2.15,
+          "lightKey": "split"
+        }
+      },
+      "lifecycle": {
+        "readerAction": "Consider how beauty and violence coexist in the piece.",
+        "visualFocus": "A split light casts warmth on the surface and shadow behind it."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "walker-context",
+      "index": 3,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Walker Context",
+      "text": "Kara Walker exploded on the art scene in the 1990s with sweet-looking cut-paper silhouettes recalling wholesome nursery décor, but which actually portray atrocities of slavery in the antebellum South. Over the years, her work has become grander in scale, but it still coolly walks a line between elegance and violence. Last year, Ms. Walker added a musical twist to her repertoire for another public commission. Called “Katastwóf Karavan,” the work was a collaboration with Jason Moran, a multimedia musician, and featured a functioning steam-powered calliope housed in a four-wheeled parade-style wagon decked with Ms. Walker’s dark-drawn silhouettes. While they programmed the calliope to play modern songs from Marvin Gaye and Jimi Hendrix, the calliope’s distinctive sound — think a class of third graders playing recorders — gave the whole thing a disturbing feel and sound.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {
+        "visualState": {
+          "yaw": -0.75,
+          "distance": 2.3,
+          "lightKey": "cool"
+        }
+      },
+      "lifecycle": {
+        "readerAction": "Hold the object in relation to Walker’s wider practice.",
+        "visualFocus": "Silhouette panels behind the object echo the article context without remaking the artwork."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "source-slide-2",
+      "index": 4,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "The Refusal",
+      "text": "“I tried to talk Alex into buying it, but he felt like it was a little violent to have around his kids.”",
+      "sourceIds": [],
+      "media": {},
+      "scene": {
+        "visualState": {
+          "yaw": 1.55,
+          "distance": 2.1,
+          "lightKey": "low"
+        }
+      },
+      "lifecycle": {
+        "readerAction": "Stay with the reason the first buyer rejected the object.",
+        "visualFocus": "The view pulls attention to the wagon’s darker contours."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "minter-buys-it",
+      "index": 5,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Minter Buys It",
+      "text": "“We were looking for something fresh,” Ms. Minter said. “And I fell in love with this the minute I saw it. I had never seen anything like it. So I tried to talk Alex into buying it, but he felt like it was a little violent to have around his kids.” This was not a problem for Ms. Minter. “I said, ‘I’m buying it.’” So she did — for about $20,000. (According to Sikkema Jenkins, the last one sold for $26,000).",
+      "sourceIds": [],
+      "media": {},
+      "scene": {
+        "visualState": {
+          "yaw": -1.2,
+          "distance": 2.2,
+          "lightKey": "warm"
+        }
+      },
+      "lifecycle": {
+        "readerAction": "Register the shift from refused object to chosen possession.",
+        "visualFocus": "The pedestal brightens and the object settles into a domestic, owned scale."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "source-slide-3",
+      "index": 6,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Up Close",
+      "text": "“When you get up close, the images just rip your heart out.”",
+      "sourceIds": [],
+      "media": {},
+      "scene": {
+        "visualState": {
+          "yaw": 2.35,
+          "distance": 1.85,
+          "lightKey": "inspection"
+        }
+      },
+      "lifecycle": {
+        "readerAction": "End with close looking rather than spectacle.",
+        "visualFocus": "The model enlarges slightly for close inspection while the viewer stays still."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    }
+  ]
+}

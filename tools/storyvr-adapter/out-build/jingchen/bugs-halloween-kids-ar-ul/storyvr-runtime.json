@@ -1,0 +1,306 @@
+{
+  "schemaVersion": "storyvr-runtime/v1",
+  "id": "bugs-halloween-kids-ar-ul",
+  "family": "jingchen",
+  "slug": "bugs-halloween-kids-ar-ul",
+  "title": "Monsters That Live On You",
+  "byline": "",
+  "sourceUrl": "",
+  "source": {
+    "family": "jingchen",
+    "strategy": "jingchen",
+    "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_10/bugs-halloween-kids-ar-ul",
+    "storyFolderRel": "Jingchen-10-stories/Story_10/bugs-halloween-kids-ar-ul",
+    "sourcePath": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_10/bugs-halloween-kids-ar-ul/webxr-adaptation/src/generated-story-instance.js",
+    "sourcePathRel": "Jingchen-10-stories/Story_10/bugs-halloween-kids-ar-ul/webxr-adaptation/src/generated-story-instance.js",
+    "sourceFormat": "generated-js",
+    "originalSchema": {
+      "slug": "string",
+      "title": "string",
+      "description": "string",
+      "storyUrl": "string",
+      "capturedAt": "string",
+      "generatedAt": "string",
+      "concept": "string",
+      "assetRoot": "string",
+      "sourceCapture": "string",
+      "beats": "array(5)"
+    },
+    "generatedAt": "2026-06-14T00:53:12.107Z"
+  },
+  "assetRoot": {
+    "mode": "build",
+    "original": "../captures/active",
+    "relativeFromApp": "../captures/active",
+    "hosted": "/Jingchen-10-stories/Story_10/bugs-halloween-kids-ar-ul/captures/active",
+    "buildBase": "/Jingchen-10-stories/Story_10/bugs-halloween-kids-ar-ul/dist-webxr-adaptation/",
+    "filesystem": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_10/bugs-halloween-kids-ar-ul/captures/active",
+    "canonical": "/Jingchen-10-stories/Story_10/bugs-halloween-kids-ar-ul/captures/active"
+  },
+  "style": {
+    "colors": {},
+    "tokens": {}
+  },
+  "contentUnits": [
+    {
+      "id": "webgl-window-0",
+      "index": 0,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Flu Virus",
+      "text": "",
+      "sourceIds": [
+        "webgl-window-0"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "webgl-window-1",
+      "index": 1,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Face Mite",
+      "text": "",
+      "sourceIds": [
+        "webgl-window-1"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "webgl-window-2",
+      "index": 2,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Bedbug",
+      "text": "",
+      "sourceIds": [
+        "webgl-window-2"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "webgl-window-3",
+      "index": 3,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Housefly",
+      "text": "",
+      "sourceIds": [
+        "webgl-window-3"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "webgl-window-4",
+      "index": 4,
+      "kind": "beats",
+      "section": "Story",
+      "title": "American Cockroach",
+      "text": "",
+      "sourceIds": [
+        "webgl-window-4"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    }
+  ],
+  "sceneTopology": {
+    "kind": "beat-sequence",
+    "routeStops": [],
+    "regions": [],
+    "markers": [],
+    "bodies": [],
+    "countries": [],
+    "modelGroups": {},
+    "sections": [],
+    "questions": {},
+    "cameraPresets": [],
+    "spatialRelationships": {}
+  },
+  "assets": [
+    {
+      "id": "bedbug_header_d-2fa4df6b126c.png",
+      "path": "../captures/active/textures/bedbug_header_d-2fa4df6b126c.png",
+      "url": null,
+      "type": "texture",
+      "role": "assets.poster",
+      "sourceField": "assets.poster",
+      "bytes": null
+    },
+    {
+      "id": "bugs-stillpromo-superJumbo-f5966e0d40fb.jpg",
+      "path": "../captures/active/textures/bugs-stillpromo-superJumbo-f5966e0d40fb.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "assets.heroImage",
+      "sourceField": "assets.heroImage",
+      "bytes": null
+    },
+    {
+      "id": "bug_64_64-0c25a25852a2.png",
+      "path": "../captures/active/textures/bug_64_64-0c25a25852a2.png",
+      "url": null,
+      "type": "texture",
+      "role": "assets.icon",
+      "sourceField": "assets.icon",
+      "bytes": null
+    }
+  ],
+  "interactions": {
+    "controls": [
+      "next",
+      "back"
+    ],
+    "keyboard": {},
+    "xrControllers": {},
+    "locomotion": "story-fixed",
+    "lifecycle": {},
+    "triggers": [],
+    "hotspots": []
+  },
+  "compatibility": {
+    "acceptedForTransformation": true,
+    "excludedCategories": [
+      "virtual-walk",
+      "sports"
+    ],
+    "sourceAdapter": "Jingchen stories with generated JS/JSON modules and per-story runtime fields."
+  },
+  "diagnostics": [
+    {
+      "severity": "warning",
+      "code": "EMPTY_CONTENT_TEXT",
+      "message": "Content unit 0 has no recognized text/caption/narration field."
+    },
+    {
+      "severity": "warning",
+      "code": "EMPTY_CONTENT_TEXT",
+      "message": "Content unit 1 has no recognized text/caption/narration field."
+    },
+    {
+      "severity": "warning",
+      "code": "EMPTY_CONTENT_TEXT",
+      "message": "Content unit 2 has no recognized text/caption/narration field."
+    },
+    {
+      "severity": "warning",
+      "code": "EMPTY_CONTENT_TEXT",
+      "message": "Content unit 3 has no recognized text/caption/narration field."
+    },
+    {
+      "severity": "warning",
+      "code": "EMPTY_CONTENT_TEXT",
+      "message": "Content unit 4 has no recognized text/caption/narration field."
+    }
+  ],
+  "rawSummary": {
+    "beatCount": 5,
+    "storyBeatCount": 0,
+    "pageCount": 0,
+    "sourceBeatCount": 0,
+    "regionCount": 0,
+    "routeStopCount": 0,
+    "frameCount": 0
+  },
+  "beats": [
+    {
+      "id": "webgl-window-0",
+      "index": 0,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Flu Virus",
+      "text": "",
+      "sourceIds": [
+        "webgl-window-0"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "webgl-window-1",
+      "index": 1,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Face Mite",
+      "text": "",
+      "sourceIds": [
+        "webgl-window-1"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "webgl-window-2",
+      "index": 2,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Bedbug",
+      "text": "",
+      "sourceIds": [
+        "webgl-window-2"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "webgl-window-3",
+      "index": 3,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Housefly",
+      "text": "",
+      "sourceIds": [
+        "webgl-window-3"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "webgl-window-4",
+      "index": 4,
+      "kind": "beats",
+      "section": "Story",
+      "title": "American Cockroach",
+      "text": "",
+      "sourceIds": [
+        "webgl-window-4"
+      ],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    }
+  ]
+}

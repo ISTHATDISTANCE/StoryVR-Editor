@@ -1,0 +1,1480 @@
+{
+  "schemaVersion": "storyvr-runtime/v1",
+  "id": "notre-dame-cathedral-fire-spread",
+  "family": "jingchen",
+  "slug": "notre-dame-cathedral-fire-spread",
+  "title": "notre-dame-cathedral-fire-spread",
+  "byline": [
+    "LARRY BUCHANAN",
+    "JAMES GLANZ",
+    "EVAN GROTHJAN",
+    "K.K. REBECCA LAI",
+    "ALLISON MCCANN",
+    "KARTHIK PATANJALI",
+    "YULIYA PARSHINA-KOTTAS",
+    "JEREMY WHITE",
+    "GRAHAM ROBERTS"
+  ],
+  "sourceUrl": "https://www.nytimes.com/interactive/2019/04/17/world/europe/notre-dame-cathedral-fire-spread.html",
+  "source": {
+    "family": "jingchen",
+    "strategy": "jingchen",
+    "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_8/notre-dame-cathedral-fire-spread",
+    "storyFolderRel": "Jingchen-10-stories/Story_8/notre-dame-cathedral-fire-spread",
+    "sourcePath": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_8/notre-dame-cathedral-fire-spread/webxr-adaptation/src/generated/story-instance.js",
+    "sourcePathRel": "Jingchen-10-stories/Story_8/notre-dame-cathedral-fire-spread/webxr-adaptation/src/generated/story-instance.js",
+    "sourceFormat": "generated-js",
+    "originalSchema": {
+      "slug": "string",
+      "generatedAt": "string",
+      "adaptationConcept": "string",
+      "storyBeats": "array(11)"
+    },
+    "generatedAt": "2026-06-14T00:53:39.266Z"
+  },
+  "assetRoot": {
+    "mode": "dev",
+    "original": "/Jingchen-10-stories/Story_8/notre-dame-cathedral-fire-spread/captures/active",
+    "relativeFromApp": "../captures/active",
+    "hosted": "/Jingchen-10-stories/Story_8/notre-dame-cathedral-fire-spread/captures/active",
+    "buildBase": "/Jingchen-10-stories/Story_8/notre-dame-cathedral-fire-spread/dist-webxr-adaptation/",
+    "filesystem": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_8/notre-dame-cathedral-fire-spread/captures/active",
+    "canonical": "../captures/active"
+  },
+  "style": {
+    "colors": {},
+    "tokens": {}
+  },
+  "contentUnits": [
+    {
+      "id": "hidden-attic",
+      "index": 0,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Hidden Attic",
+      "text": "The fire started in the attic, a hidden, rarely visited space above Notre-Dame’s grand stone arches.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[0] position 0.1"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide3.jpg",
+          "path": "../captures/active/textures/slide3-5ceb6dca8bb7.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": -0.28,
+          "distance": 4.4,
+          "height": 1.45
+        },
+        "focusKey": "attic",
+        "modelNodes": [
+          "txt1_attic"
+        ],
+        "highlightMaterials": [
+          "hl_roof_new2_shdr"
+        ],
+        "effect": "smolder"
+      },
+      "lifecycle": {
+        "readerAction": "Begin the guided sequence and look to the highlighted attic zone.",
+        "visualFocus": "Lift the cathedral into a cutaway view and put the attic above the stone vaults at eye level."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "near-the-spire",
+      "index": 1,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Near The Spire",
+      "text": "The source of the fire, likely near the spire, could have been an electrical problem or a human error, like a worker tossing a cigarette. It appeared to smolder out of sight for a time.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[1] position 0.2"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide4.jpg",
+          "path": "../captures/active/textures/slide4-bf2966725cb0.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": 0.16,
+          "distance": 4.15,
+          "height": 1.65
+        },
+        "focusKey": "spire",
+        "modelNodes": [
+          "txt2_spire"
+        ],
+        "highlightMaterials": [
+          "hl_spire_circ_new_shdr",
+          "hl_spire_whole_new3_shdr"
+        ],
+        "effect": "source"
+      },
+      "lifecycle": {
+        "readerAction": "Advance once the likely source area is clear.",
+        "visualFocus": "Pull attention to the spire and the hidden ignition area where smoke could build out of sight."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "dry-wood-beams",
+      "index": 2,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Dry Wood Beams",
+      "text": "The attic contained a combustible lattice of dry wood beams. Settled dust and debris could have made the area even more flammable.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[2] position 0.3"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide5.jpg",
+          "path": "../captures/active/textures/slide5-6377ea3624f2.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": 0.58,
+          "distance": 4.05,
+          "height": 1.52
+        },
+        "focusKey": "beams",
+        "modelNodes": [
+          "txt3_wood_beams"
+        ],
+        "highlightMaterials": [
+          "hl_frame_new_shdr",
+          "hl_roof_new2_shdr"
+        ],
+        "effect": "fuel"
+      },
+      "lifecycle": {
+        "readerAction": "Follow the highlighted beam run from end to end.",
+        "visualFocus": "Trace the combustible timber lattice as a continuous path under the roof."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "alarm-delay",
+      "index": 3,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Alarm Delay",
+      "text": "When the first alarm went off at 6:20 p.m., no fire was found. By the time a second alarm sounded 23 minutes later, the flames were already racing across the beams.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[3] position 0.4"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide6.jpg",
+          "path": "../captures/active/textures/slide6-0c7cbafb8e86.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": -0.72,
+          "distance": 4.3,
+          "height": 1.38
+        },
+        "focusKey": "flame-path",
+        "modelNodes": [
+          "opacity_driver_8",
+          "opacity_target_8"
+        ],
+        "highlightMaterials": [
+          "arrow1_new_shdr",
+          "hl_arrows2_new_shdr"
+        ],
+        "effect": "fire-run"
+      },
+      "lifecycle": {
+        "readerAction": "Compare the two alarms against the growing fire path.",
+        "visualFocus": "Show the fire racing along the roofline after the first alarm did not locate it."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "no-fire-walls",
+      "index": 4,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "No Fire Walls",
+      "text": "The cathedral had a smoke detection system, but not other basic fire-safety measures, such as fire-resistant walls that could have divided the space and helped to contain the fire.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[4] position 0.5"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide7.jpg",
+          "path": "../captures/active/textures/slide7-58a841eccf60.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": -1.02,
+          "distance": 4.15,
+          "height": 1.45
+        },
+        "focusKey": "walls",
+        "modelNodes": [
+          "txt4_additional_walls"
+        ],
+        "highlightMaterials": [
+          "hl_firewalls_new_shdr"
+        ],
+        "effect": "firewalls"
+      },
+      "lifecycle": {
+        "readerAction": "Notice how one open attic volume lets the fire travel.",
+        "visualFocus": "Bring in ghosted partition planes to make the missing containment strategy legible."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "retrofit-gap",
+      "index": 5,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Retrofit Gap",
+      "text": "Other major cathedrals in Britain and France have been retrofitted with similar designs, but Notre-Dame was not.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[5] position 0.55"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide8.jpg",
+          "path": "../captures/active/textures/slide8-0bc451a5fe8b.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": -1.18,
+          "distance": 4.55,
+          "height": 1.45
+        },
+        "focusKey": "comparison",
+        "modelNodes": [
+          "txt4_additional_walls"
+        ],
+        "highlightMaterials": [
+          "hl_firewalls_new_shdr"
+        ],
+        "effect": "comparison"
+      },
+      "lifecycle": {
+        "readerAction": "Read the comparison as a design choice, not a separate scene.",
+        "visualFocus": "Hold the ghosted firewalls in view while the slide image frames the missed retrofit context."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "no-sprinklers",
+      "index": 6,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "No Sprinklers",
+      "text": "Without firewalls, a sprinkler system could have slowed the fire. But the authorities had decided against one.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[6] position 0.6"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide8.jpg",
+          "path": "../captures/active/textures/slide8-0bc451a5fe8b.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": -0.22,
+          "distance": 4.25,
+          "height": 1.55
+        },
+        "focusKey": "sprinklers",
+        "modelNodes": [
+          "txt5_sprinkler_lines"
+        ],
+        "highlightMaterials": [
+          "hl_arrows2_new_shdr"
+        ],
+        "effect": "sprinkler"
+      },
+      "lifecycle": {
+        "readerAction": "Connect the absent system to the fire's speed.",
+        "visualFocus": "Draw a blue sprinkler line above the attic to show the system that might have slowed the fire."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "roof-and-spire",
+      "index": 7,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Roof And Spire",
+      "text": "Images showed the fire tearing across the roof and up the spire, which eventually toppled.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[7] position 0.7"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide10.jpg",
+          "path": "../captures/active/textures/slide10-7bc7bcbe987a.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": 0.42,
+          "distance": 4.35,
+          "height": 1.62
+        },
+        "focusKey": "roof-spire",
+        "modelNodes": [
+          "txt7_burned"
+        ],
+        "highlightMaterials": [
+          "hl_spire_whole_new3_shdr",
+          "hl_roof_new2_shdr"
+        ],
+        "effect": "fire-peak"
+      },
+      "lifecycle": {
+        "readerAction": "Watch the guided highlight peak at the spire.",
+        "visualFocus": "Raise the flame effect across the roof and spire without moving the viewer uncomfortably."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "stone-ceiling",
+      "index": 8,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Stone Ceiling",
+      "text": "The architecture of the cathedral made fighting the fire difficult. The cathedral’s vaulted stone ceiling prevented firefighters from shooting water at the attic from the ground.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[8] position 0.8"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide11.jpg",
+          "path": "../captures/active/textures/slide11-a6bc1e7c8b11.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": 0.86,
+          "distance": 4,
+          "height": 1.28
+        },
+        "focusKey": "ceiling",
+        "modelNodes": [
+          "txt6_stone_ceiling"
+        ],
+        "highlightMaterials": [
+          "hl_flat_roof_shdr",
+          "highlights_NEW:lambert3"
+        ],
+        "effect": "ceiling"
+      },
+      "lifecycle": {
+        "readerAction": "Look below the attic to see why ground-level water could not reach the fire.",
+        "visualFocus": "Show the stone vault as a protective barrier that also blocked water from the ground."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "fighting-from-above",
+      "index": 9,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Fighting From Above",
+      "text": "Instead, firefighters may have had to wait until the fire burned through the lead panels on the roof before they could start to spray water from above. Pulling hoses up winding staircases was also not an option.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[9] position 0.9"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide12.jpg",
+          "path": "../captures/active/textures/slide12-da6191a0d635.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": 1.08,
+          "distance": 4.28,
+          "height": 1.46
+        },
+        "focusKey": "water",
+        "modelNodes": [
+          "txt6_stone_ceiling",
+          "txt7_burned"
+        ],
+        "highlightMaterials": [
+          "hl_arrows2_new_shdr",
+          "hl_flat_roof_shdr"
+        ],
+        "effect": "water-from-above"
+      },
+      "lifecycle": {
+        "readerAction": "Keep your position and compare the above-roof water path with the blocked interior path.",
+        "visualFocus": "Stage water from above after the roof gives way, with the stair constraint kept as narration."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "damage-over-time",
+      "index": 10,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Damage Over Time",
+      "text": "After an inspection Tuesday, officials said the cathedral appeared structurally sound. But the damage may present itself over time: We don’t know what fire and water do to limestone quarried over 800 years ago.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[10] position 1.0"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide12.jpg",
+          "path": "../captures/active/textures/slide12-da6191a0d635.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": -0.48,
+          "distance": 4.65,
+          "height": 1.36
+        },
+        "focusKey": "stone",
+        "modelNodes": [
+          "txt8_stone"
+        ],
+        "highlightMaterials": [
+          "highlights_NEW:lambert3",
+          "hl_flat_roof_shdr"
+        ],
+        "effect": "damage"
+      },
+      "lifecycle": {
+        "readerAction": "End with the uncertainty of fire and water damage to centuries-old stone.",
+        "visualFocus": "Quiet the fire effects and leave the limestone and surviving structure in inspection light."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    }
+  ],
+  "sceneTopology": {
+    "kind": "beat-sequence",
+    "routeStops": [],
+    "regions": [],
+    "markers": [],
+    "bodies": [],
+    "countries": [],
+    "modelGroups": {},
+    "sections": [],
+    "questions": {},
+    "cameraPresets": [
+      {
+        "yaw": -0.28,
+        "distance": 4.4,
+        "height": 1.45
+      },
+      {
+        "yaw": 0.16,
+        "distance": 4.15,
+        "height": 1.65
+      },
+      {
+        "yaw": 0.58,
+        "distance": 4.05,
+        "height": 1.52
+      },
+      {
+        "yaw": -0.72,
+        "distance": 4.3,
+        "height": 1.38
+      },
+      {
+        "yaw": -1.02,
+        "distance": 4.15,
+        "height": 1.45
+      },
+      {
+        "yaw": -1.18,
+        "distance": 4.55,
+        "height": 1.45
+      },
+      {
+        "yaw": -0.22,
+        "distance": 4.25,
+        "height": 1.55
+      },
+      {
+        "yaw": 0.42,
+        "distance": 4.35,
+        "height": 1.62
+      },
+      {
+        "yaw": 0.86,
+        "distance": 4,
+        "height": 1.28
+      },
+      {
+        "yaw": 1.08,
+        "distance": 4.28,
+        "height": 1.46
+      },
+      {
+        "yaw": -0.48,
+        "distance": 4.65,
+        "height": 1.36
+      }
+    ],
+    "spatialRelationships": {
+      "storyBeats": [
+        {
+          "id": "hidden-attic",
+          "title": "Hidden Attic",
+          "focusKey": "attic",
+          "visualFocus": "Lift the cathedral into a cutaway view and put the attic above the stone vaults at eye level.",
+          "readerAction": "Begin the guided sequence and look to the highlighted attic zone.",
+          "modelNodes": [
+            "txt1_attic"
+          ],
+          "highlightMaterials": [
+            "hl_roof_new2_shdr"
+          ],
+          "effect": "smolder",
+          "camera": {
+            "yaw": -0.28,
+            "distance": 4.4,
+            "height": 1.45
+          },
+          "sourceSlideId": "g-webgl-window-content data-params slides[0] position 0.1",
+          "sourceIndex": 0,
+          "sourceWebglPosition": 0.1,
+          "sourceAnimationTime": 1.2458,
+          "sourceCaptionHtml": "The fire started in the <strong>attic</strong>, a hidden, rarely visited space above Notre-Dame’s grand stone arches.",
+          "narration": "The fire started in the attic, a hidden, rarely visited space above Notre-Dame’s grand stone arches.",
+          "highlightedTerms": [
+            "attic"
+          ],
+          "sourceImage": {
+            "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide3.jpg",
+            "path": "../captures/active/textures/slide3-5ceb6dca8bb7.jpg"
+          },
+          "calloutLabel": "Attic"
+        },
+        {
+          "id": "near-the-spire",
+          "title": "Near The Spire",
+          "focusKey": "spire",
+          "visualFocus": "Pull attention to the spire and the hidden ignition area where smoke could build out of sight.",
+          "readerAction": "Advance once the likely source area is clear.",
+          "modelNodes": [
+            "txt2_spire"
+          ],
+          "highlightMaterials": [
+            "hl_spire_circ_new_shdr",
+            "hl_spire_whole_new3_shdr"
+          ],
+          "effect": "source",
+          "camera": {
+            "yaw": 0.16,
+            "distance": 4.15,
+            "height": 1.65
+          },
+          "sourceSlideId": "g-webgl-window-content data-params slides[1] position 0.2",
+          "sourceIndex": 1,
+          "sourceWebglPosition": 0.2,
+          "sourceAnimationTime": 2.4917,
+          "sourceCaptionHtml": "The <strong>source of the fire</strong>, likely near the spire, could have been an electrical problem or a human error, like a worker tossing a cigarette. It appeared to smolder out of sight for a time.",
+          "narration": "The source of the fire, likely near the spire, could have been an electrical problem or a human error, like a worker tossing a cigarette. It appeared to smolder out of sight for a time.",
+          "highlightedTerms": [
+            "source of the fire"
+          ],
+          "sourceImage": {
+            "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide4.jpg",
+            "path": "../captures/active/textures/slide4-bf2966725cb0.jpg"
+          },
+          "calloutLabel": "Spire"
+        },
+        {
+          "id": "dry-wood-beams",
+          "title": "Dry Wood Beams",
+          "focusKey": "beams",
+          "visualFocus": "Trace the combustible timber lattice as a continuous path under the roof.",
+          "readerAction": "Follow the highlighted beam run from end to end.",
+          "modelNodes": [
+            "txt3_wood_beams"
+          ],
+          "highlightMaterials": [
+            "hl_frame_new_shdr",
+            "hl_roof_new2_shdr"
+          ],
+          "effect": "fuel",
+          "camera": {
+            "yaw": 0.58,
+            "distance": 4.05,
+            "height": 1.52
+          },
+          "sourceSlideId": "g-webgl-window-content data-params slides[2] position 0.3",
+          "sourceIndex": 2,
+          "sourceWebglPosition": 0.3,
+          "sourceAnimationTime": 3.7375,
+          "sourceCaptionHtml": "The attic contained a combustible lattice of dry <strong>wood beams</strong>. Settled dust and debris could have made the area even more flammable.",
+          "narration": "The attic contained a combustible lattice of dry wood beams. Settled dust and debris could have made the area even more flammable.",
+          "highlightedTerms": [
+            "wood beams"
+          ],
+          "sourceImage": {
+            "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide5.jpg",
+            "path": "../captures/active/textures/slide5-6377ea3624f2.jpg"
+          },
+          "calloutLabel": "Wood beams"
+        },
+        {
+          "id": "alarm-delay",
+          "title": "Alarm Delay",
+          "focusKey": "flame-path",
+          "visualFocus": "Show the fire racing along the roofline after the first alarm did not locate it.",
+          "readerAction": "Compare the two alarms against the growing fire path.",
+          "modelNodes": [
+            "opacity_driver_8",
+            "opacity_target_8"
+          ],
+          "highlightMaterials": [
+            "arrow1_new_shdr",
+            "hl_arrows2_new_shdr"
+          ],
+          "effect": "fire-run",
+          "camera": {
+            "yaw": -0.72,
+            "distance": 4.3,
+            "height": 1.38
+          },
+          "sourceSlideId": "g-webgl-window-content data-params slides[3] position 0.4",
+          "sourceIndex": 3,
+          "sourceWebglPosition": 0.4,
+          "sourceAnimationTime": 4.9833,
+          "sourceCaptionHtml": "When the first alarm went off at 6:20 p.m., no fire was found. By the time a second alarm sounded 23 minutes later, the flames were already racing across the beams.",
+          "narration": "When the first alarm went off at 6:20 p.m., no fire was found. By the time a second alarm sounded 23 minutes later, the flames were already racing across the beams.",
+          "highlightedTerms": [],
+          "sourceImage": {
+            "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide6.jpg",
+            "path": "../captures/active/textures/slide6-0c7cbafb8e86.jpg"
+          },
+          "calloutLabel": "Alarm Delay"
+        },
+        {
+          "id": "no-fire-walls",
+          "title": "No Fire Walls",
+          "focusKey": "walls",
+          "visualFocus": "Bring in ghosted partition planes to make the missing containment strategy legible.",
+          "readerAction": "Notice how one open attic volume lets the fire travel.",
+          "modelNodes": [
+            "txt4_additional_walls"
+          ],
+          "highlightMaterials": [
+            "hl_firewalls_new_shdr"
+          ],
+          "effect": "firewalls",
+          "camera": {
+            "yaw": -1.02,
+            "distance": 4.15,
+            "height": 1.45
+          },
+          "sourceSlideId": "g-webgl-window-content data-params slides[4] position 0.5",
+          "sourceIndex": 4,
+          "sourceWebglPosition": 0.5,
+          "sourceAnimationTime": 6.2292,
+          "sourceCaptionHtml": "The cathedral had a smoke detection system, but not other basic fire-safety measures, such as <strong>fire-resistant walls</strong> that could have divided the space and helped to contain the fire.",
+          "narration": "The cathedral had a smoke detection system, but not other basic fire-safety measures, such as fire-resistant walls that could have divided the space and helped to contain the fire.",
+          "highlightedTerms": [
+            "fire-resistant walls"
+          ],
+          "sourceImage": {
+            "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide7.jpg",
+            "path": "../captures/active/textures/slide7-58a841eccf60.jpg"
+          },
+          "calloutLabel": "Possible wall placement"
+        },
+        {
+          "id": "retrofit-gap",
+          "title": "Retrofit Gap",
+          "focusKey": "comparison",
+          "visualFocus": "Hold the ghosted firewalls in view while the slide image frames the missed retrofit context.",
+          "readerAction": "Read the comparison as a design choice, not a separate scene.",
+          "modelNodes": [
+            "txt4_additional_walls"
+          ],
+          "highlightMaterials": [
+            "hl_firewalls_new_shdr"
+          ],
+          "effect": "comparison",
+          "camera": {
+            "yaw": -1.18,
+            "distance": 4.55,
+            "height": 1.45
+          },
+          "sourceSlideId": "g-webgl-window-content data-params slides[5] position 0.55",
+          "sourceIndex": 5,
+          "sourceWebglPosition": 0.55,
+          "sourceAnimationTime": 6.8521,
+          "sourceCaptionHtml": "Other major cathedrals in Britain and France have been retrofitted with similar designs, but Notre-Dame was not.",
+          "narration": "Other major cathedrals in Britain and France have been retrofitted with similar designs, but Notre-Dame was not.",
+          "highlightedTerms": [],
+          "sourceImage": {
+            "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide8.jpg",
+            "path": "../captures/active/textures/slide8-0bc451a5fe8b.jpg"
+          },
+          "calloutLabel": "Possible wall placement"
+        },
+        {
+          "id": "no-sprinklers",
+          "title": "No Sprinklers",
+          "focusKey": "sprinklers",
+          "visualFocus": "Draw a blue sprinkler line above the attic to show the system that might have slowed the fire.",
+          "readerAction": "Connect the absent system to the fire's speed.",
+          "modelNodes": [
+            "txt5_sprinkler_lines"
+          ],
+          "highlightMaterials": [
+            "hl_arrows2_new_shdr"
+          ],
+          "effect": "sprinkler",
+          "camera": {
+            "yaw": -0.22,
+            "distance": 4.25,
+            "height": 1.55
+          },
+          "sourceSlideId": "g-webgl-window-content data-params slides[6] position 0.6",
+          "sourceIndex": 6,
+          "sourceWebglPosition": 0.6,
+          "sourceAnimationTime": 7.475,
+          "sourceCaptionHtml": "Without firewalls, a <strong>sprinkler system</strong> could have slowed the fire. But the authorities had decided against one.",
+          "narration": "Without firewalls, a sprinkler system could have slowed the fire. But the authorities had decided against one.",
+          "highlightedTerms": [
+            "sprinkler system"
+          ],
+          "sourceImage": {
+            "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide8.jpg",
+            "path": "../captures/active/textures/slide8-0bc451a5fe8b.jpg"
+          },
+          "calloutLabel": "Possible sprinkler placement"
+        },
+        {
+          "id": "roof-and-spire",
+          "title": "Roof And Spire",
+          "focusKey": "roof-spire",
+          "visualFocus": "Raise the flame effect across the roof and spire without moving the viewer uncomfortably.",
+          "readerAction": "Watch the guided highlight peak at the spire.",
+          "modelNodes": [
+            "txt7_burned"
+          ],
+          "highlightMaterials": [
+            "hl_spire_whole_new3_shdr",
+            "hl_roof_new2_shdr"
+          ],
+          "effect": "fire-peak",
+          "camera": {
+            "yaw": 0.42,
+            "distance": 4.35,
+            "height": 1.62
+          },
+          "sourceSlideId": "g-webgl-window-content data-params slides[7] position 0.7",
+          "sourceIndex": 7,
+          "sourceWebglPosition": 0.7,
+          "sourceAnimationTime": 8.7208,
+          "sourceCaptionHtml": "Images showed the fire tearing across the roof and up the spire, which eventually toppled.",
+          "narration": "Images showed the fire tearing across the roof and up the spire, which eventually toppled.",
+          "highlightedTerms": [],
+          "sourceImage": {
+            "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide10.jpg",
+            "path": "../captures/active/textures/slide10-7bc7bcbe987a.jpg"
+          },
+          "calloutLabel": "Burned"
+        },
+        {
+          "id": "stone-ceiling",
+          "title": "Stone Ceiling",
+          "focusKey": "ceiling",
+          "visualFocus": "Show the stone vault as a protective barrier that also blocked water from the ground.",
+          "readerAction": "Look below the attic to see why ground-level water could not reach the fire.",
+          "modelNodes": [
+            "txt6_stone_ceiling"
+          ],
+          "highlightMaterials": [
+            "hl_flat_roof_shdr",
+            "highlights_NEW:lambert3"
+          ],
+          "effect": "ceiling",
+          "camera": {
+            "yaw": 0.86,
+            "distance": 4,
+            "height": 1.28
+          },
+          "sourceSlideId": "g-webgl-window-content data-params slides[8] position 0.8",
+          "sourceIndex": 8,
+          "sourceWebglPosition": 0.8,
+          "sourceAnimationTime": 9.9667,
+          "sourceCaptionHtml": "The architecture of the cathedral made fighting the fire difficult. The cathedral’s <strong>vaulted stone ceiling</strong> prevented firefighters from shooting water at the attic from the ground.",
+          "narration": "The architecture of the cathedral made fighting the fire difficult. The cathedral’s vaulted stone ceiling prevented firefighters from shooting water at the attic from the ground.",
+          "highlightedTerms": [
+            "vaulted stone ceiling"
+          ],
+          "sourceImage": {
+            "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide11.jpg",
+            "path": "../captures/active/textures/slide11-a6bc1e7c8b11.jpg"
+          },
+          "calloutLabel": "Stone ceiling"
+        },
+        {
+          "id": "fighting-from-above",
+          "title": "Fighting From Above",
+          "focusKey": "water",
+          "visualFocus": "Stage water from above after the roof gives way, with the stair constraint kept as narration.",
+          "readerAction": "Keep your position and compare the above-roof water path with the blocked interior path.",
+          "modelNodes": [
+            "txt6_stone_ceiling",
+            "txt7_burned"
+          ],
+          "highlightMaterials": [
+            "hl_arrows2_new_shdr",
+            "hl_flat_roof_shdr"
+          ],
+          "effect": "water-from-above",
+          "camera": {
+            "yaw": 1.08,
+            "distance": 4.28,
+            "height": 1.46
+          },
+          "sourceSlideId": "g-webgl-window-content data-params slides[9] position 0.9",
+          "sourceIndex": 9,
+          "sourceWebglPosition": 0.9,
+          "sourceAnimationTime": 11.2125,
+          "sourceCaptionHtml": "Instead, firefighters may have had to wait until the fire burned through the lead panels on the roof before they could start to spray water from above. Pulling hoses up winding staircases was also not an option.",
+          "narration": "Instead, firefighters may have had to wait until the fire burned through the lead panels on the roof before they could start to spray water from above. Pulling hoses up winding staircases was also not an option.",
+          "highlightedTerms": [],
+          "sourceImage": {
+            "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide12.jpg",
+            "path": "../captures/active/textures/slide12-da6191a0d635.jpg"
+          },
+          "calloutLabel": "Stone ceiling"
+        },
+        {
+          "id": "damage-over-time",
+          "title": "Damage Over Time",
+          "focusKey": "stone",
+          "visualFocus": "Quiet the fire effects and leave the limestone and surviving structure in inspection light.",
+          "readerAction": "End with the uncertainty of fire and water damage to centuries-old stone.",
+          "modelNodes": [
+            "txt8_stone"
+          ],
+          "highlightMaterials": [
+            "highlights_NEW:lambert3",
+            "hl_flat_roof_shdr"
+          ],
+          "effect": "damage",
+          "camera": {
+            "yaw": -0.48,
+            "distance": 4.65,
+            "height": 1.36
+          },
+          "sourceSlideId": "g-webgl-window-content data-params slides[10] position 1.0",
+          "sourceIndex": 10,
+          "sourceWebglPosition": 1,
+          "sourceAnimationTime": 12.4583,
+          "sourceCaptionHtml": "After an inspection Tuesday, officials said the cathedral appeared structurally sound. But the damage may present itself over time: We don’t know what fire and water do to limestone quarried over 800 years ago.",
+          "narration": "After an inspection Tuesday, officials said the cathedral appeared structurally sound. But the damage may present itself over time: We don’t know what fire and water do to limestone quarried over 800 years ago.",
+          "highlightedTerms": [],
+          "sourceImage": {
+            "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide12.jpg",
+            "path": "../captures/active/textures/slide12-da6191a0d635.jpg"
+          },
+          "calloutLabel": "Damage Over Time"
+        }
+      ]
+    }
+  },
+  "assets": [
+    {
+      "id": "primaryModel",
+      "path": "../captures/active/models/notredame_20-e153fed39943.glb",
+      "url": null,
+      "type": "model",
+      "role": "Core 3D cathedral asset used for the guided WebXR model and all structural focus beats, sampled at the source WebGL slide positions.",
+      "sourceField": "assets.primaryModel",
+      "bytes": null
+    },
+    {
+      "id": "notredame_20.glb",
+      "path": "notredame_20.glb",
+      "url": null,
+      "type": "model",
+      "role": "assets.primaryModel.sourceModel",
+      "sourceField": "assets.primaryModel.sourceModel",
+      "bytes": null
+    },
+    {
+      "id": "glbSummary",
+      "path": "notredame_20-e153fed39943.glb",
+      "url": null,
+      "type": "model",
+      "role": "assets.primaryModel.glbSummary",
+      "sourceField": "assets.primaryModel.glbSummary",
+      "bytes": null
+    },
+    {
+      "id": "slide-1",
+      "path": "../captures/active/textures/slide3-5ceb6dca8bb7.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "Source fallback slide still used as a side reference panel in the WebXR adaptation.",
+      "sourceField": "assets.slideImages.0",
+      "bytes": null
+    },
+    {
+      "id": "slide-2",
+      "path": "../captures/active/textures/slide4-bf2966725cb0.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "Source fallback slide still used as a side reference panel in the WebXR adaptation.",
+      "sourceField": "assets.slideImages.1",
+      "bytes": null
+    },
+    {
+      "id": "slide-3",
+      "path": "../captures/active/textures/slide5-6377ea3624f2.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "Source fallback slide still used as a side reference panel in the WebXR adaptation.",
+      "sourceField": "assets.slideImages.2",
+      "bytes": null
+    },
+    {
+      "id": "slide-4",
+      "path": "../captures/active/textures/slide6-0c7cbafb8e86.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "Source fallback slide still used as a side reference panel in the WebXR adaptation.",
+      "sourceField": "assets.slideImages.3",
+      "bytes": null
+    },
+    {
+      "id": "slide-5",
+      "path": "../captures/active/textures/slide7-58a841eccf60.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "Source fallback slide still used as a side reference panel in the WebXR adaptation.",
+      "sourceField": "assets.slideImages.4",
+      "bytes": null
+    },
+    {
+      "id": "slide-6",
+      "path": "../captures/active/textures/slide8-0bc451a5fe8b.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "Source fallback slide still used as a side reference panel in the WebXR adaptation.",
+      "sourceField": "assets.slideImages.5",
+      "bytes": null
+    },
+    {
+      "id": "slide-8",
+      "path": "../captures/active/textures/slide10-7bc7bcbe987a.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "Source fallback slide still used as a side reference panel in the WebXR adaptation.",
+      "sourceField": "assets.slideImages.7",
+      "bytes": null
+    },
+    {
+      "id": "slide-9",
+      "path": "../captures/active/textures/slide11-a6bc1e7c8b11.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "Source fallback slide still used as a side reference panel in the WebXR adaptation.",
+      "sourceField": "assets.slideImages.8",
+      "bytes": null
+    },
+    {
+      "id": "slide-10",
+      "path": "../captures/active/textures/slide12-da6191a0d635.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "Source fallback slide still used as a side reference panel in the WebXR adaptation.",
+      "sourceField": "assets.slideImages.9",
+      "bytes": null
+    }
+  ],
+  "interactions": {
+    "controls": [
+      "next",
+      "back"
+    ],
+    "keyboard": {},
+    "xrControllers": {},
+    "locomotion": "story-fixed",
+    "lifecycle": {},
+    "triggers": [],
+    "hotspots": []
+  },
+  "compatibility": {
+    "acceptedForTransformation": true,
+    "excludedCategories": [
+      "virtual-walk",
+      "sports"
+    ],
+    "sourceAdapter": "Jingchen stories with generated JS/JSON modules and per-story runtime fields."
+  },
+  "diagnostics": [],
+  "rawSummary": {
+    "beatCount": 11,
+    "storyBeatCount": 11,
+    "pageCount": 0,
+    "sourceBeatCount": 0,
+    "regionCount": 0,
+    "routeStopCount": 0,
+    "frameCount": 0
+  },
+  "beats": [
+    {
+      "id": "hidden-attic",
+      "index": 0,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Hidden Attic",
+      "text": "The fire started in the attic, a hidden, rarely visited space above Notre-Dame’s grand stone arches.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[0] position 0.1"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide3.jpg",
+          "path": "../captures/active/textures/slide3-5ceb6dca8bb7.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": -0.28,
+          "distance": 4.4,
+          "height": 1.45
+        },
+        "focusKey": "attic",
+        "modelNodes": [
+          "txt1_attic"
+        ],
+        "highlightMaterials": [
+          "hl_roof_new2_shdr"
+        ],
+        "effect": "smolder"
+      },
+      "lifecycle": {
+        "readerAction": "Begin the guided sequence and look to the highlighted attic zone.",
+        "visualFocus": "Lift the cathedral into a cutaway view and put the attic above the stone vaults at eye level."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "near-the-spire",
+      "index": 1,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Near The Spire",
+      "text": "The source of the fire, likely near the spire, could have been an electrical problem or a human error, like a worker tossing a cigarette. It appeared to smolder out of sight for a time.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[1] position 0.2"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide4.jpg",
+          "path": "../captures/active/textures/slide4-bf2966725cb0.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": 0.16,
+          "distance": 4.15,
+          "height": 1.65
+        },
+        "focusKey": "spire",
+        "modelNodes": [
+          "txt2_spire"
+        ],
+        "highlightMaterials": [
+          "hl_spire_circ_new_shdr",
+          "hl_spire_whole_new3_shdr"
+        ],
+        "effect": "source"
+      },
+      "lifecycle": {
+        "readerAction": "Advance once the likely source area is clear.",
+        "visualFocus": "Pull attention to the spire and the hidden ignition area where smoke could build out of sight."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "dry-wood-beams",
+      "index": 2,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Dry Wood Beams",
+      "text": "The attic contained a combustible lattice of dry wood beams. Settled dust and debris could have made the area even more flammable.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[2] position 0.3"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide5.jpg",
+          "path": "../captures/active/textures/slide5-6377ea3624f2.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": 0.58,
+          "distance": 4.05,
+          "height": 1.52
+        },
+        "focusKey": "beams",
+        "modelNodes": [
+          "txt3_wood_beams"
+        ],
+        "highlightMaterials": [
+          "hl_frame_new_shdr",
+          "hl_roof_new2_shdr"
+        ],
+        "effect": "fuel"
+      },
+      "lifecycle": {
+        "readerAction": "Follow the highlighted beam run from end to end.",
+        "visualFocus": "Trace the combustible timber lattice as a continuous path under the roof."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "alarm-delay",
+      "index": 3,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Alarm Delay",
+      "text": "When the first alarm went off at 6:20 p.m., no fire was found. By the time a second alarm sounded 23 minutes later, the flames were already racing across the beams.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[3] position 0.4"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide6.jpg",
+          "path": "../captures/active/textures/slide6-0c7cbafb8e86.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": -0.72,
+          "distance": 4.3,
+          "height": 1.38
+        },
+        "focusKey": "flame-path",
+        "modelNodes": [
+          "opacity_driver_8",
+          "opacity_target_8"
+        ],
+        "highlightMaterials": [
+          "arrow1_new_shdr",
+          "hl_arrows2_new_shdr"
+        ],
+        "effect": "fire-run"
+      },
+      "lifecycle": {
+        "readerAction": "Compare the two alarms against the growing fire path.",
+        "visualFocus": "Show the fire racing along the roofline after the first alarm did not locate it."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "no-fire-walls",
+      "index": 4,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "No Fire Walls",
+      "text": "The cathedral had a smoke detection system, but not other basic fire-safety measures, such as fire-resistant walls that could have divided the space and helped to contain the fire.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[4] position 0.5"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide7.jpg",
+          "path": "../captures/active/textures/slide7-58a841eccf60.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": -1.02,
+          "distance": 4.15,
+          "height": 1.45
+        },
+        "focusKey": "walls",
+        "modelNodes": [
+          "txt4_additional_walls"
+        ],
+        "highlightMaterials": [
+          "hl_firewalls_new_shdr"
+        ],
+        "effect": "firewalls"
+      },
+      "lifecycle": {
+        "readerAction": "Notice how one open attic volume lets the fire travel.",
+        "visualFocus": "Bring in ghosted partition planes to make the missing containment strategy legible."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "retrofit-gap",
+      "index": 5,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Retrofit Gap",
+      "text": "Other major cathedrals in Britain and France have been retrofitted with similar designs, but Notre-Dame was not.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[5] position 0.55"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide8.jpg",
+          "path": "../captures/active/textures/slide8-0bc451a5fe8b.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": -1.18,
+          "distance": 4.55,
+          "height": 1.45
+        },
+        "focusKey": "comparison",
+        "modelNodes": [
+          "txt4_additional_walls"
+        ],
+        "highlightMaterials": [
+          "hl_firewalls_new_shdr"
+        ],
+        "effect": "comparison"
+      },
+      "lifecycle": {
+        "readerAction": "Read the comparison as a design choice, not a separate scene.",
+        "visualFocus": "Hold the ghosted firewalls in view while the slide image frames the missed retrofit context."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "no-sprinklers",
+      "index": 6,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "No Sprinklers",
+      "text": "Without firewalls, a sprinkler system could have slowed the fire. But the authorities had decided against one.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[6] position 0.6"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide8.jpg",
+          "path": "../captures/active/textures/slide8-0bc451a5fe8b.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": -0.22,
+          "distance": 4.25,
+          "height": 1.55
+        },
+        "focusKey": "sprinklers",
+        "modelNodes": [
+          "txt5_sprinkler_lines"
+        ],
+        "highlightMaterials": [
+          "hl_arrows2_new_shdr"
+        ],
+        "effect": "sprinkler"
+      },
+      "lifecycle": {
+        "readerAction": "Connect the absent system to the fire's speed.",
+        "visualFocus": "Draw a blue sprinkler line above the attic to show the system that might have slowed the fire."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "roof-and-spire",
+      "index": 7,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Roof And Spire",
+      "text": "Images showed the fire tearing across the roof and up the spire, which eventually toppled.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[7] position 0.7"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide10.jpg",
+          "path": "../captures/active/textures/slide10-7bc7bcbe987a.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": 0.42,
+          "distance": 4.35,
+          "height": 1.62
+        },
+        "focusKey": "roof-spire",
+        "modelNodes": [
+          "txt7_burned"
+        ],
+        "highlightMaterials": [
+          "hl_spire_whole_new3_shdr",
+          "hl_roof_new2_shdr"
+        ],
+        "effect": "fire-peak"
+      },
+      "lifecycle": {
+        "readerAction": "Watch the guided highlight peak at the spire.",
+        "visualFocus": "Raise the flame effect across the roof and spire without moving the viewer uncomfortably."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "stone-ceiling",
+      "index": 8,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Stone Ceiling",
+      "text": "The architecture of the cathedral made fighting the fire difficult. The cathedral’s vaulted stone ceiling prevented firefighters from shooting water at the attic from the ground.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[8] position 0.8"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide11.jpg",
+          "path": "../captures/active/textures/slide11-a6bc1e7c8b11.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": 0.86,
+          "distance": 4,
+          "height": 1.28
+        },
+        "focusKey": "ceiling",
+        "modelNodes": [
+          "txt6_stone_ceiling"
+        ],
+        "highlightMaterials": [
+          "hl_flat_roof_shdr",
+          "highlights_NEW:lambert3"
+        ],
+        "effect": "ceiling"
+      },
+      "lifecycle": {
+        "readerAction": "Look below the attic to see why ground-level water could not reach the fire.",
+        "visualFocus": "Show the stone vault as a protective barrier that also blocked water from the ground."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "fighting-from-above",
+      "index": 9,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Fighting From Above",
+      "text": "Instead, firefighters may have had to wait until the fire burned through the lead panels on the roof before they could start to spray water from above. Pulling hoses up winding staircases was also not an option.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[9] position 0.9"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide12.jpg",
+          "path": "../captures/active/textures/slide12-da6191a0d635.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": 1.08,
+          "distance": 4.28,
+          "height": 1.46
+        },
+        "focusKey": "water",
+        "modelNodes": [
+          "txt6_stone_ceiling",
+          "txt7_burned"
+        ],
+        "highlightMaterials": [
+          "hl_arrows2_new_shdr",
+          "hl_flat_roof_shdr"
+        ],
+        "effect": "water-from-above"
+      },
+      "lifecycle": {
+        "readerAction": "Keep your position and compare the above-roof water path with the blocked interior path.",
+        "visualFocus": "Stage water from above after the roof gives way, with the stair constraint kept as narration."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    },
+    {
+      "id": "damage-over-time",
+      "index": 10,
+      "kind": "storyBeats",
+      "section": "Story",
+      "title": "Damage Over Time",
+      "text": "After an inspection Tuesday, officials said the cathedral appeared structurally sound. But the damage may present itself over time: We don’t know what fire and water do to limestone quarried over 800 years ago.",
+      "sourceIds": [
+        "g-webgl-window-content data-params slides[10] position 1.0"
+      ],
+      "media": {
+        "sourceImage": {
+          "sourceUrl": "https://static01.nyt.com/newsgraphics/2019/04/15/notre-dame-webgl/assets/images/slide12.jpg",
+          "path": "../captures/active/textures/slide12-da6191a0d635.jpg"
+        }
+      },
+      "scene": {
+        "camera": {
+          "yaw": -0.48,
+          "distance": 4.65,
+          "height": 1.36
+        },
+        "focusKey": "stone",
+        "modelNodes": [
+          "txt8_stone"
+        ],
+        "highlightMaterials": [
+          "highlights_NEW:lambert3",
+          "hl_flat_roof_shdr"
+        ],
+        "effect": "damage"
+      },
+      "lifecycle": {
+        "readerAction": "End with the uncertainty of fire and water damage to centuries-old stone.",
+        "visualFocus": "Quiet the fire effects and leave the limestone and surviving structure in inspection light."
+      },
+      "interactions": {},
+      "originalField": "storyBeats"
+    }
+  ]
+}

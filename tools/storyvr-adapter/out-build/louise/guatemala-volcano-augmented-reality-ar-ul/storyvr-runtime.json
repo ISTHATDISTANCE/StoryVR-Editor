@@ -1,0 +1,237 @@
+{
+  "schemaVersion": "storyvr-runtime/v1",
+  "id": "guatemala-volcano-augmented-reality-ar-ul-storyvr",
+  "family": "louise",
+  "slug": "guatemala-volcano-augmented-reality-ar-ul",
+  "title": "A Volcano Turns a Town Into a Cemetery",
+  "byline": "The New York Times — June 19, 2018",
+  "sourceUrl": "https://www.nytimes.com/interactive/2018/06/19/world/americas/guatemala-volcano-augmented-reality-ar-ul.html",
+  "source": {
+    "family": "louise",
+    "strategy": "louise",
+    "storyFolder": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/guatemala-volcano-augmented-reality-ar-ul",
+    "storyFolderRel": "louise-10-stories/guatemala-volcano-augmented-reality-ar-ul",
+    "sourcePath": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/guatemala-volcano-augmented-reality-ar-ul/webxr-adaptation/data/beats.json",
+    "sourcePathRel": "louise-10-stories/guatemala-volcano-augmented-reality-ar-ul/webxr-adaptation/data/beats.json",
+    "sourceFormat": "beats-json",
+    "originalSchema": {
+      "headline": "string",
+      "byline": "string",
+      "sourceUrl": "string",
+      "model": "string",
+      "beats": "array(5)"
+    },
+    "generatedAt": null
+  },
+  "assetRoot": {
+    "mode": "build",
+    "original": "/louise-10-stories/guatemala-volcano-augmented-reality-ar-ul/captures/active",
+    "relativeFromApp": "../captures/active",
+    "hosted": "/louise-10-stories/guatemala-volcano-augmented-reality-ar-ul/captures/active",
+    "buildBase": "/louise-10-stories/guatemala-volcano-augmented-reality-ar-ul/dist-webxr-adaptation/",
+    "filesystem": "/Users/lutao/Desktop/web2vr_4/louise-10-stories/guatemala-volcano-augmented-reality-ar-ul/captures/active",
+    "canonical": "/louise-10-stories/guatemala-volcano-augmented-reality-ar-ul/captures/active"
+  },
+  "style": {
+    "colors": {},
+    "tokens": {}
+  },
+  "contentUnits": [
+    {
+      "id": "beats-01",
+      "index": 0,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 1",
+      "text": "When the Fuego volcano erupted in June, its pyroclastic flows buried much of the Guatemalan village of San Miguel Los Lotes.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-02",
+      "index": 1,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 2",
+      "text": "The Volcán de Fuego exploded on June 3, throwing a billowing tower of ash more than a mile into the sky. Burning lava, rocks and gas cascaded down its slopes.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-03",
+      "index": 2,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 3",
+      "text": "Nobody was prepared for the explosion at lunchtime, when a pyroclastic flow as hot as 1,600°F engulfed the village in deep ash.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-04",
+      "index": 3,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 4",
+      "text": "San Miguel is a ghost town, life stopped in an instant. This truck and a nearby shed were buried in about three and a half feet of ash — scanned where they came to rest.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-05",
+      "index": 4,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 5",
+      "text": "Rotate to explore the damage.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    }
+  ],
+  "sceneTopology": {
+    "kind": "beat-sequence",
+    "routeStops": [],
+    "regions": [],
+    "markers": [],
+    "bodies": [],
+    "countries": [],
+    "modelGroups": {},
+    "sections": [],
+    "questions": {},
+    "cameraPresets": [],
+    "spatialRelationships": {}
+  },
+  "assets": [
+    {
+      "id": "car.glb",
+      "path": "models/car.glb",
+      "url": null,
+      "type": "model",
+      "role": "model",
+      "sourceField": "model",
+      "bytes": null
+    }
+  ],
+  "interactions": {
+    "controls": [
+      "next",
+      "back"
+    ],
+    "keyboard": {},
+    "xrControllers": {},
+    "locomotion": "story-fixed",
+    "lifecycle": {},
+    "triggers": [],
+    "hotspots": []
+  },
+  "compatibility": {
+    "acceptedForTransformation": true,
+    "excludedCategories": [
+      "virtual-walk",
+      "sports"
+    ],
+    "sourceAdapter": "Louise stories, mostly data/beats.json plus several legacy sports summaries."
+  },
+  "diagnostics": [],
+  "rawSummary": {
+    "beatCount": 5,
+    "storyBeatCount": 0,
+    "pageCount": 0,
+    "sourceBeatCount": 0,
+    "regionCount": 0,
+    "routeStopCount": 0,
+    "frameCount": 0
+  },
+  "beats": [
+    {
+      "id": "beats-01",
+      "index": 0,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 1",
+      "text": "When the Fuego volcano erupted in June, its pyroclastic flows buried much of the Guatemalan village of San Miguel Los Lotes.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-02",
+      "index": 1,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 2",
+      "text": "The Volcán de Fuego exploded on June 3, throwing a billowing tower of ash more than a mile into the sky. Burning lava, rocks and gas cascaded down its slopes.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-03",
+      "index": 2,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 3",
+      "text": "Nobody was prepared for the explosion at lunchtime, when a pyroclastic flow as hot as 1,600°F engulfed the village in deep ash.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-04",
+      "index": 3,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 4",
+      "text": "San Miguel is a ghost town, life stopped in an instant. This truck and a nearby shed were buried in about three and a half feet of ash — scanned where they came to rest.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beats-05",
+      "index": 4,
+      "kind": "beats",
+      "section": "Story",
+      "title": "Beat 5",
+      "text": "Rotate to explore the damage.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {},
+      "interactions": {},
+      "originalField": "beats"
+    }
+  ]
+}

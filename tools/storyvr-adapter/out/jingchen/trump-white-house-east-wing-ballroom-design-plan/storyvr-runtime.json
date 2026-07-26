@@ -1,0 +1,1189 @@
+{
+  "schemaVersion": "storyvr-runtime/v1",
+  "id": "trump-white-house-east-wing-ballroom-design-plan",
+  "family": "jingchen",
+  "slug": "trump-white-house-east-wing-ballroom-design-plan",
+  "title": "Trump’s Lopsided Vision for the White House",
+  "byline": "By Junho Lee, Ashley Wu and Jon Huang",
+  "sourceUrl": "https://www.nytimes.com/interactive/2026/03/04/us/politics/trump-white-house-east-wing-ballroom-design-plan.html",
+  "source": {
+    "family": "jingchen",
+    "strategy": "jingchen",
+    "storyFolder": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_1/trump-white-house-east-wing-ballroom-design-plan",
+    "storyFolderRel": "Jingchen-10-stories/Story_1/trump-white-house-east-wing-ballroom-design-plan",
+    "sourcePath": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_1/trump-white-house-east-wing-ballroom-design-plan/webxr-adaptation/src/generated/story-instance.json",
+    "sourcePathRel": "Jingchen-10-stories/Story_1/trump-white-house-east-wing-ballroom-design-plan/webxr-adaptation/src/generated/story-instance.json",
+    "sourceFormat": "generated-json",
+    "originalSchema": {
+      "storySlug": "string",
+      "generatedAt": "string",
+      "assetRoot": "string",
+      "availableAssets": "array(13)",
+      "markerLabels": "array(13)",
+      "beats": "array(7)"
+    },
+    "generatedAt": "2026-06-14T00:53:08.109Z"
+  },
+  "assetRoot": {
+    "mode": "dev",
+    "original": "../captures/active/",
+    "relativeFromApp": "../captures/active",
+    "hosted": "/Jingchen-10-stories/Story_1/trump-white-house-east-wing-ballroom-design-plan/captures/active",
+    "buildBase": "/Jingchen-10-stories/Story_1/trump-white-house-east-wing-ballroom-design-plan/dist-webxr-adaptation/",
+    "filesystem": "/Users/lutao/Desktop/web2vr_4/Jingchen-10-stories/Story_1/trump-white-house-east-wing-ballroom-design-plan/captures/active",
+    "canonical": "../captures/active"
+  },
+  "style": {
+    "colors": {},
+    "tokens": {}
+  },
+  "contentUnits": [
+    {
+      "id": "overview",
+      "index": 0,
+      "kind": "beats",
+      "section": "WebXR adaptation",
+      "title": "Trump’s Lopsided Vision for the White House",
+      "text": "The president’s East Wing plan upends the symmetry that was once fundamental to the People’s House, our analysis shows. See the design in 3-D.",
+      "sourceIds": [
+        "header"
+      ],
+      "media": {
+        "markerIds": [
+          "east-wing",
+          "west-wing",
+          "executive-residence"
+        ]
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            3.4,
+            2.2,
+            4.2
+          ],
+          "target": [
+            0,
+            0.3,
+            0
+          ]
+        },
+        "highlightedNodes": [
+          "Proposed_East_Wing",
+          "West_Wing",
+          "ExecutiveResidence.001"
+        ],
+        "highlightedMaterials": [
+          "new_east_wing",
+          "west_wing_baked"
+        ]
+      },
+      "lifecycle": {
+        "visualFocus": "A table-scale view of the White House complex with the proposed East Wing emphasized."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "overhead",
+      "index": 1,
+      "kind": "beats",
+      "section": "Beat 1",
+      "title": "The planned footprint shifts the hierarchy",
+      "text": "The East Wing’s planned footprint is larger than that of the Executive Residence and the West Wing combined, shifting the property’s architectural hierarchy.",
+      "sourceIds": [
+        "overhead"
+      ],
+      "media": {
+        "markerIds": [
+          "east-wing",
+          "west-wing",
+          "executive-residence"
+        ]
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            0.05,
+            4.35,
+            0.2
+          ],
+          "target": [
+            0,
+            0.05,
+            0
+          ]
+        },
+        "highlightedNodes": [
+          "Proposed_East_Wing",
+          "West_Wing",
+          "ExecutiveResidence.001"
+        ],
+        "highlightedMaterials": [
+          "new_east_wing",
+          "west_wing_baked"
+        ]
+      },
+      "lifecycle": {
+        "visualFocus": "Overhead comparison of the proposed East Wing with the Executive Residence and West Wing."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "west",
+      "index": 2,
+      "kind": "beats",
+      "section": "Beat 2",
+      "title": "Grand facade features become the focus",
+      "text": "Grand features are a cornerstone of the design — 29-foot-tall arched windows, a wide staircase and a new garden that is larger than what came before it.",
+      "sourceIds": [
+        "west"
+      ],
+      "media": {
+        "markerIds": [
+          "west-staircase",
+          "new-garden",
+          "arched-windows"
+        ]
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            -2.8,
+            1.15,
+            1.8
+          ],
+          "target": [
+            -0.2,
+            0.38,
+            0.05
+          ]
+        },
+        "highlightedNodes": [
+          "Proposed_East_Wing",
+          "Garden",
+          "Small_Arch_Window_Pane"
+        ],
+        "highlightedMaterials": [
+          "new_east_wing",
+          "ai_GLASS",
+          "aiGROUND_PLANE_NEW"
+        ]
+      },
+      "lifecycle": {
+        "visualFocus": "West facade, arched windows, wide staircase, and larger garden."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "south",
+      "index": 3,
+      "kind": "beats",
+      "section": "Beat 3",
+      "title": "The south entrance is scaled against the residence",
+      "text": "The south portico, with its grand staircase, is larger than that of the Executive Residence, a defining feature of the White House.",
+      "sourceIds": [
+        "south"
+      ],
+      "media": {
+        "markerIds": [
+          "south-portico",
+          "grand-staircase",
+          "executive-residence"
+        ]
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            -0.8,
+            1,
+            3.35
+          ],
+          "target": [
+            -0.08,
+            0.34,
+            0.12
+          ]
+        },
+        "highlightedNodes": [
+          "Proposed_East_Wing",
+          "ExecutiveResidence.001"
+        ],
+        "highlightedMaterials": [
+          "new_east_wing",
+          "BASIC_WHITE_er"
+        ]
+      },
+      "lifecycle": {
+        "visualFocus": "South portico and grand staircase, with the Executive Residence retained for comparison."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "east",
+      "index": 4,
+      "kind": "beats",
+      "section": "Beat 4",
+      "title": "The east portico borrows a nearby language",
+      "text": "The east portico, one of two ballroom entrances, is modeled after ones on the Treasury building next door. Unlike those, this one sits off center.",
+      "sourceIds": [
+        "east"
+      ],
+      "media": {
+        "markerIds": [
+          "east-portico",
+          "treasury-building"
+        ]
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            3.15,
+            1.22,
+            0.35
+          ],
+          "target": [
+            0.25,
+            0.36,
+            -0.05
+          ]
+        },
+        "highlightedNodes": [
+          "Proposed_East_Wing"
+        ],
+        "highlightedMaterials": [
+          "new_east_wing"
+        ]
+      },
+      "lifecycle": {
+        "visualFocus": "East portico entrance, staged beside the source comparison image."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "north",
+      "index": 5,
+      "kind": "beats",
+      "section": "Beat 5",
+      "title": "Window rhythm links old and new",
+      "text": "One design feature lauded by Mr. Trump would bring continuity between the old and new. Windows on the north wall of the proposed East Wing mimic those of the Executive Residence.",
+      "sourceIds": [
+        "north"
+      ],
+      "media": {
+        "markerIds": [
+          "north-facade",
+          "east-wing",
+          "executive-residence"
+        ]
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            0.45,
+            1.1,
+            -3.25
+          ],
+          "target": [
+            0,
+            0.36,
+            -0.08
+          ]
+        },
+        "highlightedNodes": [
+          "Proposed_East_Wing",
+          "ExecutiveResidence.001",
+          "WindowPane"
+        ],
+        "highlightedMaterials": [
+          "new_east_wing",
+          "ai_GLASS"
+        ]
+      },
+      "lifecycle": {
+        "visualFocus": "North wall windows on the proposed East Wing compared with the Executive Residence."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "colonnades",
+      "index": 6,
+      "kind": "beats",
+      "section": "Beat 6",
+      "title": "The colonnades carry the height question",
+      "text": "The White House is also considering a second floor to the West Colonnade to match the height of the new, taller East Colonnade.",
+      "sourceIds": [
+        "colonnades"
+      ],
+      "media": {
+        "markerIds": [
+          "west-colonnade",
+          "east-colonnade"
+        ]
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            -2.2,
+            1.45,
+            -2.25
+          ],
+          "target": [
+            0.05,
+            0.4,
+            0
+          ]
+        },
+        "highlightedNodes": [
+          "ShortColumns",
+          "Proposed_East_Wing"
+        ],
+        "highlightedMaterials": [
+          "ww_short_col_tex",
+          "new_east_wing"
+        ]
+      },
+      "lifecycle": {
+        "visualFocus": "East and West Colonnades, highlighting the possible second floor alignment."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    }
+  ],
+  "sceneTopology": {
+    "kind": "beat-sequence",
+    "routeStops": [],
+    "regions": [],
+    "markers": [
+      {
+        "id": "west-wing",
+        "label": "West Wing",
+        "targetNode": "West_Wing",
+        "offset": [
+          -0.08,
+          0.38,
+          0.16
+        ]
+      },
+      {
+        "id": "executive-residence",
+        "label": "Executive<br/>Residence",
+        "targetNode": "ExecutiveResidence.001",
+        "offset": [
+          0.08,
+          0.48,
+          0
+        ]
+      },
+      {
+        "id": "east-wing",
+        "label": "Proposed<br/>East Wing",
+        "targetNode": "Proposed_East_Wing",
+        "offset": [
+          0.1,
+          0.62,
+          -0.08
+        ]
+      },
+      {
+        "id": "new-garden",
+        "label": "Garden",
+        "targetNode": "Garden",
+        "offset": [
+          0,
+          0.2,
+          0.06
+        ]
+      },
+      {
+        "id": "arched-windows",
+        "label": "Arched windows",
+        "targetNode": "Proposed_East_Wing",
+        "offset": [
+          -0.38,
+          0.82,
+          0.2
+        ]
+      },
+      {
+        "id": "west-staircase",
+        "label": "Wide staircase",
+        "targetNode": "Proposed_East_Wing",
+        "offset": [
+          -0.42,
+          0.42,
+          0.34
+        ]
+      },
+      {
+        "id": "south-portico",
+        "label": "South portico",
+        "targetNode": "Proposed_East_Wing",
+        "offset": [
+          -0.08,
+          0.58,
+          0.5
+        ]
+      },
+      {
+        "id": "grand-staircase",
+        "label": "Grand staircase",
+        "targetNode": "Proposed_East_Wing",
+        "offset": [
+          -0.18,
+          0.34,
+          0.56
+        ]
+      },
+      {
+        "id": "east-portico",
+        "label": "East portico",
+        "targetNode": "Proposed_East_Wing",
+        "offset": [
+          0.54,
+          0.5,
+          -0.05
+        ]
+      },
+      {
+        "id": "treasury-building",
+        "label": "Treasury building",
+        "targetNode": "Proposed_East_Wing",
+        "offset": [
+          0.78,
+          0.54,
+          -0.26
+        ]
+      },
+      {
+        "id": "north-facade",
+        "label": "North windows",
+        "targetNode": "Proposed_East_Wing",
+        "offset": [
+          0.02,
+          0.75,
+          -0.5
+        ]
+      },
+      {
+        "id": "west-colonnade",
+        "label": "West<br/>Colonnade",
+        "targetNode": "ShortColumns",
+        "offset": [
+          -0.34,
+          0.42,
+          0.06
+        ]
+      },
+      {
+        "id": "east-colonnade",
+        "label": "East<br/>Colonnade",
+        "targetNode": "Proposed_East_Wing",
+        "offset": [
+          0.38,
+          0.5,
+          0.14
+        ]
+      }
+    ],
+    "bodies": [],
+    "countries": [],
+    "modelGroups": {},
+    "sections": [],
+    "questions": {},
+    "cameraPresets": [
+      {
+        "position": [
+          3.4,
+          2.2,
+          4.2
+        ],
+        "target": [
+          0,
+          0.3,
+          0
+        ]
+      },
+      {
+        "position": [
+          0.05,
+          4.35,
+          0.2
+        ],
+        "target": [
+          0,
+          0.05,
+          0
+        ]
+      },
+      {
+        "position": [
+          -2.8,
+          1.15,
+          1.8
+        ],
+        "target": [
+          -0.2,
+          0.38,
+          0.05
+        ]
+      },
+      {
+        "position": [
+          -0.8,
+          1,
+          3.35
+        ],
+        "target": [
+          -0.08,
+          0.34,
+          0.12
+        ]
+      },
+      {
+        "position": [
+          3.15,
+          1.22,
+          0.35
+        ],
+        "target": [
+          0.25,
+          0.36,
+          -0.05
+        ]
+      },
+      {
+        "position": [
+          0.45,
+          1.1,
+          -3.25
+        ],
+        "target": [
+          0,
+          0.36,
+          -0.08
+        ]
+      },
+      {
+        "position": [
+          -2.2,
+          1.45,
+          -2.25
+        ],
+        "target": [
+          0.05,
+          0.4,
+          0
+        ]
+      }
+    ],
+    "spatialRelationships": {}
+  },
+  "assets": [
+    {
+      "id": "poster",
+      "path": "../captures/active/textures/east-wing-symmetry-promo-east-wing-videoSixteenByNineJumbo1600-78cb1281ad9c.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "Source promotional rendering for overview context",
+      "sourceField": "assets.poster",
+      "bytes": null
+    },
+    {
+      "id": "eastPorticoComparison",
+      "path": "../captures/active/textures/east-portico-comparison-desktop-720w-2x-ce178b768442.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "Supporting source image for the east portico comparison beat",
+      "sourceField": "assets.eastPorticoComparison",
+      "bytes": null
+    },
+    {
+      "id": 0,
+      "path": "east-wing-symmetry-promo-east-wing-facebookJumbo-763f00054960.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.0",
+      "bytes": 338790
+    },
+    {
+      "id": "east-wing-symmetry-promo-east-wing-facebookJumbo.jpg",
+      "path": null,
+      "url": "https://static01.nyt.com/images/2026/03/04/us/east-wing-symmetry-promo-east-wing/east-wing-symmetry-promo-east-wing-facebookJumbo.jpg",
+      "type": "texture",
+      "role": "availableAssets.0.originalUrl",
+      "sourceField": "availableAssets.0.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "east-wing-symmetry-promo-east-wing-googleFourByThree-51f312032108.jpg",
+      "path": "east-wing-symmetry-promo-east-wing-googleFourByThree-51f312032108.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.1",
+      "bytes": 69359
+    },
+    {
+      "id": "east-wing-symmetry-promo-east-wing-googleFourByThree.jpg",
+      "path": null,
+      "url": "https://static01.nyt.com/images/2026/03/04/us/east-wing-symmetry-promo-east-wing/east-wing-symmetry-promo-east-wing-googleFourByThree.jpg",
+      "type": "texture",
+      "role": "availableAssets.1.originalUrl",
+      "sourceField": "availableAssets.1.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "east-wing-symmetry-promo-east-wing-mediumSquareAt3X-7a5367912645.jpg",
+      "path": "east-wing-symmetry-promo-east-wing-mediumSquareAt3X-7a5367912645.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.2",
+      "bytes": 271196
+    },
+    {
+      "id": "east-wing-symmetry-promo-east-wing-mediumSquareAt3X.jpg",
+      "path": null,
+      "url": "https://static01.nyt.com/images/2026/03/04/us/east-wing-symmetry-promo-east-wing/east-wing-symmetry-promo-east-wing-mediumSquareAt3X.jpg",
+      "type": "texture",
+      "role": "availableAssets.2.originalUrl",
+      "sourceField": "availableAssets.2.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "east-wing-symmetry-promo-east-wing-videoSixteenByNine3000-2596f8db5102.jpg",
+      "path": "east-wing-symmetry-promo-east-wing-videoSixteenByNine3000-2596f8db5102.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.3",
+      "bytes": 413416
+    },
+    {
+      "id": "east-wing-symmetry-promo-east-wing-videoSixteenByNine3000.jpg",
+      "path": null,
+      "url": "https://static01.nyt.com/images/2026/03/04/us/east-wing-symmetry-promo-east-wing/east-wing-symmetry-promo-east-wing-videoSixteenByNine3000.jpg",
+      "type": "texture",
+      "role": "availableAssets.3.originalUrl",
+      "sourceField": "availableAssets.3.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "east-wing-symmetry-promo-east-wing-videoSixteenByNineJumbo1600-78cb1281ad9c.jpg",
+      "path": "east-wing-symmetry-promo-east-wing-videoSixteenByNineJumbo1600-78cb1281ad9c.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.4",
+      "bytes": 718617
+    },
+    {
+      "id": "east-wing-symmetry-promo-east-wing-videoSixteenByNineJumbo1600.jpg",
+      "path": null,
+      "url": "https://static01.nyt.com/images/2026/03/04/us/east-wing-symmetry-promo-east-wing/east-wing-symmetry-promo-east-wing-videoSixteenByNineJumbo1600.jpg",
+      "type": "texture",
+      "role": "availableAssets.4.originalUrl",
+      "sourceField": "availableAssets.4.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "00nat-trumpvoters-hbjz-square640-f402fe03042b.jpg",
+      "path": "00nat-trumpvoters-hbjz-square640-f402fe03042b.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.5",
+      "bytes": 24525
+    },
+    {
+      "id": "00nat-trumpvoters-hbjz-square640.jpg?quality=75&auto=webp&disable=upscale",
+      "path": null,
+      "url": "https://static01.nyt.com/images/2026/06/04/multimedia/00nat-trumpvoters-hbjz/00nat-trumpvoters-hbjz-square640.jpg?quality=75&auto=webp&disable=upscale",
+      "type": "remote",
+      "role": "availableAssets.5.originalUrl",
+      "sourceField": "availableAssets.5.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "05dc-trump-kqjf-square640-47a783231953.jpg",
+      "path": "05dc-trump-kqjf-square640-47a783231953.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.6",
+      "bytes": 25704
+    },
+    {
+      "id": "05dc-trump-kqjf-square640.jpg?quality=75&auto=webp&disable=upscale&width=350",
+      "path": null,
+      "url": "https://static01.nyt.com/images/2026/06/05/multimedia/05dc-trump-kqjf/05dc-trump-kqjf-square640.jpg?quality=75&auto=webp&disable=upscale&width=350",
+      "type": "remote",
+      "role": "availableAssets.6.originalUrl",
+      "sourceField": "availableAssets.6.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "06re-booth-house-twzm-square640-8fb1934268f2.jpg",
+      "path": "06re-booth-house-twzm-square640-8fb1934268f2.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.7",
+      "bytes": 139608
+    },
+    {
+      "id": "06re-booth-house-twzm-square640.jpg?quality=75&auto=webp&disable=upscale",
+      "path": null,
+      "url": "https://static01.nyt.com/images/2026/06/06/multimedia/06re-booth-house-twzm/06re-booth-house-twzm-square640.jpg?quality=75&auto=webp&disable=upscale",
+      "type": "remote",
+      "role": "availableAssets.7.originalUrl",
+      "sourceField": "availableAssets.7.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "08dc-trump-prosecutors-gzqw-square640-9e225f84a171.jpg",
+      "path": "08dc-trump-prosecutors-gzqw-square640-9e225f84a171.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.8",
+      "bytes": 30865
+    },
+    {
+      "id": "08dc-trump-prosecutors-gzqw-square640.jpg?quality=75&auto=webp&disable=upscale",
+      "path": null,
+      "url": "https://static01.nyt.com/images/2026/06/08/multimedia/08dc-trump-prosecutors-gzqw/08dc-trump-prosecutors-gzqw-square640.jpg?quality=75&auto=webp&disable=upscale",
+      "type": "remote",
+      "role": "availableAssets.8.originalUrl",
+      "sourceField": "availableAssets.8.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "east-portico-comparison-desktop-720w-2x-ce178b768442.jpg",
+      "path": "east-portico-comparison-desktop-720w-2x-ce178b768442.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.9",
+      "bytes": 1048677
+    },
+    {
+      "id": "east-portico-comparison-desktop-720w-2x.jpg",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/N8EO11Mya-j4ww/_images.2Bd27lH_7Yiqo7t82TOBTALaBrx2vogExnRZjhGufTs/east-portico-comparison-desktop-720w-2x.jpg",
+      "type": "texture",
+      "role": "availableAssets.9.originalUrl",
+      "sourceField": "availableAssets.9.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "east-portico-comparison-mobile-335w-2x-a5e78f9243bd.jpg",
+      "path": "east-portico-comparison-mobile-335w-2x-a5e78f9243bd.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.10",
+      "bytes": 292017
+    },
+    {
+      "id": "east-portico-comparison-mobile-335w-2x.jpg",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/N8EO11Mya-j4ww/_images.2Bd27lH_7Yiqo7t82TOBTALaBrx2vogExnRZjhGufTs/east-portico-comparison-mobile-335w-2x.jpg",
+      "type": "texture",
+      "role": "availableAssets.10.originalUrl",
+      "sourceField": "availableAssets.10.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "20260304_EastWingAndSurroundings-2f4f6a45d692.glb",
+      "path": "20260304_EastWingAndSurroundings-2f4f6a45d692.glb",
+      "url": null,
+      "type": "model",
+      "role": "core_story",
+      "sourceField": "availableAssets.11",
+      "bytes": 7366380
+    },
+    {
+      "id": "20260304_EastWingAndSurroundings.glb",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/z87qAQUKHiFdEA/_assets.4IgSd_JaPM2RPWEFR_ur38DOp-AgicfXDshCVl67VqE/20260304_EastWingAndSurroundings.glb",
+      "type": "model",
+      "role": "availableAssets.11.originalUrl",
+      "sourceField": "availableAssets.11.originalUrl",
+      "bytes": null
+    },
+    {
+      "id": "east-19ab51812c43.png",
+      "path": "east-19ab51812c43.png",
+      "url": null,
+      "type": "texture",
+      "role": "supporting_story",
+      "sourceField": "availableAssets.12",
+      "bytes": 12956
+    },
+    {
+      "id": "east.png",
+      "path": null,
+      "url": "https://static01.nytimes.com/newsgraphics/z87qAQUKHiFdEA/_images.Kc2fBWFKbhba6jJNYwoSxGYIx22xPRSKXq8-VhtJaPM/east.png",
+      "type": "texture",
+      "role": "availableAssets.12.originalUrl",
+      "sourceField": "availableAssets.12.originalUrl",
+      "bytes": null
+    }
+  ],
+  "interactions": {
+    "controls": [
+      "next",
+      "back"
+    ],
+    "keyboard": {},
+    "xrControllers": {},
+    "locomotion": "story-fixed",
+    "lifecycle": {},
+    "triggers": [],
+    "hotspots": []
+  },
+  "compatibility": {
+    "acceptedForTransformation": true,
+    "excludedCategories": [
+      "virtual-walk",
+      "sports"
+    ],
+    "sourceAdapter": "Jingchen stories with generated JS/JSON modules and per-story runtime fields."
+  },
+  "diagnostics": [],
+  "rawSummary": {
+    "beatCount": 7,
+    "storyBeatCount": 0,
+    "pageCount": 0,
+    "sourceBeatCount": 0,
+    "regionCount": 0,
+    "routeStopCount": 0,
+    "frameCount": 0
+  },
+  "beats": [
+    {
+      "id": "overview",
+      "index": 0,
+      "kind": "beats",
+      "section": "WebXR adaptation",
+      "title": "Trump’s Lopsided Vision for the White House",
+      "text": "The president’s East Wing plan upends the symmetry that was once fundamental to the People’s House, our analysis shows. See the design in 3-D.",
+      "sourceIds": [
+        "header"
+      ],
+      "media": {
+        "markerIds": [
+          "east-wing",
+          "west-wing",
+          "executive-residence"
+        ]
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            3.4,
+            2.2,
+            4.2
+          ],
+          "target": [
+            0,
+            0.3,
+            0
+          ]
+        },
+        "highlightedNodes": [
+          "Proposed_East_Wing",
+          "West_Wing",
+          "ExecutiveResidence.001"
+        ],
+        "highlightedMaterials": [
+          "new_east_wing",
+          "west_wing_baked"
+        ]
+      },
+      "lifecycle": {
+        "visualFocus": "A table-scale view of the White House complex with the proposed East Wing emphasized."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "overhead",
+      "index": 1,
+      "kind": "beats",
+      "section": "Beat 1",
+      "title": "The planned footprint shifts the hierarchy",
+      "text": "The East Wing’s planned footprint is larger than that of the Executive Residence and the West Wing combined, shifting the property’s architectural hierarchy.",
+      "sourceIds": [
+        "overhead"
+      ],
+      "media": {
+        "markerIds": [
+          "east-wing",
+          "west-wing",
+          "executive-residence"
+        ]
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            0.05,
+            4.35,
+            0.2
+          ],
+          "target": [
+            0,
+            0.05,
+            0
+          ]
+        },
+        "highlightedNodes": [
+          "Proposed_East_Wing",
+          "West_Wing",
+          "ExecutiveResidence.001"
+        ],
+        "highlightedMaterials": [
+          "new_east_wing",
+          "west_wing_baked"
+        ]
+      },
+      "lifecycle": {
+        "visualFocus": "Overhead comparison of the proposed East Wing with the Executive Residence and West Wing."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "west",
+      "index": 2,
+      "kind": "beats",
+      "section": "Beat 2",
+      "title": "Grand facade features become the focus",
+      "text": "Grand features are a cornerstone of the design — 29-foot-tall arched windows, a wide staircase and a new garden that is larger than what came before it.",
+      "sourceIds": [
+        "west"
+      ],
+      "media": {
+        "markerIds": [
+          "west-staircase",
+          "new-garden",
+          "arched-windows"
+        ]
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            -2.8,
+            1.15,
+            1.8
+          ],
+          "target": [
+            -0.2,
+            0.38,
+            0.05
+          ]
+        },
+        "highlightedNodes": [
+          "Proposed_East_Wing",
+          "Garden",
+          "Small_Arch_Window_Pane"
+        ],
+        "highlightedMaterials": [
+          "new_east_wing",
+          "ai_GLASS",
+          "aiGROUND_PLANE_NEW"
+        ]
+      },
+      "lifecycle": {
+        "visualFocus": "West facade, arched windows, wide staircase, and larger garden."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "south",
+      "index": 3,
+      "kind": "beats",
+      "section": "Beat 3",
+      "title": "The south entrance is scaled against the residence",
+      "text": "The south portico, with its grand staircase, is larger than that of the Executive Residence, a defining feature of the White House.",
+      "sourceIds": [
+        "south"
+      ],
+      "media": {
+        "markerIds": [
+          "south-portico",
+          "grand-staircase",
+          "executive-residence"
+        ]
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            -0.8,
+            1,
+            3.35
+          ],
+          "target": [
+            -0.08,
+            0.34,
+            0.12
+          ]
+        },
+        "highlightedNodes": [
+          "Proposed_East_Wing",
+          "ExecutiveResidence.001"
+        ],
+        "highlightedMaterials": [
+          "new_east_wing",
+          "BASIC_WHITE_er"
+        ]
+      },
+      "lifecycle": {
+        "visualFocus": "South portico and grand staircase, with the Executive Residence retained for comparison."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "east",
+      "index": 4,
+      "kind": "beats",
+      "section": "Beat 4",
+      "title": "The east portico borrows a nearby language",
+      "text": "The east portico, one of two ballroom entrances, is modeled after ones on the Treasury building next door. Unlike those, this one sits off center.",
+      "sourceIds": [
+        "east"
+      ],
+      "media": {
+        "markerIds": [
+          "east-portico",
+          "treasury-building"
+        ]
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            3.15,
+            1.22,
+            0.35
+          ],
+          "target": [
+            0.25,
+            0.36,
+            -0.05
+          ]
+        },
+        "highlightedNodes": [
+          "Proposed_East_Wing"
+        ],
+        "highlightedMaterials": [
+          "new_east_wing"
+        ]
+      },
+      "lifecycle": {
+        "visualFocus": "East portico entrance, staged beside the source comparison image."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "north",
+      "index": 5,
+      "kind": "beats",
+      "section": "Beat 5",
+      "title": "Window rhythm links old and new",
+      "text": "One design feature lauded by Mr. Trump would bring continuity between the old and new. Windows on the north wall of the proposed East Wing mimic those of the Executive Residence.",
+      "sourceIds": [
+        "north"
+      ],
+      "media": {
+        "markerIds": [
+          "north-facade",
+          "east-wing",
+          "executive-residence"
+        ]
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            0.45,
+            1.1,
+            -3.25
+          ],
+          "target": [
+            0,
+            0.36,
+            -0.08
+          ]
+        },
+        "highlightedNodes": [
+          "Proposed_East_Wing",
+          "ExecutiveResidence.001",
+          "WindowPane"
+        ],
+        "highlightedMaterials": [
+          "new_east_wing",
+          "ai_GLASS"
+        ]
+      },
+      "lifecycle": {
+        "visualFocus": "North wall windows on the proposed East Wing compared with the Executive Residence."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "colonnades",
+      "index": 6,
+      "kind": "beats",
+      "section": "Beat 6",
+      "title": "The colonnades carry the height question",
+      "text": "The White House is also considering a second floor to the West Colonnade to match the height of the new, taller East Colonnade.",
+      "sourceIds": [
+        "colonnades"
+      ],
+      "media": {
+        "markerIds": [
+          "west-colonnade",
+          "east-colonnade"
+        ]
+      },
+      "scene": {
+        "camera": {
+          "position": [
+            -2.2,
+            1.45,
+            -2.25
+          ],
+          "target": [
+            0.05,
+            0.4,
+            0
+          ]
+        },
+        "highlightedNodes": [
+          "ShortColumns",
+          "Proposed_East_Wing"
+        ],
+        "highlightedMaterials": [
+          "ww_short_col_tex",
+          "new_east_wing"
+        ]
+      },
+      "lifecycle": {
+        "visualFocus": "East and West Colonnades, highlighting the possible second floor alignment."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    }
+  ]
+}

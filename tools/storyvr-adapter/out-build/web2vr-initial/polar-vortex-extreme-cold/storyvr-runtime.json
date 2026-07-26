@@ -1,0 +1,374 @@
+{
+  "schemaVersion": "storyvr-runtime/v1",
+  "id": "polar-vortex-extreme-cold-webxr",
+  "family": "web2vr-initial",
+  "slug": "polar-vortex-extreme-cold",
+  "title": "A Closer Look at the Polar Vortex’s Dangerously Cold Winds",
+  "byline": "By Yuliya Parshina-Kottas, Karthik Patanjali, Jeremy White, Benjamin Wilhelm and Evan Grothjan",
+  "sourceUrl": "https://www.nytimes.com/interactive/2019/01/30/science/polar-vortex-extreme-cold.html",
+  "source": {
+    "family": "web2vr-initial",
+    "strategy": "web2vr-initial",
+    "storyFolder": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/polar-vortex-extreme-cold",
+    "storyFolderRel": "web2VR-Initial-Adaptations/polar-vortex-extreme-cold",
+    "sourcePath": "/Users/lutao/Desktop/web2vr_4/web2VR-Initial-Adaptations/polar-vortex-extreme-cold/webxr-adaptation/data/story-instance.json",
+    "sourcePathRel": "web2VR-Initial-Adaptations/polar-vortex-extreme-cold/webxr-adaptation/data/story-instance.json",
+    "sourceFormat": "story-instance-json",
+    "originalSchema": {
+      "id": "string",
+      "title": "string",
+      "sourceUrl": "string",
+      "sourceTitle": "string",
+      "sourceDescription": "string",
+      "byline": "string",
+      "publishedAt": "string",
+      "storySlug": "string",
+      "assetRoot": "string",
+      "beats": "array(5)"
+    },
+    "generatedAt": null
+  },
+  "assetRoot": {
+    "mode": "build",
+    "original": "/polar-vortex-extreme-cold/captures/active",
+    "relativeFromApp": "../../../polar-vortex-extreme-cold/captures/active",
+    "hosted": "/polar-vortex-extreme-cold/captures/active",
+    "buildBase": "/web2VR-Initial-Adaptations/polar-vortex-extreme-cold/dist-webxr-adaptation/",
+    "filesystem": "/Users/lutao/Desktop/web2vr_4/polar-vortex-extreme-cold/captures/active",
+    "canonical": "/polar-vortex-extreme-cold/captures/active"
+  },
+  "style": {
+    "colors": {
+      "night": "#07121b",
+      "panel": "#0f1b24",
+      "ice": "#87d8ff",
+      "arctic": "#d9f4ff",
+      "wind": "#f8f6eb",
+      "warm": "#f08c5a",
+      "cold": "#4bb7ff",
+      "alert": "#f4cf69",
+      "neutral": "#f3ead9"
+    },
+    "tokens": {}
+  },
+  "contentUnits": [
+    {
+      "id": "beat-00-opening",
+      "index": 0,
+      "kind": "beats",
+      "section": "Opening",
+      "title": "A Closer Look at the Polar Vortex’s Dangerously Cold Winds",
+      "text": "A Closer Look at the Polar Vortex’s Dangerously Cold Winds\n\nChicago will be as cold as the Arctic on Wednesday. We’ll show you why.\n\nBy Yuliya Parshina-Kottas, Karthik Patanjali, Jeremy White, Benjamin Wilhelm and Evan Grothjan. Jan. 30, 2019.\n\nTemperatures will plummet to minus 26 degrees Fahrenheit in Chicago and minus 31 degrees in Madison, Wis., on Wednesday night — the worst cold to grip the Upper Midwest in a generation . Parts of Alaska, on the other hand, are unseasonably warm.\n\nWhat is causing such extreme weather across the United States? The polar vortex, an ominous-sounding system of wind and cold air over the North Pole, broke apart this month. Here’s how it’s bringing dangerous cold nationwide.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {
+        "transition": "fade-in",
+        "readerAction": "Advance when ready; no locomotion required.",
+        "visualFocus": "A readable, room-scale version of the captured polar vortex model floats at eye level with the source weather layer beside it.",
+        "sourceTextPreservation": "Headline, deck, byline/date and the two opening source paragraphs are preserved as the opening beat."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beat-01-vortex-forms",
+      "index": 0,
+      "kind": "beats",
+      "section": "The Vortex Forms ...",
+      "title": "The Vortex Forms",
+      "text": "The Vortex Forms ...\n\nThe polar vortex spins to life every winter 10 miles above the ground, seen here on Dec. 22. Typically, it has a single center, surrounded by a wall of powerful winds. But sometimes it weakens —  shifting, and even breaking into pieces.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {
+        "transition": "slow-inspect",
+        "readerAction": "Advance when ready; the scene changes in place.",
+        "visualFocus": "The stratospheric wind wall is staged as a single rotating crown above the North Pole.",
+        "sourceTextPreservation": "The WebGL slide subhead and annotation are preserved verbatim in this beat."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beat-02-splits-apart",
+      "index": 1,
+      "kind": "beats",
+      "section": "… Splits Apart …",
+      "title": "Splits Apart",
+      "text": "… Splits Apart …\n\nOn Jan. 3, 2019, the polar vortex split into parts. It's a pattern that is happening more frequently and is often followed by severe cold and winter storms, said Judah Cohen, a climatologist at Atmospheric and Environmental Research, a weather risk-assessment firm.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {
+        "transition": "split-shift",
+        "readerAction": "Advance when ready; the scene changes in place.",
+        "visualFocus": "The centered vortex separates into two offset gyres while the jet stream begins to deform.",
+        "sourceTextPreservation": "The WebGL slide subhead and annotation are preserved verbatim in this beat."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beat-03-cold-arrives",
+      "index": 2,
+      "kind": "beats",
+      "section": "… Then the Cold Arrives",
+      "title": "Then the Cold Arrives",
+      "text": "… Then the Cold Arrives\n\nThe split takes two weeks to affect the weather: It warps the polar jet stream, bringing freezing arctic air south and warm air north. Parts of the Midwest were expected on Tuesday night to have a wind chill of minus 60 degrees.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {
+        "transition": "cold-drop",
+        "readerAction": "Advance when ready; the scene changes in place.",
+        "visualFocus": "Blue cold-air flow bends south while orange warm-air flow is held north of the fractured jet stream.",
+        "sourceTextPreservation": "The WebGL slide subhead and annotation are preserved verbatim in this beat."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beat-04-aftereffects",
+      "index": 0,
+      "kind": "beats",
+      "section": "Aftereffects",
+      "title": "What Could Follow",
+      "text": "Dr. Cohen said extreme weather could continue for six to eight weeks after the split.\n\nThe effects of the polar vortex could become more frequent and severe. Scientists looking at links between climate change and the polar vortex believe that the rapidly warming Arctic could bring about more intense periods of cold snaps and storms, even as winters become shorter and warmer.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {
+        "transition": "hold-context",
+        "readerAction": "Advance/back through the closing context without moving around the room.",
+        "visualFocus": "The same system remains visible while the story broadens from the event to possible recurring cold snaps and storms.",
+        "sourceTextPreservation": "The two source paragraphs immediately after the WebGL sequence are preserved as closing narration."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    }
+  ],
+  "sceneTopology": {
+    "kind": "beat-sequence",
+    "routeStops": [],
+    "regions": [],
+    "markers": [],
+    "bodies": [],
+    "countries": [],
+    "modelGroups": {},
+    "sections": [],
+    "questions": {},
+    "cameraPresets": [],
+    "spatialRelationships": {}
+  },
+  "assets": [
+    {
+      "id": "vortex_190129_d-91cd3815cf18.glb",
+      "path": "models/vortex_190129_d-91cd3815cf18.glb",
+      "url": null,
+      "type": "model",
+      "role": "assets.vortexModel",
+      "sourceField": "assets.vortexModel",
+      "bytes": null
+    },
+    {
+      "id": "polar-vortex-image-promo-videoSixteenByNineJumbo1600-v3-1e3506e8238b.jpg",
+      "path": "textures/polar-vortex-image-promo-videoSixteenByNineJumbo1600-v3-1e3506e8238b.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "assets.coverImage",
+      "sourceField": "assets.coverImage",
+      "bytes": null
+    },
+    {
+      "id": "polar-vortex-image-promo-superJumbo-v3-5dcc6fef193c.jpg",
+      "path": "textures/polar-vortex-image-promo-superJumbo-v3-5dcc6fef193c.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "assets.coverSquare",
+      "sourceField": "assets.coverSquare",
+      "bytes": null
+    },
+    {
+      "id": "vortex_cover_d1-091df2054d1c.jpg",
+      "path": "textures/vortex_cover_d1-091df2054d1c.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "assets.desktopCover",
+      "sourceField": "assets.desktopCover",
+      "bytes": null
+    },
+    {
+      "id": "vortex_cover_m1-2b91d98efaad.jpg",
+      "path": "textures/vortex_cover_m1-2b91d98efaad.jpg",
+      "url": null,
+      "type": "texture",
+      "role": "assets.mobileCover",
+      "sourceField": "assets.mobileCover",
+      "bytes": null
+    },
+    {
+      "id": "wind-key-11dc2e4aa248.png",
+      "path": "textures/wind-key-11dc2e4aa248.png",
+      "url": null,
+      "type": "texture",
+      "role": "assets.windKey",
+      "sourceField": "assets.windKey",
+      "bytes": null
+    },
+    {
+      "id": "temp-key-f7ac3b2b5aa2.png",
+      "path": "textures/temp-key-f7ac3b2b5aa2.png",
+      "url": null,
+      "type": "texture",
+      "role": "assets.tempKey",
+      "sourceField": "assets.tempKey",
+      "bytes": null
+    },
+    {
+      "id": "wind-ramp-4-f4fd71d411d5.png",
+      "path": "textures/wind-ramp-4-f4fd71d411d5.png",
+      "url": null,
+      "type": "texture",
+      "role": "assets.windRamp",
+      "sourceField": "assets.windRamp",
+      "bytes": null
+    },
+    {
+      "id": "base-default-a5a0663985ce.png",
+      "path": "textures/base-default-a5a0663985ce.png",
+      "url": null,
+      "type": "texture",
+      "role": "assets.defaultBase",
+      "sourceField": "assets.defaultBase",
+      "bytes": null
+    }
+  ],
+  "interactions": {
+    "controls": [
+      "next",
+      "back"
+    ],
+    "keyboard": {},
+    "xrControllers": {},
+    "locomotion": "story-fixed",
+    "lifecycle": {},
+    "triggers": [],
+    "hotspots": []
+  },
+  "compatibility": {
+    "acceptedForTransformation": true,
+    "excludedCategories": [
+      "virtual-walk",
+      "sports"
+    ],
+    "sourceAdapter": "Initial Web2VR per-story generated JSON instances."
+  },
+  "diagnostics": [],
+  "rawSummary": {
+    "beatCount": 5,
+    "storyBeatCount": 0,
+    "pageCount": 0,
+    "sourceBeatCount": 0,
+    "regionCount": 0,
+    "routeStopCount": 0,
+    "frameCount": 0
+  },
+  "beats": [
+    {
+      "id": "beat-00-opening",
+      "index": 0,
+      "kind": "beats",
+      "section": "Opening",
+      "title": "A Closer Look at the Polar Vortex’s Dangerously Cold Winds",
+      "text": "A Closer Look at the Polar Vortex’s Dangerously Cold Winds\n\nChicago will be as cold as the Arctic on Wednesday. We’ll show you why.\n\nBy Yuliya Parshina-Kottas, Karthik Patanjali, Jeremy White, Benjamin Wilhelm and Evan Grothjan. Jan. 30, 2019.\n\nTemperatures will plummet to minus 26 degrees Fahrenheit in Chicago and minus 31 degrees in Madison, Wis., on Wednesday night — the worst cold to grip the Upper Midwest in a generation . Parts of Alaska, on the other hand, are unseasonably warm.\n\nWhat is causing such extreme weather across the United States? The polar vortex, an ominous-sounding system of wind and cold air over the North Pole, broke apart this month. Here’s how it’s bringing dangerous cold nationwide.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {
+        "transition": "fade-in",
+        "readerAction": "Advance when ready; no locomotion required.",
+        "visualFocus": "A readable, room-scale version of the captured polar vortex model floats at eye level with the source weather layer beside it.",
+        "sourceTextPreservation": "Headline, deck, byline/date and the two opening source paragraphs are preserved as the opening beat."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beat-01-vortex-forms",
+      "index": 0,
+      "kind": "beats",
+      "section": "The Vortex Forms ...",
+      "title": "The Vortex Forms",
+      "text": "The Vortex Forms ...\n\nThe polar vortex spins to life every winter 10 miles above the ground, seen here on Dec. 22. Typically, it has a single center, surrounded by a wall of powerful winds. But sometimes it weakens —  shifting, and even breaking into pieces.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {
+        "transition": "slow-inspect",
+        "readerAction": "Advance when ready; the scene changes in place.",
+        "visualFocus": "The stratospheric wind wall is staged as a single rotating crown above the North Pole.",
+        "sourceTextPreservation": "The WebGL slide subhead and annotation are preserved verbatim in this beat."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beat-02-splits-apart",
+      "index": 1,
+      "kind": "beats",
+      "section": "… Splits Apart …",
+      "title": "Splits Apart",
+      "text": "… Splits Apart …\n\nOn Jan. 3, 2019, the polar vortex split into parts. It's a pattern that is happening more frequently and is often followed by severe cold and winter storms, said Judah Cohen, a climatologist at Atmospheric and Environmental Research, a weather risk-assessment firm.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {
+        "transition": "split-shift",
+        "readerAction": "Advance when ready; the scene changes in place.",
+        "visualFocus": "The centered vortex separates into two offset gyres while the jet stream begins to deform.",
+        "sourceTextPreservation": "The WebGL slide subhead and annotation are preserved verbatim in this beat."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beat-03-cold-arrives",
+      "index": 2,
+      "kind": "beats",
+      "section": "… Then the Cold Arrives",
+      "title": "Then the Cold Arrives",
+      "text": "… Then the Cold Arrives\n\nThe split takes two weeks to affect the weather: It warps the polar jet stream, bringing freezing arctic air south and warm air north. Parts of the Midwest were expected on Tuesday night to have a wind chill of minus 60 degrees.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {
+        "transition": "cold-drop",
+        "readerAction": "Advance when ready; the scene changes in place.",
+        "visualFocus": "Blue cold-air flow bends south while orange warm-air flow is held north of the fractured jet stream.",
+        "sourceTextPreservation": "The WebGL slide subhead and annotation are preserved verbatim in this beat."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    },
+    {
+      "id": "beat-04-aftereffects",
+      "index": 0,
+      "kind": "beats",
+      "section": "Aftereffects",
+      "title": "What Could Follow",
+      "text": "Dr. Cohen said extreme weather could continue for six to eight weeks after the split.\n\nThe effects of the polar vortex could become more frequent and severe. Scientists looking at links between climate change and the polar vortex believe that the rapidly warming Arctic could bring about more intense periods of cold snaps and storms, even as winters become shorter and warmer.",
+      "sourceIds": [],
+      "media": {},
+      "scene": {},
+      "lifecycle": {
+        "transition": "hold-context",
+        "readerAction": "Advance/back through the closing context without moving around the room.",
+        "visualFocus": "The same system remains visible while the story broadens from the event to possible recurring cold snaps and storms.",
+        "sourceTextPreservation": "The two source paragraphs immediately after the WebGL sequence are preserved as closing narration."
+      },
+      "interactions": {},
+      "originalField": "beats"
+    }
+  ]
+}

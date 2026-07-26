@@ -1,0 +1,352 @@
+:root {
+  color: #f6f2e7;
+  background: #080a08;
+  font-family: "Avenir Next", "Gill Sans", "Trebuchet MS", sans-serif;
+  --panel: rgba(12, 22, 19, 0.78);
+  --line: rgba(246, 242, 231, 0.18);
+  --muted: rgba(246, 242, 231, 0.68);
+  --accent: #6ed8c2;
+  --warm: #e5aa63;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(110, 216, 194, 0.16), transparent 24rem),
+    linear-gradient(140deg, #101611, #050706 70%);
+}
+
+button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.72rem 1rem;
+  background: rgba(246, 242, 231, 0.08);
+  color: #f6f2e7;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.runtime-shell,
+.stage {
+  position: fixed;
+  inset: 0;
+}
+
+.stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.reader-panel {
+  position: fixed;
+  left: 24px;
+  top: 24px;
+  display: grid;
+  gap: 0.65rem;
+  width: min(460px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  padding: 1rem;
+  background: var(--panel);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(18px);
+  transition: width 160ms ease, height 160ms ease, padding 160ms ease, border-radius 160ms ease;
+}
+
+.reader-panel {
+  cursor: grab;
+}
+
+.reader-panel.dragging,
+.reader-panel.dragging * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+.reader-panel-toggle {
+  position: absolute;
+  top: 0.7rem;
+  right: 0.7rem;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  padding: 0;
+  border-color: rgba(110, 216, 194, 0.44);
+  background: rgba(8, 22, 19, 0.88);
+  color: var(--accent);
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.reader-panel.minimized {
+  width: 3.75rem;
+  height: 3.75rem;
+  min-height: 3.75rem;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 999px;
+}
+
+.reader-panel.minimized > :not(.reader-panel-toggle) {
+  display: none;
+}
+
+.reader-panel.minimized .reader-panel-toggle {
+  top: 0.68rem;
+  right: 0.68rem;
+}
+
+.kicker,
+.beat-progress,
+.decision-row span {
+  margin: 0;
+  color: var(--accent);
+  font-size: 0.74rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 0.2rem;
+  font-size: clamp(1.7rem, 4vw, 3.2rem);
+  line-height: 0.95;
+}
+
+h2 {
+  margin-bottom: 0;
+  font-size: 1.1rem;
+  color: #fff9e8;
+}
+
+.beat-text {
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1.45;
+}
+
+.variant-controls {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid rgba(110, 216, 194, 0.28);
+  border-radius: 16px;
+  padding: 0.7rem;
+  background: rgba(110, 216, 194, 0.07);
+}
+
+.variant-controls[hidden] {
+  display: none;
+}
+
+.variant-interaction-label {
+  margin: 0;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.variant-control-head,
+.variant-option-list {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.variant-control-head {
+  justify-content: space-between;
+}
+
+.variant-control-head span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.variant-direction-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.variant-direction-controls button {
+  width: 100%;
+  padding: 0.5rem 0.7rem;
+}
+
+.variant-direction-controls button[data-variant-direction="-1"] {
+  grid-column: 1;
+}
+
+.variant-direction-controls button[data-variant-direction="1"] {
+  grid-column: 2;
+}
+
+.variant-option-list {
+  flex-wrap: wrap;
+}
+
+.variant-option-list button {
+  padding: 0.42rem 0.62rem;
+  font-size: 0.78rem;
+}
+
+.variant-option-list button.active {
+  border-color: var(--warm);
+  background: rgba(229, 170, 99, 0.22);
+  color: #fff5df;
+}
+
+.environment-info {
+  margin: 0;
+  border-left: 3px solid var(--accent);
+  padding-left: 0.7rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.environment-info span {
+  color: #f6f2e7;
+  font-weight: 800;
+}
+
+.environment-info a {
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.decision-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.decision-row span {
+  border: 1px solid rgba(110, 216, 194, 0.22);
+  border-radius: 999px;
+  padding: 0.32rem 0.55rem;
+  background: rgba(110, 216, 194, 0.08);
+  color: #d5fff5;
+  letter-spacing: 0.04em;
+}
+
+.reader-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.xr-button-slot {
+  min-width: 118px;
+}
+
+.beat-strip {
+  position: fixed;
+  left: 24px;
+  right: 24px;
+  bottom: 20px;
+  display: flex;
+  gap: 0.45rem;
+  overflow-x: auto;
+  padding: 0.25rem 0 0.5rem;
+}
+
+.beat-strip button {
+  flex: 0 0 46px;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  background: rgba(12, 22, 19, 0.72);
+}
+
+.beat-strip button.active {
+  border-color: var(--warm);
+  background: rgba(229, 170, 99, 0.24);
+  color: #fff5df;
+}
+
+.beat-strip button.has-model {
+  border-color: rgba(110, 216, 194, 0.44);
+}
+
+.runtime-status {
+  position: fixed;
+  right: 24px;
+  top: 24px;
+  max-width: min(360px, calc(100vw - 48px));
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.68rem 0.9rem;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+  backdrop-filter: blur(14px);
+}
+
+@media (max-width: 760px) {
+  body {
+    overflow: auto;
+  }
+
+  .reader-panel {
+    left: 12px;
+    right: 12px;
+    top: 12px;
+    width: auto;
+    max-height: 52vh;
+  }
+
+  .reader-panel.minimized {
+    right: auto;
+    width: 3.75rem;
+    max-height: 3.75rem;
+  }
+
+  .runtime-status {
+    left: 12px;
+    right: 12px;
+    top: auto;
+    bottom: 82px;
+    max-width: none;
+    border-radius: 18px;
+  }
+
+  .beat-strip {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+  }
+}
