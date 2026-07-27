@@ -83,6 +83,12 @@ test("reader preserves its camera and removes synthetic surroundings when enviro
   assert.doesNotMatch(functionSource("loadRuntimeEnvironmentEnhancement"), /scene\.add\([^)]*camera/);
 });
 
+test("neutral reader habitat does not create a synthetic marker sphere", () => {
+  const updateHabitat = functionSource("updateHabitat");
+  assert.doesNotMatch(updateHabitat, /SphereGeometry|habitatLabel|particleColor/);
+  assert.doesNotMatch(source, /function habitatLabel\(|function particleColor\(/);
+});
+
 test("reader aligns the WebXR reference-space origin with the authored environment viewpoint", () => {
   assert.match(source, /sessionstart[\s\S]*captureXrEntryPose\(\)/);
   assert.match(functionSource("captureXrEntryPose"), /camera\.getWorldPosition\(xrEntryWorldPosition\)/);
@@ -104,11 +110,49 @@ test("reader exposes environment provenance and uses the canonical checkpoint id
 });
 
 test("reader treats an explicit skipped environment as no runtime asset and keeps its neutral fallback", () => {
+  const hasPolicy = new Function(
+    `${functionSource("hasAuthoredRuntimeEnvironmentPolicy")}
+    return hasAuthoredRuntimeEnvironmentPolicy;`,
+  )();
   assert.match(functionSource("normalizeRuntimeEnvironmentEnhancement"), /if \(!source\) return null/);
   assert.match(functionSource("normalizeRuntimeEnvironmentAssignments"), /defaultEnvironment: null/);
   assert.match(functionSource("switchRuntimeEnvironmentEnhancement"), /neutralEnvironmentRoot\.visible = true/);
   assert.match(functionSource("loadRuntimeEnvironmentEnhancement"), /reason: "not-authored"/);
+  assert.match(functionSource("clearRuntimeEnvironmentEnhancement"), /scene\.fog = null/,
+    "the neutral reader preserves authored source colors instead of fogging them to black");
   assert.match(functionSource("renderEnvironmentInformation"), /environmentInfo\.hidden = true/);
+  assert.equal(hasPolicy({
+    environmentEnhancement: null,
+    provenance: {
+      decisions: {
+        "environment-enhancement": {
+          option: {
+            optionId: "environment-enhancement-no-added-environment",
+            environmentEnhancementSkipped: true,
+            environmentEnhancement: null,
+          },
+        },
+      },
+    },
+  }), true, "a compiled No added environment decision is still an authored environment policy");
+  assert.equal(hasPolicy({ environmentEnhancement: null, provenance: { decisions: {} } }), false,
+    "legacy runtimes without an Environment Enhancement decision retain their source presentation");
+});
+
+test("source playback presentation preserves source background only without an authored environment policy", () => {
+  const syncPresentation = functionSource("syncSourcePlaybackPresentation");
+  assert.match(syncPresentation, /playback\?\.sharedTimeline \? playback\.contract : null/);
+  assert.match(syncPresentation, /presentation\?\.authoredGround === true/);
+  assert.match(syncPresentation, /neutralEnvironmentRoot\.visible = !authoredGround/);
+  assert.match(syncPresentation, /runtimeHasAuthoredEnvironmentPolicy\s*\?\s*null\s*:\s*sourcePlaybackPresentationBackground\(contract\)/,
+    "Environment Enhancement owns the background whenever that checkpoint was explicitly authored");
+  assert.ok(
+    syncPresentation.indexOf("neutralEnvironmentRoot.visible = !authoredGround")
+      < syncPresentation.indexOf("activeSourcePresentationSignature === signature"),
+    "the source-authored floor wins even after an asynchronous neutral-environment refresh",
+  );
+  assert.match(syncPresentation, /scene\.background = background/);
+  assert.match(functionSource("render"), /syncSourcePlaybackPresentation\(activeSourceAnimation\)/);
 });
 
 test("ground movement cues preserve generated texture evidence and bounded real-world dimensions", () => {

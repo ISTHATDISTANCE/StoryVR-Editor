@@ -252,6 +252,14 @@ test("the Final Review viewer loads an exact variant scene and mounts its text p
   assert.match(initializer, /spatialSceneContextsByAssetId: transitionPlayback\s*\? interBeatSpatialSceneContextsByAssetId\(transitionBoundary\)\s*:\s*new Map\(exactSceneAssetLinks\.map\(\(link\) => \[link\.assetId, sceneContext\]\)\)/s);
   assert.match(initializer, /assetLinks: exactSceneAssetLinks/);
   assert.match(initializer, /scene\.add\(camera\)/);
+  assert.match(initializer, /scene\.background = new THREE\.Color\(0x080a08\)/,
+    "Final Review uses the compiled reader's dark world when no environment is authored");
+  assert.match(initializer, /scene\.fog = null/,
+    "Final Review keeps source geometry unfogged when no environment is authored");
+  assert.match(initializer, /renderer\.setClearColor\(0x080a08, 1\)/,
+    "Final Review clears XR and transparent framebuffers to the same neutral world");
+  assert.doesNotMatch(initializer, /scene\.background = new THREE\.Color\(0xf8f7ec\)/,
+    "Final Review no longer falls back to the pale authoring-canvas background");
   assert.match(initializer, /const readerHandRig = addFinalReviewReaderHandRig\(camera, camera\.aspect\)/);
   assert.match(initializer, /readerHandRig,/);
   assert.match(initializer, /controls\.enableZoom = false/,
@@ -273,18 +281,22 @@ test("the Final Review viewer loads an exact variant scene and mounts its text p
 
   assert.match(responsiveHand, /const compactness = THREE\.MathUtils\.clamp/);
   assert.match(responsiveHand, /THREE\.MathUtils\.lerp\(-0\.52, -1\.28, compactness\)/);
-  assert.match(responsiveHand, /renderTangent \/ referenceTangent/,
+  assert.match(responsiveHand, /const viewportScale = THREE\.MathUtils\.clamp\(renderTangent \/ referenceTangent/,
     "a contracted narrow-FOV source camera keeps the hand panel at the reader camera's apparent size");
+  assert.match(responsiveHand, /\(-0\.16 \* viewportScale\) \+ offsetY/,
+    "narrow source-camera FOVs keep the hand itself inside the viewport");
 
   assert.match(textPanel, /FINAL_REVIEW_XR_TEXT_PANEL_WIDTH, FINAL_REVIEW_XR_TEXT_PANEL_HEIGHT/);
   assert.match(textPanel, /updateFinalReviewTextPanelViewport\(viewer\)/);
-  assert.match(panelViewport, /group\.position\.set\(\(0\.105 \* side\) \+ offsetX, 0\.115 \+ offsetY, -0\.32\)/);
+  assert.match(panelViewport, /group\.position\.set\(\(0\.25 \* side\) \+ offsetX, 0\.115 \+ offsetY, -0\.32\)/,
+    "the hand stays visible beside the reader-attached panel");
   assert.match(panelViewport, /group\.rotation\.set\(-0\.16, -0\.12 \* side, 0\)/);
   assert.match(textPanel, /viewer\.readerHandRig\?\.panelAnchor \|\| viewer\.camera/);
   assert.match(textPanel, /viewer\.textOrientationPolicy = "reader-hand"/);
-  assert.match(textPanel, /depthTest:\s*true/, "scene objects can occlude the Final Review text panel");
+  assert.match(textPanel, /depthTest:\s*false/, "scene objects cannot occlude the reader-attached Final Review text panel");
   assert.match(textPanel, /depthWrite:\s*false/, "the transparent panel does not write an opaque depth mask");
-  assert.doesNotMatch(textPanel, /renderOrder/, "the Final Review panel uses normal scene render ordering");
+  assert.match(textPanel, /panel\.renderOrder = READER_UI_RENDER_ORDER/,
+    "the Final Review panel renders after story geometry and attention effects");
   assert.doesNotMatch(textPanel, /lockedTextPlacementForBeat|textPlacementWorldPosition/);
   assert.match(spatialEditor, /text panel attached to the reader's left hand/);
 });
@@ -314,11 +326,48 @@ test("Final Review installs and disposes the saved matching-ground cue with its 
   assert.match(disposeEnvironment, /viewer\.groundMovementCue = null/);
 });
 
-test("Reader look starts from the authored Spatial Relations reader pose", () => {
+test("Final Review keeps an authored environment policy above source presentation metadata", () => {
+  const attachEnvironment = functionSource("attachLockedEnvironmentToViewer");
+  const policyExists = functionSource("authoredEnvironmentPolicyExists");
+  const syncPresentation = new Function(
+    "THREE",
+    `
+      ${functionSource("sourcePlaybackPresentationBackground")}
+      ${functionSource("syncFinalReviewSourcePresentation")}
+      return syncFinalReviewSourcePresentation;
+    `,
+  )(THREE);
+  const viewer = {
+    scene: new THREE.Scene(),
+    renderer: { setClearColor() {} },
+    lockedEnvironmentActive: false,
+    authoredEnvironmentPolicyActive: true,
+  };
+  viewer.scene.background = new THREE.Color(0x080a08);
+  const playback = { asset: { presentation: { backgroundColor: "#e8edef" } } };
+
+  syncPresentation(viewer, playback);
+  assert.equal(viewer.scene.background.getHexString(), "080a08",
+    "an explicit neutral Environment Enhancement decision keeps the authored black world");
+
+  viewer.authoredEnvironmentPolicyActive = false;
+  syncPresentation(viewer, playback);
+  assert.equal(viewer.scene.background.getHexString(), "e8edef",
+    "legacy stories without an Environment Enhancement decision may retain source presentation metadata");
+
+  assert.match(policyExists, /decisions\?\.\["environment-enhancement"\]\?\.option/);
+  assert.match(attachEnvironment, /viewer\.authoredEnvironmentPolicyActive = authoredEnvironmentPolicyExists\(\)/);
+});
+
+test("Reader look starts from the authored pose once and preserves its position across beat changes", () => {
   const authoredTransform = functionSource("finalReviewAuthoredReaderTransform");
   const applyPose = functionSource("applyFinalReviewAuthoredReaderPose");
   const resetReaderLook = functionSource("resetFinalReviewReaderLookAnchor");
   const setMode = functionSource("setFinalReviewViewRotationMode");
+  const initializer = functionSource("initializeFinalReviewViewer");
+  const openScene = functionSource("openFinalReviewScene");
+  const finiteCameraArray = functionSource("finiteFinalReviewCameraArray");
+  const shouldRestore = functionSource("shouldRestoreFinalReviewViewerCameraState");
 
   assert.match(authoredTransform, /interactionReaderTransformForContext\(context\)/);
   assert.match(applyPose, /viewer\.viewRotationMode !== "reader"/);
@@ -329,9 +378,60 @@ test("Reader look starts from the authored Spatial Relations reader pose", () =>
   assert.match(applyPose, /viewer\.camera\.quaternion\.copy\(quaternion\)/);
   assert.match(applyPose, /viewer\.readerLookPosition\.copy\(position\)/);
   assert.match(applyPose, /viewer\.authoredReaderTransform = transform/);
-  assert.match(resetReaderLook, /if \(applyFinalReviewAuthoredReaderPose\(viewer\)\) return true/);
-  assert.match(setMode, /resetFinalReviewReaderLookAnchor\(viewer\)/,
-    "switching from orbit to Reader look reapplies the selected scene's authored station");
+  assert.doesNotMatch(resetReaderLook, /applyFinalReviewAuthoredReaderPose/,
+    "re-anchoring Reader look must use the current camera instead of the selected beat's station");
+  assert.match(resetReaderLook, /viewer\.readerLookPosition\.copy\(viewer\.camera\.position\)/);
+  assert.match(initializer, /const restoredCameraState = state\.finalReviewViewerCameraState/);
+  assert.match(initializer, /const canRestoreCameraState = shouldRestoreFinalReviewViewerCameraState\(viewer, restoredCameraState\)/);
+  assert.match(initializer, /if \(canRestoreCameraState\) \{\s*applyFinalReviewViewerCameraState\(viewer, restoredCameraState\);\s*\} else if \(viewer\.viewRotationMode === "reader"\) \{\s*applyFinalReviewAuthoredReaderPose\(viewer\);\s*\}/s,
+    "only the first reader entry uses the authored Spatial Relations pose");
+  assert.match(openScene, /state\.finalReviewViewerCameraState = captureFinalReviewViewerCameraState\(\)/,
+    "selecting another beat captures the current reader pose before rebuilding the scene");
+  assert.match(setMode, /if \(!restoredStoredCameraState\) applyFinalReviewAuthoredReaderPose\(viewer\)/,
+    "Reader look uses an authored pose only when it has no earlier reader camera to restore");
+  assert.doesNotMatch(shouldRestore, /topologyKind|topologyViewpoint/,
+    "beat-specific topology metadata cannot invalidate the reader's continuous position");
+
+  const restorePredicate = new Function(`
+    ${finiteCameraArray}
+    ${shouldRestore}
+    return shouldRestoreFinalReviewViewerCameraState;
+  `)();
+  assert.equal(restorePredicate(
+    { disposed: false, topologyKind: "single", topologyViewpoint: "egocentric" },
+    {
+      position: [2.4, 1.7, -0.8],
+      quaternion: [0, 0.38, 0, 0.92],
+      target: [1.4, 1.6, -2.1],
+      near: 0.02,
+      far: 1000,
+      topologyKind: "map",
+      topologyViewpoint: "exocentric",
+    },
+  ), true, "a valid reader camera survives a beat with different topology and viewpoint metadata");
+
+  const resetReaderAnchor = new Function("THREE", `
+    ${resetReaderLook}
+    return resetFinalReviewReaderLookAnchor;
+  `)(THREE);
+  const camera = new THREE.PerspectiveCamera(42, 1.6, 0.02, 1000);
+  camera.position.set(2.4, 1.7, -0.8);
+  camera.lookAt(1.4, 1.6, -2.1);
+  camera.updateMatrixWorld(true);
+  const preservedPosition = camera.position.clone();
+  const viewer = {
+    disposed: false,
+    viewRotationMode: "reader",
+    camera,
+    controls: { target: new THREE.Vector3(1.4, 1.6, -2.1) },
+    readerLookPosition: null,
+    readerLookDirection: null,
+    readerLookDistance: null,
+  };
+  assert.equal(resetReaderAnchor(viewer), true);
+  assert.ok(camera.position.distanceTo(preservedPosition) < 1e-9);
+  assert.ok(viewer.readerLookPosition.distanceTo(preservedPosition) < 1e-9,
+    "rebuilding the beat anchors Reader look at its existing position");
 });
 
 test("Final Review activates compiled-style Attention Guidance arrows and investigation sparkles", () => {
@@ -423,6 +523,45 @@ test("Final Review activates compiled-style Attention Guidance arrows and invest
   assert.match(dispose, /clearFinalReviewAttentionGuidance\(finalReviewViewer\)/);
 });
 
+test("Final Review preserves the saved Spatial Relations floor and framing contract", () => {
+  const framingSource = functionSource("finalReviewSpatialFraming");
+  const loadSwap = functionSource("loadTopologySwapAsset");
+  const loadSingle = functionSource("loadFinalReviewAsset");
+  const framingFor = new Function("spatialTopologyAssetPose", "spatialEntityVerticalAlignment", `
+    ${framingSource}
+    return finalReviewSpatialFraming;
+  `)(
+    () => ({ targetSize: 5.4 }),
+    (entity) => entity.verticalAlignment,
+  );
+  const centeredEntity = { kind: "glb", verticalAlignment: "center", manual: true };
+
+  assert.deepEqual(
+    framingFor({ componentId: "transition-pacing" }, centeredEntity),
+    { anchorY: 0, targetSize: 5.4, verticalAlignment: "center" },
+    "Final Review uses the authored floor origin, room-scale target, and saved centered pivot",
+  );
+  assert.equal(
+    framingFor({ componentId: "dynamic-geometry" }, centeredEntity),
+    null,
+    "the parity repair does not change other checkpoint preview framing",
+  );
+  assert.match(loadSwap, /finalReviewSpatialFraming\(viewer, spatialEntity, index, 1\)/);
+  assert.match(loadSwap, /topologyWrapper\.position\.set\(0, finalReviewFraming\?\.anchorY \?\? 0\.16, 0\)/);
+  assert.match(
+    loadSwap,
+    /if \(finalReviewFraming\)[\s\S]*?normalizeSpatialRuntimeObject\([\s\S]*?finalReviewFraming\.verticalAlignment/s,
+    "cumulative Final Review assets preserve the saved vertical-alignment pivot",
+  );
+  assert.match(loadSingle, /finalReviewSpatialFraming\(viewer, spatialEntity\)/);
+  assert.match(loadSingle, /topologyWrapper\.position\.set\(0, finalReviewFraming\?\.anchorY \?\? 0\.2, 0\)/);
+  assert.match(
+    loadSingle,
+    /if \(finalReviewFraming\)[\s\S]*?normalizeSpatialRuntimeObject\([\s\S]*?finalReviewFraming\.verticalAlignment/s,
+    "the single-asset fallback uses the same saved spatial framing",
+  );
+});
+
 test("Final Review opts into exact shared-timeline holds without changing legacy asset loading", () => {
   const attach = functionSource("attachFinalReviewSourcePlayback");
   const transitionAttach = functionSource("attachSourceTransitionPlayback");
@@ -481,25 +620,28 @@ test("Final Review opts into exact shared-timeline holds without changing legacy
   assert.equal(attachCalls, 1, "the Final Review hook cannot alter another authoring component");
 });
 
-test("Final Review follows a shared timeline's desktop and XR camera policies only when contracted", () => {
+test("Final Review always renders the authored Reader camera", () => {
   const selectEntrySource = functionSource("finalReviewSourcePlaybackEntry");
   const renderCameraSource = functionSource("finalReviewRenderCamera");
   const syncRigSource = functionSource("syncFinalReviewReaderHandRigCamera");
   const initializer = functionSource("initializeFinalReviewViewer");
   const selectEntry = new Function(`${selectEntrySource}\nreturn finalReviewSourcePlaybackEntry;`)();
-  const renderCamera = new Function("finalReviewSourcePlaybackEntry", `
+  const renderCamera = new Function(
+    "finalReviewSourcePlaybackEntry",
+    "syncFinalReviewSourcePresentation",
+    `
     ${renderCameraSource}
     return finalReviewRenderCamera;
-  `)(selectEntry);
-  const readerCamera = { aspect: 1.6 };
-  const sourceCamera = {
-    isPerspectiveCamera: true,
-    aspect: 1,
-    updates: 0,
-    updateProjectionMatrix() { this.updates += 1; },
-  };
+  `,
+  )(selectEntry, () => {});
+  const readerCamera = new THREE.PerspectiveCamera(42, 1.6, 0.02, 1000);
+  const sourceCamera = new THREE.PerspectiveCamera(32, 1, 0.1, 800);
+  sourceCamera.position.set(4, 5, 6);
+  sourceCamera.rotation.set(-0.2, 0.4, 0.1);
+  sourceCamera.updateMatrixWorld(true);
   const viewer = {
     componentId: "transition-pacing",
+    scene: new THREE.Scene(),
     camera: readerCamera,
     renderer: { xr: { isPresenting: false } },
     beat: { linkedAssetIds: ["classroom.glb"] },
@@ -526,26 +668,27 @@ test("Final Review follows a shared timeline's desktop and XR camera policies on
       sourceCamera,
     },
   };
-  assert.equal(renderCamera(viewer), sourceCamera);
-  assert.equal(sourceCamera.aspect, readerCamera.aspect);
-  assert.equal(sourceCamera.updates, 1);
+  assert.equal(renderCamera(viewer), readerCamera,
+    "a desktop source-camera policy cannot replace the Spatial Relations reader pose");
   viewer.renderer.xr.isPresenting = true;
   assert.equal(renderCamera(viewer), readerCamera,
-    "the classroom contract preserves the reader's head-tracked XR camera");
+    "XR preserves the authored, head-tracked reader camera");
   viewer.finalReviewAssetEntry.sourcePlayback.asset.camera.xrPolicy = "source-camera";
-  assert.equal(renderCamera(viewer), sourceCamera);
+  assert.equal(renderCamera(viewer), readerCamera,
+    "even a legacy XR source-camera policy cannot replace live reader tracking");
+  assert.doesNotMatch(renderCameraSource, /syncFinalReviewSourceCameraRenderProxy/,
+    "Final Review cannot render through a camera that OrbitControls does not own");
 
   let viewportUpdates = 0;
   const syncRig = new Function("finalReviewRenderCamera", "updateFinalReviewReaderHandRigViewport", `
     ${syncRigSource}
     return syncFinalReviewReaderHandRigCamera;
   `)(renderCamera, () => { viewportUpdates += 1; });
-  const rigGroup = { parent: readerCamera };
-  sourceCamera.isCamera = true;
-  sourceCamera.add = (child) => { child.parent = sourceCamera; };
-  assert.equal(syncRig({ camera: readerCamera, readerHandRig: { group: rigGroup } }, sourceCamera), true);
-  assert.equal(rigGroup.parent, sourceCamera,
-    "desktop hand UI follows the contracted render camera instead of occluding it from the old author camera");
+  const rigGroup = new THREE.Group();
+  readerCamera.add(rigGroup);
+  assert.equal(syncRig({ camera: readerCamera, readerHandRig: { group: rigGroup } }, readerCamera), true);
+  assert.equal(rigGroup.parent, readerCamera,
+    "desktop hand UI stays attached to the authored reader camera");
   assert.equal(viewportUpdates, 1);
   assert.match(
     initializer,
@@ -591,6 +734,7 @@ test("Final Review keeps assetless base beats out of the global Single-anchor as
 test("the Final Review text panel mirrors the compiled minimize control and responds to mouse clicks", () => {
   const initializer = functionSource("initializeFinalReviewViewer");
   const textPanel = functionSource("addFinalReviewTextPanel");
+  const textTexture = functionSource("makeFinalReviewTextTexture");
   const control = functionSource("makeFinalReviewTextPanelControl");
   const minimize = functionSource("setFinalReviewTextPanelMinimized");
   const updateBeat = functionSource("updateFinalReviewSceneBeat");
@@ -603,9 +747,14 @@ test("the Final Review text panel mirrors the compiled minimize control and resp
   assert.match(textPanel, /const minimizedRoot = new THREE\.Group\(\)/);
   assert.match(textPanel, /makeFinalReviewTextPanelControl\("Aa", "restore", 0\.105\)/);
   assert.match(textPanel, /setFinalReviewTextPanelMinimized\(viewer, state\.finalReviewTextPanelMinimized\)/);
+  assert.match(textTexture, /rgba\(255,253,244,1\)/,
+    "the reader-attached panel has an opaque reading surface");
 
   assert.match(control, /finalReviewTextPanelAction = action/,
     "the rendered control exposes a ray-castable action");
+  assert.match(control, /depthTest:\s*false/);
+  assert.match(control, /mesh\.renderOrder = READER_UI_RENDER_ORDER \+ 2/,
+    "panel controls render above the panel texture");
   assert.match(minimize, /state\.finalReviewTextPanelMinimized = nextMinimized/);
   assert.match(minimize, /expandedRoot\.visible = !nextMinimized/);
   assert.match(minimize, /minimizedRoot\.visible = nextMinimized/);
@@ -905,7 +1054,7 @@ test("the Final Review reader hand is draggable without stealing ordinary scene 
   assert.match(dispose, /removeEventListener\("pointerup", finalReviewViewer\.readerHandPointerUpHandler\)/);
 });
 
-test("Final Review switches view dragging between scene orbit and reader look", () => {
+test("Final Review switches view dragging while keeping the reader UI visible", () => {
   const spatialEditor = functionSource("renderFinalReviewSpatialEditor");
   const setMode = functionSource("setFinalReviewViewRotationMode");
   const syncReaderUi = functionSource("syncFinalReviewReaderUiVisibility");
@@ -916,7 +1065,7 @@ test("Final Review switches view dragging between scene orbit and reader look", 
   const textPanel = functionSource("addFinalReviewTextPanel");
   const configureXr = functionSource("configureFinalReviewXrTextPanel");
 
-  assert.match(source, /finalReviewViewRotationMode: "scene"/);
+  assert.match(source, /finalReviewViewRotationMode: "reader"/);
   assert.match(source, /finalReviewSceneOrbitCameraState: null/);
   assert.match(source, /finalReviewReaderLookCameraState: null/);
   assert.match(spatialEditor, /data-final-review-view-rotation="scene"[^>]*>Orbit scene<\/button>/);
@@ -932,16 +1081,17 @@ test("Final Review switches view dragging between scene orbit and reader look", 
   assert.match(setMode, /syncFinalReviewReaderUiVisibility\(viewer\)/);
   assert.match(textPanel, /syncFinalReviewReaderUiVisibility\(viewer\)/,
     "a rebuilt beat panel immediately follows the selected view mode");
-  assert.match(syncReaderUi, /normalizeFinalReviewViewRotationMode\(viewer\.viewRotationMode\) === "reader"/);
-  assert.match(syncReaderUi, /readerHandRig\.group\.visible = visible && viewer\.renderer\?\.xr\?\.isPresenting !== true/);
-  assert.match(syncReaderUi, /finalReviewTextGroup\.visible = visible/);
+  assert.doesNotMatch(syncReaderUi, /viewRotationMode/,
+    "the drag-view mode cannot hide reader-facing UI from Final Review");
+  assert.match(syncReaderUi, /readerHandRig\.group\.visible = viewer\.renderer\?\.xr\?\.isPresenting !== true/);
+  assert.match(syncReaderUi, /finalReviewTextGroup\.visible = true/);
   assert.match(initializer, /if \(!panelGroup\?\.visible\) return null/,
-    "a hidden Orbit panel cannot intercept pointer input");
+    "pointer handling still respects runtime visibility such as disposal or XR attachment");
   assert.match(initializer, /if \(!viewer\.readerHandRig\?\.group\?\.visible\) return null/,
-    "a hidden Orbit hand cannot intercept scene orbiting");
+    "the desktop hand cannot intercept input while XR owns the reader controls");
   assert.match(configureXr, /attachFinalReviewTextPanelToPreferredXrHand\(viewer\);\s*syncFinalReviewReaderUiVisibility\(viewer\)/s);
   assert.doesNotMatch(configureXr, /readerHandRig\.group\.visible = true/,
-    "leaving XR cannot reveal the reader UI while Orbit scene remains selected");
+    "XR visibility remains centralized in the shared reader UI policy");
   assert.match(resetReaderLook, /viewer\.readerLookPosition\.copy\(viewer\.camera\.position\)/);
   assert.match(stabilizeReaderLook, /viewer\.camera\.position\.copy\(viewer\.readerLookPosition\)/,
     "reader look rotates without orbiting the camera through the scene");
@@ -964,9 +1114,9 @@ test("Final Review switches view dragging between scene orbit and reader look", 
     readerHandRig: { group: { visible: true } },
     finalReviewTextGroup: { visible: true },
   };
-  assert.equal(syncVisibility(visibilityViewer), false);
-  assert.equal(visibilityViewer.readerHandRig.group.visible, false);
-  assert.equal(visibilityViewer.finalReviewTextGroup.visible, false);
+  assert.equal(syncVisibility(visibilityViewer), true);
+  assert.equal(visibilityViewer.readerHandRig.group.visible, true);
+  assert.equal(visibilityViewer.finalReviewTextGroup.visible, true);
   visibilityViewer.viewRotationMode = "reader";
   assert.equal(syncVisibility(visibilityViewer), true);
   assert.equal(visibilityViewer.readerHandRig.group.visible, true);

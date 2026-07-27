@@ -7,6 +7,28 @@ import { EventDispatcher } from "three";
 const source = await readFile(new URL("./reader-template/src/main.js", import.meta.url), "utf8");
 const html = await readFile(new URL("./reader-template/index.html", import.meta.url), "utf8");
 const styles = await readFile(new URL("./reader-template/src/styles.css", import.meta.url), "utf8");
+const questControllerProfiles = JSON.parse(await readFile(
+  new URL("./reader-template/public/webxr-input-profiles/profiles/profilesList.json", import.meta.url),
+  "utf8",
+));
+const questControllerProfile = JSON.parse(await readFile(
+  new URL("./reader-template/public/webxr-input-profiles/profiles/meta-quest-touch-plus-v2/profile.json", import.meta.url),
+  "utf8",
+));
+const questControllerLeftGlb = await readFile(
+  new URL("./reader-template/public/webxr-input-profiles/profiles/meta-quest-touch-plus-v2/left.glb", import.meta.url),
+);
+const questControllerRightGlb = await readFile(
+  new URL("./reader-template/public/webxr-input-profiles/profiles/meta-quest-touch-plus-v2/right.glb", import.meta.url),
+);
+
+function glbJson(buffer) {
+  assert.equal(buffer.toString("ascii", 0, 4), "glTF");
+  assert.equal(buffer.readUInt32LE(4), 2);
+  assert.equal(buffer.toString("ascii", 16, 20), "JSON");
+  const jsonLength = buffer.readUInt32LE(12);
+  return JSON.parse(buffer.toString("utf8", 20, 20 + jsonLength));
+}
 
 function functionSource(name) {
   const start = source.indexOf(`function ${name}(`);
@@ -535,6 +557,85 @@ test("WebXR Trigger is reserved for UI-ray interactions and never advances a bea
   assert.doesNotMatch(`${configure}\n${handler}`, /BoxGeometry|makeInteractionButton|new THREE\.Mesh/);
 });
 
+test("compiled WebXR reader renders the locally bundled Meta Quest 3 Touch Plus controllers", () => {
+  const configure = functionSource("configureXrInteractionControllers");
+  const attach = functionSource("attachXrControllerVisual");
+  const detach = functionSource("detachXrControllerVisual");
+  const update = functionSource("updateXrControllerVisuals");
+
+  assert.match(source, /XRControllerModelFactory/);
+  assert.match(source, /webxr-input-profiles\/profiles/);
+  assert.match(source, /const xrControllerModelFactory = new XRControllerModelFactory\(\)/);
+  assert.match(source, /xrControllerModelFactory\.setPath\(XR_CONTROLLER_PROFILE_PATH\)/);
+  assert.match(configure, /handleXrTextPanelControllerConnected\(entry, event\)/);
+  assert.match(attach, /const controllerModelInput = new THREE\.Group\(\)/);
+  assert.match(attach, /createControllerModel\(controllerModelInput\)/);
+  assert.match(attach, /entry\.grip\.add\(controllerModel\)/);
+  assert.match(attach, /controllerModelInput\.dispatchEvent\(\{ type: "connected", data: entry\.inputSource \}\)/);
+  assert.match(detach, /type: "disconnected"/);
+  assert.match(detach, /entry\.controllerModel\?\.removeFromParent/);
+  assert.match(update, /renderer\.xr\.isPresenting && xrControllerEntryOwnsHand\(entry\)/);
+  assert.equal(source.includes("function createXrControllerFallbackModel("), false);
+  assert.doesNotMatch(attach, /CapsuleGeometry|TorusGeometry/);
+  assert.equal(questControllerProfile.profileId, "meta-quest-touch-plus-v2");
+  assert.equal(
+    questControllerProfiles["meta-quest-touch-plus"].path,
+    "meta-quest-touch-plus-v2/profile.json",
+  );
+  assert.equal(
+    questControllerProfiles["meta-quest-touch-plus-v2"].path,
+    "meta-quest-touch-plus-v2/profile.json",
+  );
+  assert.ok(questControllerLeftGlb.byteLength > 750_000);
+  assert.ok(questControllerRightGlb.byteLength > 750_000);
+  for (const [hand, glb] of [["left", questControllerLeftGlb], ["right", questControllerRightGlb]]) {
+    const controllerJson = glbJson(glb);
+    const nodeNames = new Set(controllerJson.nodes.map((node) => node.name).filter(Boolean));
+    assert.deepEqual(controllerJson.extensionsUsed || [], []);
+    assert.ok(controllerJson.meshes.length > 0);
+    for (const component of Object.values(questControllerProfile.layouts[hand].components)) {
+      for (const response of Object.values(component.visualResponses)) {
+        assert.ok(nodeNames.has(response.valueNodeName), `${hand} ${response.valueNodeName} exists`);
+        assert.ok(nodeNames.has(response.minNodeName), `${hand} ${response.minNodeName} exists`);
+        assert.ok(nodeNames.has(response.maxNodeName), `${hand} ${response.maxNodeName} exists`);
+      }
+    }
+  }
+  assert.match(source, /updateXrControllerVisuals\(\);\n  updateXrTextPanelInteractionRays\(\)/);
+});
+
+test("WebXR controller ownership keeps only the newest connected source for each physical hand", () => {
+  const handOwner = evaluateFunctions(["xrControllerHandOwner"], "xrControllerHandOwner");
+  const olderLeft = { index: 0, handedness: "left", connected: true, connectionOrder: 1 };
+  const newerLeft = { index: 1, handedness: "left", connected: true, connectionOrder: 2 };
+  const right = { index: 2, handedness: "right", connected: true, connectionOrder: 3 };
+
+  assert.equal(handOwner([olderLeft, newerLeft, right], "left"), newerLeft);
+  assert.equal(handOwner([olderLeft, newerLeft, right], "left", olderLeft), olderLeft);
+  newerLeft.connected = false;
+  assert.equal(handOwner([olderLeft, newerLeft, right], "left"), olderLeft);
+  olderLeft.connected = false;
+  assert.equal(handOwner([olderLeft, newerLeft, right], "left"), null);
+
+  const reconcile = functionSource("reconcileXrControllerHand");
+  const deactivate = functionSource("deactivateXrControllerHandEntry");
+  const connected = functionSource("handleXrTextPanelControllerConnected");
+  const disconnected = functionSource("handleXrTextPanelControllerDisconnected");
+  const configuredInput = functionSource("updateConfiguredControllerInteractions");
+  const ray = functionSource("setXrTextPanelRayState");
+
+  assert.match(reconcile, /deactivateXrControllerHandEntry\(previousEntry\)/);
+  assert.match(reconcile, /xrTextPanelControllersByHand\.set\(handedness, nextEntry\)/);
+  assert.match(reconcile, /attachXrControllerVisual\(nextEntry\)/);
+  assert.match(deactivate, /detachXrControllerVisual\(entry\)/);
+  assert.match(connected, /entry\.connectionOrder = \+\+xrControllerConnectionRevision/);
+  assert.match(connected, /reconcileXrControllerHand\(handedness, entry\)/);
+  assert.match(disconnected, /event\.data !== entry\.inputSource/);
+  assert.match(disconnected, /reconcileXrControllerHand\(handedness\)/);
+  assert.match(configuredInput, /if \(!xrControllerEntryOwnsHand\(entry\)\) continue/);
+  assert.match(ray, /xrControllerEntryOwnsHand\(entry\) && active/);
+});
+
 test("Quest gamepad decoding identifies reserved Trigger/Grip and assignable navigation controls", () => {
   const controls = evaluateFunctionsWithThree([
     "normalizeRuntimeControllerControl",
@@ -658,6 +759,7 @@ test("WebXR text-panel Previous and Next actions step variants and consume disab
       let setBeatCalls = 0;
       function xrTextPanelHit() { return { action, disabled }; }
       function xrTextPanelScrollStartHit() { return xrTextPanelHit(); }
+      function xrControllerEntryOwnsHand() { return true; }
       function setTextPanelMinimized() {}
       function setXrTextPanelRayState() {}
       function runtimeVariantGroupForBeat() { return { id: "variant-group" }; }
@@ -789,17 +891,21 @@ test("compiled reader Grip grabs the panel or a direct-manipulation target", () 
   assert.match(styles, /\.reader-panel\.dragging/);
 });
 
-test("reader text panel uses normal scene occlusion without becoming a manipulation collider", () => {
+test("reader text panel stays readable above scene geometry without becoming a manipulation collider", () => {
   const create = functionSource("createRuntimeHandTextPanel");
   const control = functionSource("makeRuntimeTextPanelControl");
   const button = functionSource("makeRuntimeTextPanelButton");
+  const texture = functionSource("makeRuntimeTextPanelTexture");
   const directRoots = functionSource("activeRuntimeDirectTargetRoots");
 
   for (const panelPart of [create, control, button]) {
-    assert.match(panelPart, /depthTest:\s*true/, "panel surfaces respect the scene depth buffer");
+    assert.match(panelPart, /depthTest:\s*false/, "reader-attached panel surfaces ignore story-scene depth");
     assert.match(panelPart, /depthWrite:\s*false/, "transparent panel surfaces do not write an opaque depth mask");
-    assert.doesNotMatch(panelPart, /renderOrder/, "panel surfaces use normal scene render ordering");
+    assert.match(panelPart, /renderOrder = XR_TEXT_PANEL_RENDER_ORDER/,
+      "panel surfaces render after story geometry and attention effects");
   }
+  assert.match(texture, /rgba\(8, 22, 19, 1\)/,
+    "the immersive reader panel has an opaque reading surface");
   assert.doesNotMatch(directRoots, /spatialTextPanel|storyvrTextPanel/, "the panel is not a Direct manipulation target");
 });
 
@@ -1357,6 +1463,7 @@ test("reader keeps beat manipulation independent of transition policy and update
   const begin = functionSource("beginXrDirectManipulation");
   const beginScale = functionSource("beginXrDirectManipulationScale");
   const disconnect = functionSource("handleXrTextPanelControllerDisconnected");
+  const deactivateController = functionSource("deactivateXrControllerHandEntry");
   const render = functionSource("render");
   assert.match(configure, /configureRuntimeInBeatInteractionTargets\(\)/);
   assert.match(configure, /isDirectManipulationInteraction\(outgoingBoundary\)/);
@@ -1370,7 +1477,8 @@ test("reader keeps beat manipulation independent of transition policy and update
     "a scalable-only first grip arms without moving the object");
   assert.match(beginScale, /hit\?\.root !== grab\.root/);
   assert.match(beginScale, /twoHandScalable !== true/);
-  assert.match(disconnect, /endXrDirectManipulation\(entry, \{ evaluate: false \}\)/);
+  assert.match(disconnect, /reconcileXrControllerHand\(handedness\)/);
+  assert.match(deactivateController, /xrDirectManipulationEntryIsActive\(entry\)[\s\S]*cancelXrDirectManipulation\(\)/);
   assert.ok(render.indexOf("updateSourceAnimation(delta, frameTime)") < render.indexOf("updateRuntimeDirectManipulation()"),
     "interaction pivots are applied after animation updates");
 

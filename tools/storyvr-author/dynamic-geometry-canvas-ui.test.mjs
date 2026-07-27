@@ -294,6 +294,12 @@ test("the editor viewer uses only saved scene assets and locked Spatial Relation
   assert.doesNotMatch(initialize, /proceduralDynamicsCandidateProjectedSpatialScene|suppressedAuthoredAssetIds|projectedSpatialScene/);
   assert.match(initialize, /dynamicSceneAssetLinks\(proposal, \[beat\], sceneContext\)/,
     "the viewer must not pool assets from other beats or variants");
+  assert.match(initialize, /spatialSceneEntities\(lockedSpatialRelationsContract\(\), sceneContext\)/,
+    "the Dynamics editor resolves the Reader from the same exact saved scene");
+  assert.match(initialize, /createSpatialReaderRig\(root, layers\.viewpointKind, layoutKind, readerEntity\)/,
+    "the Dynamics spatial editor shows the same Reader model and pose as Spatial Relations");
+  assert.match(initialize, /readerRig:\s*readerEditorLayer\.rig/);
+  assert.match(initialize, /readerProxy:\s*readerEditorLayer\.proxy/);
   assert.match(initialize, /sceneContext,/);
   assert.doesNotMatch(initialize, /addInheritedTextComfortLayer/,
     "the Dynamics scene editor must not materialize the reader-hand text system surface");
@@ -317,8 +323,11 @@ test("the editor viewer uses only saved scene assets and locked Spatial Relation
     "the existing authored model remains visible");
   assert.match(loadAsset, /lockedSpatialGlbEntityForViewer\(viewer, assetLink\.assetId, assetLink\.entityId\)/);
   assert.match(loadAsset, /spatialTopologyAssetPose\(viewer, index, Math\.max\(total, 1\)\)\.targetSize/);
-  assert.match(loadAsset, /if \(spatialTransformApplied\) normalizeSpatialRuntimeObject\(gltf\.scene, targetSize\)/,
-    "the Dynamics preview uses the same model normalization as the saved Spatial Relations scene");
+  assert.match(
+    loadAsset,
+    /if \(spatialTransformApplied\)[\s\S]*?normalizeSpatialRuntimeObject\([\s\S]*?targetSize,[\s\S]*?spatialEntityVerticalAlignment\(spatialEntity\)/,
+    "the Dynamics preview uses the same model normalization and grounding as the saved Spatial Relations scene",
+  );
   assert.doesNotMatch(loadAsset, /authoredSourceSuppressed/);
   assert.match(loadAsset, /new THREE\.PlaneGeometry\(width, height\)/,
     "scene images preserve their saved plane dimensions as well as their transform");
@@ -521,21 +530,14 @@ test("the author preview binds motion to existing authored entities without clon
   assert.doesNotMatch(dispose, /disposeObject|skeleton|geometry\.dispose/);
 });
 
-test("Dynamics treats existing manual scene links as upstream input and never writes generated overrides", () => {
-  const manualRecord = sourceFunction("manualSceneAssetLinkRecord");
-  const manualIds = sourceFunction("manualSceneAssetIdsForContext");
+test("Dynamics uses ordinary Source Graph links and has no generated asset override path", () => {
   const sceneBeat = sourceFunction("spatialSceneBeat");
   const sceneAssetIds = sourceFunction("spatialSceneLinkedAssetIds");
   const refreshAfterApply = sourceFunction("refreshAfterProceduralDynamicsApply");
 
-  assert.match(manualRecord, /graph\?\.manualSceneAssetLinks/);
-  assert.match(manualRecord, /store\.byScope/);
-  assert.match(manualRecord, /proceduralDynamicsSceneKey\(context\)/);
-  assert.match(manualIds, /record\.mode && record\.mode !== "exact"/);
-  assert.match(sceneBeat, /manualSceneAssetIdsForContext\(state\.data\?\.graph, context\)/);
-  assert.match(sceneBeat, /manualAssetIds \?\? variantOptionAssetIds\(option\)/);
-  assert.match(sceneAssetIds, /if \(manualAssetIds !== null\) return manualAssetIds/);
-  assert.doesNotMatch(source, /function applyProceduralDynamicsAssetLinksToGraph|source:\s*"generated-dynamics"/);
+  assert.match(sceneBeat, /linkedAssetIds: variantOptionAssetIds\(option\)/);
+  assert.match(sceneAssetIds, /return option \? variantOptionAssetIds\(option\) : beatAssetIds\(beat\)/);
+  assert.doesNotMatch(source, /manualSceneAssetLinks|manualSceneAssetIdsForContext|generated-dynamics/);
   assert.match(refreshAfterApply, /state\.data\.graph = preservedGraph/,
     "a dirty Source Graph draft is preserved verbatim because Dynamics has no graph output to merge");
 });

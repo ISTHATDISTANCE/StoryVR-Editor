@@ -23,7 +23,29 @@ import {
 test("motion-only Generate and Apply preserve graph, linked assets, Spatial Relations, and attention", async (t) => {
   const fixture = await createDynamicsFixture(t);
   const { options, modelA, modelB, beatId, modelAEntityId } = fixture;
+  const original = await loadAuthorProject(options);
+  const legacyGraph = structuredClone(original.graph);
+  legacyGraph.manualSceneAssetLinks = {
+    schemaVersion: "storyvr-manual-scene-asset-links/v1",
+    byScope: {
+      [`beat:${beatId}`]: {
+        mode: "exact",
+        assetIds: [modelB.id],
+        beatId,
+        source: "generated-dynamics",
+      },
+    },
+  };
+  await saveStoryGraph(options, legacyGraph);
   const before = await loadAuthorProject(options);
+  assert.equal(Object.prototype.hasOwnProperty.call(before.graph, "manualSceneAssetLinks"), false);
+  assert.deepEqual(
+    before.graph.beats.find((beat) => beat.id === beatId).linkedAssets
+      .map((asset) => typeof asset === "string" ? asset : asset.id),
+    original.graph.beats.find((beat) => beat.id === beatId).linkedAssets
+      .map((asset) => typeof asset === "string" ? asset : asset.id),
+    "legacy Dynamics asset overrides are discarded instead of changing ordinary Source Graph links",
+  );
   const graphBefore = structuredClone(before.graph);
   const spatialBefore = structuredClone(before.spatialRelations);
   const attentionBefore = structuredClone(before.attentionGuidance);
@@ -78,7 +100,7 @@ test("motion-only Generate and Apply preserve graph, linked assets, Spatial Rela
   assert.deepEqual(fresh.spatialRelations, spatialBefore, "Apply must not mutate any saved transform");
   assert.deepEqual(fresh.attentionGuidance, attentionBefore, "Apply must not re-infer attention");
   assert.equal(fresh.proceduralDynamics.revision, 1);
-  assert.equal(fresh.graph.manualSceneAssetLinks?.byScope?.[`beat:${beatId}`], undefined);
+  assert.equal(Object.prototype.hasOwnProperty.call(fresh.graph, "manualSceneAssetLinks"), false);
   assert.equal(fresh.decisions["spatial-relations"].status, "current");
   assert.equal(fresh.decisions["asset-topology"].status, "current");
   assert.equal(fresh.decisions["attention-guidance"].status, "current");

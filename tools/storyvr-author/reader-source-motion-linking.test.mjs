@@ -52,6 +52,46 @@ test("reader supports the generic layered texture-atlas material contract", () =
   );
 });
 
+test("reader renders only audience-facing source annotations", () => {
+  const isReaderVisible = evaluateFunctions(
+    ["sharedTimelineAnnotationIsReaderVisible"],
+    "sharedTimelineAnnotationIsReaderVisible",
+  );
+  assert.equal(isReaderVisible({ label: "Internal timeline summary" }), false);
+  assert.equal(isReaderVisible({ id: "missing-target", text: "Incomplete annotation" }), false);
+  assert.equal(isReaderVisible({ id: "object-target", text: "Incomplete annotation", target: {} }), false);
+  assert.equal(isReaderVisible({
+    id: "fan",
+    text: "Fan",
+    node: "label_fan",
+    opacitySource: { node: "label_fan", path: "scale.x" },
+  }), true);
+  assert.equal(isReaderVisible({ label: "Intentional fixed card", readerVisible: true }), true);
+  assert.equal(isReaderVisible({
+    id: "hidden",
+    text: "Hidden label",
+    node: "hidden-node",
+    readerVisible: false,
+  }), false);
+  assert.match(functionSource("createSharedTimelinePlayback"),
+    /const annotations = \(contract\.annotations \|\| \[\]\)\.filter\(sharedTimelineAnnotationIsReaderVisible\)/,
+    "compiled playback excludes metadata-only annotations before creating DOM elements");
+  assert.match(functionSource("initializeSharedTimelineAnnotations"),
+    /if \(!sharedTimelineAnnotationIsReaderVisible\(definition\)\) continue;/,
+    "the DOM annotation initializer independently rejects metadata-only records");
+  assert.match(functionSource("initializeSharedTimelineAnnotations"),
+    /playback\.contract\?\.presentation\?\.annotations/,
+    "compiled annotations inherit the source asset's all-beat presentation style");
+  assert.match(functionSource("initializeSharedTimelineAnnotations"),
+    /transparentBackground \? "0" : "0\.28rem 0\.5rem"/,
+    "bare source labels do not retain the generated card padding");
+  const updateAnnotations = functionSource("updateSharedTimelineAnnotations");
+  assert.match(updateAnnotations, /stage\.getBoundingClientRect\(\)/);
+  assert.match(updateAnnotations, /readerPanelOccupiesLeftEdge[\s\S]*readableStageLeft/);
+  assert.match(updateAnnotations, /THREE\.MathUtils\.clamp\(unclampedLeft/);
+  assert.match(updateAnnotations, /THREE\.MathUtils\.clamp\(unclampedTop/);
+});
+
 test("normalizes inline targets and assignment-array overrides", () => {
   const normalizeSourceMotionTracks = evaluateFunctions([
     ...routeHelperFunctions,
@@ -252,7 +292,7 @@ test("shared-timeline playback selects the boundary for the crossed variant rout
   );
 });
 
-test("reader keeps legacy playback and guards source cameras in WebXR", () => {
+test("reader keeps legacy playback while preserving the authored viewer camera", () => {
   assert.match(functionSource("createSourceAnimationPlayback"), /if \(hasSourceMotionLinking\)/);
   assert.match(functionSource("createSourceAnimationPlayback"), /createLegacySourceAnimationPlayback/);
   assert.match(functionSource("createLegacySourceAnimationPlayback"), /clips\.map\(\(clip\) => mixer\.clipAction\(clip\)\)/);
@@ -261,8 +301,12 @@ test("reader keeps legacy playback and guards source cameras in WebXR", () => {
   assert.match(functionSource("sourceTransitionForBeatChange"), /track\.kind !== "clip" && track\.kind !== "camera"/);
   assert.match(functionSource("sourceTransitionForBeatChange"), /sourceMotionTrackAppliesToComponent\(track, "inter-beat-dynamics"\)/);
   assert.match(functionSource("activeRenderCamera"), /renderCameraForPlayback\(activeSourceAnimation, camera, renderer\.xr\.isPresenting\)/);
-  assert.match(functionSource("renderCameraForPlayback"), /preserve-viewer-camera/);
-  assert.match(functionSource("sourceAnimationStatusText"), /source camera transition skipped in WebXR to preserve headset tracking/);
+  assert.match(functionSource("renderCameraForPlayback"), /return readerCamera/);
+  assert.doesNotMatch(functionSource("renderCameraForPlayback"), /return playback\.sourceCamera/);
+  assert.match(
+    functionSource("sourceAnimationStatusText"),
+    /source camera motion retained while preserving the reader view/,
+  );
   assert.match(functionSource("loadModel"), /cameras/);
   assert.match(functionSource("clonedSourceCameras"), /storyvrSourceCameraIndex/);
   assert.match(functionSource("showModel"), /transitionPartSelectors/, "reader uses the union of boundary states during a transition");
@@ -285,7 +329,7 @@ test("reader keeps legacy Path metadata readable while the XR panel follows a ha
   assert.match(functionSource("runtimeSourceCameraFocus"), /intersectObjects\(spatialTextFocusCandidates, false, spatialTextFocusHits\)/);
   assert.doesNotMatch(functionSource("runtimeSourceCameraFocus"), /intersectObject\(activeModel, true\)/);
   assert.match(functionSource("render"), /updateSpatialTextPanelPose\(frameTime\)/);
-  assert.match(functionSource("renderCameraForPlayback"), /if \(xrPresenting\) return usesSourceCamera\(xrPolicy\) \? playback\.sourceCamera : readerCamera/);
+  assert.match(functionSource("renderCameraForPlayback"), /return readerCamera/);
 });
 
 test("reader consumes Spatial Relations visual transforms while text uses the hand surface", () => {
@@ -315,7 +359,8 @@ test("reader consumes Spatial Relations visual transforms while text uses the ha
   assert.match(functionSource("modelAssetForBeat"), /spatialTextEntityForBeat\(beat\)\?\.anchor\?\.assetId/);
   assert.match(functionSource("attachSpatialTextPanelToEntry"), /entry\.anchor \|\| entry\.grip \|\| entry\.controller/);
   assert.doesNotMatch(functionSource("render"), /applySpatialTextOrientation|applySpatialTextCollisionClearance/);
-  assert.match(functionSource("renderCameraForPlayback"), /if \(xrPresenting\)/, "Spatial Relations does not take ownership of the headset camera");
+  assert.match(functionSource("renderCameraForPlayback"), /return readerCamera/,
+    "Spatial Relations owns the reader pose without replacing live headset tracking");
 });
 
 test("initial model selection resolves text entities without reading activeIndex during initialization", () => {
@@ -340,10 +385,13 @@ test("reader hand panel bypasses obsolete authored clearance and focus placement
 test("reader enables the lightweight immersive-XR rendering profile", () => {
   assert.match(source, /preserveDrawingBuffer: false/);
   assert.match(source, /powerPreference: "high-performance"/);
-  assert.match(source, /setFramebufferScaleFactor\(XR_FRAMEBUFFER_SCALE_FACTOR\)/);
-  assert.match(source, /setFoveation\(XR_FIXED_FOVEATION\)/);
+  assert.match(source, /setFramebufferScaleFactor\(performanceOptimization\.settings\.xrFramebufferScaleFactor\)/);
+  assert.match(source, /setFoveation\(performanceOptimization\.settings\.xrFixedFoveation\)/);
   assert.match(source, /sessionstart[\s\S]*renderer\.shadowMap\.enabled = false/);
-  assert.match(functionSource("render"), /if \(!renderer\.xr\.isPresenting\) controls\.update\(\)/);
+  assert.match(
+    functionSource("render"),
+    /if \(!renderer\.xr\.isPresenting\) \{[\s\S]*controls\.update\(\);[\s\S]*stabilizeDesktopReaderLook\(\);[\s\S]*\}/,
+  );
   assert.match(functionSource("updateSharedTimelineAnnotations"), /renderer\.xr\.isPresenting[\s\S]*setSharedTimelineAnnotationsHidden/);
 });
 
@@ -558,10 +606,16 @@ test("shared contracts veto same-asset legacy playback while uncontracted assets
   assert.match(functionSource("showModel"), /if \(!contractedTimeline\) applySourcePartMask/, "contracted assets skip legacy selector masks even without an exact boundary");
 });
 
-test("reader ground-aligns only contracted shared-timeline GLBs above its neutral floor", () => {
+test("reader migrates legacy spatial GLBs to grounding while preserving explicit current and shared-timeline modes", () => {
   const sharedTimelineGroundAligned = new Function(`
     ${functionSource("sharedTimelineGroundAligned")}
     return sharedTimelineGroundAligned;
+  `)();
+  const runtimeSpatialEntityGroundAligned = new Function(`
+    const CURRENT_SPATIAL_RELATIONS_INFERENCE_VERSION = "per-scene-exact-assets-v3";
+    ${functionSource("sharedTimelineGroundAligned")}
+    ${functionSource("runtimeSpatialEntityGroundAligned")}
+    return runtimeSpatialEntityGroundAligned;
   `)();
   const frameModel = new Function("THREE", "modelFrameTarget", `
     ${functionSource("frameModel")}
@@ -588,11 +642,36 @@ test("reader ground-aligns only contracted shared-timeline GLBs above its neutra
   assert.ok(Math.abs(contractedBounds.min.y) < 1e-9, "contracted source surfaces remain above the reader floor");
   assert.ok(Math.abs(legacyBounds.getCenter(new THREE.Vector3()).y) < 1e-9, "legacy readers keep their existing center alignment");
   assert.ok(legacyBounds.min.y < 0, "the no-contract path remains vertically centered rather than grounded");
+  assert.equal(runtimeSpatialEntityGroundAligned(
+    { verticalAlignment: "ground" },
+    null,
+    { inferenceVersion: "per-scene-exact-assets-v3" },
+  ), true);
+  assert.equal(runtimeSpatialEntityGroundAligned(
+    { verticalAlignment: "center" },
+    null,
+    { inferenceVersion: "per-scene-exact-assets-v3" },
+  ), false, "a current contract can still explicitly request a centered pivot");
+  assert.equal(runtimeSpatialEntityGroundAligned(
+    { verticalAlignment: "center", manual: true },
+    null,
+    { inferenceVersion: "per-scene-exact-assets-v2" },
+  ), true, "legacy authored spatial entities migrate to floor contact");
+  assert.equal(runtimeSpatialEntityGroundAligned(
+    { manual: true },
+    null,
+    { inferenceVersion: "per-scene-exact-assets-v2" },
+  ), true, "legacy manual spatial entities without alignment also migrate to floor contact");
+  assert.equal(
+    runtimeSpatialEntityGroundAligned(null, { framing: { verticalAlignment: "ground" } }),
+    true,
+    "non-spatial shared-timeline readers retain their existing framing contract",
+  );
 
   const primaryLoader = functionSource("showModel");
   const supplementalLoader = functionSource("showSupplementalModel");
-  assert.match(primaryLoader, /groundAligned: sharedTimelineGroundAligned\(sharedTimelineContract\)/);
-  assert.match(supplementalLoader, /groundAligned: sharedTimelineGroundAligned\(sharedTimelineContract\)/);
+  assert.match(primaryLoader, /runtimeSpatialEntityGroundAligned\([\s\S]*options\.spatialEntity,[\s\S]*sharedTimelineContract,[\s\S]*runtimeSpatialRelations/);
+  assert.match(supplementalLoader, /runtimeSpatialEntityGroundAligned\([\s\S]*entry\.entity,[\s\S]*sharedTimelineContract,[\s\S]*runtimeSpatialRelations/);
 });
 
 test("resolves neutral shared-timeline initial, scrub, hold, reverse, and clear states", () => {
@@ -820,7 +899,7 @@ test("camera-only clip coordination preserves an explicit null source-camera ind
   assert.equal(helpers.sharedTimelineSourceCamera([sourceCamera], { cameraIndex: 0 }), sourceCamera);
 });
 
-test("shared source camera persists across desktop states while XR preserves the viewer", () => {
+test("shared source camera animation never replaces the authored reader view", () => {
   const renderCameraForPlayback = evaluateFunctions(["renderCameraForPlayback"], "renderCameraForPlayback");
   const readerCamera = { id: "viewer" };
   const sourceCamera = { id: "source" };
@@ -833,10 +912,11 @@ test("shared source camera persists across desktop states while XR preserves the
     },
   };
   for (const mode of ["frozen", "segment", "segment-complete"]) {
-    assert.equal(renderCameraForPlayback({ ...shared, mode }, readerCamera, false), sourceCamera);
+    assert.equal(renderCameraForPlayback({ ...shared, mode }, readerCamera, false), readerCamera);
     assert.equal(renderCameraForPlayback({ ...shared, mode }, readerCamera, true), readerCamera);
   }
-  assert.equal(renderCameraForPlayback({ sourceCamera, mode: "segment-complete" }, readerCamera, false), readerCamera, "legacy camera behavior remains unchanged");
+  assert.equal(renderCameraForPlayback({ sourceCamera, mode: "segment" }, readerCamera, false), readerCamera,
+    "legacy source cameras also remain motion-only in the StoryVR reader");
 });
 
 test("applies declared generic bindings and reports unsupported operations without guessing", () => {

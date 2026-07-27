@@ -17,6 +17,7 @@ It returns a `StoryVRRuntimeInstance` payload with:
 - `contentUnits`: normalized beat-like story units from `beats`, `pages`, `sourceBeats`, `regions`, or Louise `data/beats.json`.
 - `sceneTopology`: normalized route stops, regions, countries, markers, model groups, sections and camera presets.
 - `assets`: normalized model, texture, data, media and remote asset references.
+- `pointCloudEffects` (optional): explicit model-plus-PCD composite effects reconstructed from analyzer evidence.
 - `assetRoot`: centralized original/dev/hosted/build/filesystem path conventions.
 - `interactions`: controls, lifecycle, trigger and hotspot metadata.
 - `diagnostics`: non-fatal compatibility findings.
@@ -122,5 +123,7 @@ Skipped stories are listed in the migration report with an explicit reason and n
 - Asset-root divergence: original, app-relative, repo-hosted, filesystem and build-base paths are emitted together.
 - Topology divergence: route stops, regions, countries, model groups, markers and object lineups are carried into `sceneTopology`.
 - Interaction divergence: reader actions, transitions, hotspots, controller and keyboard metadata are carried into `interactions`.
+
+PCD files remain ordinary captured assets unless `story_structure_candidates.json` also declares a valid `storyvr-pointcloud-composite-effect/v1` record with `scope.activation: "explicit-source-ptcloud-link-only"`. The adapter never infers a point-cloud effect from a `.pcd` file or from missing story data. Unsupported, incomplete, or unrelated records leave `pointCloudEffects` absent, preserving the existing runtime shape for other stories.
 
 Existing per-story runtimes remain untouched. This adapter creates the normalized StoryVR payload that a shared `createScene(...)` renderer can consume next.

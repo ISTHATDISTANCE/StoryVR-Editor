@@ -6,8 +6,15 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { parseCodexJsonObject as parseJsonObject } from "../codex-json.mjs";
+import {
+  analyzeExplicitPointCloudEffects,
+  discoverExplicitPointCloudLinks,
+  pointCloudDownloadCandidates,
+  validatePcdBytes
+} from "./pointcloud-effect.mjs";
 
-const VERSION = "0.16.1";
+const VERSION = "0.16.2";
 const JUDGMENT_SCHEMA_VERSION = "storyvr-animation-judgment/v3";
 const CODEX_PROMPT_VERSION = "storyvr-animation-codex/v6";
 const JUDGMENT_CACHE_SCHEMA_VERSION = "storyvr-codex-judgment-cache/v1";
@@ -23,6 +30,8 @@ const MAX_EMBEDDED_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_CODEX_IMAGE_ATTACHMENTS = 24;
 const MAX_MODEL_RESOLUTION_PASSES = 3;
 const MAX_MODEL_RESOLUTION_CANDIDATES = 24;
+const MAX_EXPLICIT_POINT_CLOUD_DOWNLOADS = 4;
+const MAX_EXPLICIT_POINT_CLOUD_BYTES = 64 * 1024 * 1024;
 const MIN_ACCESSIBLE_CARD_MODEL_CONFIDENCE = 0.70;
 const CODEX_INPUT_HARD_LIMIT_CHARS = 1_048_576;
 const CODEX_PROMPT_TARGET_CHARS = 900_000;
@@ -1111,6 +1120,9 @@ function judgmentSemanticInput(evidence) {
     assetDiscovery,
     sourceEvidence,
     glbModels,
+    ...((evidence?.pointCloudEffects || []).length ? {
+      pointCloudEffects: canonicalObjectKeys(evidence.pointCloudEffects)
+    } : {}),
     relationships,
     runtimeBeats: (evidence?.runtimeObservation?.beatRuntimeStates || []).map(semanticRuntimeBeat),
     visualObservation: semanticVisualObservation(evidence),
@@ -1134,6 +1146,7 @@ function codexJudgmentCachePath(probe, options, fingerprint) {
 function normalizedAssetTypeHint(value, url = "") {
   const hint = String(value || "").toLowerCase();
   if (/model|glb|gltf/.test(hint)) return "model";
+  if (/point.?cloud|\bpcd\b/.test(hint)) return "pointcloud";
   if (/script|javascript|\bjs\b/.test(hint)) return "script";
   if (/data|json|csv|geojson|topojson/.test(hint)) return "data";
   if (/image|texture|photo/.test(hint)) return "image";
@@ -1482,13 +1495,36 @@ function validateDownloadedModelBytes(bytes, url) {
 
 async function downloadCandidate(url, outputRoot, options) {
   const assetType = normalizedAssetTypeHint(options.assetTypeHint, url) || classifyUrl(url);
-  const folder = assetType === "model" ? "models" : assetType === "script" ? "scripts" : assetType === "data" ? "data" : assetType === "image" ? "textures" : "other";
+  const folder = assetType === "model"
+    ? "models"
+    : assetType === "script"
+      ? "scripts"
+      : assetType === "data"
+        ? "data"
+        : assetType === "image"
+          ? "textures"
+          : assetType === "pointcloud"
+            ? "pointclouds"
+            : "other";
   const localPath = path.join(outputRoot, "downloads", folder, filenameForUrl(url));
   const response = await fetchWithTimeout(url, options);
   if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
+  if (assetType === "pointcloud") {
+    const declaredLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_EXPLICIT_POINT_CLOUD_BYTES) {
+      throw new Error(`Point-cloud download exceeds the ${MAX_EXPLICIT_POINT_CLOUD_BYTES}-byte safety limit.`);
+    }
+  }
   const arrayBuffer = await response.arrayBuffer();
   const bytes = Buffer.from(arrayBuffer);
   if (assetType === "model") validateDownloadedModelBytes(bytes, url);
+  if (assetType === "pointcloud") {
+    if (bytes.length > MAX_EXPLICIT_POINT_CLOUD_BYTES) {
+      throw new Error(`Point-cloud download exceeds the ${MAX_EXPLICIT_POINT_CLOUD_BYTES}-byte safety limit.`);
+    }
+    validatePcdBytes(bytes);
+  }
+  await fs.mkdir(path.dirname(localPath), { recursive: true });
   await fs.writeFile(localPath, bytes);
   return {
     url,
@@ -1523,22 +1559,30 @@ async function downloadProbeAssets(probe, outputRoot, options) {
   const directCandidates = discoverCandidateRecords(probe);
   const priorityDirectCandidates = directCandidates.filter((candidate) => ["model", "script"].includes(candidate.assetType));
   const deferredDirectCandidates = directCandidates.filter((candidate) => !["model", "script"].includes(candidate.assetType));
+  const explicitPointCloudLinks = discoverExplicitPointCloudLinks(probe);
+  const explicitPointCloudCandidates = pointCloudDownloadCandidates(probe, explicitPointCloudLinks)
+    .slice(0, MAX_EXPLICIT_POINT_CLOUD_DOWNLOADS);
   const downloads = [];
   const failedDownloads = [];
   const attemptedUrls = [];
+  const primaryAttemptedUrls = [];
+  const pointCloudAttemptedUrls = [];
   const visited = new Set();
   const resolvedReferences = new Map();
   let lastReferences = [];
   let lastBases = [];
 
-  const tryCandidate = async (candidate) => {
+  const tryCandidate = async (candidate, { explicitPointCloud = false } = {}) => {
     const url = candidate?.url;
     if (!url) return null;
     const existing = downloads.find((download) => download.url === url || download.finalUrl === url);
     if (existing) return existing;
-    if (visited.has(url) || attemptedUrls.length >= options.maxDownloads) return null;
+    const budgetAttempts = explicitPointCloud ? pointCloudAttemptedUrls : primaryAttemptedUrls;
+    const budgetLimit = explicitPointCloud ? MAX_EXPLICIT_POINT_CLOUD_DOWNLOADS : options.maxDownloads;
+    if (visited.has(url) || budgetAttempts.length >= budgetLimit) return null;
     visited.add(url);
     attemptedUrls.push(url);
+    budgetAttempts.push(url);
     try {
       const download = await downloadCandidate(url, outputRoot, {
         ...options,
@@ -1556,7 +1600,7 @@ async function downloadProbeAssets(probe, outputRoot, options) {
         } : null
       });
       downloads.push(download);
-      if (candidate.rawValue) {
+      if (candidate.rawValue && candidate.assetType === "model") {
         resolvedReferences.set(candidate.rawValue, {
           rawValue: candidate.rawValue,
           assetType: candidate.assetType,
@@ -1596,14 +1640,14 @@ async function downloadProbeAssets(probe, outputRoot, options) {
 
   const downloadBatch = async (candidates, attemptLimit = options.maxDownloads) => {
     for (const candidate of candidates) {
-      if (attemptedUrls.length >= Math.min(options.maxDownloads, attemptLimit)) break;
+      if (primaryAttemptedUrls.length >= Math.min(options.maxDownloads, attemptLimit)) break;
       await tryCandidate(candidate);
     }
   };
 
   const resolveDiscoveredModels = async () => {
     for (let pass = 0; pass < MAX_MODEL_RESOLUTION_PASSES; pass += 1) {
-      if (attemptedUrls.length >= options.maxDownloads) break;
+      if (primaryAttemptedUrls.length >= options.maxDownloads) break;
       const beforeDownloadCount = downloads.length;
       const sources = [
         ...probeDiscoveryTextSources(probe),
@@ -1622,7 +1666,7 @@ async function downloadProbeAssets(probe, outputRoot, options) {
       await downloadBatch(Array.from(exactModelCandidates.values()).sort((a, b) => stableCompare(a.url, b.url)));
 
       for (const reference of lastReferences) {
-        if (attemptedUrls.length >= options.maxDownloads) break;
+        if (primaryAttemptedUrls.length >= options.maxDownloads) break;
         if (resolvedReferences.has(reference.rawValue)) continue;
         const directModel = directModelForReference(downloads, reference);
         if (directModel) {
@@ -1645,7 +1689,7 @@ async function downloadProbeAssets(probe, outputRoot, options) {
         for (const candidate of modelResolutionCandidates(reference, lastBases, probe?.story_url || "")) {
           const download = await tryCandidate(candidate);
           if (download) break;
-          if (attemptedUrls.length >= options.maxDownloads) break;
+          if (primaryAttemptedUrls.length >= options.maxDownloads) break;
         }
       }
 
@@ -1660,11 +1704,15 @@ async function downloadProbeAssets(probe, outputRoot, options) {
   await resolveDiscoveredModels();
   await downloadBatch(deferredDirectCandidates);
   await resolveDiscoveredModels();
+  for (const candidate of explicitPointCloudCandidates) {
+    await tryCandidate(candidate, { explicitPointCloud: true });
+  }
 
   return {
     downloads,
     failedDownloads,
     attemptedUrls,
+    explicitPointCloudLinks,
     assetDiscovery: {
       schemaVersion: "storyvr-asset-discovery/v1",
       directCandidateCount: directCandidates.length,
@@ -1679,7 +1727,18 @@ async function downloadProbeAssets(probe, outputRoot, options) {
           rawValue: reference.rawValue,
           source: reference.source,
           sourceType: reference.sourceType
-        }))
+        })),
+      ...(explicitPointCloudLinks.length ? {
+        explicitPointCloud: {
+          activation: "explicit-source-ptcloud-link-only",
+          linkCount: explicitPointCloudLinks.length,
+          candidateCount: explicitPointCloudCandidates.length,
+          attemptedCount: pointCloudAttemptedUrls.length,
+          maxDownloads: MAX_EXPLICIT_POINT_CLOUD_DOWNLOADS,
+          maxBytesPerDownload: MAX_EXPLICIT_POINT_CLOUD_BYTES,
+          primaryDownloadBudgetUnaffected: true
+        }
+      } : {})
     }
   };
 }
@@ -3841,7 +3900,8 @@ async function buildEvidenceBundle(probe, inputPath, outputRoot, options) {
     downloads,
     failedDownloads,
     attemptedUrls,
-    assetDiscovery
+    assetDiscovery,
+    explicitPointCloudLinks
   } = await downloadProbeAssets(probe, outputRoot, options);
 
   const sourceEvidence = [];
@@ -3893,6 +3953,11 @@ async function buildEvidenceBundle(probe, inputPath, outputRoot, options) {
       nodes: [],
       animations: []
     };
+  });
+  const pointCloudEffects = analyzeExplicitPointCloudEffects({
+    links: explicitPointCloudLinks,
+    downloads,
+    sourceEvidence
   });
 
   const runtimeSnapshots = (Array.isArray(probe.snapshots) ? probe.snapshots : []).map(normalizeSnapshot);
@@ -3985,6 +4050,7 @@ async function buildEvidenceBundle(probe, inputPath, outputRoot, options) {
     visualObservation,
     imageRelevance,
     imageAssets,
+    ...(pointCloudEffects.length ? { pointCloudEffects } : {}),
     variantObservation: {
       groups: Array.isArray(probe.variant_groups) ? probe.variant_groups : probe.storyvr_author_input?.variant_groups || [],
       interactions: Array.isArray(probe.variant_interactions) ? probe.variant_interactions : [],
@@ -4179,6 +4245,9 @@ function compactEvidenceForCodexPrompt(evidence, semanticEvidence, profile) {
     } : null,
     imageRelevance: semanticEvidence.imageRelevance,
     imageAssets: semanticEvidence.imageAssets,
+    ...(Array.isArray(semanticEvidence.pointCloudEffects) && semanticEvidence.pointCloudEffects.length
+      ? { pointCloudEffects: semanticEvidence.pointCloudEffects }
+      : {}),
     glbAnimations: {
       modelCount: semanticEvidence.glbModels.length,
       animatedModelCount: semanticEvidence.glbModels.filter((model) => model.animations.length > 0).length,
@@ -4370,18 +4439,6 @@ function extractCodexFinalText(stdout) {
     }
   }
   return completed || deltas.trim();
-}
-
-function parseJsonObject(text) {
-  const raw = String(text || "").trim();
-  try {
-    return JSON.parse(raw);
-  } catch {
-    const start = raw.indexOf("{");
-    const end = raw.lastIndexOf("}");
-    if (start >= 0 && end > start) return JSON.parse(raw.slice(start, end + 1));
-    throw new Error("Codex response did not contain a JSON object.");
-  }
 }
 
 function stableStringSet(values) {
@@ -5718,6 +5775,9 @@ function normalizeJudgmentForEvidence(judgment, evidence) {
     modelBeatAssociations: modelBeatAssociationsForJudgment(judgment, evidence),
     imageBeatAssociations: imageBeatAssociationsForJudgment(judgment, evidence),
     glbAnimationInterpretations: glbAnimationInterpretationsForJudgment(judgment, evidence),
+    ...((evidence?.pointCloudEffects || []).length ? {
+      pointCloudEffects: evidence.pointCloudEffects
+    } : {}),
     inferredBeatAssetStates: inferredBeatAssetStatesForJudgment(judgment, evidence),
     beatRuntimeStates: Array.isArray(evidence?.runtimeObservation?.beatRuntimeStates)
       ? evidence.runtimeObservation.beatRuntimeStates
@@ -5955,6 +6015,49 @@ function compactList(values, maxCount = 4) {
   return items.length > maxCount ? `${visible}, +${items.length - maxCount} more` : visible;
 }
 
+function pointCloudEffectsSection(judgment, evidence) {
+  const effects = Array.isArray(evidence?.pointCloudEffects)
+    ? evidence.pointCloudEffects
+    : Array.isArray(judgment?.pointCloudEffects)
+      ? judgment.pointCloudEffects
+      : [];
+  if (!effects.length) return "";
+  const lines = ["## Explicit Point-Cloud Composite Effects"];
+  for (const effect of effects) {
+    const pointCloud = effect.pointCloud || {};
+    const model = effect.model || {};
+    const timeline = effect.driverTimeline || {};
+    const contract = effect.reconstructionContract || {};
+    lines.push(
+      `- ${pointCloud.file || pointCloud.reference || effect.id}: status=${effect.captureStatus || "partial"}; `
+      + `scope=${effect.scope?.activation || "explicit-source-link-only"}; model=${model.file || model.reference || "unresolved"}; `
+      + `points=${pointCloud.summary?.observedPointCount ?? pointCloud.summary?.declaredPointCount ?? "unknown"}; `
+      + `driverGroups=${timeline.driverCount ?? "unresolved"}.`
+    );
+    if (contract.kind) {
+      lines.push(
+        `  - Reconstruction: ${contract.kind}; source-point-motion=${contract.sourcePointMotion}; `
+        + `reveal=${contract.revealMechanism}; group-column=${contract.groupIndexColumn}; group-count=${contract.groupCount}.`
+      );
+    }
+    const emitTimes = Array.isArray(contract.emitTimesSeconds) ? contract.emitTimesSeconds : [];
+    if (emitTimes.length) {
+      lines.push(
+        `  - Emit times: ${emitTimes.map((item) => (
+          `group ${item.groupIndex}=${item.emitTimeSeconds ?? "unresolved"}s`
+        )).join(", ")}.`
+      );
+    }
+    if (effect.scope?.requiredForUnrelatedStories === false) {
+      lines.push("  - Compatibility: this optional contract is activated only by an explicit source `ptcloud` link and is not required for unrelated stories.");
+    }
+    if (Array.isArray(effect.limitations) && effect.limitations.length) {
+      lines.push(`  - Limitations: ${effect.limitations.join("; ")}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 function glbAnimationInterpretationSection(judgment, evidence) {
   const interpretations = glbAnimationInterpretationsForJudgment(judgment, evidence);
   if (!interpretations.length) return "";
@@ -6015,6 +6118,7 @@ function summaryMarkdownFromJudgment(judgment, evidence) {
   const runtimeBeatSection = beatRuntimeStateSection(judgment, evidence);
   const inferredBeatSection = inferredBeatAssetStateSection(judgment, evidence);
   const imageSection = imageBeatAssociationsSection(judgment, evidence);
+  const pointCloudSection = pointCloudEffectsSection(judgment, evidence);
   const interpretationSection = glbAnimationInterpretationSection(judgment, evidence);
   const investigationSection = investigationSummarySection(judgment);
   if (typeof judgment.summaryMarkdown === "string" && judgment.summaryMarkdown.trim()) {
@@ -6024,6 +6128,7 @@ function summaryMarkdownFromJudgment(judgment, evidence) {
     summary = replaceOrAppendMarkdownSection(summary, "Beat Runtime State", runtimeBeatSection);
     summary = replaceOrAppendMarkdownSection(summary, "Inferred Beat Asset State", inferredBeatSection);
     summary = replaceOrAppendMarkdownSection(summary, "Image Beat Associations", imageSection);
+    summary = replaceOrAppendMarkdownSection(summary, "Explicit Point-Cloud Composite Effects", pointCloudSection);
     summary = replaceOrAppendMarkdownSection(summary, "GLB Animation Interpretation", interpretationSection);
     summary = replaceOrAppendMarkdownSection(summary, "Investigation Notes", investigationSection);
     return `${summary}\n`;
@@ -6050,6 +6155,8 @@ function summaryMarkdownFromJudgment(judgment, evidence) {
     inferredBeatSection.trim(),
     "",
     imageSection.trim(),
+    "",
+    pointCloudSection.trim(),
     "",
     interpretationSection.trim(),
     "",
@@ -6085,6 +6192,7 @@ async function shouldWriteAuthorInput(probe, options) {
 
 function authorAssetFolderForType(assetType) {
   if (assetType === "model") return "models";
+  if (assetType === "pointcloud") return "pointclouds";
   if (assetType === "script") return "scripts";
   if (assetType === "data") return "data";
   if (assetType === "image") return "textures";
@@ -6093,6 +6201,7 @@ function authorAssetFolderForType(assetType) {
 
 function storyVrAssetType(assetType, filePath = "") {
   if (assetType === "model") return "model";
+  if (assetType === "pointcloud") return "pointcloud";
   if (assetType === "script") return "script";
   if (assetType === "data") return "data";
   if (assetType === "image") return "texture";
@@ -6111,9 +6220,15 @@ async function copyProbeDownloadsToAuthorInput(resourceFolder, evidence, probe) 
   const copyFailures = [];
   const imageGroups = authorInputImageGroupsFromProbe(probe);
   const imageGroupIndex = imageGroupIndexByUrl(imageGroups, evidence.story?.url || probe?.story_url || "");
+  const linkedPointCloudUrls = new Set((evidence?.pointCloudEffects || []).flatMap((effect) => [
+    effect?.pointCloud?.assetUrl,
+    effect?.pointCloud?.finalUrl
+  ]).filter(Boolean).map((url) => normalizeUrl(url)));
   for (const download of Array.isArray(evidence.downloads) ? evidence.downloads : []) {
     const imageGroup = imageGroupForDownload(download, imageGroupIndex, evidence.story?.url || probe?.story_url || "");
     if (download.assetType === "image" && !imageGroup) continue;
+    const linkedPointCloud = download.assetType === "pointcloud"
+      && [download.url, download.finalUrl].some((url) => linkedPointCloudUrls.has(normalizeUrl(url)));
 
     const sourcePath = absoluteLocalPath(download.localPath);
     const fileName = path.basename(sourcePath || download.localPath || filenameForUrl(download.url || "asset"));
@@ -6139,9 +6254,17 @@ async function copyProbeDownloadsToAuthorInput(resourceFolder, evidence, probe) 
       final_url: download.finalUrl || download.url,
       local_path: localPath,
       asset_type: storyVrAssetType(download.assetType, fileName),
-      source_type: imageGroup ? "image_group" : "animation_probe_download",
-      source_types: imageGroup ? ["animation_probe_download", "image_group"] : ["animation_probe_download"],
-      adaptation_relevance: download.assetType === "model" || imageGroup ? "core_story" : "source_evidence",
+      source_type: imageGroup
+        ? "image_group"
+        : linkedPointCloud
+          ? "explicit_pointcloud_effect"
+          : "animation_probe_download",
+      source_types: imageGroup
+        ? ["animation_probe_download", "image_group"]
+        : linkedPointCloud
+          ? ["animation_probe_download", "explicit_pointcloud_effect"]
+          : ["animation_probe_download"],
+      adaptation_relevance: download.assetType === "model" || imageGroup || linkedPointCloud ? "core_story" : "source_evidence",
       story_prefix_match: "",
       discovery_depth: 0,
       file_size: download.fileSize || null,
@@ -8059,6 +8182,33 @@ function visualEntriesWithoutAggregateVariants(entries, variantGroups) {
   });
 }
 
+function pointCloudEffectsForAuthorInput(evidence, assetManifest) {
+  const effects = Array.isArray(evidence?.pointCloudEffects) ? evidence.pointCloudEffects : [];
+  if (!effects.length) return [];
+  const indexes = assetRecordIndexes(assetManifest);
+  return effects.map((effect) => {
+    const modelRecord = assetRecordForProbeAssociation({
+      assetUrl: effect?.model?.assetUrl,
+      assetFile: effect?.model?.file
+    }, indexes);
+    const pointCloudRecord = assetRecordForProbeAssociation({
+      assetUrl: effect?.pointCloud?.assetUrl,
+      assetFile: effect?.pointCloud?.file
+    }, indexes);
+    return {
+      ...effect,
+      model: {
+        ...(effect.model || {}),
+        localPath: modelRecord?.local_path || ""
+      },
+      pointCloud: {
+        ...(effect.pointCloud || {}),
+        localPath: pointCloudRecord?.local_path || ""
+      }
+    };
+  });
+}
+
 function buildStoryStructureForAuthorInput(probe, evidence, judgment, assetManifest) {
   const { variantGroups, unresolvedVariantGroups } = variantHierarchyForAuthorInput(probe, judgment, assetManifest);
   const nonSequentialVariantGroups = [...variantGroups, ...unresolvedVariantGroups];
@@ -8070,6 +8220,7 @@ function buildStoryStructureForAuthorInput(probe, evidence, judgment, assetManif
   const title = evidence.story?.title || probe.title || evidence.story?.slug || probe.slug || "NYT story";
   const headings = authorInputHeadingsFromProbe(probe, title);
   const imageGroups = authorInputImageGroupsFromProbe(probe);
+  const pointCloudEffects = pointCloudEffectsForAuthorInput(evidence, assetManifest);
   return {
     story_url: evidence.story?.url || probe.story_url || "",
     timestamp: evidence.generatedAt || new Date().toISOString(),
@@ -8079,6 +8230,7 @@ function buildStoryStructureForAuthorInput(probe, evidence, judgment, assetManif
     slides,
     captions: [],
     image_groups: imageGroups,
+    ...(pointCloudEffects.length ? { point_cloud_effects: pointCloudEffects } : {}),
     variant_groups: variantGroups,
     unresolved_variant_groups: unresolvedVariantGroups,
     text_only_parts: textOnlyParts,
@@ -8093,14 +8245,18 @@ function buildStoryStructureForAuthorInput(probe, evidence, judgment, assetManif
       textOnlyPartCount: textOnlyParts.length,
       variantGroupCount: variantGroups.length,
       unresolvedVariantGroupCount: unresolvedVariantGroups.length,
-      variantAssetAssociationCount: collectedVariantAssetAssociations(probe).length
+      variantAssetAssociationCount: collectedVariantAssetAssociations(probe).length,
+      ...(pointCloudEffects.length ? { pointCloudEffectCount: pointCloudEffects.length } : {})
     },
     notes: [
       "Generated from animation logic probe output so StoryVR author can load this probe as a fetched-resource story.",
       "Visual beats are derived from modelBeatAssociations and imageBeatAssociations; unassociated runtime active text is retained as text_only_parts.",
       "Evidence-derived variant_groups preserve mutually exclusive states within one story beat instead of flattening them into narrative successors.",
       "Collector-observed parent interaction paths are authoritative for nesting child controls under a top-level option.",
-      "Dependent-looking controls without direct parent interaction evidence are retained in unresolved_variant_groups and are not promoted to top-level beats."
+      "Dependent-looking controls without direct parent interaction evidence are retained in unresolved_variant_groups and are not promoted to top-level beats.",
+      ...(pointCloudEffects.length ? [
+        "point_cloud_effects is optional and appears only when captured source configuration explicitly links a GLB model to a PCD asset."
+      ] : [])
     ]
   };
 }
@@ -8111,7 +8267,11 @@ async function writeAuthorInput(probe, inputPath, outputRoot, evidence, judgment
   const storyStructurePath = path.join(metadataRoot, "story_structure_candidates.json");
   const existingStoryStructure = await readJsonIfExists(storyStructurePath);
   await fs.mkdir(metadataRoot, { recursive: true });
-  for (const dir of ["models", "scripts", "data", "textures", "other"]) {
+  const authorAssetDirectories = ["models", "scripts", "data", "textures", "other"];
+  if ((evidence?.downloads || []).some((download) => download.assetType === "pointcloud")) {
+    authorAssetDirectories.push("pointclouds");
+  }
+  for (const dir of authorAssetDirectories) {
     await fs.mkdir(path.join(resourceFolder, dir), { recursive: true });
   }
 
@@ -8154,7 +8314,10 @@ async function writeAuthorInput(probe, inputPath, outputRoot, evidence, judgment
     visualBeatCount: storyStructure.slides.length,
     textOnlyPartCount: storyStructure.text_only_parts.length,
     variantGroupCount: storyStructure.variant_groups.length,
-    unresolvedVariantGroupCount: storyStructure.unresolved_variant_groups.length
+    unresolvedVariantGroupCount: storyStructure.unresolved_variant_groups.length,
+    ...(Array.isArray(storyStructure.point_cloud_effects) ? {
+      pointCloudEffectCount: storyStructure.point_cloud_effects.length
+    } : {})
   };
 
   const assetManifestPath = path.join(metadataRoot, "asset_manifest.json");
@@ -10281,6 +10444,7 @@ async function runSelfTest() {
   assert.equal(normalizedJudgment.imageBeatAssociations.length, 1);
   assert.equal(normalizedJudgment.imageBeatAssociations[0].associationSource, "direct");
   assert.equal(normalizedJudgment.glbAnimationInterpretations.length, 1);
+  assert.equal(Object.hasOwn(normalizedJudgment, "pointCloudEffects"), false);
   assert.equal(normalizedJudgment.glbAnimationInterpretations[0].triggerMapping.type, "local-scroll-window-progress");
   assert.equal(normalizedJudgment.modelBeatAssociations.find((item) => item.assetFile === staticSummary.file)?.hasEmbeddedAnimation, false);
 
@@ -10367,6 +10531,7 @@ async function runSelfTest() {
   assert.deepEqual(imageSlide?.attributes?.probeAssociationSources, ["direct"]);
   assert.equal(authorStructure.headings[0].text, "Section One");
   assert.equal(authorStructure.image_groups.length, 1);
+  assert.equal(Object.hasOwn(authorStructure, "point_cloud_effects"), false);
   assert.equal(authorStructure.image_groups[0].caption.text, "Mars image caption");
   assert.equal(authorStructure.image_groups[0].credits[0].text, "NASA/JPL-Caltech");
   assert.equal(authorStructure.text_only_parts.some((item) => item.text === "Second beat"), true);
@@ -10380,6 +10545,7 @@ async function runSelfTest() {
   assert.match(imageManifestRecord?.local_path || "", /textures\/mars-image\.jpg/);
   assert.equal(await exists(path.join(authorInputRoot, "models", "fixture.glb")), true);
   assert.equal(await exists(path.join(authorInputRoot, "textures", "mars-image.jpg")), true);
+  assert.equal(await exists(path.join(authorInputRoot, "pointclouds")), false);
   assert.equal(await exists(path.join(authorInputRoot, "metadata", "asset_manifest.json")), true);
 
   const marsStoryUrl = "https://www.nytimes.com/interactive/2018/05/01/science/mars-nasa-insight-ar-3d-ul.html";

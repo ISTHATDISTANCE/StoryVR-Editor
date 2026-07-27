@@ -169,7 +169,10 @@ test("Interaction preview reuses the locked Spatial Relations scene from an outs
     /if \(viewer\?\.spatialEditorCamera\) \{[\s\S]*?frameSpatialSceneOverview\(viewer\)[\s\S]*?return;[\s\S]*?\}[\s\S]*?fitInheritedTopologyPreviewCamera/,
     "the reader and scene open in Spatial Relations' outside overview before inherited egocentric framing can run",
   );
-  assert.match(sceneLoader, /normalizeSpatialRuntimeObject\(gltf\.scene, topologyPose\.targetSize\)/);
+  assert.match(
+    sceneLoader,
+    /normalizeSpatialRuntimeObject\([\s\S]*?topologyPose\.targetSize,[\s\S]*?spatialEntityVerticalAlignment\(entity\)/,
+  );
   assert.match(sceneLoader, /viewer\.spatialContract \|\| state\.spatialRelationsDraft/,
     "the shared loader resolves the locked authoring scene outside Spatial Relations");
   assert.match(destinationGizmo, /makeInteractionLocomotionDestination/);
@@ -207,9 +210,10 @@ test("Interaction spatial editor always shows both reader hands with a panel on 
   assert.match(handRig, /leftHand\.add\(panelAnchor\)/, "the text-panel anchor is parented to the left hand");
   assert.match(handRig, /makeFinalReviewTextTexture\(beat/, "the preview panel renders the selected beat text");
   assert.match(handRig, /new THREE\.PlaneGeometry\(/, "the hand anchor owns a visible panel surface");
-  assert.match(handRig, /depthTest:\s*true/, "scene objects can occlude the preview text panel");
+  assert.match(handRig, /depthTest:\s*false/, "scene objects cannot occlude the reader-attached preview text panel");
   assert.match(handRig, /depthWrite:\s*false/, "the transparent panel does not write an opaque depth mask");
-  assert.doesNotMatch(handRig, /renderOrder/, "the preview panel uses normal scene render ordering");
+  assert.match(handRig, /panel\.renderOrder = READER_UI_RENDER_ORDER/,
+    "the preview panel renders after story geometry");
   assert.match(handRig, /group,[\s\S]*panelAnchor,[\s\S]*textPanel/, "the persistent hand rig exposes its panel objects");
   assert.doesNotMatch(handRig, /viewer\.kind !== "direct"/, "the baseline reader is not limited to Direct manipulation");
   assert.match(initializer, /(?:readerRig|spatialReaderRig|interactionReaderRig)/, "the spatial reader is stored separately from policy overlays");

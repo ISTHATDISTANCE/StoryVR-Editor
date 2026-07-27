@@ -219,6 +219,16 @@ test("a Transition editor resolves the exact previous-default and selected desti
     "the opened editor must not pool its scene from the old story-wide beat selection");
   assert.match(initialize, /sceneContext:\s*beatContext\.toSceneContext/);
   assert.match(initialize, /beat:\s*beatContext\.to/);
+  assert.match(initialize, /thumbnailMode\s*\?\s*null\s*:\s*spatialSceneEntities\(lockedSpatialRelationsContract\(\), beatContext\.toSceneContext \|\| sceneContext\)/,
+    "the full Transition editor resolves the Reader from its exact destination scene");
+  assert.match(initialize, /thumbnailMode\s*\?\s*null\s*:\s*createSpatialReaderRig\(root, layers\.viewpointKind, layoutKind, readerEntity\)/,
+    "the Transition spatial editor shows the saved Reader without adding it to Story Canvas thumbnails");
+  assert.match(initialize, /readerRig:\s*readerEditorLayer\?\.rig \|\| null/);
+  assert.match(initialize, /readerProxy:\s*readerEditorLayer\?\.proxy \|\| null/);
+  assert.match(sourceFunction("frameInterBeatSourcePlaybackAsset"), /!viewer\.thumbnailMode && viewer\.readerRig \? viewer\.root : object/,
+    "the full Transition editor frames the Reader with the destination scene while thumbnails retain their focused framing");
+  assert.match(sourceFunction("requestSourceCameraCue"), /!viewer\.thumbnailMode && !state\.sourceCameraPreviewEnabled/,
+    "a declared source camera cannot hide the Reader unless the author explicitly previews that camera");
   assert.doesNotMatch(initialize, /addInheritedTextComfortLayer/,
     "the Transition spatial editor does not add a detached prose panel");
   assert.doesNotMatch(sourceFunction("addInterBeatTransitionOverlays"), /makeTextSprite|Beat A:|Beat B:|reader travels/,
@@ -285,7 +295,8 @@ test("shared-timeline playback stays authoritative for host routes while variant
     "stale editor camera state cannot override explicit source-window framing");
   assert.match(initialize, /frameInterBeatSourcePlaybackAsset\(viewer\)/);
   assert.match(framePreviewAsset, /candidate\?\.assetId === assetId/);
-  assert.match(framePreviewAsset, /fitCameraToObject\(viewer\.camera, viewer\.controls, object\)/);
+  assert.match(framePreviewAsset, /fitCameraToObject\([\s\S]*!viewer\.thumbnailMode && viewer\.readerRig \? viewer\.root : object/,
+    "the full editor frames the Reader with the coordinated asset while thumbnails remain asset-only");
   assert.match(thumbnailSpec, /previewFraming:\s*"source-playback-focus"/);
   assert.match(thumbnailSpec, /startProgress:\s*windowState\.startProgress/);
   assert.match(thumbnailSpec, /endProgress:\s*windowState\.endProgress/);

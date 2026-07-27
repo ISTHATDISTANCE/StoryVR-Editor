@@ -33,6 +33,7 @@ import {
 } from "./engine.mjs";
 import { searchEnvironmentCandidates } from "./environment/providers.mjs";
 import {
+  decodeEnvironmentGenerationReferenceImages,
   generateEnvironmentImageWithCodex,
   generateMatchingGroundTextureWithCodex,
   sanitizeEnvironmentGenerationPrompt,
@@ -80,6 +81,7 @@ const environmentCandidateCache = new Map();
 let manualEnvironmentUploadCounter = 0;
 let environmentGenerationBusy = false;
 const MAX_ENVIRONMENT_JSON_BYTES = 64 * 1024;
+const MAX_ENVIRONMENT_GENERATION_JSON_BYTES = 32 * 1024 * 1024;
 const MAX_DYNAMICS_JSON_BYTES = 512 * 1024;
 let environmentProviderStatus = initialEnvironmentProviderStatus();
 
@@ -244,9 +246,10 @@ async function handleApi(req, res) {
 
     if (route === "POST /api/environment-enhancement/generate") {
       const projectState = await assertEnvironmentEnhancementReady();
-      const body = await readLimitedJsonBody(req, MAX_ENVIRONMENT_JSON_BYTES);
+      const body = await readLimitedJsonBody(req, MAX_ENVIRONMENT_GENERATION_JSON_BYTES);
       const beatId = requireAuthoredEnvironmentBeat(projectState, body.beatId);
       const prompt = sanitizeEnvironmentGenerationPrompt(body.prompt);
+      const referenceImages = decodeEnvironmentGenerationReferenceImages(body.referenceImages);
       if (environmentGenerationBusy) {
         throw httpError(409, "An environment panorama and matching ground are already being prepared.");
       }
@@ -263,6 +266,7 @@ async function handleApi(req, res) {
         const baselineEnvironment = await environmentStore.getState();
         const generated = await generateEnvironmentImageWithCodex({
           prompt,
+          referenceImages,
           codexBin: CODEX_BIN,
           codexVersion: codexStatus.version,
         });
@@ -554,7 +558,18 @@ async function handleApi(req, res) {
     }
 
     if (route === "POST /api/compile") {
-      writeJsonResponse(res, 200, await compileAuthorRuntime(authorOptions()));
+      const codexStatus = await getCodexStatus().catch(() => ({
+        authenticated: false,
+        codexAvailable: false,
+        version: null,
+      }));
+      writeJsonResponse(res, 200, await compileAuthorRuntime({
+        ...authorOptions(),
+        performanceOptimizationEnabled: true,
+        readerDistBuildEnabled: true,
+        codexAuthenticated: Boolean(codexStatus.codexAvailable && codexStatus.authenticated),
+        codexVersion: codexStatus.version || null,
+      }));
       return;
     }
 

@@ -162,6 +162,153 @@ test("selected GLBs can be copied and pasted as explicit authored instances from
   assert.match(styles, /\.spatial-clipboard-status\s*\{/);
 });
 
+test("a selected GLB transform can be applied to all or selected matching beats", () => {
+  const viewport = functionSource("renderSpatialRelationsViewport");
+  const renderTargets = functionSource("renderSpatialPropagationTargets");
+  const events = functionSource("bindSpatialRelationsEvents");
+  const targetEvents = functionSource("bindSpatialPropagationTargetEvents");
+  const sync = functionSource("syncSpatialPropagationControls");
+  const apply = functionSource("applySelectedSpatialGlbTransformToMatchingScenes");
+  const helpers = evaluateFunctions([
+    "spatialRelationEntities",
+    "spatialEntityType",
+    "spatialAllSceneRecords",
+    "spatialSceneRecordForContext",
+    "spatialGlbCrossSceneMatchKey",
+    "spatialMatchingGlbsInOtherScenes",
+  ], "({ spatialGlbCrossSceneMatchKey, spatialMatchingGlbsInOtherScenes })");
+  const base = (beatId) => ({
+    id: `glb:shark.glb:beat:${beatId}`,
+    type: "glb",
+    assetId: "shark.glb",
+    beatId,
+  });
+  const instance = (beatId, instanceIndex) => ({
+    ...base(beatId),
+    id: `glb:shark.glb:beat:${beatId}:instance:${instanceIndex}`,
+    authoredInstance: true,
+    instanceIndex,
+  });
+  const sceneA = { beatId: "beat-a", entities: [base("beat-a"), instance("beat-a", 2)] };
+  const sceneB = { beatId: "beat-b", entities: [base("beat-b"), instance("beat-b", 2), instance("beat-b", 3)] };
+  const contract = { resolvedByBeat: { "beat-a": sceneA, "beat-b": sceneB } };
+
+  assert.equal(helpers.spatialGlbCrossSceneMatchKey(base("beat-a")), "shark.glb::base");
+  assert.equal(helpers.spatialGlbCrossSceneMatchKey(instance("beat-a", 2)), "shark.glb::instance:2");
+  assert.deepEqual(
+    helpers.spatialMatchingGlbsInOtherScenes(base("beat-a"), contract, { beatId: "beat-a" })
+      .map(({ entity }) => entity.id),
+    ["glb:shark.glb:beat:beat-b"],
+  );
+  assert.deepEqual(
+    helpers.spatialMatchingGlbsInOtherScenes(instance("beat-a", 2), contract, { beatId: "beat-a" })
+      .map(({ entity }) => entity.id),
+    ["glb:shark.glb:beat:beat-b:instance:2"],
+    "authored copies propagate only to the same instance ordinal",
+  );
+  const sourceEntity = {
+    ...base("beat-a"),
+    verticalAlignment: "ground",
+    inferredTransform: { position: [0, 0, 0], quaternion: [0, 0, 0, 1], scale: [1, 1, 1] },
+    transform: { position: [3, 1, -2], quaternion: [0, 0.707, 0, 0.707], scale: [4, 4, 4] },
+  };
+  const targetEntity = {
+    ...base("beat-b"),
+    verticalAlignment: "center",
+    inferredTransform: { position: [0, 0, 0], quaternion: [0, 0, 0, 1], scale: [1, 1, 1] },
+    transform: { position: [0, 0, 0], quaternion: [0, 0, 0, 1], scale: [1, 1, 1] },
+    manual: false,
+  };
+  const skippedEntity = {
+    ...base("beat-c"),
+    verticalAlignment: "center",
+    inferredTransform: { position: [0, 0, 0], quaternion: [0, 0, 0, 1], scale: [1, 1, 1] },
+    transform: { position: [0, 0, 0], quaternion: [0, 0, 0, 1], scale: [1, 1, 1] },
+    manual: false,
+  };
+  const sceneC = { beatId: "beat-c", entities: [skippedEntity] };
+  const mutationSignals = { undo: 0, commit: 0, finalized: 0, synced: 0 };
+  const flush = () => {};
+  const runApply = new Function("deps", `
+    const {
+      state,
+      selectedSpatialRelationEntity,
+      spatialEntityType,
+      activeSpatialSceneContext,
+      syncSpatialPropagationControls,
+      spatialMatchingGlbsInOtherScenes,
+      normalizeSpatialTransform,
+      cloneJson,
+      spatialTransformsEqual,
+      spatialEntityVerticalAlignment,
+      pushSpatialUndoSnapshot,
+      spatialRelationEntityLabel,
+      commitSpatialDraftMutation,
+      finalizePersistentAuthorHistory,
+      flushSpatialRelationsAutosave,
+    } = deps;
+    ${apply}
+    return applySelectedSpatialGlbTransformToMatchingScenes;
+  `)({
+    state: { spatialPropagationStatus: "", spatialPropagationTargetBeatIds: ["beat-b"] },
+    selectedSpatialRelationEntity: () => sourceEntity,
+    spatialEntityType: (entity) => entity?.type || "",
+    activeSpatialSceneContext: () => ({ beatId: "beat-a" }),
+    syncSpatialPropagationControls: () => { mutationSignals.synced += 1; },
+    spatialMatchingGlbsInOtherScenes: () => [
+      { scene: sceneB, entity: targetEntity },
+      { scene: sceneC, entity: skippedEntity },
+    ],
+    normalizeSpatialTransform: (value) => structuredClone(value),
+    cloneJson: (value) => structuredClone(value),
+    spatialTransformsEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+    spatialEntityVerticalAlignment: (entity) => entity?.verticalAlignment || "ground",
+    pushSpatialUndoSnapshot: () => { mutationSignals.undo += 1; },
+    spatialRelationEntityLabel: () => "shark.glb",
+    commitSpatialDraftMutation: () => { mutationSignals.commit += 1; },
+    finalizePersistentAuthorHistory: (callback) => {
+      mutationSignals.finalized += 1;
+      assert.equal(callback, flush);
+    },
+    flushSpatialRelationsAutosave: flush,
+  });
+  assert.equal(runApply(), true);
+  assert.deepEqual(targetEntity.transform, sourceEntity.transform);
+  assert.notEqual(targetEntity.transform, sourceEntity.transform, "the propagated transform is cloned");
+  assert.equal(targetEntity.verticalAlignment, "ground", "the placement basis propagates with the numeric transform");
+  assert.equal(targetEntity.manual, true);
+  assert.deepEqual(
+    skippedEntity.transform,
+    { position: [0, 0, 0], quaternion: [0, 0, 0, 1], scale: [1, 1, 1] },
+    "unselected beats keep their transform",
+  );
+  assert.deepEqual(mutationSignals, { undo: 1, commit: 1, finalized: 1, synced: 1 });
+  assert.match(viewport, /renderSpatialPropagationTargets/);
+  assert.match(renderTargets, /data-spatial-apply-toggle/);
+  assert.match(renderTargets, /Select all beats/);
+  assert.match(renderTargets, /data-spatial-apply-current/);
+  assert.match(renderTargets, /Current beat · Source transform/);
+  assert.match(renderTargets, /data-spatial-apply-target=/);
+  assert.match(renderTargets, /Apply to selected beats/);
+  assert.match(events, /bindSpatialPropagationTargetEvents/);
+  assert.match(targetEvents, /data-spatial-apply-select-all/);
+  assert.match(targetEvents, /spatialPropagationTargetBeats\(\)\.map\(\(beat\) => beat\.id\)/);
+  assert.match(targetEvents, /applySelectedSpatialGlbTransformToMatchingScenes/);
+  assert.match(sync, /selectAll\.indeterminate = selectedBeatCount > 0 && selectedBeatCount < listedBeatCount/);
+  assert.match(apply, /targetBeatIds\.has\(String\(scene\?\.beatId/);
+  assert.match(apply, /normalizeSpatialTransform\(sourceEntity\.transform, sourceEntity\.inferredTransform\)/);
+  assert.match(apply, /entity\.transform = transform/);
+  assert.match(apply, /entity\.verticalAlignment = verticalAlignment/);
+  assert.match(apply, /entity\.manual = manual/);
+  assert.match(apply, /pushSpatialUndoSnapshot\(\)/);
+  assert.match(apply, /commitSpatialDraftMutation\(\)/);
+  assert.match(apply, /finalizePersistentAuthorHistory\(flushSpatialRelationsAutosave\)/);
+  assert.match(styles, /\.spatial-transform-toolbar \.spatial-apply-scenes-button:not\(:disabled\)/);
+  assert.match(styles, /\.spatial-apply-target-panel\[hidden\]\s*\{[^}]*display:\s*none;/s);
+  assert.match(styles, /\.spatial-apply-target-list\s*\{[^}]*overflow-y:\s*auto;/s);
+  assert.match(styles, /\.spatial-apply-target-row\.selected/);
+});
+
 test("numeric fields and the scale gizmo share one bounded proportional scale calculation", () => {
   const helpers = evaluateFunctions([
     "spatialLockedScaleForAxis",

@@ -8,6 +8,7 @@ import { KTX2Loader } from "three/addons/loaders/KTX2Loader.js";
 import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 import { clone as cloneSkinnedObject } from "three/addons/utils/SkeletonUtils.js";
 import { VRButton } from "three/addons/webxr/VRButton.js";
+import { XRControllerModelFactory } from "three/addons/webxr/XRControllerModelFactory.js";
 import { createGroundMovementCue, normalizeGroundMovementCue } from "./ground-movement-cue.js";
 import {
   clampProceduralDynamicsPlan,
@@ -15,6 +16,10 @@ import {
   proceduralDynamicsPlansForScene,
   sampleProceduralDynamicsTransform,
 } from "./procedural-dynamics-runtime.js";
+import {
+  augmentGltfLoaderWithStoryVrPointClouds,
+  updateStoryVrPointCloudEffects,
+} from "./point-cloud-runtime.js";
 
 const runtimeUrl = "../discovery/storyvr-runtime.json";
 const captureRoot = "../captures/active";
@@ -23,6 +28,7 @@ const readerPublicBaseUrl = import.meta.env?.DEV
   : new URL(String(import.meta.env?.BASE_URL || "./").replace(/\/?$/, "/"), window.location.href).href;
 const DRACO_DECODER_PATH = `${readerPublicBaseUrl.replace(/\/?$/, "/")}draco/gltf/`;
 const KTX2_TRANSCODER_PATH = `${readerPublicBaseUrl.replace(/\/?$/, "/")}basis/`;
+const XR_CONTROLLER_PROFILE_PATH = `${readerPublicBaseUrl.replace(/\/?$/, "/")}webxr-input-profiles/profiles`;
 const SOURCE_FOCUS_DYNAMIC_REFRESH_MS = 100;
 const SPATIAL_TEXT_CACHE_LIMIT = 128;
 const SPATIAL_TEXT_CLEARANCE_SAMPLES_PER_FRAME = 4;
@@ -30,6 +36,7 @@ const SPATIAL_TEXT_CLEARANCE_SAMPLES_PER_XR_FRAME = 2;
 const SPATIAL_TEXT_CLEARANCE_TRANSITION_MS = 100;
 const SPATIAL_TEXT_CLEARANCE_REVEAL_MS = 120;
 const SPATIAL_TEXT_CLEARANCE_INWARD_HYSTERESIS = 0.02;
+const CURRENT_SPATIAL_RELATIONS_INFERENCE_VERSION = "per-scene-exact-assets-v3";
 const ATTENTION_COMPLETION_DISTANCE_METERS = 3;
 const ATTENTION_ARROW_EDGE_NDC = 0.72;
 const ATTENTION_ARROW_DISTANCE_METERS = 0.86;
@@ -43,12 +50,14 @@ const XR_FIXED_FOVEATION = 1;
 const XR_TEXT_PANEL_DEFAULT_HAND = "left";
 const XR_TEXT_PANEL_WIDTH = 0.46;
 const XR_TEXT_PANEL_HEIGHT = 0.252;
+const XR_TEXT_PANEL_RENDER_ORDER = 20_000;
 const XR_TEXT_PANEL_RAY_LENGTH = 3.2;
 const XR_RESERVED_CONTROLLER_CONTROLS = new Set(["trigger", "grip"]);
 const XR_GAMEPAD_BUTTON_PRESS_THRESHOLD = 0.72;
 const XR_GAMEPAD_BUTTON_RELEASE_THRESHOLD = 0.45;
 const XR_THUMBSTICK_PRESS_THRESHOLD = 0.72;
 const XR_THUMBSTICK_RELEASE_THRESHOLD = 0.45;
+const DESKTOP_READER_MOVE_SPEED_METERS_PER_SECOND = 2.8;
 const DEFAULT_LOCOMOTION_DISTANCE_METERS = 0.68;
 const DEFAULT_LOCOMOTION_DWELL_SECONDS = 1.25;
 const DEFAULT_DIRECT_POSITION_TOLERANCE_METERS = 0.12;
@@ -68,7 +77,17 @@ function createGltfLoader() {
   loader.setDRACOLoader(getSharedDracoLoader());
   loader.setKTX2Loader(getSharedKtx2Loader());
   loader.setMeshoptDecoder(MeshoptDecoder);
-  return loader;
+  return augmentGltfLoaderWithStoryVrPointClouds(loader, {
+    THREE,
+    effects: () => runtimePointCloudEffects,
+    pointCloudUrlForEffect: (effect) => {
+      const localPath = String(effect?.pointCloud?.path || "").trim();
+      return localPath ? `${captureRoot}/${localPath}` : String(effect?.pointCloud?.url || "").trim();
+    },
+    onDiagnostic: (error, effect) => {
+      console.warn(`StoryVR point-cloud companion ${effect?.id || "unknown"} was skipped: ${error.message}`);
+    },
+  });
 }
 
 function getSharedDracoLoader() {
@@ -114,12 +133,15 @@ try {
 }
 
 const beats = runtime.contentUnits || [];
+const runtimePointCloudEffects = Array.isArray(runtime.pointCloudEffects) ? runtime.pointCloudEffects : [];
 const graphBeats = new Map((runtime.sceneTopology?.storyGraph?.beats || []).map((beat) => [beat.id, beat]));
+const runtimeHasAuthoredEnvironmentPolicy = hasAuthoredRuntimeEnvironmentPolicy(runtime);
 const runtimeEnvironmentAssignments = normalizeRuntimeEnvironmentAssignments(
   runtime.environmentEnhancement,
   runtime.provenance?.decisions?.["environment-enhancement"],
 );
 const finalTuning = finalTuningFromRuntime(runtime);
+const performanceOptimization = normalizeRuntimePerformanceOptimization(runtime.performanceOptimization);
 const assetTopologyOption = runtime.provenance?.decisions?.["asset-topology"]?.option || {};
 const dynamicGeometryOption = runtime.provenance?.decisions?.["dynamic-geometry"]?.option || {};
 const runtimeTopologyKind = topologyKindFromLabel(assetTopologyOption.label);
@@ -217,6 +239,7 @@ let activeModelAsset = null;
 let activeModelSpatialEntity = null;
 let activeModelAnimations = [];
 let activeSourceAnimation = null;
+let activeSourcePresentationSignature = "";
 const activeSupplementalModelEntries = [];
 const activeSpatialImageEntries = [];
 const activeProceduralDynamicsEntries = [];
@@ -244,9 +267,12 @@ const activeRuntimeDirectInteractions = [];
 const activeRuntimeDirectCues = [];
 const xrTextPanelControllers = new Map();
 const xrTextPanelControllersByHand = new Map();
+let xrControllerConnectionRevision = 0;
 const xrTextPanelConsumedSelect = new WeakSet();
 const xrTextPanelRaycaster = new THREE.Raycaster();
 const xrTextPanelRayRotation = new THREE.Matrix4();
+const xrControllerModelFactory = new XRControllerModelFactory();
+xrControllerModelFactory.setPath(XR_CONTROLLER_PROFILE_PATH);
 let xrTextPanelPreferredHand = XR_TEXT_PANEL_DEFAULT_HAND;
 let xrTextPanelAttachedEntry = null;
 let xrTextPanelGrabEntry = null;
@@ -260,24 +286,33 @@ storyTitle.textContent = runtime.title || runtime.slug || "Compiled StoryVR";
 decisionRow.innerHTML = designChips().map((label) => `<span>${escapeHtml(label)}</span>`).join("");
 
 const renderer = new THREE.WebGLRenderer({
-  antialias: true,
+  antialias: performanceOptimization.settings.antialias,
   alpha: true,
   preserveDrawingBuffer: false,
   powerPreference: "high-performance",
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, performanceOptimization.settings.desktopPixelRatioCap));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.shadowMap.enabled = true;
+renderer.shadowMap.enabled = performanceOptimization.settings.desktopShadows;
 renderer.xr.enabled = true;
-renderer.xr.setFramebufferScaleFactor(XR_FRAMEBUFFER_SCALE_FACTOR);
-renderer.xr.setFoveation(XR_FIXED_FOVEATION);
+renderer.xr.setFramebufferScaleFactor(performanceOptimization.settings.xrFramebufferScaleFactor);
+renderer.xr.setFoveation(performanceOptimization.settings.xrFixedFoveation);
+renderer.domElement.tabIndex = 0;
+renderer.domElement.setAttribute(
+  "aria-label",
+  "Reader view. Drag to look around. Focus the scene and use W A S D to move.",
+);
+renderer.domElement.title = "Drag to look around · Click the scene, then use WASD to move";
 stage.appendChild(renderer.domElement);
+if (performanceOptimization.status === "applied") {
+  console.info(`[StoryVR performance] Codex ${performanceOptimization.profile} profile applied.`, performanceOptimization.settings);
+}
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x080a08);
-scene.fog = new THREE.Fog(0x080a08, 7, 18);
+scene.fog = null;
 
 const readerRig = new THREE.Group();
 readerRig.name = "storyvr-reader-rig";
@@ -292,16 +327,28 @@ const xrEntryLocalQuaternion = new THREE.Quaternion();
 const xrEntryEuler = new THREE.Euler(0, 0, 0, "YXZ");
 let xrEntryPosePending = false;
 let runtimeReaderPoseInitialized = false;
+const desktopReaderMovementKeys = new Set();
+const desktopReaderLookPosition = new THREE.Vector3();
+const desktopReaderLookDirection = new THREE.Vector3();
+const desktopReaderMovement = new THREE.Vector3();
+const desktopReaderForward = new THREE.Vector3();
+const desktopReaderRight = new THREE.Vector3();
+let desktopReaderLookDistance = 1;
+let desktopReaderLookInitialized = false;
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 1.25, 0);
 controls.enableDamping = true;
+controls.enablePan = false;
+controls.enableZoom = false;
 controls.maxDistance = 9;
 controls.minDistance = 1.8;
 configureCameraForTopology();
+resetDesktopReaderLookAnchor();
 const desktopShadowMapEnabled = renderer.shadowMap.enabled;
 renderer.xr.addEventListener("sessionstart", () => {
   captureXrEntryPose();
+  desktopReaderMovementKeys.clear();
   controls.enabled = false;
   renderer.shadowMap.enabled = false;
   setSharedTimelineAnnotationsHidden(activeSourceAnimation, true);
@@ -316,10 +363,56 @@ renderer.xr.addEventListener("sessionend", () => {
   xrTextPanelScrollGesture = null;
   if (spatialTextPanel) spatialTextPanel.visible = false;
   controls.enabled = true;
+  resetDesktopReaderLookAnchor();
   renderer.shadowMap.enabled = desktopShadowMapEnabled;
   renderer.shadowMap.needsUpdate = true;
   setSharedTimelineAnnotationsHidden(activeSourceAnimation, false);
 });
+
+function resetDesktopReaderLookAnchor() {
+  if (renderer.xr.isPresenting) return false;
+  desktopReaderLookPosition.copy(camera.position);
+  camera.getWorldDirection(desktopReaderLookDirection);
+  desktopReaderLookDistance = Math.max(camera.position.distanceTo(controls.target), 0.35);
+  desktopReaderLookInitialized = true;
+  return true;
+}
+
+function stabilizeDesktopReaderLook() {
+  if (renderer.xr.isPresenting) return false;
+  if (!desktopReaderLookInitialized) return resetDesktopReaderLookAnchor();
+  camera.getWorldDirection(desktopReaderLookDirection);
+  camera.position.copy(desktopReaderLookPosition);
+  controls.target.copy(desktopReaderLookPosition).addScaledVector(
+    desktopReaderLookDirection,
+    desktopReaderLookDistance,
+  );
+  camera.lookAt(controls.target);
+  camera.updateMatrixWorld(true);
+  return true;
+}
+
+function updateDesktopKeyboardMovement(deltaSeconds) {
+  if (renderer.xr.isPresenting || !desktopReaderMovementKeys.size) return false;
+  camera.getWorldDirection(desktopReaderForward);
+  desktopReaderForward.y = 0;
+  if (desktopReaderForward.lengthSq() === 0) return false;
+  desktopReaderForward.normalize();
+  desktopReaderRight.crossVectors(desktopReaderForward, camera.up).normalize();
+  desktopReaderMovement.set(0, 0, 0);
+  if (desktopReaderMovementKeys.has("w")) desktopReaderMovement.add(desktopReaderForward);
+  if (desktopReaderMovementKeys.has("s")) desktopReaderMovement.sub(desktopReaderForward);
+  if (desktopReaderMovementKeys.has("d")) desktopReaderMovement.add(desktopReaderRight);
+  if (desktopReaderMovementKeys.has("a")) desktopReaderMovement.sub(desktopReaderRight);
+  if (desktopReaderMovement.lengthSq() === 0) return false;
+  desktopReaderMovement.normalize().multiplyScalar(
+    Math.max(0, Number(deltaSeconds) || 0) * DESKTOP_READER_MOVE_SPEED_METERS_PER_SECOND,
+  );
+  camera.position.add(desktopReaderMovement);
+  controls.target.add(desktopReaderMovement);
+  desktopReaderLookPosition.add(desktopReaderMovement);
+  return true;
+}
 
 function captureXrEntryPose() {
   camera.updateWorldMatrix(true, false);
@@ -414,9 +507,25 @@ readerPanelToggle?.addEventListener("click", (event) => {
 configureReaderPanelMouseDragging();
 window.addEventListener("resize", resize);
 window.addEventListener("pagehide", disposeRuntimeEnvironmentEnhancement, { once: true });
+renderer.domElement.addEventListener("pointerdown", () => renderer.domElement.focus());
+renderer.domElement.addEventListener("blur", () => desktopReaderMovementKeys.clear());
+window.addEventListener("blur", () => desktopReaderMovementKeys.clear());
 window.addEventListener("keydown", (event) => {
   if (event.key === "ArrowLeft") navigateInteraction(-1);
   if (event.key === "ArrowRight") navigateInteraction(1);
+  const key = event.key.toLowerCase();
+  if (
+    !renderer.xr.isPresenting
+    && document.activeElement === renderer.domElement
+    && ["w", "a", "s", "d"].includes(key)
+  ) {
+    event.preventDefault();
+    desktopReaderMovementKeys.add(key);
+  }
+});
+window.addEventListener("keyup", (event) => {
+  const key = event.key.toLowerCase();
+  if (["w", "a", "s", "d"].includes(key)) desktopReaderMovementKeys.delete(key);
 });
 
 buildBeatStrip();
@@ -436,6 +545,14 @@ async function loadRuntime() {
   const response = await fetch(runtimeUrl, { cache: "no-store" });
   if (!response.ok) throw new Error(`Could not load ${runtimeUrl}`);
   return response.json();
+}
+
+function hasAuthoredRuntimeEnvironmentPolicy(runtimeValue) {
+  const decision = runtimeValue?.provenance?.decisions?.["environment-enhancement"];
+  return Boolean(
+    (runtimeValue?.environmentEnhancement && typeof runtimeValue.environmentEnhancement === "object")
+    || (decision?.option && typeof decision.option === "object")
+  );
 }
 
 function normalizeRuntimeEnvironmentAssignments(value, decision) {
@@ -686,7 +803,7 @@ function clearRuntimeEnvironmentEnhancement() {
   disposeRuntimeGroundMovementCue();
   scene.environment = null;
   scene.background = new THREE.Color(0x080a08);
-  scene.fog = new THREE.Fog(0x080a08, 7, 18);
+  scene.fog = null;
   scene.environmentRotation.y = 0;
   scene.backgroundRotation.y = 0;
   renderer.toneMappingExposure = 1;
@@ -701,6 +818,49 @@ function clearRuntimeEnvironmentEnhancement() {
   environmentRoot.rotation.set(0, 0, 0);
   environmentRoot.scale.setScalar(1);
   environmentLoaded = false;
+}
+
+function sourcePlaybackPresentationBackground(contract) {
+  const value = contract?.presentation?.backgroundColor;
+  if (Array.isArray(value) && value.length >= 3) {
+    const components = value.slice(0, 3).map(Number);
+    if (components.every(Number.isFinite)) return new THREE.Color().setRGB(...components);
+  }
+  const text = String(value || "").trim();
+  return text ? new THREE.Color(text) : null;
+}
+
+function syncSourcePlaybackPresentation(playback) {
+  if (environmentLoaded) {
+    activeSourcePresentationSignature = "environment";
+    neutralEnvironmentRoot.visible = false;
+    if (habitat) habitat.visible = false;
+    return;
+  }
+  const contract = playback?.sharedTimeline ? playback.contract : null;
+  const presentation = contract?.presentation && typeof contract.presentation === "object"
+    ? contract.presentation
+    : null;
+  const background = runtimeHasAuthoredEnvironmentPolicy
+    ? null
+    : sourcePlaybackPresentationBackground(contract);
+  const authoredGround = presentation?.authoredGround === true;
+  const signature = `${background?.getHexString?.() || "neutral"}:${authoredGround ? "authored-ground" : "fallback-ground"}`;
+  neutralEnvironmentRoot.visible = !authoredGround;
+  if (habitat) habitat.visible = !authoredGround;
+  const expectedBackground = background?.getHexString?.() || "080a08";
+  const currentBackground = scene.background?.isColor ? scene.background.getHexString() : "";
+  if (activeSourcePresentationSignature === signature && currentBackground === expectedBackground) return;
+  activeSourcePresentationSignature = signature;
+  if (background) {
+    scene.background = background;
+    scene.fog = null;
+    renderer.setClearColor(background, 1);
+  } else {
+    scene.background = new THREE.Color(0x080a08);
+    scene.fog = null;
+    renderer.setClearColor(0x080a08, 1);
+  }
 }
 
 function disposeRuntimeEnvironmentObject(root) {
@@ -821,6 +981,7 @@ function normalizeRuntimeSpatialRelations(value, decision) {
   const resolvedByVariant = source.resolvedByVariant && typeof source.resolvedByVariant === "object" ? source.resolvedByVariant : {};
   return {
     schemaVersion: String(source.schemaVersion || "storyvr-spatial-relations/v1"),
+    inferenceVersion: String(source.inferenceVersion || ""),
     viewpoint: String(source.viewpoint || ""),
     entities,
     resolvedByBeat,
@@ -3013,7 +3174,7 @@ function updateConfiguredControllerInteractions() {
     "menu",
   ];
   for (const entry of xrTextPanelControllers.values()) {
-    if (!entry.connected) continue;
+    if (!xrControllerEntryOwnsHand(entry)) continue;
     const gamepad = entry.inputSource?.gamepad;
     if (!gamepad) continue;
     entry.gamepadInputState ||= new Map();
@@ -3104,10 +3265,14 @@ function configureXrInteractionControllers() {
       anchor: controller,
       handedness: controller.userData.handedness,
       connected: false,
+      connectionOrder: 0,
+      controllerModel: null,
+      controllerModelInput: null,
+      controllerModelInputSource: null,
     };
     xrTextPanelControllers.set(controller, entry);
     controller.addEventListener("connected", (event) => handleXrTextPanelControllerConnected(entry, event));
-    controller.addEventListener("disconnected", () => handleXrTextPanelControllerDisconnected(entry));
+    controller.addEventListener("disconnected", (event) => handleXrTextPanelControllerDisconnected(entry, event));
     controller.addEventListener("selectstart", (event) => handleXrTextPanelSelectStart(entry, event));
     controller.addEventListener("selectend", () => handleXrTextPanelSelectEnd(entry));
     controller.addEventListener("squeezestart", () => handleXrTextPanelSqueezeStart(entry));
@@ -3118,37 +3283,131 @@ function configureXrInteractionControllers() {
   }
 }
 
-function handleXrTextPanelControllerConnected(entry, event) {
-  const previousHand = entry.handedness;
-  if (xrTextPanelControllersByHand.get(previousHand) === entry) xrTextPanelControllersByHand.delete(previousHand);
-  const handedness = ["left", "right"].includes(event?.data?.handedness)
-    ? event.data.handedness
-    : (entry.index === 0 ? "left" : "right");
-  entry.handedness = handedness;
-  entry.connected = true;
-  entry.inputSource = event?.data || null;
-  entry.gamepadInputState = new Map();
-  entry.anchor = event?.data?.gripSpace ? entry.grip : entry.controller;
-  entry.controller.userData.handedness = handedness;
-  entry.controller.userData.inputSource = event?.data || null;
-  xrTextPanelControllersByHand.set(handedness, entry);
-  attachSpatialTextPanelToPreferredHand();
+function attachXrControllerVisual(entry) {
+  if (!entry?.inputSource || !xrControllerEntryOwnsHand(entry)) return null;
+  if (entry.controllerModel && entry.controllerModelInputSource === entry.inputSource) {
+    return entry.controllerModel;
+  }
+  detachXrControllerVisual(entry);
+  const controllerModelInput = new THREE.Group();
+  controllerModelInput.name = `storyvr-controller-model-input-${entry.index + 1}`;
+  const controllerModel = xrControllerModelFactory.createControllerModel(controllerModelInput);
+  controllerModel.name = `storyvr-meta-quest-3-controller-${entry.index + 1}`;
+  controllerModel.visible = false;
+  entry.controllerModelInput = controllerModelInput;
+  entry.controllerModelInputSource = entry.inputSource;
+  entry.controllerModel = controllerModel;
+  entry.grip.add(controllerModel);
+  controllerModelInput.dispatchEvent({ type: "connected", data: entry.inputSource });
+  return controllerModel;
 }
 
-function handleXrTextPanelControllerDisconnected(entry) {
-  if (xrDirectManipulationEntryIsActive(entry)) endXrDirectManipulation(entry, { evaluate: false });
-  entry.connected = false;
-  entry.inputSource = null;
-  entry.gamepadInputState?.clear?.();
-  entry.controller.userData.inputSource = null;
-  if (xrTextPanelControllersByHand.get(entry.handedness) === entry) xrTextPanelControllersByHand.delete(entry.handedness);
+function detachXrControllerVisual(entry) {
+  if (!entry) return false;
+  if (entry.controllerModelInput && entry.controllerModelInputSource) {
+    entry.controllerModelInput.dispatchEvent({
+      type: "disconnected",
+      data: entry.controllerModelInputSource,
+    });
+  }
+  entry.controllerModel?.removeFromParent?.();
+  entry.controllerModel = null;
+  entry.controllerModelInput = null;
+  entry.controllerModelInputSource = null;
+  return true;
+}
+
+function xrControllerHandOwner(entries, handedness, preferredEntry = null) {
+  const candidates = [...entries].filter((entry) => (
+    entry?.connected && entry.handedness === handedness
+  ));
+  if (preferredEntry && candidates.includes(preferredEntry)) return preferredEntry;
+  return candidates.reduce((owner, candidate) => {
+    if (!owner) return candidate;
+    const candidateOrder = Number(candidate.connectionOrder) || 0;
+    const ownerOrder = Number(owner.connectionOrder) || 0;
+    if (candidateOrder !== ownerOrder) return candidateOrder > ownerOrder ? candidate : owner;
+    return Number(candidate.index) < Number(owner.index) ? candidate : owner;
+  }, null);
+}
+
+function xrControllerEntryOwnsHand(entry) {
+  return Boolean(
+    entry?.connected
+    && xrTextPanelControllersByHand.get(entry.handedness) === entry,
+  );
+}
+
+function deactivateXrControllerHandEntry(entry) {
+  if (!entry) return false;
+  if (xrDirectManipulationEntryIsActive(entry)) cancelXrDirectManipulation();
   if (xrTextPanelGrabEntry === entry) {
     xrTextPanelGrabEntry = null;
     xrTextPanelGrabInput = null;
   }
   if (xrTextPanelAttachedEntry === entry) xrTextPanelAttachedEntry = null;
   if (xrTextPanelScrollGesture?.entry === entry) xrTextPanelScrollGesture = null;
+  entry.gamepadInputState?.clear?.();
+  setXrTextPanelRayState(entry, false);
+  detachXrControllerVisual(entry);
+  return true;
+}
+
+function reconcileXrControllerHand(handedness, preferredEntry = null) {
+  const previousEntry = xrTextPanelControllersByHand.get(handedness) || null;
+  const nextEntry = xrControllerHandOwner(
+    xrTextPanelControllers.values(),
+    handedness,
+    preferredEntry,
+  );
+  if (previousEntry !== nextEntry) {
+    if (previousEntry) deactivateXrControllerHandEntry(previousEntry);
+    if (nextEntry) xrTextPanelControllersByHand.set(handedness, nextEntry);
+    else xrTextPanelControllersByHand.delete(handedness);
+  }
+  if (nextEntry) attachXrControllerVisual(nextEntry);
+  updateXrControllerVisuals();
+  return nextEntry;
+}
+
+function updateXrControllerVisuals() {
+  for (const entry of xrTextPanelControllers.values()) {
+    const visible = Boolean(renderer.xr.isPresenting && xrControllerEntryOwnsHand(entry));
+    if (entry.controllerModel) entry.controllerModel.visible = visible;
+  }
+}
+
+function handleXrTextPanelControllerConnected(entry, event) {
+  const previousHand = entry.handedness;
+  const handedness = ["left", "right"].includes(event?.data?.handedness)
+    ? event.data.handedness
+    : (entry.index === 0 ? "left" : "right");
+  entry.handedness = handedness;
+  entry.connected = true;
+  entry.inputSource = event?.data || null;
+  entry.connectionOrder = ++xrControllerConnectionRevision;
+  entry.gamepadInputState = new Map();
+  entry.anchor = event?.data?.gripSpace ? entry.grip : entry.controller;
+  entry.controller.userData.handedness = handedness;
+  entry.controller.userData.inputSource = event?.data || null;
+  if (previousHand !== handedness) reconcileXrControllerHand(previousHand);
+  reconcileXrControllerHand(handedness, entry);
   attachSpatialTextPanelToPreferredHand();
+}
+
+function handleXrTextPanelControllerDisconnected(entry, event) {
+  if (event?.data && entry.inputSource && event.data !== entry.inputSource) return false;
+  const handedness = entry.handedness;
+  entry.connected = false;
+  if (xrTextPanelControllersByHand.get(handedness) === entry) {
+    reconcileXrControllerHand(handedness);
+  } else {
+    deactivateXrControllerHandEntry(entry);
+  }
+  entry.inputSource = null;
+  entry.controller.userData.inputSource = null;
+  attachSpatialTextPanelToPreferredHand();
+  return true;
 }
 
 function createXrTextPanelRay() {
@@ -3165,12 +3424,12 @@ function createXrTextPanelRay() {
 
 function preferredXrTextPanelEntry() {
   const preferred = xrTextPanelControllersByHand.get(xrTextPanelPreferredHand);
-  if (preferred?.connected) return preferred;
+  if (xrControllerEntryOwnsHand(preferred)) return preferred;
   const left = xrTextPanelControllersByHand.get("left");
-  if (left?.connected) return left;
+  if (xrControllerEntryOwnsHand(left)) return left;
   const right = xrTextPanelControllersByHand.get("right");
-  if (right?.connected) return right;
-  return [...xrTextPanelControllers.values()].find((entry) => entry.connected) || null;
+  if (xrControllerEntryOwnsHand(right)) return right;
+  return [...xrTextPanelControllers.values()].find(xrControllerEntryOwnsHand) || null;
 }
 
 function attachSpatialTextPanelToPreferredHand() {
@@ -3186,7 +3445,7 @@ function attachSpatialTextPanelToPreferredHand() {
 }
 
 function attachSpatialTextPanelToEntry(entry) {
-  if (!spatialTextPanel || !entry?.connected) return false;
+  if (!spatialTextPanel || !xrControllerEntryOwnsHand(entry)) return false;
   const anchor = entry.anchor || entry.grip || entry.controller;
   if (spatialTextPanel.parent !== anchor) anchor.add(spatialTextPanel);
   const side = entry.handedness === "right" ? -1 : 1;
@@ -3206,7 +3465,7 @@ function xrTextPanelActiveHitRoot() {
 }
 
 function xrTextPanelHit(entry) {
-  if (!entry?.connected || !spatialTextPanel?.visible || entry === xrTextPanelAttachedEntry) return null;
+  if (!xrControllerEntryOwnsHand(entry) || !spatialTextPanel?.visible || entry === xrTextPanelAttachedEntry) return null;
   const target = xrTextPanelActiveHitRoot();
   if (!target?.visible) return null;
   target.updateWorldMatrix(true, true);
@@ -3241,7 +3500,7 @@ function xrTextPanelScrollStartHit(entry) {
   const hit = xrTextPanelHit(entry);
   if (hit) return hit;
   if (
-    entry?.connected
+    xrControllerEntryOwnsHand(entry)
     && entry === xrTextPanelAttachedEntry
     && !textPanelMinimized
     && Number(spatialTextPanel?.userData?.textPagination?.maxScrollLine) > 0
@@ -3257,6 +3516,7 @@ function xrTextPanelScrollStartHit(entry) {
 }
 
 function handleXrTextPanelSelectStart(entry) {
+  if (!xrControllerEntryOwnsHand(entry)) return false;
   const hit = xrTextPanelScrollStartHit(entry);
   if (!hit) return false;
   xrTextPanelConsumedSelect.add(entry.controller);
@@ -3281,6 +3541,7 @@ function handleXrTextPanelSelectStart(entry) {
 }
 
 function handleXrTextPanelSelectEnd(entry) {
+  if (!xrControllerEntryOwnsHand(entry)) return false;
   entry.gamepadInputState?.set?.("trigger", false);
   if (xrTextPanelScrollGesture?.entry !== entry) return false;
   xrTextPanelScrollGesture = null;
@@ -3289,6 +3550,7 @@ function handleXrTextPanelSelectEnd(entry) {
 }
 
 function handleXrTextPanelSqueezeStart(entry) {
+  if (!xrControllerEntryOwnsHand(entry)) return false;
   entry.gamepadInputState?.set?.("grip", true);
   if (xrTextPanelHit(entry)) return beginXrTextPanelGrab(entry, "squeeze");
   if (!beginXrDirectManipulation(entry)) return false;
@@ -3297,6 +3559,7 @@ function handleXrTextPanelSqueezeStart(entry) {
 }
 
 function handleXrTextPanelSqueezeEnd(entry) {
+  if (!xrControllerEntryOwnsHand(entry)) return false;
   entry.gamepadInputState?.set?.("grip", false);
   if (xrDirectManipulationEntryIsActive(entry)) {
     endXrDirectManipulation(entry);
@@ -3310,7 +3573,7 @@ function handleXrTextPanelSqueezeEnd(entry) {
 function beginXrTextPanelScroll(entry, hit) {
   const content = spatialTextPanel?.userData?.textContent;
   const pagination = spatialTextPanel?.userData?.textPagination;
-  if (!entry?.connected || hit?.action !== "scroll" || !content || !pagination) return false;
+  if (!xrControllerEntryOwnsHand(entry) || hit?.action !== "scroll" || !content || !pagination) return false;
   entry.controller.updateMatrixWorld(true, false);
   const controllerPosition = entry.controller.getWorldPosition(new THREE.Vector3());
   xrTextPanelScrollGesture = {
@@ -3325,7 +3588,7 @@ function beginXrTextPanelScroll(entry, hit) {
 
 function updateXrTextPanelScroll() {
   const gesture = xrTextPanelScrollGesture;
-  if (!gesture?.entry?.connected) return false;
+  if (!xrControllerEntryOwnsHand(gesture?.entry)) return false;
   gesture.entry.controller.updateMatrixWorld(true, false);
   const controllerPosition = gesture.entry.controller.getWorldPosition(new THREE.Vector3());
   return setRuntimeTextPanelScrollLine(runtimeTextPanelScrollLineFromVerticalDrag(
@@ -3355,7 +3618,7 @@ function runtimeTextPanelScrollLineFromVerticalDrag(
 }
 
 function beginXrTextPanelGrab(entry, input = "squeeze") {
-  if (!entry?.connected || !spatialTextPanel || xrTextPanelGrabEntry) return false;
+  if (!xrControllerEntryOwnsHand(entry) || !spatialTextPanel || xrTextPanelGrabEntry) return false;
   xrTextPanelGrabEntry = entry;
   xrTextPanelGrabInput = input;
   entry.controller.attach(spatialTextPanel);
@@ -3390,7 +3653,7 @@ function updateXrTextPanelInteractionRays() {
 function setXrTextPanelRayState(entry, active, action = "", disabled = false) {
   const ray = entry?.controller?.getObjectByName("storyvr-text-panel-ray");
   if (!ray) return;
-  ray.visible = Boolean(renderer.xr.isPresenting && entry.connected && active);
+  ray.visible = Boolean(renderer.xr.isPresenting && xrControllerEntryOwnsHand(entry) && active);
   ray.material.color.setHex(disabled ? 0x76817d : action === "minimize" || action === "restore" ? 0xe5aa63 : 0x6ed8c2);
   ray.material.opacity = active ? 0.92 : 0.68;
 }
@@ -3971,7 +4234,7 @@ function configureRuntimeDirectManipulation() {
 }
 
 function xrDirectManipulationHit(entry) {
-  if (!entry?.connected || !activeRuntimeInBeatTargets.length) return null;
+  if (!xrControllerEntryOwnsHand(entry) || !activeRuntimeInBeatTargets.length) return null;
   const roots = [...new Set(activeRuntimeInBeatTargets.map((targetEntry) => targetEntry.root))];
   if (!roots.length) return null;
   entry.controller.updateWorldMatrix(true, false);
@@ -4341,7 +4604,7 @@ async function setBeat(index) {
     button.classList.toggle("active", Number(button.dataset.beatIndex) === activeIndex);
   }
 
-  updateHabitat(beat, modelAsset);
+  updateHabitat();
   if (usesBeatSpatialScene && spatialAssetEntries.length) {
     try {
       const result = await showSpatialSceneAssets(spatialAssetEntries, beat, previousIndex, {
@@ -4917,6 +5180,7 @@ function teleportReaderTo(destination, station = null) {
     controls.target.copy(destination).addScaledVector(forward, targetDistance);
   } else controls.target.add(delta);
   controls.update();
+  resetDesktopReaderLookAnchor();
 }
 
 function updatePhysicalTraversal() {
@@ -5295,7 +5559,13 @@ async function showModel(asset, beat, transitionPlayback = null, options = {}) {
   else applyRuntimeGlbSpatialTransform(asset, beat);
   const sharedTimelineContract = sharedTimelineContractForAsset(asset.id);
   const contractedTimeline = Boolean(sharedTimelineContract);
-  frameModel(activeModel, { groundAligned: sharedTimelineGroundAligned(sharedTimelineContract) });
+  frameModel(activeModel, {
+    groundAligned: runtimeSpatialEntityGroundAligned(
+      options.spatialEntity,
+      sharedTimelineContract,
+      runtimeSpatialRelations,
+    ),
+  });
   modelAuthorTransformRoot.add(activeModel);
   const sourcePartState = sourcePartStateForBeatAsset(beat.id, asset.id);
   const destinationPartSelectors = sourcePartSelectorsForBeatAsset(beat.id, asset.id);
@@ -5353,7 +5623,13 @@ async function showSupplementalModel(entry, beat, previousIndex, options = {}) {
   });
   const sharedTimelineContract = sharedTimelineContractForAsset(entry.asset.id);
   const contractedTimeline = Boolean(sharedTimelineContract);
-  frameModel(model, { groundAligned: sharedTimelineGroundAligned(sharedTimelineContract) });
+  frameModel(model, {
+    groundAligned: runtimeSpatialEntityGroundAligned(
+      entry.entity,
+      sharedTimelineContract,
+      runtimeSpatialRelations,
+    ),
+  });
   const authorTransformRoot = new THREE.Group();
   authorTransformRoot.name = `storyvr-spatial-relations-author-transform:${entry.asset.id}`;
   applyRuntimeSpatialEntityTransform(authorTransformRoot, entry.entity, `glb:${entry.asset.id}`);
@@ -5578,11 +5854,12 @@ function createRuntimeHandTextPanel() {
     new THREE.MeshBasicMaterial({
       transparent: true,
       side: THREE.DoubleSide,
-      depthTest: true,
+      depthTest: false,
       depthWrite: false,
       toneMapped: false,
     }),
   );
+  contentMesh.renderOrder = XR_TEXT_PANEL_RENDER_ORDER;
   contentMesh.userData.storyvrTextPanelAction = "scroll";
   expandedRoot.add(contentMesh);
 
@@ -5645,11 +5922,12 @@ function makeRuntimeTextPanelControl(label, action, size) {
       map: texture,
       transparent: true,
       side: THREE.DoubleSide,
-      depthTest: true,
+      depthTest: false,
       depthWrite: false,
       toneMapped: false,
     }),
   );
+  mesh.renderOrder = XR_TEXT_PANEL_RENDER_ORDER + 2;
   mesh.userData.storyvrTextPanelAction = action;
   return mesh;
 }
@@ -5662,11 +5940,12 @@ function makeRuntimeTextPanelButton(label, action) {
       map: texture,
       transparent: true,
       side: THREE.DoubleSide,
-      depthTest: true,
+      depthTest: false,
       depthWrite: false,
       toneMapped: false,
     }),
   );
+  mesh.renderOrder = XR_TEXT_PANEL_RENDER_ORDER + 2;
   mesh.userData.storyvrTextPanelAction = action;
   mesh.userData.storyvrTextPanelDisabled = false;
   mesh.userData.storyvrTextPanelLabel = label;
@@ -6508,7 +6787,7 @@ function makeRuntimeTextPanelTexture(title, text, placement, variantState = null
   canvas.height = 560;
   const context = canvas.getContext("2d");
   const variantLayout = variantState ? runtimeTextPanelVariantLayout(canvas.height) : null;
-  context.fillStyle = "rgba(8, 22, 19, 0.94)";
+  context.fillStyle = "rgba(8, 22, 19, 1)";
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.strokeStyle = "rgba(110, 216, 194, 0.9)";
   context.lineWidth = 10;
@@ -6646,6 +6925,18 @@ function sharedTimelineGroundAligned(contract) {
   return String(contract?.framing?.verticalAlignment || "").trim().toLowerCase() === "ground";
 }
 
+function runtimeSpatialEntityGroundAligned(entity, sharedTimelineContract = null, spatialRelations = null) {
+  if (
+    entity
+    && String(spatialRelations?.inferenceVersion || "") !== CURRENT_SPATIAL_RELATIONS_INFERENCE_VERSION
+  ) return true;
+  const supplied = String(entity?.verticalAlignment || "").trim().toLowerCase();
+  if (["ground", "grounded", "floor"].includes(supplied)) return true;
+  if (["center", "centered", "centre", "centred"].includes(supplied)) return false;
+  if (entity) return true;
+  return sharedTimelineGroundAligned(sharedTimelineContract);
+}
+
 function activeRuntimeTopologyKind() {
   const sceneRecord = runtimeSpatialSceneForBeat();
   const topology = sceneRecord?.topology;
@@ -6675,13 +6966,12 @@ function modelRootPositionForBeat(beat) {
   return new THREE.Vector3(Math.cos(angle) * radius, 1.05, Math.sin(angle) * radius);
 }
 
-function updateHabitat(beat, modelAsset) {
+function updateHabitat() {
   if (habitat) scene.remove(habitat);
   if (environmentLoaded) {
     habitat = null;
     return;
   }
-  const label = habitatLabel(beat, modelAsset);
   const viewpoint = activeRuntimeViewpointKind();
   habitat = new THREE.Group();
   if (!finalTuning.directives.hideGroundCircles) {
@@ -6694,12 +6984,6 @@ function updateHabitat(beat, modelAsset) {
     ring.position.y = 0.03;
     habitat.add(ring);
   }
-  const marker = new THREE.Mesh(
-    new THREE.SphereGeometry(0.055, 16, 16),
-    new THREE.MeshStandardMaterial({ color: label.color, emissive: label.color, emissiveIntensity: 0.2 }),
-  );
-  marker.position.set(-1.55, 0.18, -1.3);
-  habitat.add(marker);
   scene.add(habitat);
 }
 
@@ -6767,18 +7051,45 @@ function render(frameTime = performance.now(), xrFrame = null) {
   lastFrameTime = frameTime;
   elapsedSeconds += delta;
   updateSourceAnimation(delta, frameTime);
+  updateActivePointCloudEffects();
   updateProceduralDynamics(delta);
   updateRuntimeDirectManipulation();
   updateSpatialTextPanelPose(frameTime);
+  updateXrControllerVisuals();
   updateXrTextPanelInteractionRays();
   updateConfiguredControllerInteractions();
   updateRuntimeDirectManipulationCues();
   updatePhysicalTraversal();
-  if (!renderer.xr.isPresenting) controls.update();
+  if (!renderer.xr.isPresenting) {
+    updateDesktopKeyboardMovement(delta);
+    controls.update();
+    stabilizeDesktopReaderLook();
+  }
   const renderCamera = activeRenderCamera();
+  syncSourcePlaybackPresentation(activeSourceAnimation);
   updateSharedTimelineAnnotations(activeSourceAnimation, renderCamera);
   updateRuntimeAttentionGuidance(renderCamera, delta);
   renderer.render(scene, renderCamera);
+}
+
+function sourcePlaybackPointCloudTime(playback) {
+  if (!playback) return null;
+  if (playback.sharedTimeline) {
+    return sharedTimelineTimeSeconds(playback.timelineDurationSeconds, playback.currentProgress ?? 0);
+  }
+  const actionTime = Number(playback.actions?.[0]?.time);
+  if (Number.isFinite(actionTime)) return actionTime;
+  const mixerTime = Number(playback.mixer?.time);
+  return Number.isFinite(mixerTime) ? mixerTime : null;
+}
+
+function updateActivePointCloudEffects() {
+  const activeTime = sourcePlaybackPointCloudTime(activeSourceAnimation);
+  if (activeModel && activeTime !== null) updateStoryVrPointCloudEffects(activeModel, activeTime);
+  for (const entry of activeSupplementalModelEntries) {
+    const time = sourcePlaybackPointCloudTime(entry.playback);
+    if (time !== null) updateStoryVrPointCloudEffects(entry.model, time);
+  }
 }
 
 function resize() {
@@ -6794,16 +7105,12 @@ function activeRenderCamera() {
 }
 
 function renderCameraForPlayback(playback, readerCamera, xrPresenting) {
-  if (!playback?.sourceCamera) return readerCamera;
-  if (playback.sharedTimeline) {
-    const xrPolicy = String(playback.cameraPolicy?.xrPolicy || "preserve-viewer-camera").toLowerCase();
-    const desktopPolicy = String(playback.cameraPolicy?.desktopPolicy || "render-source-camera").toLowerCase();
-    const usesSourceCamera = (policy) => policy === "render-source-camera" || policy === "source-camera";
-    if (xrPresenting) return usesSourceCamera(xrPolicy) ? playback.sourceCamera : readerCamera;
-    return usesSourceCamera(desktopPolicy) ? playback.sourceCamera : readerCamera;
-  }
-  if (xrPresenting) return readerCamera;
-  return playback.mode === "segment" ? playback.sourceCamera : readerCamera;
+  void playback;
+  void xrPresenting;
+  // The compiled StoryVR reader always renders the authored reader camera.
+  // Captured source cameras remain animation evidence, never a replacement for
+  // the Spatial Relations pose or live desktop / headset view controls.
+  return readerCamera;
 }
 
 function syncSourceCameraViewport(sourceCamera) {
@@ -7329,6 +7636,7 @@ function createSharedTimelinePlayback(root, clips, sourceCameras, transitionPlay
   const startProgress = normalizedProgress(transitionPlayback.startProgress, transitionPlayback.endProgress ?? 0);
   const endProgress = normalizedProgress(transitionPlayback.endProgress, startProgress);
   const clipSpanSeconds = timelineDurationSeconds * Math.abs(endProgress - startProgress);
+  const annotations = (contract.annotations || []).filter(sharedTimelineAnnotationIsReaderVisible);
   const playback = {
     mixer,
     root,
@@ -7349,9 +7657,9 @@ function createSharedTimelinePlayback(root, clips, sourceCameras, transitionPlay
     contract,
     materialRecipes: materialState.recipes,
     bindings: contract.bindings || [],
-    annotations: contract.annotations || [],
+    annotations,
     wallClockBindings: (contract.bindings || []).filter(sharedTimelineBindingUsesWallClock),
-    wallClockAnnotations: (contract.annotations || []).filter((annotation) => sharedTimelineBindingUsesWallClock({
+    wallClockAnnotations: annotations.filter((annotation) => sharedTimelineBindingUsesWallClock({
       source: annotation?.opacitySource,
     })),
     annotationTargets: new Map(),
@@ -8130,27 +8438,52 @@ function sharedTimelineAnnotationTarget(playback, binding) {
   return elementId ? document.getElementById(elementId) : null;
 }
 
+function sharedTimelineAnnotationIsReaderVisible(definition) {
+  if (!definition || typeof definition !== "object") return false;
+  if (definition.readerVisible === false || definition.display === false || definition.render === false) return false;
+  const text = String(definition.text || definition.label || "").trim();
+  if (!text) return false;
+  if (definition.readerVisible === true || definition.authoredSceneText === true) return true;
+  const id = String(definition.id || definition.annotationId || "").trim();
+  const authoredText = String(definition.text || "").trim();
+  const hasTarget = [
+    definition.node,
+    definition.nodeName,
+    definition.target,
+    definition.selector,
+    definition.elementId,
+  ].some((value) => typeof value === "string" && value.trim());
+  return Boolean(id && authoredText && hasTarget);
+}
+
 function initializeSharedTimelineAnnotations(playback) {
   if (typeof document === "undefined" || !stage || !playback?.sharedTimeline) return;
+  const presentation = playback.contract?.presentation?.annotations;
+  const presentationStyle = presentation && typeof presentation === "object" ? presentation : {};
   for (const [index, definition] of (playback.annotations || []).entries()) {
+    if (!sharedTimelineAnnotationIsReaderVisible(definition)) continue;
     const id = String(definition?.id || definition?.annotationId || `annotation:${index}`).trim();
     const label = String(definition?.text || definition?.label || "").trim();
     if (!id || !label) continue;
     const element = document.createElement("div");
     element.dataset.storyvrAnnotation = id;
     element.textContent = label;
+    const background = definition.background ?? presentationStyle.background ?? "rgba(255,253,244,0.9)";
+    const transparentBackground = !background || String(background).trim().toLowerCase() === "transparent";
     Object.assign(element.style, {
       position: "absolute",
       left: "0",
       top: "0",
       zIndex: "4",
       pointerEvents: "none",
-      padding: "0.28rem 0.5rem",
-      borderRadius: "0.35rem",
-      color: String(definition.color || "#10201c"),
-      background: String(definition.background || "rgba(255,253,244,0.9)"),
-      font: "600 12px/1.25 system-ui, sans-serif",
-      whiteSpace: "nowrap",
+      padding: transparentBackground ? "0" : "0.28rem 0.5rem",
+      borderRadius: transparentBackground ? "0" : "0.35rem",
+      color: String(definition.color ?? presentationStyle.color ?? "#10201c"),
+      background: String(background || "transparent"),
+      font: `${Number(definition.fontWeight ?? presentationStyle.fontWeight) || 600} 12px/1.25 system-ui, sans-serif`,
+      maxWidth: String(definition.maxWidth ?? presentationStyle.maxWidth ?? "min(32rem, calc(100vw - 24px))"),
+      whiteSpace: String(definition.whiteSpace ?? presentationStyle.whiteSpace ?? "normal"),
+      textAlign: "center",
       opacity: "0",
       transform: "translate(-50%, -100%)",
     });
@@ -8175,15 +8508,38 @@ function updateSharedTimelineAnnotations(playback, renderCamera) {
     return;
   }
   setSharedTimelineAnnotationsHidden(playback, false);
+  const stageBounds = stage.getBoundingClientRect();
+  const readerPanelBounds = !textPanelMinimized && readerPanel?.getBoundingClientRect
+    ? readerPanel.getBoundingClientRect()
+    : null;
+  const readerPanelOccupiesLeftEdge = readerPanelBounds
+    && readerPanelBounds.left <= stageBounds.left + 24
+    && readerPanelBounds.right < stageBounds.right - 24;
+  const readableStageLeft = readerPanelOccupiesLeftEdge ? readerPanelBounds.right : stageBounds.left;
   for (const entry of playback.annotationTargets.values()) {
     if (!entry.targetNode?.getWorldPosition) continue;
     entry.targetNode.getWorldPosition(entry.worldPosition);
     entry.worldPosition.project(renderCamera);
-    const x = (entry.worldPosition.x * 0.5 + 0.5) * window.innerWidth;
-    const y = (-entry.worldPosition.y * 0.5 + 0.5) * window.innerHeight;
+    const x = stageBounds.left + (entry.worldPosition.x * 0.5 + 0.5) * stageBounds.width;
+    const y = stageBounds.top + (-entry.worldPosition.y * 0.5 + 0.5) * stageBounds.height;
     const offset = entry.definition?.offset || {};
-    const left = `${x + (Number(offset.x) || 0)}px`;
-    const top = `${y + (Number(offset.y) || 0)}px`;
+    const elementBounds = entry.element.getBoundingClientRect();
+    const presentationStyle = playback.contract?.presentation?.annotations || {};
+    const margin = Math.max(0, Number(entry.definition?.viewportMargin ?? presentationStyle.viewportMargin) || 12);
+    const unclampedLeft = x + (Number(offset.x) || 0);
+    const unclampedTop = y + (Number(offset.y) || 0);
+    const minimumLeft = readableStageLeft + margin + elementBounds.width / 2;
+    const maximumLeft = stageBounds.right - margin - elementBounds.width / 2;
+    const minimumTop = stageBounds.top + margin + elementBounds.height;
+    const maximumTop = stageBounds.bottom - margin;
+    const clampedLeft = maximumLeft >= minimumLeft
+      ? THREE.MathUtils.clamp(unclampedLeft, minimumLeft, maximumLeft)
+      : stageBounds.left + stageBounds.width / 2;
+    const clampedTop = maximumTop >= minimumTop
+      ? THREE.MathUtils.clamp(unclampedTop, minimumTop, maximumTop)
+      : stageBounds.top + stageBounds.height / 2;
+    const left = `${clampedLeft}px`;
+    const top = `${clampedTop}px`;
     const visibility = entry.worldPosition.z >= -1 && entry.worldPosition.z <= 1 ? "visible" : "hidden";
     if (entry.element.style.left !== left) entry.element.style.left = left;
     if (entry.element.style.top !== top) entry.element.style.top = top;
@@ -8754,9 +9110,7 @@ function sourceAnimationStatusText() {
       : `; looping ${clipCount} assigned source animation${clipCount === 1 ? "" : "s"}`;
   }
   if (activeSourceAnimation.sourceCamera) {
-    return renderer.xr.isPresenting
-      ? "; source camera transition skipped in WebXR to preserve headset tracking"
-      : "; following assigned source camera transition";
+    return "; source camera motion retained while preserving the reader view";
   }
   if (activeSourceAnimation.cameraUnavailable) {
     return "; assigned source camera is unavailable; using the reader camera";
@@ -8804,6 +9158,33 @@ function finalTuningFromRuntime(runtimeData) {
   };
 }
 
+function normalizeRuntimePerformanceOptimization(value) {
+  const supplied = value?.status === "applied" && value.settings && typeof value.settings === "object"
+    ? value.settings
+    : {};
+  return {
+    status: value?.status === "applied" ? "applied" : "unchanged",
+    profile: ["quality", "balanced", "performance"].includes(value?.profile) ? value.profile : "unchanged",
+    settings: {
+      desktopPixelRatioCap: boundedRuntimePerformanceNumber(supplied.desktopPixelRatioCap, 2, 1, 2),
+      antialias: typeof supplied.antialias === "boolean" ? supplied.antialias : true,
+      desktopShadows: typeof supplied.desktopShadows === "boolean" ? supplied.desktopShadows : true,
+      xrFramebufferScaleFactor: boundedRuntimePerformanceNumber(
+        supplied.xrFramebufferScaleFactor,
+        XR_FRAMEBUFFER_SCALE_FACTOR,
+        0.65,
+        1,
+      ),
+      xrFixedFoveation: boundedRuntimePerformanceNumber(supplied.xrFixedFoveation, XR_FIXED_FOVEATION, 0, 1),
+    },
+  };
+}
+
+function boundedRuntimePerformanceNumber(value, fallback, minimum, maximum) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(minimum, Math.min(maximum, number)) : fallback;
+}
+
 function finalTuningDirectivesForPrompt(prompt) {
   const text = String(prompt || "").toLowerCase();
   const suppress = /\b(no|not|hide|remove|disable|without|exclude|avoid|clear|suppress)\b/.test(text);
@@ -8814,21 +9195,6 @@ function finalTuningDirectivesForPrompt(prompt) {
     hideGroundCircles: suppress && ground && circles,
     hideDecorativeParticles: suppress && particles,
   };
-}
-
-function particleColor(beat, modelAsset) {
-  const haystack = `${beat.title || ""} ${beat.text || ""} ${modelAsset?.id || ""}`.toLowerCase();
-  if (haystack.includes("flu") || haystack.includes("virus")) return new THREE.Color(0xd7c45c);
-  if (haystack.includes("mite") || haystack.includes("skin")) return new THREE.Color(0x9fbd6e);
-  if (haystack.includes("bedbug")) return new THREE.Color(0xc97873);
-  if (haystack.includes("fly") || haystack.includes("fecal")) return new THREE.Color(0x7bc4c6);
-  if (haystack.includes("cockroach")) return new THREE.Color(0xd79b47);
-  return new THREE.Color(0x6ed8c2);
-}
-
-function habitatLabel(beat, modelAsset) {
-  const color = particleColor(beat, modelAsset).getHex();
-  return { color };
 }
 
 function escapeHtml(value) {

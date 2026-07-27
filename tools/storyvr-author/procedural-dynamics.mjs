@@ -6,7 +6,6 @@ export const MOTION_PLAN_SCHEMA_VERSION = "storyvr-motion-plan/v2";
 export const DYNAMICS_SCENE_CANDIDATE_SCHEMA_VERSION = "storyvr-dynamics-scene-candidate/v3";
 export const DYNAMICS_MOTION_ONLY_SCENE_PATCH_SCHEMA_VERSION = "storyvr-motion-only-scene-patch/v1";
 
-const MAX_ACTORS = 3;
 const TRAJECTORY_TYPES = new Set(["school-orbit", "waypoint-loop"]);
 const UNSAFE_TEXT_PATTERN = /(?:\b(?:https?|file|data|javascript):|```|<script\b|\beval\s*\(|\bfunction\s*\(|=>)/i;
 
@@ -98,9 +97,6 @@ export function normalizeMotionPlan(rawPlan, context, options = {}) {
   );
   const rawActors = Array.isArray(rawPlan.actors) ? rawPlan.actors : [];
   if (!rawActors.length) throw dynamicsError(400, "The generated Dynamics candidate must contain at least one actor.");
-  if (rawActors.length > MAX_ACTORS) {
-    throw dynamicsError(400, `The generated Dynamics candidate may target at most ${MAX_ACTORS} existing scene instances.`);
-  }
 
   const seenEntityIds = new Set();
   const actors = rawActors.map((rawActor, index) => {
@@ -148,7 +144,7 @@ export function normalizeMotionPlan(rawPlan, context, options = {}) {
       fadeOutSeconds: comfort.fadeOutSeconds,
     },
     performance: {
-      maxActors: MAX_ACTORS,
+      motionTargetCount,
       instancePolicy: "existing-spatial-entities-only",
       castShadow: false,
     },
@@ -276,6 +272,7 @@ export function normalizeDynamicsSceneIntent(generated, context, options = {}) {
     prompt,
     requireSceneMatch: false,
   });
+  assertPromptTargetCoverage(normalizedPlan, allowedAssets, prompt);
   return {
     prompt,
     targetEntityIds: normalizedPlan.actors.map((actor) => actor.entityId),
@@ -294,8 +291,9 @@ export function createFallbackMotionPlan(context, prompt, previousPlan = null) {
   const promptHints = fallbackMotionHints(safePrompt);
   const samePrompt = normalizedPromptForComparison(previousPlan?.prompt)
     === normalizedPromptForComparison(safePrompt);
-  const asksForEach = /\b(each|different|species|types?|kinds?)\b/i.test(safePrompt);
-  const selectedAssets = asksForEach ? preferredAssets.slice(0, MAX_ACTORS) : [asset];
+  const asksForMultipleTargets = promptRequestsAllTargets(safePrompt)
+    || /\b(different|species|types?|kinds?)\b/i.test(safePrompt);
+  const selectedAssets = asksForMultipleTargets ? preferredAssets : [asset];
   const actors = selectedAssets.map((selectedAsset, index) => {
     const availableClip = selectedAsset.clips[0] || null;
     const previousActor = samePrompt
@@ -410,6 +408,11 @@ export function applyMotionPlanToStore(currentStore, payload, context, now = new
     prompt: payload?.plan?.prompt ?? payload?.candidate?.prompt,
     requireSceneMatch: true,
   });
+  assertPromptTargetCoverage(
+    plan,
+    normalizeAllowedAssets(context?.assets, requireSceneContext(context?.scene || context)),
+    plan.prompt,
+  );
   const requestScene = requireSceneContext(payload?.sceneContext);
   if (requestScene.sceneKey !== plan.sceneKey) {
     throw dynamicsError(409, "The generated Dynamics candidate does not match the requested scene.");
@@ -483,12 +486,13 @@ export function proceduralDynamicsPrompt({ context, prompt, previousPlan }) {
     "Never emit JavaScript, URLs, filesystem paths, shader code, HTML, or executable expressions.",
     `The motion plan must use schemaVersion ${MOTION_PLAN_SCHEMA_VERSION} and the exact supplied sceneKey, beatId, variantGroupId, and variantOptionId.`,
     "anchor is fixed: {\"type\":\"reader-start\",\"coordinateSpace\":\"world\",\"followReader\":false}.",
-    "actors must be an array of 1 to 3 records. Each actor must include entityId, clip, trajectory, orientation, and animation.",
+    `actors must be a non-empty array using only the ${assets.length} supplied existing motionTargets. Each actor must include entityId, clip, trajectory, orientation, and animation.`,
+    "When the author asks for all, every, or each scene model, include every supplied motionTarget exactly once. There is no smaller fixed actor limit.",
     "All trajectory coordinates are temporary motion offsets layered outside the immutable authored Spatial Relations transform. y=0 is the reader's starting eye level.",
     "trajectory.kind is school-orbit or waypoint-loop. school-orbit uses radiusMeters, eye-relative heightMeters (normally near 0), angularSpeedRadiansPerSecond, direction (clockwise, counterclockwise, or mixed), and verticalSwayMeters. waypoint-loop uses 3 to 12 reader-start-relative [x,y,z] waypoint offsets and durationSeconds.",
     "orientation.kind is path-tangent. animation uses only an available clip and has mode loop or none, phase staggered, and timeScale.",
     "comfort must include minimumViewerDistanceMeters, maximumSpeedMetersPerSecond, fadeInSeconds, and fadeOutSeconds.",
-    "performance must be an object but server-owned limits will replace its values.",
+    "performance must be an object but server-owned runtime metadata will replace its values.",
     `Author request: ${prompt}`,
     `Context JSON:\n${JSON.stringify({
       scene,
@@ -785,6 +789,28 @@ function preferredAssetsForPrompt(assets, prompt) {
 function promptSuppressesAuthoredModels(prompt) {
   const source = String(prompt || "");
   return /\b(?:no|without|remove|hide|replace)\b.{0,36}\b(?:static|authored|source|original)\b|\b(?:static|authored|source|original)\b.{0,36}\b(?:no|without|remove|hide|replace)\b/i.test(source);
+}
+
+function promptRequestsAllTargets(prompt) {
+  const source = String(prompt || "");
+  return /\b(?:all|every|each)\b.{0,48}\b(?:them|models?|objects?|assets?|instances?|entities|sharks?|fish|creatures?|characters?)\b/i.test(source)
+    || /\b(?:models?|objects?|assets?|instances?|entities|sharks?|fish|creatures?|characters?)\b.{0,24}\b(?:all|every|each)\b/i.test(source);
+}
+
+function assertPromptTargetCoverage(plan, allowedAssets, prompt) {
+  if (!promptRequestsAllTargets(prompt)) return;
+  const requiredEntityIds = uniqueIdentifiers(
+    (Array.isArray(allowedAssets) ? allowedAssets : []).map((asset) => asset?.entityId),
+  );
+  const targetedEntityIds = new Set(
+    (Array.isArray(plan?.actors) ? plan.actors : []).map((actor) => actor?.entityId),
+  );
+  const missingEntityIds = requiredEntityIds.filter((entityId) => !targetedEntityIds.has(entityId));
+  if (!missingEntityIds.length) return;
+  throw dynamicsError(
+    400,
+    `The author asked to animate all existing scene model instances, but the generated candidate targets ${targetedEntityIds.size} of ${requiredEntityIds.length}.`,
+  );
 }
 
 function uniqueIdentifiers(values) {

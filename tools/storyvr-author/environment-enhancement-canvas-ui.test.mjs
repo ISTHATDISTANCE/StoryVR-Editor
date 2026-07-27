@@ -81,6 +81,10 @@ test("Generate creates a panorama and matching ground through Codex for only the
   const prompt = sourceFunction("environmentGenerationPrompt");
   const recommendation = sourceFunction("adoptEnvironmentGenerationRecommendation");
   const availability = sourceFunction("updateEnvironmentActionAvailability");
+  const referenceEvents = sourceFunction("bindEnvironmentGenerationReferenceEvents");
+  const addReferences = sourceFunction("addEnvironmentGenerationReferenceFiles");
+  const referencePayload = sourceFunction("environmentGenerationReferencePayload");
+  const referencePreview = sourceFunction("renderEnvironmentGenerationReferenceImages");
 
   assert.match(editor, /signed-in Codex CLI session/);
   assert.match(editor, /built-in image generation tool/);
@@ -88,6 +92,11 @@ test("Generate creates a panorama and matching ground through Codex for only the
   assert.match(editor, /2:1 equirectangular LDR PNG plus its matching ground texture/);
   assert.match(editor, /Generated PNG · 360° \+ ground/);
   assert.match(editor, /id="environment-generation-prompt"/);
+  assert.match(editor, /data-environment-generation-dropzone/);
+  assert.match(editor, /id="environment-generation-reference-files"/);
+  assert.match(editor, /Paste a screenshot with ⌘V, drop images here, or choose files/);
+  assert.match(editor, /accept="image\/png,image\/jpeg,image\/webp/);
+  assert.match(editor, /multiple/);
   assert.match(editor, /data-environment-generate-button/);
   assert.match(editor, /data-environment-generation-status/);
   assert.match(editor, /aria-live="polite"/);
@@ -99,13 +108,25 @@ test("Generate creates a panorama and matching ground through Codex for only the
   assert.match(generate, /persistent:\s*true/);
   assert.match(generate, /componentId:\s*"environment-enhancement"/);
   assert.match(generate, /const sceneContext = activeEnvironmentSceneContext\(\)/);
-  assert.match(generate, /api\.post\("\/api\/environment-enhancement\/generate", \{[\s\S]*prompt,[\s\S]*beatId: sceneContext\.beatId/);
+  assert.match(generate, /api\.post\("\/api\/environment-enhancement\/generate", \{[\s\S]*prompt,[\s\S]*beatId: sceneContext\.beatId,[\s\S]*referenceImages: environmentGenerationReferencePayload\(\)/);
   assert.match(generate, /applyEnvironmentEnhancementPayload\(response, \{ resetDraft: true \}\)/);
   assert.match(generate, /state\.environmentUi\.selectionMode = "asset"/);
   assert.match(generate, /generationStatus = "Codex is generating/);
   assert.match(availability, /\[data-environment-generate-button\]/);
+  assert.match(availability, /#environment-generation-reference-files/);
   assert.match(availability, /!String\(generationInput\?\.value \?\? environmentGenerationPrompt\(\)\)\.trim\(\)/);
+  assert.match(referenceEvents, /addEventListener\("paste"/);
+  assert.match(referenceEvents, /clipboardData\?\.items/);
+  assert.match(referenceEvents, /addEventListener\("drop"/);
+  assert.match(addReferences, /MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGES/);
+  assert.match(addReferences, /MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGE_BYTES/);
+  assert.match(addReferences, /readEnvironmentGenerationReferenceFile/);
+  assert.match(referencePayload, /base64:/);
+  assert.match(referencePreview, /data-environment-generation-reference-remove/);
+  assert.match(referencePreview, /<img src=/);
   assert.match(styles, /\.environment-generation-form textarea\s*\{[^}]*resize:\s*vertical;/s);
+  assert.match(styles, /\.environment-generation-prompt-dropzone\.drag-active/);
+  assert.match(styles, /\.environment-generation-reference img/);
   assert.match(styles, /\.environment-generation-status\.error/);
 });
 
@@ -172,6 +193,7 @@ test("checkpoint saving has no legal acknowledgement gate", () => {
 test("downstream checkpoint previews resolve the locked environment for their current beat", () => {
   const resolve = sourceFunction("environmentEnhancementContractForBeat");
   const locked = sourceFunction("lockedEnvironmentPreviewContract");
+  const neutral = sourceFunction("applyNeutralEnvironmentFallbackToViewer");
   const attach = sourceFunction("attachLockedEnvironmentToViewer");
 
   assert.match(resolve, /ENVIRONMENT_ENHANCEMENT_ASSIGNMENTS_SCHEMA_VERSION/);
@@ -186,6 +208,21 @@ test("downstream checkpoint previews resolve the locked environment for their cu
   assert.match(locked, /environmentEnhancementContractForBeat\(decisionBundle, beatId\)/);
   assert.match(locked, /if \(decisionBundle && !decisionContract\) return null/,
     "an explicit neutral assignment cannot fall through to another beat's image");
+  assert.match(neutral, /viewer\.scene\.environment = null/);
+  assert.match(neutral, /viewer\.scene\.background = new THREE\.Color\(0x080a08\)/,
+    "downstream spatial editors use the compiled reader's dark no-environment world");
+  assert.match(neutral, /viewer\.scene\.fog = null/,
+    "the neutral world preserves the authored source geometry instead of fogging it to black");
+  assert.match(neutral, /viewer\.renderer\.toneMappingExposure = 1/);
+  assert.match(neutral, /viewer\.renderer\.setClearColor\(0x080a08, 1\)/);
+  assert.match(attach, /if \(!applyNeutralEnvironmentFallbackToViewer\(viewer\)\) return/);
+  assert.ok(
+    attach.indexOf("applyNeutralEnvironmentFallbackToViewer(viewer)")
+      < attach.indexOf("lockedEnvironmentPreviewContract(viewer)"),
+    "the neutral reader world is installed before a saved environment optionally overrides it",
+  );
+  assert.match(attach, /if \(!asset \|\| !localUrl\) return/,
+    "an explicit no-environment decision keeps the shared neutral fallback");
   assert.match(attach, /lockedEnvironmentPreviewContract\(viewer\)/);
   assert.doesNotMatch(attach, /environmentManifest\(\)\.asset/,
     "the loader does not fall back to the Environment editor's active or default beat");

@@ -1024,6 +1024,11 @@ test("builds a generic shared timeline with inactive, initialize, hold, scrub, a
       assetRef: { path: asset.path },
       mode: "shared-timeline",
       framing: { verticalAlignment: "grounded" },
+      presentation: {
+        backgroundColor: "#e8edef",
+        authoredGround: true,
+        annotations: { background: "transparent" },
+      },
       timeline: { timeMapping: "shared-absolute", defaultLoopMode: "repeat" },
       anchors: [
         { sourceText: atomicBeats[2].text, localProgress: 0.2, contributorClipIndexes: [0] },
@@ -1061,6 +1066,11 @@ test("builds a generic shared timeline with inactive, initialize, hold, scrub, a
   assert.equal(contract.timeline.durationSeconds, 6);
   assert.equal(contract.timeline.timeMapping, "shared-absolute");
   assert.deepEqual(contract.framing, { verticalAlignment: "ground" });
+  assert.deepEqual(contract.presentation, {
+    backgroundColor: "#e8edef",
+    authoredGround: true,
+    annotations: { background: "transparent" },
+  });
   assert.deepEqual(contract.coordinatedClips, [
     { clipIndex: 0, loopMode: "repeat" },
     { clipIndex: 1, loopMode: "repeat" },

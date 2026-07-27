@@ -3,7 +3,22 @@ import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("./app/src/main.js", import.meta.url), "utf8");
 const styles = await readFile(new URL("./app/src/styles.css", import.meta.url), "utf8");
-const classroomPlayback = JSON.parse(await readFile(new URL("../../../classroom/analysis/storyvr/source-motion-playback.json", import.meta.url), "utf8"));
+
+async function readOptionalSiblingPlayback(storySlug) {
+  try {
+    return JSON.parse(await readFile(
+      new URL(`../../../${storySlug}/analysis/storyvr/source-motion-playback.json`, import.meta.url),
+      "utf8",
+    ));
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+const classroomPlayback = await readOptionalSiblingPlayback("classroom");
+const transmissionPlayback = await readOptionalSiblingPlayback("transmission");
+const sharkPlayback = await readOptionalSiblingPlayback("shark");
 
 function functionSource(name) {
   const start = source.indexOf(`function ${name}(`);
@@ -22,6 +37,25 @@ const viewerInitializers = [
   "initializeFinalReviewViewer",
 ];
 
+if (classroomPlayback) {
+  const classroomCameraPlaybackAsset = classroomPlayback.assets[0];
+  assert.equal(classroomCameraPlaybackAsset.camera.desktopPolicy, "render-source-camera",
+    "the classroom keeps its authored embedded camera on desktop");
+  assert.equal(classroomCameraPlaybackAsset.camera.xrPolicy, "preserve-viewer-camera",
+    "the classroom source camera cannot replace the head-tracked XR reader camera");
+}
+if (transmissionPlayback) {
+  const transmissionPlaybackAsset = transmissionPlayback.assets[0];
+  assert.equal(transmissionPlaybackAsset.mode, "shared-timeline",
+    "the transmission story keeps its original cough spread on one coordinated timeline");
+  assert.equal(transmissionPlaybackAsset.anchors.length, 13,
+    "the transmission story retains one saved source pose for every visual beat");
+  assert.equal(transmissionPlaybackAsset.camera.desktopPolicy, "preserve-viewer-camera",
+    "the transmission source camera cannot replace the draggable desktop reader camera");
+  assert.equal(transmissionPlaybackAsset.camera.xrPolicy, "preserve-viewer-camera",
+    "the transmission source camera cannot replace the head-tracked XR reader camera");
+}
+
 for (const name of viewerInitializers) {
   const block = functionSource(name);
   assert.match(block, /addPreviewMetadataOverlay\(/, `${name} mounts the shared DOM metadata overlay`);
@@ -30,9 +64,57 @@ for (const name of viewerInitializers) {
 
 const spatialTextSprite = functionSource("makeTextSprite");
 assert.match(spatialTextSprite, /options\.authoredSceneText === true/, "Three.js text requires an explicit source-authored content contract");
+assert.match(spatialTextSprite, /fog:\s*false/, "source-authored labels remain legible independently of environment fog");
+assert.match(spatialTextSprite, /depthTest: options\.depthTest !== false/, "source-authored labels can use the source overlay depth policy");
+assert.match(spatialTextSprite, /toneMapped: options\.toneMapped !== false/, "source-authored labels can preserve their authored screen color");
 assert.match(spatialTextSprite, /sprite\.visible = authoredSceneText/, "system-generated spatial text cards remain hidden");
 assert.match(spatialTextSprite, /sprite\.raycast = \(\) => \{\}/, "hidden text cards cannot leave invisible interaction targets");
-assert.match(functionSource("initializeSourcePlaybackAnnotations"), /authoredSceneText:\s*true/, "source-declared annotations remain visible");
+const sourcePlaybackAnnotationIsReaderVisible = new Function(
+  `${functionSource("sourcePlaybackAnnotationIsReaderVisible")}\nreturn sourcePlaybackAnnotationIsReaderVisible;`,
+)();
+if (transmissionPlayback) {
+  assert.equal(sourcePlaybackAnnotationIsReaderVisible(transmissionPlayback.assets[0].annotations[0]), false,
+    "the transmission provenance label is not rendered as a Final Review card");
+}
+if (sharkPlayback) {
+  assert.equal(sourcePlaybackAnnotationIsReaderVisible(sharkPlayback.assets[0].annotations[0]), false,
+    "the shark timeline summary is not rendered as a Final Review card");
+}
+if (classroomPlayback) {
+  for (const annotation of classroomPlayback.assets[0].annotations) {
+    assert.equal(sourcePlaybackAnnotationIsReaderVisible(annotation), true,
+      `the source-authored classroom annotation ${annotation.id} remains visible`);
+  }
+  if (classroomPlayback.assets[0].presentation) {
+    assert.deepEqual(classroomPlayback.assets[0].presentation, {
+      backgroundColor: "#e8edef",
+      authoredGround: true,
+      annotations: {
+        background: "transparent",
+        color: "#111614",
+        fontWeight: 600,
+        maxLineCharacters: 44,
+        viewportMargin: 12,
+      },
+    }, "the classroom source contract preserves its all-beat background, authored floor, and label treatment");
+  }
+}
+assert.equal(sourcePlaybackAnnotationIsReaderVisible({ label: "Intentional label", readerVisible: true }), true,
+  "an unanchored authored annotation can explicitly opt into reader visibility");
+assert.match(functionSource("normalizeSourcePlaybackAsset"), /filter\(sourcePlaybackAnnotationIsReaderVisible\)/,
+  "Final Review removes metadata-only annotations during playback normalization");
+assert.match(functionSource("initializeSourcePlaybackAnnotations"), /sourcePlaybackAnnotationIsReaderVisible\(definition\)[^]*authoredSceneText:\s*true/s,
+  "only reader-visible source annotations opt into Three.js scene text");
+assert.match(functionSource("initializeSourcePlaybackAnnotations"), /sourcePlaybackAnnotationLayout\(text, definition, presentation\)/,
+  "every source annotation uses content-aware dimensions instead of a fixed card size");
+assert.match(functionSource("initializeSourcePlaybackAnnotations"), /background: definition\.background \?\? presentation\.background/,
+  "the source contract can restore bare labels without per-beat overrides");
+assert.match(functionSource("initializeSourcePlaybackAnnotations"), /initializeFinalReviewSourcePlaybackAnnotationElement/,
+  "Final Review projects source annotations into the same constant-size DOM treatment as the reader");
+assert.match(functionSource("updateSourcePlaybackAnnotations"), /THREE\.MathUtils\.clamp\(x, minimumLeft, maximumLeft\)/,
+  "Final Review keeps source labels inside the preview viewport across the whole timeline");
+assert.match(functionSource("updateSourcePlaybackAnnotations"), /annotation\.sprite\.visible = annotationVisible && \(!annotation\.element \|\| xrPresenting\)/,
+  "desktop Final Review uses crisp projected labels while XR retains world-space sprites");
 assert.equal((source.match(/authoredSceneText:\s*true/g) || []).length, 1, "only source-declared annotations can opt back into spatial text rendering");
 assert.match(functionSource("makeTopologyPlaceholder"), /mesh\.visible = false[\s\S]*mesh\.raycast = \(\) => \{\}/, "asset placeholders are neither rendered nor pickable");
 assert.match(functionSource("makeTextComfortPlaceholder"), /group\.visible = false[\s\S]*object\.raycast = \(\) => \{\}/, "loading placeholders stay out of spatial editors and picking");
@@ -62,8 +144,10 @@ assert.match(functionSource("dynamicPreviewHasEmbeddedGlbAnimation"), /hasEmbedd
 assert.match(functionSource("renderDynamicPreview"), /hasSourceAnimation \? "Generated \+ GLB motion" : "Generated motion"/,
   "Dynamics distinguishes an explicit generated plan from embedded GLB playback and static scenes");
 assert.match(functionSource("initializeDynamicGeometryViewer"), /attachLockedEnvironmentToViewer\(viewer\)/, "Dynamics inherits the current saved Environment Enhancement");
+assert.match(functionSource("initializeDynamicGeometryViewer"), /createSpatialReaderRig\(root, layers\.viewpointKind, layoutKind, readerEntity\)/, "Dynamics shows the saved Reader model in its spatial editor");
 assert.doesNotMatch(functionSource("initializeDynamicGeometryViewer"), /addInheritedTextComfortLayer/, "Dynamics does not materialize the reader-hand text system surface");
 assert.match(functionSource("initializeInterBeatDynamicsViewer"), /attachLockedEnvironmentToViewer\(viewer\)/, "Transition inherits the current saved Environment Enhancement");
+assert.match(functionSource("initializeInterBeatDynamicsViewer"), /thumbnailMode[\s\S]*createSpatialReaderRig\(root, layers\.viewpointKind, layoutKind, readerEntity\)/, "Transition shows the saved Reader model only in the full spatial editor");
 assert.doesNotMatch(functionSource("initializeInterBeatDynamicsViewer"), /addInheritedTextComfortLayer/, "Transition does not materialize a detached prose panel");
 const interactionInitializer = functionSource("initializeInteractionControlViewer");
 const interactionCumulativeUpdate = functionSource("updateInteractionControlCumulativeScene");
@@ -363,6 +447,8 @@ assert.match(
   "source-camera cues share the render loop while a paused compact preview receives no clock delta",
 );
 assert.match(functionSource("cancelSourceCameraCue"), /viewer\.sourceCameraCue = null/, "manual orbit cancels source-camera ownership");
+assert.match(functionSource("requestSourceCameraCue"), /!viewer\.thumbnailMode && !state\.sourceCameraPreviewEnabled\) return false/,
+  "the full Transition editor keeps its Reader overview until the author explicitly previews the source camera");
 assert.match(functionSource("syncSourceCameraPreview"), /lerpVectors\(cue\.startPosition, targetPosition, smooth\)/, "camera cues move smoothly from the current user view");
 assert.match(source, /if \(state\.interBeatPreviewPlaying\) \{[^]*requestSourceCameraCue\(interBeatViewer\)/s, "Play re-cues the authored camera from the current orbit view");
 assert.match(functionSource("renderInterBeatPreview"), /renderSourceCameraEvidence\(beat\)/, "Transition exposes camera-path linking evidence per beat");
@@ -379,7 +465,7 @@ assert.match(functionSource("renderInterBeatPreview"), /timelineLabel[^]*windowL
 assert.match(functionSource("initializeSourcePlaybackBindings"), /visibility-opacity[^]*draw-range-progress[^]*camera-focal-length[^]*annotation-opacity/s, "the frontend supports each declared generic binding operation");
 assert.match(functionSource("initializeSourcePlaybackBindings"), /unsupported-binding-operation/, "unsupported binding operations are diagnostic no-ops");
 assert.match(functionSource("updateSourcePlaybackAnnotations"), /definition\.visibleThreshold/, "annotation visibility uses the normalized contract threshold");
-assert.match(functionSource("attachSourceTransitionPlayback"), /gltf\.scene\.visible = entry\.sourcePlaybackContractActive/, "contract presence controls the loaded source scene");
+assert.match(functionSource("attachSourceTransitionPlayback"), /gltf\.scene\.visible = sourcePlaybackSceneVisibleForViewer/, "each preview resolves loaded source-scene visibility through its ownership boundary");
 assert.match(functionSource("applyInterBeatSourcePartMaskToEntry"), /sourcePlaybackContractOwnsEntryVisibility/, "shared-timeline entries bypass legacy source-part masks");
 for (const loaderName of ["loadTopologySwapAsset", "loadDynamicAsset"]) {
   const loader = functionSource(loaderName);

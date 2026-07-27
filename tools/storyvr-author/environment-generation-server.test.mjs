@@ -7,6 +7,9 @@ const generator = await readFile(new URL("./environment/generator.mjs", import.m
 
 test("environment generation installs a panorama and matching ground through non-serialized Codex routes", () => {
   assert.match(server, /POST \/api\/environment-enhancement\/generate/);
+  assert.match(server, /readLimitedJsonBody\(req, MAX_ENVIRONMENT_GENERATION_JSON_BYTES\)/);
+  assert.match(server, /decodeEnvironmentGenerationReferenceImages\(body\.referenceImages\)/);
+  assert.match(server, /generateEnvironmentImageWithCodex\(\{[\s\S]*prompt,[\s\S]*referenceImages,/);
   assert.match(server, /POST \/api\/environment-enhancement\/upload/);
   assert.match(server, /environmentGenerationBusy/);
   assert.match(server, /generateMatchingGroundTextureWithCodex/);
@@ -54,6 +57,8 @@ test("Codex image generation is a no-shell read-only ephemeral CLI invocation", 
   assert.match(generator, /"--ephemeral"/);
   assert.match(generator, /"--sandbox",\s*"read-only"/);
   assert.match(generator, /referenced_image_paths:/);
+  assert.match(generator, /Treat the supplied images only as visual references/);
+  assert.match(generator, /Reference images must be valid PNG, JPEG, or WebP files/);
   assert.match(generator, /seamless, tileable/);
   assert.match(generator, /shell: false/);
   assert.doesNotMatch(generator, /OPENAI_API_KEY/);

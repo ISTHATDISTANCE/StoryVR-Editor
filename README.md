@@ -188,12 +188,6 @@ node tools/animation-logic-probe/analyze-animation-probe.mjs \
   --story-folder "../$STORY_SLUG"
 ```
 
-The legacy `nyt-console-collector.js` and `nyt-asset-downloader.mjs` entrypoints
-referenced by some package scripts are not currently included in this
-repository. As a result, discovery-JSON collection/fetching and `npm run
-self-test` require those files, while authoring and normalizing an existing
-`captures/active/` folder do not.
-
 Detailed subsystem documentation is available in:
 
 - `tools/storyvr-author/README.md`
@@ -211,9 +205,7 @@ npm run test:probe
 npm run test:https
 ```
 
-`npm run check` additionally references the two legacy ingestion entrypoints
-that are not currently included, so it will report them as missing until those
-files are supplied.
+Run `npm run check` for syntax validation across the standalone StoryVR tools.
 
 ## Troubleshooting
 

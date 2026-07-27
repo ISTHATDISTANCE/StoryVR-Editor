@@ -239,6 +239,11 @@ test("infers stable reader, text-panel, and root-visual Spatial Relations entiti
     quaternion: [0, 0, 0, 1],
     scale: [1, 1, 1],
   });
+  assert.equal(
+    contract.entities.find((entity) => entity.id === "glb:focus.glb:beat:focus-beat").verticalAlignment,
+    "ground",
+    "new inferred GLBs use a floor-contact pivot",
+  );
   const focusPanel = contract.entities.find((entity) => entity.id === "text-panel:focus-beat");
   assert.deepEqual(focusPanel.clearance, {
     enabled: true,
@@ -318,6 +323,7 @@ test("validates manual transforms without allowing stale or unknown entities", (
   assert.deepEqual(validatedEntity.transform.position, [1.25, 0.2, -0.4]);
   assert.deepEqual(validatedEntity.transform.quaternion, [0, 0.70710678, 0, 0.70710678]);
   assert.equal(validatedEntity.manual, true);
+  assert.equal(validatedEntity.verticalAlignment, "ground", "new manual edits retain the inferred floor-contact pivot");
 
   const readerEdited = structuredClone(inferred);
   const reader = readerEdited.entities.find((item) => item.id === "reader:beat:focus-beat");
@@ -390,6 +396,7 @@ test("validates explicit authored GLB instances while rejecting forged instance 
   assert.equal(canonical.instanceOfEntityId, baseId);
   assert.equal(canonical.instanceIndex, 2);
   assert.equal(canonical.manual, true);
+  assert.equal(canonical.verticalAlignment, "ground");
   assert.deepEqual(canonical.transform.position, [0.8, 0.15, -0.6]);
   assert.deepEqual(canonical.transform.scale, [1.4, 1.4, 1.4]);
 
@@ -616,7 +623,7 @@ test("validates viewpoint changes independently for each beat scene", () => {
   assert.equal(validatedReader.manual, false);
 });
 
-test("migrates one v1 global GLB transform into every linked beat without coupling later edits", () => {
+test("migrates one v1 global GLB transform into every grounded linked beat without coupling later edits", () => {
   const { graph, runtime, decisions } = fixture();
   const inferred = inferSpatialRelationsContract(graph, runtime, decisions);
   const legacyTransform = {
@@ -645,6 +652,7 @@ test("migrates one v1 global GLB transform into every linked beat without coupli
     "glb:focus.glb:beat:asset-beat",
   ]);
   assert.ok(focusEntities.every((entity) => JSON.stringify(entity.transform) === JSON.stringify(legacyTransform)));
+  assert.ok(focusEntities.every((entity) => entity.verticalAlignment === "ground"), "legacy manual GLBs adopt the current floor-contact pivot");
 
   const edited = structuredClone(migrated);
   const first = edited.resolvedByBeat["focus-beat"].entities.find((entity) => entity.kind === "glb" && entity.assetId === "focus.glb");
@@ -653,6 +661,33 @@ test("migrates one v1 global GLB transform into every linked beat without coupli
   const validated = validateSpatialRelationsContract(edited, inferred);
   assert.deepEqual(validated.resolvedByBeat["focus-beat"].entities.find((entity) => entity.kind === "glb" && entity.assetId === "focus.glb").transform.position, [8, 0, 0]);
   assert.deepEqual(validated.resolvedByBeat["asset-beat"].entities.find((entity) => entity.kind === "glb" && entity.assetId === "focus.glb").transform.position, legacyTransform.position);
+});
+
+test("migrates explicit centered v2 authored GLBs to the v3 inferred grounding basis", () => {
+  const { graph, runtime, decisions } = fixture();
+  const inferred = inferSpatialRelationsContract(graph, runtime, decisions);
+  const legacy = structuredClone(inferred);
+  legacy.inferenceVersion = "per-scene-exact-assets-v2";
+  const entityId = "glb:focus.glb:beat:focus-beat";
+  const legacyTransform = {
+    position: [0.4, 1.2, -0.6],
+    quaternion: [0, 0, 0, 1],
+    scale: [1.8, 1.8, 1.8],
+  };
+  editSpatialEntityCopies(legacy, entityId, (entity) => {
+    entity.verticalAlignment = "center";
+    entity.transform = structuredClone(legacyTransform);
+    entity.manual = true;
+  });
+
+  const migrated = validateSpatialRelationsContract(legacy, inferred);
+  const flat = migrated.entities.find((entity) => entity.id === entityId);
+  const scene = migrated.resolvedByBeat["focus-beat"].entities.find((entity) => entity.id === entityId);
+  assert.equal(migrated.inferenceVersion, "per-scene-exact-assets-v3");
+  assert.equal(flat.verticalAlignment, "ground");
+  assert.equal(scene.verticalAlignment, "ground");
+  assert.deepEqual(flat.transform, legacyTransform, "migration preserves the authored numeric transform");
+  assert.deepEqual(scene, flat, "the scene copy is rebuilt from the migrated canonical entity");
 });
 
 test("v1 migration drops an obsolete automatic GLB anchor for a now text-only beat", () => {

@@ -121,7 +121,7 @@ test("normalization binds motion to an existing entity and keeps scene ownership
   assert.equal(plan.comfort.minimumViewerDistanceMeters, 1.75);
   assert.equal(plan.comfort.maximumSpeedMetersPerSecond, 1.5);
   assert.deepEqual(plan.performance, {
-    maxActors: 3,
+    motionTargetCount: 1,
     instancePolicy: "existing-spatial-entities-only",
     castShadow: false,
   });
@@ -172,8 +172,8 @@ test("normalization rejects all asset, transform, suppression, population, and d
   );
 });
 
-test("entity identity supports multiple placed instances of the same linked asset", () => {
-  const assets = [1, 2, 3].map((index) => ({
+test("entity identity supports every placed instance without a fixed actor limit", () => {
+  const assets = Array.from({ length: 8 }, (_, offset) => offset + 1).map((index) => ({
     entityId: `glb:shark.glb:beat:shark-beat:instance:${index}`,
     assetId: "shark.glb",
     label: `Placed shark ${index}`,
@@ -187,8 +187,9 @@ test("entity identity supports multiple placed instances of the same linked asse
     })),
   }), context);
   assert.deepEqual(plan.actors.map((actor) => actor.entityId), assets.map((asset) => asset.entityId));
-  assert.equal(expandProceduralDynamicsInstances(plan, { xrPresenting: false }).length, 3);
-  assert.equal(expandProceduralDynamicsInstances(plan, { xrPresenting: true }).length, 3);
+  assert.equal(plan.performance.motionTargetCount, 8);
+  assert.equal(expandProceduralDynamicsInstances(plan, { xrPresenting: false }).length, 8);
+  assert.equal(expandProceduralDynamicsInstances(plan, { xrPresenting: true }).length, 8);
 });
 
 test("apply and remove use optimistic revisions and reject cross-scene candidates", () => {
@@ -302,6 +303,48 @@ test("candidate generation supplies a strict prompt and rejects forbidden genera
     }),
     /cannot change.*instance count/i,
   );
+});
+
+test("all-target prompts reject partial generated plans and fallback targets the complete scene", async () => {
+  const assets = Array.from({ length: 5 }, (_, index) => ({
+    entityId: `glb:shark-${index + 1}.glb:beat:shark-beat`,
+    assetId: `shark-${index + 1}.glb`,
+    label: `Placed shark ${index + 1}`,
+    clips: index < 3 ? [{
+      trackId: `shark-${index + 1}.glb#clip:0`,
+      clipIndex: 0,
+      clipName: "Swim",
+      durationSeconds: 2,
+    }] : [],
+  }));
+  const context = sceneContext({ assets });
+  const prompt = "Have all sharks in the scene swim around me.";
+  const partialActors = assets.slice(0, 3).map((asset) => ({
+    entityId: asset.entityId,
+    assetId: asset.assetId,
+    trajectory: { kind: "school-orbit", radiusMeters: 4 },
+  }));
+
+  await assert.rejects(
+    generateMotionPlanCandidate({
+      context,
+      prompt,
+      generateJson: async () => ({
+        scenePatch: {
+          motionPlan: rawPlan({ prompt, actors: partialActors }),
+        },
+      }),
+    }),
+    /targets 3 of 5/i,
+  );
+
+  const fallback = createFallbackMotionPlan(context, prompt);
+  assert.equal(fallback.actors.length, 5);
+  assert.deepEqual(
+    new Set(fallback.actors.map((actor) => actor.entityId)),
+    new Set(assets.map((asset) => asset.entityId)),
+  );
+  assert.equal(fallback.actors.filter((actor) => actor.animation.enabled).length, 3);
 });
 
 test("fallback honors specific motion numbers while population language cannot create copies", () => {

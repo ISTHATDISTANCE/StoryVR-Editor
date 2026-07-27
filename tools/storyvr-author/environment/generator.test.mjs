@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   mkdir,
   mkdtemp,
+  readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -13,9 +14,11 @@ import {
   assertCodexImageGenerationCliVersion,
   buildCodexEnvironmentGenerationPrompt,
   buildCodexMatchingGroundPrompt,
+  decodeEnvironmentGenerationReferenceImages,
   GENERATED_ENVIRONMENT_HEIGHT,
   GENERATED_ENVIRONMENT_WIDTH,
   GENERATED_GROUND_TEXTURE_SIZE,
+  MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGES,
   generateEnvironmentImageWithCodex,
   generateMatchingGroundTextureWithCodex,
   parseCodexThreadId,
@@ -101,6 +104,78 @@ test("Codex CLI generation uses JSON events and copies the PNG from its exact th
   const workerPrompt = commandRecord.args.at(-1);
   assert.match(workerPrompt, /\$imagegen/);
   assert.match(workerPrompt, /image_gen\.imagegen exactly once/);
+});
+
+test("environment generation supplies validated screenshots and image files as visual references", async (t) => {
+  const { codexHome, temporaryRoot } = await fixture(t);
+  await mkdir(temporaryRoot, { recursive: true });
+  const generatedImagePath = path.join(codexHome, "generated_images", THREAD_ID, "generated.png");
+  const screenshot = minimalPng(640, 480);
+  let suppliedReference = null;
+
+  const result = await generateEnvironmentImageWithCodex({
+    prompt: "turn this classroom view into a complete surrounding",
+    referenceImages: [{
+      filename: "copied classroom screenshot.png",
+      mediaType: "image/png",
+      image: screenshot,
+    }],
+    codexHome,
+    temporaryRoot,
+    commandRunner: async (_command, args) => {
+      const workerPrompt = args.at(-1);
+      const paths = JSON.parse(workerPrompt.match(/referenced_image_paths: (\[[^\n]+\])/)[1]);
+      assert.equal(paths.length, 1);
+      assert.match(paths[0], /visual-reference-01\.png$/);
+      suppliedReference = await readFile(paths[0]);
+      assert.match(workerPrompt, /every supplied image participates as a visual reference/);
+      assert.match(workerPrompt, /Extrapolate beyond the images into a coherent full sphere/);
+      await mkdir(path.dirname(generatedImagePath), { recursive: true });
+      await writeFile(
+        generatedImagePath,
+        minimalPng(GENERATED_ENVIRONMENT_WIDTH, GENERATED_ENVIRONMENT_HEIGHT),
+      );
+      await writeFile(args[args.indexOf("--output-last-message") + 1], "Image generated.\n");
+      return { ok: true, code: 0, stdout: `${threadStarted(THREAD_ID)}\n`, stderr: "" };
+    },
+  });
+
+  assert.deepEqual(suppliedReference, screenshot);
+  assert.deepEqual(result.metadata.referenceImages, [{
+    filename: "copied classroom screenshot.png",
+    mediaType: "image/png",
+    bytes: screenshot.byteLength,
+  }]);
+});
+
+test("generation reference payloads are base64-decoded and verified by file signature", () => {
+  const png = minimalPng(320, 180);
+  const decoded = decodeEnvironmentGenerationReferenceImages([{
+    filename: "../copied screenshot.png",
+    mediaType: "image/jpeg",
+    base64: png.toString("base64"),
+  }]);
+
+  assert.equal(decoded.length, 1);
+  assert.equal(decoded[0].filename, "copied screenshot.png");
+  assert.equal(decoded[0].mediaType, "image/png");
+  assert.deepEqual(decoded[0].image, png);
+  assert.throws(
+    () => decodeEnvironmentGenerationReferenceImages([{
+      filename: "not-an-image.png",
+      base64: Buffer.from("not an image").toString("base64"),
+    }]),
+    /valid PNG, JPEG, or WebP/,
+  );
+  assert.throws(
+    () => decodeEnvironmentGenerationReferenceImages(
+      Array.from({ length: MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGES + 1 }, () => ({
+        filename: "reference.png",
+        base64: png.toString("base64"),
+      })),
+    ),
+    /no more than 4/,
+  );
 });
 
 test("matching-ground generation references the panorama and normalizes a square PNG", async (t) => {

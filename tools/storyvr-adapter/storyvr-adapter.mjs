@@ -2,6 +2,7 @@ import { access, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promi
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { normalizeStoryVrPointCloudEffects } from "../storyvr-author/point-cloud-runtime.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, "../..");
@@ -194,6 +195,7 @@ export async function importFetchedStoryResources(resourceFolder, mode = "dev", 
   const slug = firstNonEmpty(sourceDiscovery.slug, storySlugFromUrl(sourceDiscovery.story_url || storyStructure.story_url), inferredSlugFromResourceFolder(fullResourceFolder));
   const storyTitle = firstNonEmpty(storyStructure.title, sourceDiscovery.title, slug);
   const assets = assetsFromManifest(manifest);
+  const pointCloudEffects = normalizeStoryVrPointCloudEffects(storyStructure.point_cloud_effects, assets);
   const rawContentUnits = contentUnitsFromFetchedStructure(storyStructure, { storyTitle });
   const variantGroups = variantGroupsFromFetchedStructure(storyStructure, assets);
   const unresolvedVariantGroupCount = arrayOr(storyStructure.unresolved_variant_groups).length;
@@ -242,6 +244,7 @@ export async function importFetchedStoryResources(resourceFolder, mode = "dev", 
     style: { colors: {}, tokens: {} },
     contentUnits,
     ...(variantGroups.length ? { variantGroups } : {}),
+    ...(pointCloudEffects.length ? { pointCloudEffects } : {}),
     sceneTopology: {
       kind: "fetched-resource-sequence",
       routeStops: [],
@@ -286,6 +289,7 @@ export async function importFetchedStoryResources(resourceFolder, mode = "dev", 
       textOnlyPartCount: arrayOr(storyStructure.text_only_parts).length,
       variantGroupCount: variantGroups.length,
       unresolvedVariantGroupCount,
+      ...(pointCloudEffects.length ? { pointCloudEffectCount: pointCloudEffects.length } : {}),
     },
   };
 
@@ -1105,7 +1109,7 @@ function assetsFromManifest(manifest) {
     const fileName = assetFileName(localPath || entry.final_url || entry.asset_url || `asset-${index + 1}`);
     return {
       id: firstNonEmpty(entry.id, fileName),
-      path: localPath ? toPosix(localPath).replace(/^.*\/(models|textures|data|scripts|html|metadata|media)\//, "$1/") : null,
+      path: localPath ? toPosix(localPath).replace(/^.*\/(models|pointclouds|textures|data|scripts|html|metadata|media)\//, "$1/") : null,
       url: entry.final_url || entry.asset_url || null,
       type: entry.asset_type || inferAssetType(fileName),
       role: firstNonEmpty(entry.adaptation_relevance, entry.role, ""),
@@ -1458,7 +1462,7 @@ function compactObject(value) {
 function looksLikeAsset(value) {
   const text = String(value || "");
   if (!text || /^https?:\/\/www\.nytimes\.com/i.test(text)) return false;
-  return isRemoteUrl(text) || /\.(glb|gltf|bin|json|csv|png|jpe?g|webp|avif|gif|mp4|webm|mp3|wav|svg)$/i.test(text) || /^(models|textures|data|media|audio)\//i.test(text);
+  return isRemoteUrl(text) || /\.(glb|gltf|pcd|bin|json|csv|png|jpe?g|webp|avif|gif|mp4|webm|mp3|wav|svg)$/i.test(text) || /^(models|pointclouds|textures|data|media|audio)\//i.test(text);
 }
 
 function isRemoteUrl(value) {
@@ -1469,6 +1473,7 @@ function inferAssetType(value, context = []) {
   const text = String(value || "").toLowerCase();
   const contextText = context.join(".").toLowerCase();
   if (/\.(glb|gltf)$/.test(text) || contextText.includes("model")) return "model";
+  if (/\.pcd$/.test(text) || contextText.includes("pointcloud") || contextText.includes("point_cloud")) return "pointcloud";
   if (/\.(png|jpe?g|webp|avif|gif|svg)$/.test(text) || contextText.includes("image") || contextText.includes("texture")) return "texture";
   if (/\.(json|csv|bin)$/.test(text) || contextText.includes("data")) return "data";
   if (/\.(mp4|webm)$/.test(text) || contextText.includes("media") || contextText.includes("video")) return "media";

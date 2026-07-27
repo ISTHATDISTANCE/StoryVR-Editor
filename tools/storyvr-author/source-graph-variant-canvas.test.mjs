@@ -31,9 +31,9 @@ test("Source Graph renders default and alternative options as parallel canvas ca
   assert.match(alternatives, /source-graph-parallel-variant-card/);
   assert.match(alternatives, /data-source-graph-variant-card/);
   assert.match(alternatives, /data-source-graph-variant-drop/);
-  assert.match(alternatives, /sourceGraphEffectiveVariantAssetIds\(beat, group, option\)/);
-  assert.match(alternatives, /manualSceneAssetIdsForContext/,
-    "an applied exact Dynamics override replaces the visible option assets after reload");
+  assert.match(alternatives, /variantOptionAssetIds\(option\)/);
+  assert.doesNotMatch(alternatives, /manualSceneAsset|generatedOverride/,
+    "Source Graph renders only its ordinary editable variant asset links");
 });
 
 test("Source Graph beat cards render without badges or text-only color treatment", async () => {
@@ -95,11 +95,10 @@ test("parallel variant cards bind the same drag-in, drag-out, and move flow as b
   const renderer = source.match(/function renderSourceGraphBeatAsset\([\s\S]*?\nfunction variantGroupForBeat/)?.[0] || "";
   const bindings = source.match(/function bindSourceGraphCanvasEvents\([\s\S]*?\nfunction sourceGraphDragPayloadFromDataTransfer/)?.[0] || "";
 
-  assert.match(renderer, /const draggable = !generatedOverride && Boolean\(String\(assetId \|\| ""\)\.trim\(\)\)/);
+  assert.match(renderer, /const draggable = Boolean\(String\(assetId \|\| ""\)\.trim\(\)\)/);
   assert.doesNotMatch(renderer, /&& !variant/);
-  assert.match(renderer, /generatedOverride \? "generated-override"/);
-  assert.match(renderer, /Generated exact/,
-    "generated exact links are visible but do not masquerade as editable authored links");
+  assert.doesNotMatch(renderer, /generatedOverride|generated-override|Generated exact/,
+    "all displayed links are ordinary editable Source Graph links");
   assert.match(bindings, /sourceVariantGroupId/);
   assert.match(bindings, /sourceVariantOptionId/);
   assert.match(bindings, /\[data-source-graph-variant-drop\]/);

@@ -53,6 +53,10 @@ import {
   sampleProceduralDynamicsTransform,
 } from "../../procedural-dynamics-runtime.js";
 import {
+  augmentGltfLoaderWithStoryVrPointClouds,
+  updateStoryVrPointCloudEffects,
+} from "../../point-cloud-runtime.js";
+import {
   createStoryvrNavigationHistoryState,
   createStoryvrNavigationRoute,
   normalizeStoryvrNavigationScene,
@@ -72,6 +76,7 @@ const SOURCE_GRAPH_MODEL_THUMBNAIL_WIDTH = 256;
 const SOURCE_GRAPH_MODEL_THUMBNAIL_HEIGHT = 222;
 const FINAL_REVIEW_XR_TEXT_PANEL_WIDTH = 0.46;
 const FINAL_REVIEW_XR_TEXT_PANEL_HEIGHT = 0.252;
+const READER_UI_RENDER_ORDER = 20_000;
 const FINAL_REVIEW_DESKTOP_PANEL_REFERENCE_FOV = 42;
 const FINAL_REVIEW_DIRECT_GHOST_OPACITY = 0.32;
 const FINAL_REVIEW_DIRECT_GHOST_VELOCITY_METERS_PER_SECOND = 0.75;
@@ -85,6 +90,7 @@ const SOURCE_GRAPH_ASSET_LINK_TOOLTIP = "Click to link to the selected beat or v
 const SOURCE_GRAPH_ASSET_TOOLTIP_DELAY_MS = 2000;
 const INTERACTION_CONFIGURATION_SCHEMA = "storyvr-interaction-configuration/v1";
 const IN_BEAT_INTERACTIONS_SCHEMA = "storyvr-in-beat-interactions/v1";
+const CURRENT_SPATIAL_RELATIONS_INFERENCE_VERSION = "per-scene-exact-assets-v3";
 const INTERACTION_CONTROLLER_PROFILES = Object.freeze({
   "meta-quest-touch-plus": Object.freeze({
     id: "meta-quest-touch-plus",
@@ -159,7 +165,27 @@ function createGltfLoader() {
   const loader = new GLTFLoader();
   loader.setDRACOLoader(getSharedDracoLoader());
   loader.setMeshoptDecoder(MeshoptDecoder);
-  return loader;
+  return augmentGltfLoaderWithStoryVrPointClouds(loader, {
+    THREE,
+    effects: () => currentPointCloudEffects(),
+    pointCloudUrlForEffect: authorPointCloudUrl,
+    onDiagnostic: (error, effect) => {
+      console.warn(`StoryVR point-cloud companion ${effect?.id || "unknown"} was skipped: ${error.message}`);
+    },
+  });
+}
+
+function currentPointCloudEffects() {
+  const graphEffects = state.data?.graph?.pointCloudEffects;
+  if (Array.isArray(graphEffects) && graphEffects.length) return graphEffects;
+  const runtimeEffects = state.data?.runtimeSummary?.pointCloudEffects;
+  return Array.isArray(runtimeEffects) ? runtimeEffects : [];
+}
+
+function authorPointCloudUrl(effect) {
+  const localPath = String(effect?.pointCloud?.path || "").trim();
+  if (localPath) return `/api/assets/${encodeURI(localPath)}`;
+  return String(effect?.pointCloud?.url || "").trim();
 }
 
 function getSharedDracoLoader() {
@@ -268,6 +294,9 @@ const state = {
     generationBusy: false,
     generationRequestId: 0,
     generationResult: null,
+    generationReferences: [],
+    generationReferenceCounter: 0,
+    generationReferenceLoading: false,
     applyTargetsOpen: false,
     applyTargetBeatIds: [],
     applyStatus: "",
@@ -295,6 +324,10 @@ const state = {
   spatialScaleRatioLocked: true,
   spatialClipboard: null,
   spatialClipboardStatus: "Select a GLB model to copy.",
+  spatialPropagationSelectionId: null,
+  spatialPropagationTargetsOpen: false,
+  spatialPropagationTargetBeatIds: [],
+  spatialPropagationStatus: "Select a GLB model to reuse its transform in other scenes.",
   spatialDraftRevision: 0,
   spatialDraftDirty: false,
   spatialAutosaveTimer: null,
@@ -344,7 +377,7 @@ const state = {
   finalReviewPendingTransition: null,
   finalReviewCompletedAttentionKeys: new Set(),
   finalReviewViewerCameraState: null,
-  finalReviewViewRotationMode: "scene",
+  finalReviewViewRotationMode: "reader",
   finalReviewSceneOrbitCameraState: null,
   finalReviewReaderLookCameraState: null,
   finalReviewPlaying: true,
@@ -390,6 +423,14 @@ const SOURCE_CAMERA_CUE_SECONDS = 0.65;
 const DEFAULT_SOURCE_ORDER_CYCLE_SECONDS = 3.6;
 const INTERACTION_PREVIEW_CAMERA_FRAMING_CONTRACT = "interaction-spatial-editor/v4";
 const MAX_ENVIRONMENT_UPLOAD_BYTES = 120 * 1024 * 1024;
+const MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGES = 4;
+const MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_ENVIRONMENT_GENERATION_REFERENCE_TOTAL_BYTES = 20 * 1024 * 1024;
+const ENVIRONMENT_GENERATION_REFERENCE_MEDIA_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+]);
 const DEFAULT_ENVIRONMENT_TRANSFORM = Object.freeze({
   position: Object.freeze([0, 0, 0]),
   rotationY: 0,
@@ -1065,6 +1106,10 @@ function applyStoryvrBrowserNavigation(route, options = {}) {
     if (beatIndex >= 0) state.selectedTextBeatIndex = beatIndex;
     state.selectedSpatialEntityId = null;
     state.spatialHierarchyQuery = "";
+    state.spatialPropagationSelectionId = null;
+    state.spatialPropagationTargetsOpen = false;
+    state.spatialPropagationTargetBeatIds = [];
+    state.spatialPropagationStatus = "Select a GLB model to reuse its transform in other scenes.";
     ensureSpatialRelationsDraft(spatialRelationsComponent());
     state.output = null;
   } else if (navigation.editorScene && navigation.componentId === "environment-enhancement") {
@@ -1704,7 +1749,8 @@ function updateCheckpointStatusDom(componentId = state.activeId) {
   }
   const compileButton = document.querySelector('[data-action="compile"]');
   if (compileButton) {
-    compileButton.disabled = state.graphDirty
+    compileButton.disabled = state.busy
+      || state.graphDirty
       || checkpointComponents().some((component) => !checkpointIsCurrent(component.id) || checkpointHasLocalDraft(component.id));
   }
 }
@@ -1795,21 +1841,10 @@ function renderBeatTimeline() {
           const combined = isCombinedBeat(beat);
           const variantGroup = variantGroupForBeat(beat);
           const defaultVariantOption = sourceGraphDefaultVariantOption(variantGroup);
-          const linkedIds = sourceGraphEffectiveBeatAssetIds(beat);
-          const beatHasGeneratedOverride = manualSceneAssetIdsForContext(
-            state.data?.graph,
-            spatialSceneContext(beat.id),
-          ) !== null;
+          const linkedIds = beatAssetIds(beat);
           const defaultVariantIds = defaultVariantOption
-            ? sourceGraphEffectiveVariantAssetIds(beat, variantGroup, defaultVariantOption)
+            ? variantOptionAssetIds(defaultVariantOption)
             : [];
-          const defaultVariantHasGeneratedOverride = Boolean(
-            defaultVariantOption
-            && manualSceneAssetIdsForContext(
-              state.data?.graph,
-              spatialSceneContext(beat.id, variantGroup?.id, defaultVariantOption.id),
-            ) !== null
-          );
           const primaryTitle = defaultVariantOption?.label || beat.title || beat.id;
           const primaryText = defaultVariantOption?.text || beat.text || beat.section || "No text available.";
           const primaryTextDetailOpen = sourceGraphTextDetailMatches(
@@ -1865,10 +1900,9 @@ function renderBeatTimeline() {
                     ${defaultVariantIds.map((assetId) => renderSourceGraphBeatAsset(assetId, beat, {
                       variant: true,
                       combined,
-                      generatedOverride: defaultVariantHasGeneratedOverride,
                     })).join("")}
                     ${!defaultVariantIds.length
-                      ? `<span class="muted">${defaultVariantHasGeneratedOverride ? "Generated scene override · no linked visual" : "Drop a model or image here"}</span>`
+                      ? `<span class="muted">Drop a model or image here</span>`
                       : ""}
                   </div>
                 ` : `
@@ -1876,10 +1910,9 @@ function renderBeatTimeline() {
                     ${linkedIds.map((assetId) => renderSourceGraphBeatAsset(assetId, beat, {
                       variant: false,
                       combined,
-                      generatedOverride: beatHasGeneratedOverride,
                     })).join("")}
                     ${!linkedIds.length
-                      ? `<span class="muted">${beatHasGeneratedOverride ? "Generated scene override · no linked visual" : "Drop a model or image here"}</span>`
+                      ? `<span class="muted">Drop a model or image here</span>`
                       : ""}
                   </div>
                 `}
@@ -2001,11 +2034,7 @@ function renderSourceGraphVariantAlternatives(beat, group, defaultOption) {
       ${alternatives.map((option, optionIndex) => {
         const optionTitle = option.label || option.id;
         const optionText = option.text || option.label || "No text available.";
-        const optionAssetIds = sourceGraphEffectiveVariantAssetIds(beat, group, option);
-        const generatedOverride = manualSceneAssetIdsForContext(
-          state.data?.graph,
-          spatialSceneContext(beat.id, group.id, option.id),
-        ) !== null;
+        const optionAssetIds = variantOptionAssetIds(option);
         const textDetailOpen = sourceGraphTextDetailMatches(beat.id, group.id, option.id);
         const cardEndpoint = {
           cardKind: "variant",
@@ -2052,10 +2081,9 @@ function renderSourceGraphVariantAlternatives(beat, group, defaultOption) {
                 ${optionAssetIds.map((assetId) => renderSourceGraphBeatAsset(assetId, beat, {
                   variant: true,
                   combined: true,
-                  generatedOverride,
                 })).join("")}
                 ${!optionAssetIds.length
-                  ? `<span class="muted">${generatedOverride ? "Generated scene override · no linked visual" : "Drop a model or image here"}</span>`
+                  ? `<span class="muted">Drop a model or image here</span>`
                   : ""}
               </div>
               ${renderSourceGraphCardCombineDropFields(cardEndpoint)}
@@ -2416,15 +2444,12 @@ function storyVariantEndpointLabel(endpoint) {
 function renderSourceGraphBeatAsset(assetId, beat, options = {}) {
   const asset = findAssetById(assetId);
   const variant = options.variant === true;
-  const generatedOverride = options.generatedOverride === true;
-  const draggable = !generatedOverride && Boolean(String(assetId || "").trim());
-  const title = generatedOverride
-    ? `${assetId} · exact scene link applied by generated Dynamics`
-    : `${assetId} · drag to move or unlink`;
+  const draggable = Boolean(String(assetId || "").trim());
+  const title = `${assetId} · drag to move or unlink`;
   return `
     <button
       type="button"
-      class="source-graph-beat-asset ${variant ? "variant" : ""} ${generatedOverride ? "generated-override" : ""} ${asset ? "" : "missing"}"
+      class="source-graph-beat-asset ${variant ? "variant" : ""} ${asset ? "" : "missing"}"
       ${draggable ? "draggable=\"true\"" : ""}
       ${draggable ? `data-source-graph-drag-asset="${escapeHtml(assetId)}"${variant ? "" : ` data-source-beat-id="${escapeHtml(beat.id)}"`}` : ""}
       data-select-beat="${escapeHtml(beat.id)}"
@@ -2432,7 +2457,7 @@ function renderSourceGraphBeatAsset(assetId, beat, options = {}) {
     >
       ${asset ? renderSpatialStoryAssetPreview(asset) : `<span class="asset-icon">?</span>`}
       <span>${escapeHtml(asset?.id || assetId)}</span>
-      ${generatedOverride ? `<small>Generated exact</small>` : variant ? `<small>Variant</small>` : ""}
+      ${variant ? `<small>Variant</small>` : ""}
     </button>
   `;
 }
@@ -3842,6 +3867,10 @@ function resetGraphDependentPreviewState() {
   state.selectedSpatialEntityId = null;
   state.spatialClipboard = null;
   state.spatialClipboardStatus = "Select a GLB model to copy.";
+  state.spatialPropagationSelectionId = null;
+  state.spatialPropagationTargetsOpen = false;
+  state.spatialPropagationTargetBeatIds = [];
+  state.spatialPropagationStatus = "Select a GLB model to reuse its transform in other scenes.";
   state.spatialPendingTransition = null;
 }
 
@@ -3950,6 +3979,7 @@ function groupAssetsByType(assets) {
 function assetGroupLabel(asset) {
   const type = String(asset.type || "").toLowerCase();
   const path = String(asset.path || asset.url || "").toLowerCase();
+  if (type.includes("pointcloud") || /\.pcd(?:\?|#|$)/.test(path)) return "Point-cloud companions";
   if (type.includes("texture") || /\.(png|jpe?g|webp|gif|svg)$/.test(path)) return "Images / textures";
   if (type.includes("model") || /\.(glb|gltf|bin)$/.test(path)) return "3D models";
   if (type.includes("video") || /\.(mp4|webm|mov|m3u8|mpd)$/.test(path)) return "Video / media";
@@ -6345,6 +6375,24 @@ function normalizeSourcePlaybackBoundary(value) {
   };
 }
 
+function sourcePlaybackAnnotationIsReaderVisible(definition) {
+  if (!definition || typeof definition !== "object") return false;
+  if (definition.readerVisible === false || definition.display === false || definition.render === false) return false;
+  const text = String(definition.text || definition.label || "").trim();
+  if (!text) return false;
+  if (definition.readerVisible === true || definition.authoredSceneText === true) return true;
+  const id = String(definition.id || definition.annotationId || "").trim();
+  const authoredText = String(definition.text || "").trim();
+  const hasTarget = [
+    definition.node,
+    definition.nodeName,
+    definition.target,
+    definition.selector,
+    definition.elementId,
+  ].some((value) => typeof value === "string" && value.trim());
+  return Boolean(id && authoredText && hasTarget);
+}
+
 function normalizeSourcePlaybackAsset(value) {
   if (!value || typeof value !== "object") return null;
   const assetId = String(value.assetId || value.id || value.assetFile || "").trim();
@@ -6370,7 +6418,7 @@ function normalizeSourcePlaybackAsset(value) {
     camera: value.camera && typeof value.camera === "object" ? { ...value.camera } : null,
     materials: Array.isArray(value.materials) ? value.materials.filter((material) => material && typeof material === "object") : [],
     bindings: Array.isArray(value.bindings) ? value.bindings.filter((binding) => binding && typeof binding === "object") : [],
-    annotations: Array.isArray(value.annotations) ? value.annotations.filter((annotation) => annotation && typeof annotation === "object") : [],
+    annotations: Array.isArray(value.annotations) ? value.annotations.filter(sourcePlaybackAnnotationIsReaderVisible) : [],
   };
 }
 
@@ -7408,20 +7456,38 @@ function renderEnvironmentEnhancementEditorWorkspace(component, sceneContext) {
             <div class="environment-generation-intro">
               <span class="environment-field-kicker">Codex image generation</span>
               <strong>Create a new 360° surrounding and matching ground</strong>
-              <p>StoryVR sends this scene description through your signed-in Codex CLI session and its built-in image generation tool. It generates the panorama and a coordinated world-fixed ground texture; no separate API key is required.</p>
+              <p>StoryVR sends this scene description and any attached visual references through your signed-in Codex CLI session and its built-in image generation tool. It generates the panorama and a coordinated world-fixed ground texture; no separate API key is required.</p>
             </div>
             <form class="environment-generation-form" data-environment-generation-form>
-              <label for="environment-generation-prompt">Scene description</label>
-              <textarea
-                id="environment-generation-prompt"
-                rows="5"
-                maxlength="1000"
-                placeholder="Describe the full 360° place, lighting, weather, and mood"
-                required
-                ${!ready || state.environmentUi.generationBusy ? "disabled" : ""}
-              >${escapeHtml(generationPrompt)}</textarea>
+              <label for="environment-generation-prompt">Scene description and visual references</label>
+              <div class="environment-generation-prompt-dropzone" data-environment-generation-dropzone>
+                <textarea
+                  id="environment-generation-prompt"
+                  rows="5"
+                  maxlength="1000"
+                  placeholder="Describe the full 360° place, lighting, weather, and mood"
+                  required
+                  ${!ready || state.environmentUi.generationBusy ? "disabled" : ""}
+                >${escapeHtml(generationPrompt)}</textarea>
+                <div class="environment-generation-reference-actions">
+                  <label class="environment-generation-reference-picker">
+                    <span>Add reference images</span>
+                    <input
+                      id="environment-generation-reference-files"
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+                      multiple
+                      ${!ready || state.environmentUi.generationBusy ? "disabled" : ""}
+                    >
+                  </label>
+                  <span>Paste a screenshot with ⌘V, drop images here, or choose files.</span>
+                </div>
+              </div>
+              <div class="environment-generation-references" data-environment-generation-references>
+                ${renderEnvironmentGenerationReferenceImages()}
+              </div>
               <button class="primary" type="submit" data-environment-generate-button ${!ready || state.environmentUi.generationBusy || !generationPrompt ? "disabled" : ""}>${state.environmentUi.generationBusy ? "Generating panorama + ground…" : "Generate panorama + ground"}</button>
-              <small>Generation can take a few minutes. StoryVR validates and installs a 2:1 equirectangular LDR PNG plus its matching ground texture as the current draft; review the seam, horizon, and near-ground blend before saving.</small>
+              <small>Optional PNG, JPEG, or WebP references guide the setting, layout, materials, lighting, and mood. StoryVR extrapolates them into a full sphere rather than placing a flat screenshot in VR. Generation can take a few minutes; StoryVR validates and installs a 2:1 equirectangular LDR PNG plus its matching ground texture as the current draft.</small>
             </form>
             <p
               class="environment-generation-status ${state.environmentUi.generationError ? "error" : ""}"
@@ -8484,6 +8550,93 @@ function renderSpatialHierarchy(visibleEntities, beat) {
   `;
 }
 
+function renderSpatialPropagationTargets(entity, sceneContext) {
+  const otherBeats = spatialPropagationTargetBeats(entity, state.spatialRelationsDraft, sceneContext);
+  const validIds = new Set(otherBeats.map((beat) => beat.id));
+  const selectedTargetIds = new Set(
+    (state.spatialPropagationTargetBeatIds || []).filter((beatId) => validIds.has(beatId)),
+  );
+  const currentBeat = spatialPreviewBeats()
+    .map((beat, index) => ({ ...beat, index, current: true, matchingSceneCount: 1 }))
+    .find((beat) => beat.id === sceneContext?.beatId) || null;
+  const listedBeats = [...(currentBeat ? [currentBeat] : []), ...otherBeats];
+  const selectedIds = new Set([
+    ...(currentBeat ? [currentBeat.id] : []),
+    ...selectedTargetIds,
+  ]);
+  const allSelected = Boolean(listedBeats.length) && selectedIds.size === listedBeats.length;
+  const unavailable = spatialEntityType(entity) !== "glb" || !otherBeats.length;
+  const panelId = "spatial-apply-targets-panel";
+  return `
+    <section class="spatial-apply-scope ${state.spatialPropagationTargetsOpen ? "open" : ""}">
+      <button
+        type="button"
+        class="spatial-apply-scenes-button"
+        data-spatial-apply-toggle
+        aria-controls="${panelId}"
+        aria-expanded="${state.spatialPropagationTargetsOpen}"
+        ${unavailable ? "disabled" : ""}
+        title="${escapeHtml(otherBeats.length
+          ? `Choose which of ${otherBeats.length} other matching beat${otherBeats.length === 1 ? "" : "s"} receives this GLB transform.`
+          : "No matching instance of this GLB exists in another beat.")}"
+      >Apply transform to other beats…</button>
+      <div
+        class="spatial-apply-target-panel"
+        id="${panelId}"
+        data-spatial-apply-target-panel
+        ${state.spatialPropagationTargetsOpen ? "" : "hidden"}
+      >
+        <div class="spatial-apply-target-head">
+          <div>
+            <strong>Apply this transform to other beats</strong>
+            <p>Copy position, rotation, scale, and placement alignment to matching GLB instances.</p>
+          </div>
+          <span data-spatial-apply-count>${selectedIds.size} selected</span>
+        </div>
+        <label class="spatial-apply-select-all">
+          <input
+            type="checkbox"
+            data-spatial-apply-select-all
+            ${allSelected ? "checked" : ""}
+            ${unavailable ? "disabled" : ""}
+          >
+          <span>Select all beats</span>
+        </label>
+        <div class="spatial-apply-target-list">
+          ${listedBeats.map((beat) => `
+            <label class="spatial-apply-target-row ${selectedIds.has(beat.id) ? "selected" : ""} ${beat.current ? "current" : ""}">
+              <input
+                type="checkbox"
+                ${beat.current
+                  ? "data-spatial-apply-current"
+                  : `data-spatial-apply-target="${escapeHtml(beat.id)}"`}
+                ${selectedIds.has(beat.id) ? "checked" : ""}
+                ${beat.current || unavailable ? "disabled" : ""}
+              >
+              <span class="spatial-apply-target-index">${String(beat.index + 1).padStart(2, "0")}</span>
+              <span>
+                <strong>${escapeHtml(beat.title)}</strong>
+                <small>${beat.current
+                  ? `Current beat · Source transform · ${escapeHtml(shortText(beat.text || beat.id, 72))}`
+                  : `${beat.matchingSceneCount} matching scene${beat.matchingSceneCount === 1 ? "" : "s"} · ${escapeHtml(shortText(beat.text || beat.id, 92))}`}</small>
+              </span>
+            </label>
+          `).join("")}
+        </div>
+        <div class="spatial-apply-target-actions">
+          <p class="spatial-apply-status" data-spatial-propagation-status aria-live="polite">${escapeHtml(state.spatialPropagationStatus || "Select one or more other beats.")}</p>
+          <button
+            type="button"
+            class="primary"
+            data-spatial-apply-submit
+            ${unavailable || !selectedTargetIds.size ? "disabled" : ""}
+          >Apply to selected beats</button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function renderSpatialRelationsViewport(proposal, beat, entity, sceneContext, scene) {
   const mode = state.spatialTransformMode;
   const readerSelected = spatialEntityType(entity) === "reader";
@@ -8516,6 +8669,9 @@ function renderSpatialRelationsViewport(proposal, beat, entity, sceneContext, sc
         <button data-spatial-copy-model ${glbSelected ? "" : "disabled"} title="Copy selected GLB model (Command or Ctrl+C)">Copy model <kbd>⌘C</kbd></button>
         <button data-spatial-paste-model ${pasteReady ? "" : "disabled"} title="Paste another instance (Command or Ctrl+V)">Paste instance <kbd>⌘V</kbd></button>
         <span class="spatial-clipboard-status" data-spatial-clipboard-status aria-live="polite">${escapeHtml(state.spatialClipboardStatus)}</span>
+        <span class="spatial-toolbar-divider" aria-hidden="true"></span>
+        ${renderSpatialPropagationTargets(glbSelected ? entity : null, sceneContext)}
+        <span class="spatial-propagation-status" data-spatial-propagation-status aria-live="polite">${escapeHtml(state.spatialPropagationStatus)}</span>
       </div>
       <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell" data-spatial-viewer="${escapeHtml(proposal?.optionId || "inferred-layout")}" tabindex="0" role="application" aria-label="Interactive Spatial Relations editor">
         <div class="topology-viewer-status">Loading Spatial Relations editor...</div>
@@ -10202,9 +10358,9 @@ function renderPreviewQa() {
           <p class="eyebrow">Compiler</p>
           <h2>Preview + QA</h2>
         </div>
-        <button class="primary" data-action="compile" ${canCompile ? "" : "disabled"}>Compile + prepare reader app</button>
+        <button class="primary" data-action="compile" ${canCompile && !state.busy ? "" : "disabled"}>Compile + optimize + build reader</button>
       </div>
-      <p>Inspect comfort warnings, provenance, and unresolved assumptions, then compile the payload and prepare the reader app in one click.</p>
+      <p>Inspect comfort warnings, provenance, and unresolved assumptions, then compile the payload, prepare the reader source, apply a bounded performance profile, and rebuild the production reader in one click.</p>
       ${state.graphDirty ? `<p class="blocked-note">Save Source Graph edits before compiling. The compiler reads the saved graph file.</p>` : ""}
       ${renderDiagnostics()}
       ${renderCompilerHandoff()}
@@ -10222,52 +10378,126 @@ function renderCompilerHandoff() {
     ? compiledRuntimeSummary(compiled, staleCompile)
     : state.graphDirty
       ? "Save Source Graph edits before compiling; unsaved beat grouping is not in the compiler input yet."
-      : "Click Compile + prepare reader app to save the payload, create missing reader source, and enable the run command.";
+      : "Click Compile + optimize + build reader to save the payload, prepare the reader source, apply a bounded performance profile, and rebuild the production dist.";
+  const distBuilt = compiled?.readerBuild?.status === "built" && !staleCompile;
+  const staticRunCommand = distBuilt ? run.serveCommand : run.headsetCommand;
+  const staticRunLabel = distBuilt ? "serve built reader" : "build and serve reader";
 
   return `
     <div class="compiler-handoff ${compiled && !staleCompile ? "compiled" : ""}">
       <div class="compiler-status-row">
-        <span class="pill ${compiled && !staleCompile ? "good" : "neutral"}">${compiled ? (staleCompile ? "Stale compile" : "Compiled") : "Not compiled"}</span>
+        <span class="pill ${compiled && !staleCompile ? "good" : "neutral"}">${compiled ? (staleCompile ? "Stale compile" : distBuilt ? "Compiled + built" : "Compiled") : "Not compiled"}</span>
         <div>
           <strong>${compiled ? escapeHtml(compiled.title || compiled.slug || "Runtime payload") : "One-click compile handoff"}</strong>
           <p class="muted">${escapeHtml(summary)}</p>
         </div>
       </div>
       ${compiled?.diagnostics?.length ? `<ul class="warning-list">${compiled.diagnostics.map((item) => `<li>${escapeHtml(item.message || item.code || String(item))}</li>`).join("")}</ul>` : ""}
+      ${compiled?.performanceOptimization ? renderPerformanceOptimizationHandoff(compiled.performanceOptimization) : ""}
+      ${compiled?.readerBuild ? renderReaderBuildHandoff(compiled.readerBuild) : ""}
       <dl class="compiler-paths">
         <dt>Saved runtime</dt>
         <dd>${escapeHtml(run.runtimePath)}</dd>
         <dt>Reader source</dt>
         <dd>${escapeHtml(run.readerSourcePath)}</dd>
+        <dt>Built reader</dt>
+        <dd>${escapeHtml(run.distPath || compiled?.readerBuild?.distPath || "Not built yet")}</dd>
         <dt>Run from folder</dt>
         <dd>${escapeHtml(run.commandRoot || "Unavailable")}</dd>
       </dl>
       <p class="${runnable ? "muted" : "blocked-note"}">${escapeHtml(run.message || "Copy and paste a command below to run the reader story.")}</p>
       ${runnable ? `<div class="run-step-list">
         <div>
-          <h3>Desktop preview</h3>
-          <code class="command-line">${escapeHtml(run.devCommand)}</code>
-          <p class="muted">Then open: ${escapeHtml(run.devUrl)}</p>
-        </div>
-        <div>
-          <h3>Headset or static run</h3>
-          <code class="command-line">${escapeHtml(run.headsetCommand)}</code>
-          <p class="muted">Then open the printed LAN URL, or: ${escapeHtml(run.staticUrl)}</p>
+          <h3>${distBuilt ? "Serve built reader" : "Build + serve reader"}</h3>
+          ${renderRunCommand(staticRunCommand, staticRunLabel)}
+          <p class="muted">Then open the printed LAN URL on a desktop browser or headset, or: ${escapeHtml(run.staticUrl)}</p>
         </div>
       </div>` : ""}
     </div>
   `;
 }
 
+function renderReaderBuildHandoff(readerBuild) {
+  const built = readerBuild?.status === "built";
+  return `
+    <section class="performance-optimization-handoff ${built ? "applied" : "not-applied"}">
+      <div class="compiler-status-row">
+        <span class="pill ${built ? "good" : "bad"}">${built ? "Production reader built" : "Reader build failed"}</span>
+        <div>
+          <strong>${escapeHtml(readerBuild?.distPath || "dist-webxr-adaptation")}</strong>
+          <p class="muted">${built
+            ? `Vite rebuilt the production reader${readerBuild.builtStoryInstance ? " after refreshing its generated story data" : ""}.`
+            : escapeHtml(readerBuild?.error || "The production reader could not be rebuilt.")}</p>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderRunCommand(command, label) {
+  return `
+    <div class="command-field">
+      <code class="command-line">${escapeHtml(command)}</code>
+      <button
+        class="command-copy-button"
+        type="button"
+        data-copy-run-command
+        aria-label="Copy ${escapeHtml(label)} command"
+      >
+        <svg class="command-copy-icon" viewBox="0 0 20 20" aria-hidden="true">
+          <rect x="6.5" y="6.5" width="9" height="9" rx="1.5"></rect>
+          <path d="M4.5 13.5h-1a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v1"></path>
+        </svg>
+        <span data-copy-run-command-label>Copy</span>
+      </button>
+    </div>
+  `;
+}
+
+function renderPerformanceOptimizationHandoff(optimization) {
+  const status = String(optimization?.status || "skipped");
+  const applied = status === "applied";
+  const settings = optimization?.settings || {};
+  const profile = applied ? `${optimization.profile || "balanced"} profile` : "Existing settings retained";
+  const settingRows = applied ? [
+    ["Desktop pixel ratio cap", settings.desktopPixelRatioCap],
+    ["Desktop antialiasing", settings.antialias ? "On" : "Off"],
+    ["Desktop shadows", settings.desktopShadows ? "On" : "Off"],
+    ["XR framebuffer scale", settings.xrFramebufferScaleFactor],
+    ["XR fixed foveation", settings.xrFixedFoveation],
+  ] : [];
+  const changes = Array.isArray(optimization?.appliedOptimizations) ? optimization.appliedOptimizations : [];
+  return `
+    <section class="performance-optimization-handoff ${applied ? "applied" : "not-applied"}">
+      <div class="compiler-status-row">
+        <span class="pill ${applied ? "good" : "neutral"}">${applied ? "Codex optimized" : escapeHtml(status === "failed" ? "Optimization failed" : "Optimization skipped")}</span>
+        <div>
+          <strong>${escapeHtml(profile)}</strong>
+          <p class="muted">${escapeHtml(optimization?.summary || "No performance summary was returned.")}</p>
+        </div>
+      </div>
+      ${settingRows.length ? `<dl class="performance-settings">${settingRows.map(([label, value]) => `
+        <dt>${escapeHtml(label)}</dt>
+        <dd>${escapeHtml(value)}</dd>
+      `).join("")}</dl>` : ""}
+      ${changes.length ? `<ul class="performance-change-list">${changes.map((change) => `<li>${escapeHtml(change)}</li>`).join("")}</ul>` : ""}
+      ${optimization?.artifactPath ? `<p class="muted">Audit report: <code>${escapeHtml(optimization.artifactPath)}</code></p>` : ""}
+    </section>
+  `;
+}
+
 function renderCompileError(output) {
   const diagnostics = Array.isArray(output.diagnostics) ? output.diagnostics : [];
+  const readerBuildFailed = diagnostics.some((item) => item?.code === "READER_DIST_BUILD_FAILED");
   return `
     <div class="compiler-handoff error">
       <div class="compiler-status-row">
-        <span class="pill bad">Compile failed</span>
+        <span class="pill bad">${readerBuildFailed ? "Reader build failed" : "Compile failed"}</span>
         <div>
           <strong>${escapeHtml(output.error || "Compiler error")}</strong>
-          <p class="muted">Fix the blocking issue, then compile again to prepare the reader app before running the story.</p>
+          <p class="muted">${readerBuildFailed
+            ? "The runtime and reader source were saved, but the production dist was not completed. Fix the build issue, then use the same button again."
+            : "Fix the blocking issue, then compile again to prepare and build the reader app before running the story."}</p>
         </div>
       </div>
       ${diagnostics.length ? `<ul class="warning-list">${diagnostics.map((item) => `<li>${escapeHtml(item.message || item.code || String(item))}</li>`).join("")}</ul>` : ""}
@@ -10314,6 +10544,8 @@ function summarizeCompiledRuntime(runtime) {
     assetCount: Array.isArray(runtime.assets) ? runtime.assets.length : runtime.assetCount,
     diagnosticCount: Array.isArray(runtime.diagnostics) ? runtime.diagnostics.length : 0,
     diagnostics: runtime.diagnostics || [],
+    performanceOptimization: runtime.performanceOptimization || null,
+    readerBuild: runtime.readerBuild || null,
     compiledAt: runtime.provenance?.compiledAt || null,
   };
 }
@@ -10325,6 +10557,7 @@ function compiledRuntimeSummary(compiled, staleCompile) {
       ? countLabel(compiled.fineGrainedBeatCount, "fine-grained source beat")
       : null,
     compiled.assetCount != null ? countLabel(compiled.assetCount, "asset") : null,
+    compiled.readerBuild?.status === "built" ? "reader dist built" : null,
     countLabel(compiled.diagnosticCount || 0, "diagnostic"),
   ].filter(Boolean);
   const detail = parts.join(" / ");
@@ -10487,6 +10720,7 @@ function bindEnvironmentEnhancementEvents() {
     updateEnvironmentActionAvailability();
     updateEnvironmentGenerationDom();
   });
+  bindEnvironmentGenerationReferenceEvents();
   generationForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     generateEnvironmentFromUi();
@@ -11750,6 +11984,185 @@ function bindEnvironmentCandidateButtons() {
   }
 }
 
+function renderEnvironmentGenerationReferenceImages() {
+  const references = state.environmentUi.generationReferences || [];
+  if (!references.length) {
+    return `<p class="environment-generation-reference-empty">No visual references attached. Text-only generation remains available.</p>`;
+  }
+  return references.map((reference) => `
+    <article class="environment-generation-reference">
+      <img src="${escapeHtml(reference.dataUrl)}" alt="">
+      <div>
+        <strong title="${escapeHtml(reference.filename)}">${escapeHtml(reference.filename)}</strong>
+        <span>${escapeHtml(environmentFormatBytes(reference.size))}</span>
+      </div>
+      <button
+        type="button"
+        data-environment-generation-reference-remove="${escapeHtml(reference.id)}"
+        aria-label="Remove ${escapeHtml(reference.filename)}"
+        ${state.environmentUi.generationBusy || state.environmentUi.generationReferenceLoading ? "disabled" : ""}
+      >Remove</button>
+    </article>
+  `).join("");
+}
+
+function bindEnvironmentGenerationReferenceEvents() {
+  const dropzone = document.querySelector("[data-environment-generation-dropzone]");
+  const fileInput = document.querySelector("#environment-generation-reference-files");
+  if (!dropzone || !fileInput) return;
+
+  fileInput.addEventListener("change", () => {
+    const files = Array.from(fileInput.files || []);
+    fileInput.value = "";
+    if (files.length) addEnvironmentGenerationReferenceFiles(files);
+  });
+  dropzone.addEventListener("paste", (event) => {
+    const files = Array.from(event.clipboardData?.items || [])
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (!files.length) return;
+    event.preventDefault();
+    addEnvironmentGenerationReferenceFiles(files);
+  });
+  dropzone.addEventListener("dragenter", (event) => {
+    if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+    event.preventDefault();
+    dropzone.classList.add("drag-active");
+  });
+  dropzone.addEventListener("dragover", (event) => {
+    if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    dropzone.classList.add("drag-active");
+  });
+  dropzone.addEventListener("dragleave", (event) => {
+    if (event.relatedTarget && dropzone.contains(event.relatedTarget)) return;
+    dropzone.classList.remove("drag-active");
+  });
+  dropzone.addEventListener("drop", (event) => {
+    dropzone.classList.remove("drag-active");
+    const files = Array.from(event.dataTransfer?.files || []);
+    if (!files.length) return;
+    event.preventDefault();
+    addEnvironmentGenerationReferenceFiles(files);
+  });
+  bindEnvironmentGenerationReferenceRemovalEvents();
+}
+
+function bindEnvironmentGenerationReferenceRemovalEvents() {
+  for (const button of document.querySelectorAll("[data-environment-generation-reference-remove]")) {
+    button.addEventListener("click", () => {
+      if (state.environmentUi.generationBusy || state.environmentUi.generationReferenceLoading) return;
+      const id = button.dataset.environmentGenerationReferenceRemove;
+      state.environmentUi.generationReferences = state.environmentUi.generationReferences
+        .filter((reference) => reference.id !== id);
+      state.environmentUi.generationError = false;
+      state.environmentUi.generationStatus = state.environmentUi.generationReferences.length
+        ? `${state.environmentUi.generationReferences.length} visual reference image${state.environmentUi.generationReferences.length === 1 ? "" : "s"} attached.`
+        : "Visual references cleared. Text-only generation remains available.";
+      updateEnvironmentGenerationDom();
+      updateEnvironmentActionAvailability();
+    });
+  }
+}
+
+async function addEnvironmentGenerationReferenceFiles(files) {
+  if (
+    state.environmentUi.generationBusy
+    || state.environmentUi.operationBusy
+    || state.environmentUi.generationReferenceLoading
+  ) return;
+  const incoming = Array.from(files || []);
+  if (!incoming.length) return;
+  const current = state.environmentUi.generationReferences || [];
+  if (current.length + incoming.length > MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGES) {
+    setEnvironmentGenerationReferenceError(
+      `Attach no more than ${MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGES} reference images.`,
+    );
+    return;
+  }
+
+  state.environmentUi.generationReferenceLoading = true;
+  updateEnvironmentActionAvailability();
+  try {
+    const prepared = [];
+    let totalBytes = current.reduce((sum, reference) => sum + Number(reference.size || 0), 0);
+    for (const file of incoming) {
+      const mediaType = environmentGenerationReferenceMediaType(file);
+      if (!mediaType) throw new Error("Reference images must be PNG, JPEG, or WebP files.");
+      if (!file.size) throw new Error(`${file.name || "A reference image"} is empty.`);
+      if (file.size > MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGE_BYTES) {
+        throw new Error(`Each reference image must be ${MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGE_BYTES / (1024 * 1024)} MiB or smaller.`);
+      }
+      totalBytes += file.size;
+      if (totalBytes > MAX_ENVIRONMENT_GENERATION_REFERENCE_TOTAL_BYTES) {
+        throw new Error(`Reference images must total ${MAX_ENVIRONMENT_GENERATION_REFERENCE_TOTAL_BYTES / (1024 * 1024)} MiB or less.`);
+      }
+      const dataUrl = await readEnvironmentGenerationReferenceFile(file, mediaType);
+      state.environmentUi.generationReferenceCounter += 1;
+      prepared.push({
+        id: `environment-reference-${state.environmentUi.generationReferenceCounter}`,
+        filename: String(file.name || `pasted-image-${state.environmentUi.generationReferenceCounter}`).slice(0, 160),
+        mediaType,
+        size: file.size,
+        dataUrl,
+      });
+    }
+    state.environmentUi.generationReferences = [...current, ...prepared];
+    state.environmentUi.generationError = false;
+    state.environmentUi.generationStatus = `${state.environmentUi.generationReferences.length} visual reference image${state.environmentUi.generationReferences.length === 1 ? "" : "s"} attached. Add a scene description, then generate.`;
+    updateEnvironmentGenerationDom();
+  } catch (error) {
+    setEnvironmentGenerationReferenceError(error.message);
+  } finally {
+    state.environmentUi.generationReferenceLoading = false;
+    updateEnvironmentActionAvailability();
+  }
+}
+
+function environmentGenerationReferenceMediaType(file) {
+  const declared = String(file?.type || "").toLowerCase();
+  if (ENVIRONMENT_GENERATION_REFERENCE_MEDIA_TYPES.has(declared)) return declared;
+  const extension = String(file?.name || "").toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  if (extension === "png") return "image/png";
+  if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+  if (extension === "webp") return "image/webp";
+  return "";
+}
+
+function readEnvironmentGenerationReferenceFile(file, mediaType) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("error", () => reject(new Error(`Could not read ${file.name || "the reference image"}.`)));
+    reader.addEventListener("load", () => {
+      const result = String(reader.result || "");
+      const separator = result.indexOf(",");
+      if (separator < 0 || !result.slice(separator + 1)) {
+        reject(new Error(`Could not read ${file.name || "the reference image"}.`));
+        return;
+      }
+      resolve(`data:${mediaType};base64,${result.slice(separator + 1)}`);
+    });
+    reader.readAsDataURL(file);
+  });
+}
+
+function setEnvironmentGenerationReferenceError(message) {
+  state.environmentUi.generationError = true;
+  state.environmentUi.generationStatus = message;
+  updateEnvironmentGenerationDom();
+  updateEnvironmentActionAvailability();
+}
+
+function environmentGenerationReferencePayload() {
+  return (state.environmentUi.generationReferences || []).map((reference) => ({
+    filename: reference.filename,
+    mediaType: reference.mediaType,
+    base64: String(reference.dataUrl || "").split(",", 2)[1] || "",
+  }));
+}
+
 async function generateEnvironmentFromUi(options = {}) {
   const input = document.querySelector("#environment-generation-prompt");
   const prompt = String(input?.value ?? environmentGenerationPrompt()).trim();
@@ -11801,6 +12214,7 @@ async function generateEnvironmentFromUi(options = {}) {
     const response = await api.post("/api/environment-enhancement/generate", {
       prompt,
       beatId: sceneContext.beatId,
+      referenceImages: environmentGenerationReferencePayload(),
     });
     if (requestId !== state.environmentUi.generationRequestId) return;
     applyEnvironmentEnhancementPayload(response, { resetDraft: true });
@@ -11814,7 +12228,8 @@ async function generateEnvironmentFromUi(options = {}) {
       description: response.generation?.description
         || "The generated panorama and matching ground are installed as the current Environment Enhancement draft and shown in the spatial editor.",
     };
-    state.environmentUi.generationStatus = "Generated panorama and matching ground installed as the current draft. Inspect their alignment in the spatial editor, then save the checkpoint.";
+    const referenceCount = Number(response.generation?.referenceImages?.length || 0);
+    state.environmentUi.generationStatus = `Generated panorama and matching ground installed as the current draft${referenceCount ? ` using ${referenceCount} visual reference image${referenceCount === 1 ? "" : "s"}` : ""}. Inspect their alignment in the spatial editor, then save the checkpoint.`;
     state.environmentUi.generationError = false;
     state.output = null;
     shouldRender = true;
@@ -11838,6 +12253,7 @@ async function generateEnvironmentFromUi(options = {}) {
 function updateEnvironmentGenerationDom() {
   const input = document.querySelector("#environment-generation-prompt");
   if (input && document.activeElement !== input) input.value = environmentGenerationPrompt();
+  updateEnvironmentGenerationReferencesDom();
   const status = document.querySelector("[data-environment-generation-status]");
   if (status) {
     status.textContent = state.environmentUi.generationStatus || "Describe the surrounding, then generate its panorama and matching ground.";
@@ -11849,6 +12265,19 @@ function updateEnvironmentGenerationDom() {
       ? "Generating panorama + ground…"
       : "Generate panorama + ground";
   }
+}
+
+function updateEnvironmentGenerationReferencesDom() {
+  const container = document.querySelector("[data-environment-generation-references]");
+  if (!container) return;
+  const signature = JSON.stringify({
+    ids: (state.environmentUi.generationReferences || []).map((reference) => reference.id),
+    busy: Boolean(state.environmentUi.generationBusy),
+  });
+  if (container.dataset.referenceSignature === signature) return;
+  container.dataset.referenceSignature = signature;
+  container.innerHTML = renderEnvironmentGenerationReferenceImages();
+  bindEnvironmentGenerationReferenceRemovalEvents();
 }
 
 async function searchEnvironmentCandidatesFromUi() {
@@ -12219,11 +12648,25 @@ function updateEnvironmentActionAvailability() {
   if (query) query.disabled = !ready || busy || state.environmentUi.searchBusy;
   const generationInput = document.querySelector("#environment-generation-prompt");
   if (generationInput) generationInput.disabled = !ready || busy || state.environmentUi.generationBusy;
+  const generationReferenceInput = document.querySelector("#environment-generation-reference-files");
+  if (generationReferenceInput) {
+    generationReferenceInput.disabled = !ready
+      || busy
+      || state.environmentUi.generationBusy
+      || state.environmentUi.generationReferenceLoading;
+  }
+  for (const removeReference of document.querySelectorAll("[data-environment-generation-reference-remove]")) {
+    removeReference.disabled = !ready
+      || busy
+      || state.environmentUi.generationBusy
+      || state.environmentUi.generationReferenceLoading;
+  }
   const generate = document.querySelector("[data-environment-generate-button]");
   if (generate) {
     generate.disabled = !ready
       || busy
       || state.environmentUi.generationBusy
+      || state.environmentUi.generationReferenceLoading
       || !String(generationInput?.value ?? environmentGenerationPrompt()).trim();
   }
   const upload = document.querySelector("#environment-upload-file");
@@ -12942,6 +13385,10 @@ function bindEvents() {
   bindDynamicGeometryCanvasEvents();
   bindInterBeatDynamicsCanvasEvents();
   bindInteractionControlCanvasEvents();
+
+  for (const button of document.querySelectorAll("[data-copy-run-command]")) {
+    button.addEventListener("click", () => copyRunCommand(button));
+  }
 
   for (const button of document.querySelectorAll("[data-action]")) {
     button.addEventListener("click", () => handleAction(button.dataset.action));
@@ -14794,6 +15241,7 @@ function bindSpatialRelationsEvents() {
   if (copyModel) copyModel.addEventListener("click", () => copySelectedSpatialGlb());
   const pasteModel = document.querySelector("[data-spatial-paste-model]");
   if (pasteModel) pasteModel.addEventListener("click", () => pasteSpatialGlbInstance());
+  bindSpatialPropagationTargetEvents();
 
   const ratio = document.querySelector("[data-spatial-ratio-lock]");
   if (ratio) ratio.addEventListener("change", () => {
@@ -14960,6 +15408,58 @@ async function persistSourceMotionLinks() {
   };
   await refresh();
   return changedCount;
+}
+
+async function writeRunCommandToClipboard(command) {
+  let clipboardError = null;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(command);
+      return;
+    } catch (error) {
+      clipboardError = error;
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = command;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand?.("copy");
+  textarea.remove();
+  if (!copied) throw clipboardError || new Error("Clipboard access is unavailable.");
+}
+
+async function copyRunCommand(button) {
+  const command = button.closest(".command-field")?.querySelector(".command-line")?.textContent || "";
+  if (!command) return;
+  const label = button.querySelector("[data-copy-run-command-label]");
+  const defaultAriaLabel = button.dataset.defaultAriaLabel || button.getAttribute("aria-label") || "Copy command";
+  button.dataset.defaultAriaLabel = defaultAriaLabel;
+  window.clearTimeout(button.copyFeedbackTimer);
+  button.classList.remove("copied", "copy-error");
+
+  try {
+    await writeRunCommandToClipboard(command);
+    button.classList.add("copied");
+    if (label) label.textContent = "Copied";
+    button.setAttribute("aria-label", `${defaultAriaLabel}. Copied.`);
+  } catch {
+    button.classList.add("copy-error");
+    if (label) label.textContent = "Failed";
+    button.setAttribute("aria-label", `${defaultAriaLabel}. Copy failed.`);
+  }
+
+  button.focus({ preventScroll: true });
+  button.copyFeedbackTimer = window.setTimeout(() => {
+    button.classList.remove("copied", "copy-error");
+    if (label) label.textContent = "Copy";
+    button.setAttribute("aria-label", defaultAriaLabel);
+  }, 3000);
 }
 
 async function handleAction(action, options = {}) {
@@ -15524,13 +16024,15 @@ function addTopologySwapCue(viewer) {
 function loadTopologySwapAsset(viewer, step, index, finishAsset) {
   const asset = findAssetById(step.assetId);
   const viewpoint = viewerTopologyViewpointKind(viewer);
-  const targetSize = topologyAssetTargetSize("single", 1, viewpoint);
   const spatialEntity = viewer?.layers?.enabled?.[SPATIAL_RELATIONS_COMPONENT_ID]
     ? lockedSpatialGlbEntityForViewer(viewer, step.assetId, step.entityId)
     : null;
+  const finalReviewFraming = finalReviewSpatialFraming(viewer, spatialEntity, index, 1);
+  const targetSize = finalReviewFraming?.targetSize
+    ?? topologyAssetTargetSize("single", 1, viewpoint);
   const topologyWrapper = new THREE.Group();
   topologyWrapper.name = `StoryVR topology anchor · ${step.assetId}`;
-  topologyWrapper.position.set(0, 0.16, 0);
+  topologyWrapper.position.set(0, finalReviewFraming?.anchorY ?? 0.16, 0);
   const authorWrapper = new THREE.Group();
   authorWrapper.name = `StoryVR author transform · ${step.assetId}`;
   authorWrapper.userData.assetId = step.assetId;
@@ -15602,7 +16104,15 @@ function loadTopologySwapAsset(viewer, step, index, finishAsset) {
           modelRoot.remove(placeholder);
           disposeObject(placeholder);
         }
-        normalizeTopologyObject(gltf.scene, targetSize);
+        if (finalReviewFraming) {
+          normalizeSpatialRuntimeObject(
+            gltf.scene,
+            finalReviewFraming.targetSize,
+            finalReviewFraming.verticalAlignment,
+          );
+        } else {
+          normalizeTopologyObject(gltf.scene, targetSize);
+        }
         entry.opacityMaterials.push(...preparePreviewOpacityTarget(gltf.scene));
         modelRoot.add(gltf.scene);
         entry.sourceScene = gltf.scene;
@@ -16244,11 +16754,20 @@ function makeTextSprite(text, options = {}) {
   // inside the Three.js scene.
   const authoredSceneText = options.authoredSceneText === true;
   const texture = authoredSceneText
-    ? makeTextCanvasTexture(shortText(text, 34), "", 0xffffff, options)
+    ? makeTextCanvasTexture(String(text || "").trim(), "", 0xffffff, options)
     : null;
-  const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    fog: false,
+    depthTest: options.depthTest !== false,
+    depthWrite: options.depthWrite !== false,
+    toneMapped: options.toneMapped !== false,
+    alphaTest: authoredSceneText ? 0.01 : 0,
+  });
   const sprite = new THREE.Sprite(material);
   sprite.visible = authoredSceneText;
+  sprite.renderOrder = authoredSceneText ? Number(options.renderOrder) || 9000 : 0;
   sprite.userData.storyvrArtificialSpatialTextPanel = !authoredSceneText;
   if (!authoredSceneText) sprite.raycast = () => {};
   sprite.scale.set(options.width || 1.15, options.height || 0.28, 1);
@@ -16260,17 +16779,36 @@ function makeTextSprite(text, options = {}) {
 
 function makeTextCanvasTexture(title, subtitle = "", color = 0xffffff, options = {}) {
   const canvas = document.createElement("canvas");
-  canvas.width = 512;
   canvas.height = 192;
+  const requestedAspect = Math.max(
+    1.5,
+    Math.min(14, (Number(options.width) || 1.15) / Math.max(Number(options.height) || 0.28, 0.01)),
+  );
+  canvas.width = Math.max(288, Math.min(2048, Math.round(canvas.height * requestedAspect)));
   const ctx = canvas.getContext("2d");
-  const background = options.background || `#${new THREE.Color(color).getHexString()}`;
+  const background = options.background ?? `#${new THREE.Color(color).getHexString()}`;
+  const transparentBackground = !background
+    || String(background).trim().toLowerCase() === "transparent"
+    || /rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/i.test(String(background).trim());
+  const lines = (Array.isArray(options.lines) ? options.lines : [title])
+    .map((line) => String(line || "").trim())
+    .filter(Boolean);
+  if (!lines.length) lines.push("");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  drawRoundRect(ctx, 18, 20, canvas.width - 36, canvas.height - 40, 26, background);
+  if (!transparentBackground) {
+    drawRoundRect(ctx, 2, 2, canvas.width - 4, canvas.height - 4, 22, background);
+  }
   ctx.fillStyle = options.color || "#10201c";
-  ctx.font = "800 34px Avenir Next, Gill Sans, sans-serif";
+  const fontWeight = Math.max(100, Math.min(900, Number(options.fontWeight) || 800));
+  const lineHeight = Math.min(150, Math.max(38, Math.floor((canvas.height - 24) / Math.max(lines.length, 1))));
+  const fontSize = Math.min(108, Math.max(30, Math.floor(lineHeight * 0.65)));
+  ctx.font = `${fontWeight} ${fontSize}px Avenir Next, Gill Sans, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(title, canvas.width / 2, subtitle ? 78 : canvas.height / 2, canvas.width - 72);
+  const firstLineY = (canvas.height - (lines.length - 1) * lineHeight) / 2;
+  lines.forEach((line, index) => {
+    ctx.fillText(line, canvas.width / 2, firstLineY + index * lineHeight, canvas.width - 24);
+  });
   if (subtitle) {
     ctx.fillStyle = "#5f716c";
     ctx.font = "700 24px Avenir Next, Gill Sans, sans-serif";
@@ -16308,6 +16846,15 @@ function normalizeTopologyObject(object, targetSize) {
   object.position.x -= center.x * scale;
   object.position.z -= center.z * scale;
   object.position.y -= box.min.y * scale;
+}
+
+function finalReviewSpatialFraming(viewer, spatialEntity, index = 0, total = 1) {
+  if (viewer?.componentId !== "transition-pacing" || !spatialEntity) return null;
+  return {
+    anchorY: 0,
+    targetSize: spatialTopologyAssetPose(viewer, index, Math.max(Number(total) || 1, 1)).targetSize,
+    verticalAlignment: spatialEntityVerticalAlignment(spatialEntity),
+  };
 }
 
 function topologyAssetTargetSize(kind, total, viewpoint = "exocentric") {
@@ -16394,12 +16941,11 @@ function updateFinalReviewViewRotationUi(mode) {
 
 function syncFinalReviewReaderUiVisibility(viewer) {
   if (!viewer || viewer.disposed) return false;
-  const visible = normalizeFinalReviewViewRotationMode(viewer.viewRotationMode) === "reader";
   if (viewer.readerHandRig?.group) {
-    viewer.readerHandRig.group.visible = visible && viewer.renderer?.xr?.isPresenting !== true;
+    viewer.readerHandRig.group.visible = viewer.renderer?.xr?.isPresenting !== true;
   }
-  if (viewer.finalReviewTextGroup) viewer.finalReviewTextGroup.visible = visible;
-  return visible;
+  if (viewer.finalReviewTextGroup) viewer.finalReviewTextGroup.visible = true;
+  return true;
 }
 
 function finalReviewAuthoredReaderTransform(viewer) {
@@ -16437,10 +16983,10 @@ function applyFinalReviewAuthoredReaderPose(viewer) {
 
 function resetFinalReviewReaderLookAnchor(viewer) {
   if (!viewer || viewer.disposed || viewer.viewRotationMode !== "reader") return false;
-  if (applyFinalReviewAuthoredReaderPose(viewer)) return true;
   viewer.readerLookPosition ||= new THREE.Vector3();
   viewer.readerLookDirection ||= new THREE.Vector3();
   viewer.readerLookPosition.copy(viewer.camera.position);
+  viewer.camera.getWorldDirection(viewer.readerLookDirection);
   viewer.readerLookDistance = Math.max(
     viewer.camera.position.distanceTo(viewer.controls.target),
     0.35,
@@ -16469,15 +17015,15 @@ function setFinalReviewViewRotationMode(viewer, requestedMode) {
   const storedCameraState = nextMode === "reader"
     ? state.finalReviewReaderLookCameraState
     : state.finalReviewSceneOrbitCameraState;
-  if (shouldRestorePreviewCameraState(viewer, storedCameraState)) {
-    applyFinalReviewViewerCameraState(viewer, storedCameraState);
-  } else if (nextMode === "scene") {
+  const restoredStoredCameraState = applyFinalReviewViewerCameraState(viewer, storedCameraState);
+  if (!restoredStoredCameraState && nextMode === "scene") {
     viewer.controls.target.set(0, 0.78, 0);
     viewer.controls.update();
   }
   viewer.viewRotationMode = nextMode;
   viewer.controls.enablePan = nextMode === "scene";
   if (nextMode === "reader") {
+    if (!restoredStoredCameraState) applyFinalReviewAuthoredReaderPose(viewer);
     resetFinalReviewReaderLookAnchor(viewer);
   } else {
     viewer.readerLookPosition = null;
@@ -16654,8 +17200,27 @@ function captureFinalReviewViewerCameraState() {
   return previewCameraState(finalReviewViewer);
 }
 
+function finiteFinalReviewCameraArray(value, length) {
+  return Array.isArray(value)
+    && value.length === length
+    && value.every((entry) => Number.isFinite(Number(entry)));
+}
+
+function shouldRestoreFinalReviewViewerCameraState(viewer, cameraState) {
+  if (!viewer || viewer.disposed || !cameraState) return false;
+  // The compiled reader keeps one continuous reader rig, so a new beat's
+  // topology or viewpoint metadata must not invalidate its current pose.
+  return finiteFinalReviewCameraArray(cameraState.position, 3)
+    && finiteFinalReviewCameraArray(cameraState.quaternion, 4)
+    && finiteFinalReviewCameraArray(cameraState.target, 3)
+    && Number.isFinite(Number(cameraState.near))
+    && Number(cameraState.near) > 0
+    && Number.isFinite(Number(cameraState.far))
+    && Number(cameraState.far) > Number(cameraState.near);
+}
+
 function applyFinalReviewViewerCameraState(viewer, cameraState) {
-  if (!shouldRestorePreviewCameraState(viewer, cameraState)) return;
+  if (!shouldRestoreFinalReviewViewerCameraState(viewer, cameraState)) return false;
   viewer.camera.position.fromArray(cameraState.position);
   viewer.camera.quaternion.fromArray(cameraState.quaternion);
   viewer.camera.near = cameraState.near;
@@ -16663,6 +17228,7 @@ function applyFinalReviewViewerCameraState(viewer, cameraState) {
   viewer.camera.updateProjectionMatrix();
   viewer.controls.target.fromArray(cameraState.target);
   viewer.controls.update();
+  return true;
 }
 
 function applyReaderViewerCameraState(viewer, cameraState) {
@@ -16835,6 +17401,8 @@ function initializeDynamicGeometryViewer(active) {
   const hasProceduralMotion = proceduralInstances.length > 0;
   const cumulativeContext = null;
   const assetLinks = dynamicSceneAssetLinks(proposal, [beat], sceneContext);
+  const readerEntity = spatialSceneEntities(lockedSpatialRelationsContract(), sceneContext)
+    .find((entity) => spatialEntityType(entity) === "reader") || null;
   const activeAssetIds = new Set(beat.linkedAssetIds || []);
   const activeAssetIndex = Math.max(assetLinks.findIndex((assetLink) => activeAssetIds.has(assetLink.assetId)), 0);
   const hasSourceAnimation = kind !== "none" && dynamicPreviewHasEmbeddedGlbAnimation(proposal, beat);
@@ -16886,6 +17454,7 @@ function initializeDynamicGeometryViewer(active) {
 
   const root = new THREE.Group();
   scene.add(root);
+  const readerEditorLayer = createSpatialReaderRig(root, layers.viewpointKind, layoutKind, readerEntity);
 
   const viewer = {
     scene,
@@ -16893,6 +17462,9 @@ function initializeDynamicGeometryViewer(active) {
     renderer,
     controls,
     root,
+    readerRig: readerEditorLayer.rig,
+    readerProxy: readerEditorLayer.proxy,
+    readerEntity,
     animationId: null,
     resizeHandler: null,
     keyDownHandler: null,
@@ -17102,7 +17674,11 @@ function frameInterBeatSourcePlaybackAsset(viewer) {
   const entry = entries.find((candidate) => candidate?.assetId === assetId);
   const object = entry?.modelRoot || entry?.sourceScene || entry?.authorWrapper || entry?.wrapper;
   if (!object) return false;
-  fitCameraToObject(viewer.camera, viewer.controls, object);
+  fitCameraToObject(
+    viewer.camera,
+    viewer.controls,
+    !viewer.thumbnailMode && viewer.readerRig ? viewer.root : object,
+  );
   viewer.previewCameraFramingReady = true;
   return true;
 }
@@ -17210,6 +17786,13 @@ function initializeInterBeatDynamicsViewer(active) {
 
   const root = new THREE.Group();
   scene.add(root);
+  const readerEntity = thumbnailMode
+    ? null
+    : spatialSceneEntities(lockedSpatialRelationsContract(), beatContext.toSceneContext || sceneContext)
+      .find((entity) => spatialEntityType(entity) === "reader") || null;
+  const readerEditorLayer = thumbnailMode
+    ? null
+    : createSpatialReaderRig(root, layers.viewpointKind, layoutKind, readerEntity);
 
   const viewer = {
     scene,
@@ -17218,6 +17801,9 @@ function initializeInterBeatDynamicsViewer(active) {
     renderer,
     controls,
     root,
+    readerRig: readerEditorLayer?.rig || null,
+    readerProxy: readerEditorLayer?.proxy || null,
+    readerEntity,
     animationId: null,
     resizeHandler: null,
     keyDownHandler: null,
@@ -17252,7 +17838,7 @@ function initializeInterBeatDynamicsViewer(active) {
     manualVariantSwitch: playback.manualVariantSwitch,
     routeScopedTransition: playback.routeScopedProgression,
     variantTransitionAnimationSpec: playback.variantTransitionAnimationSpec,
-    sourceCameraCuePending: !thumbnailMode,
+    sourceCameraCuePending: false,
     sourceCameraCue: null,
     sourceMotionTransition: beatContext.fromBeatId ? {
       fromBeatId: beatContext.fromBeatId,
@@ -17872,7 +18458,11 @@ function loadEnvironmentPreviewStoryAssets(viewer, status) {
         return;
       }
       const pose = spatialTopologyAssetPose({ topologyKind, topologyViewpoint: viewpoint }, index, entries.length);
-      normalizeSpatialRuntimeObject(gltf.scene, pose.targetSize);
+      normalizeSpatialRuntimeObject(
+        gltf.scene,
+        pose.targetSize,
+        spatialEntityVerticalAlignment(entry.entity),
+      );
       wrapper.add(gltf.scene);
       finish(true);
     }, undefined, () => finish(false));
@@ -18009,7 +18599,7 @@ function applyEnvironmentDraftToViewer(viewer = contextViewer) {
     viewer.renderer.toneMappingExposure = 1;
     viewer.scene.environment = null;
     viewer.scene.background = new THREE.Color(0x080a08);
-    viewer.scene.fog = new THREE.Fog(0x080a08, 7, 18);
+    viewer.scene.fog = null;
     viewer.renderer.setClearColor(0x080a08, 1);
     return;
   }
@@ -18129,11 +18719,32 @@ function lockedEnvironmentPreviewContract(viewer) {
   };
 }
 
+function applyNeutralEnvironmentFallbackToViewer(viewer) {
+  if (!viewer?.scene || !viewer?.renderer) return false;
+  viewer.lockedEnvironmentActive = false;
+  viewer.scene.environment = null;
+  viewer.scene.background = new THREE.Color(0x080a08);
+  viewer.scene.fog = null;
+  viewer.scene.environmentRotation?.set?.(0, 0, 0);
+  viewer.scene.backgroundRotation?.set?.(0, 0, 0);
+  viewer.renderer.toneMappingExposure = 1;
+  viewer.renderer.setClearColor(0x080a08, 1);
+  return true;
+}
+
+function authoredEnvironmentPolicyExists() {
+  const option = state.data?.decisions?.["environment-enhancement"]?.option;
+  return Boolean(option && typeof option === "object");
+}
+
 function attachLockedEnvironmentToViewer(viewer) {
+  if (!applyNeutralEnvironmentFallbackToViewer(viewer)) return;
+  viewer.authoredEnvironmentPolicyActive = authoredEnvironmentPolicyExists();
   const contract = lockedEnvironmentPreviewContract(viewer);
   const asset = contract?.asset;
   const localUrl = String(asset?.localUrl || "").trim();
-  if (!viewer?.scene || !asset || !localUrl) return;
+  if (!asset || !localUrl) return;
+  viewer.lockedEnvironmentActive = true;
 
   const transform = environmentDraftFromManifest(contract).transform;
   const rendering = environmentDraftFromManifest(contract).rendering;
@@ -18945,7 +19556,8 @@ function initializeFinalReviewViewer(active) {
   const width = Math.max(container.clientWidth, 360);
   const height = Math.max(container.clientHeight, 620);
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xf8f7ec);
+  scene.background = new THREE.Color(0x080a08);
+  scene.fog = null;
 
   const camera = new THREE.PerspectiveCamera(42, width / height, 0.02, 1000);
   camera.position.set(3.8, 2.45, 4.8);
@@ -18955,6 +19567,7 @@ function initializeFinalReviewViewer(active) {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setSize(width, height);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.setClearColor(0x080a08, 1);
   renderer.xr.enabled = true;
   renderer.xr.setFramebufferScaleFactor(0.8);
   renderer.xr.setFoveation(1);
@@ -19142,10 +19755,17 @@ function initializeFinalReviewViewer(active) {
   };
   finalReviewViewer = viewer;
   controls.enablePan = viewer.viewRotationMode === "scene";
+  const restoredCameraState = state.finalReviewViewerCameraState;
+  const canRestoreCameraState = shouldRestoreFinalReviewViewerCameraState(viewer, restoredCameraState);
+  // Match the compiled reader: use the authored station only for the initial
+  // reader entry, then preserve the captured pose through later beat rebuilds.
+  if (canRestoreCameraState) {
+    applyFinalReviewViewerCameraState(viewer, restoredCameraState);
+  } else if (viewer.viewRotationMode === "reader") {
+    applyFinalReviewAuthoredReaderPose(viewer);
+  }
   resetFinalReviewReaderLookAnchor(viewer);
   attachLockedEnvironmentToViewer(viewer);
-  const restoredCameraState = restoredPreviewCameraState(viewer, state.finalReviewViewerCameraState);
-  const canRestoreCameraState = shouldRestorePreviewCameraState(viewer, restoredCameraState);
   addFinalReviewTextPanel(viewer, beat, region);
   configureFinalReviewXrTextPanel(viewer);
   addFinalReviewTransitionEffects(
@@ -19447,7 +20067,6 @@ function initializeFinalReviewViewer(active) {
 
   const finish = (ok) => {
     if (viewer.disposed) return;
-    if (canRestoreCameraState) applyFinalReviewViewerCameraState(viewer, restoredCameraState);
     resetFinalReviewReaderLookAnchor(viewer);
     refreshFinalReviewDirectManipulationCues(viewer);
     syncFinalReviewAttentionGuidance(viewer);
@@ -19463,9 +20082,10 @@ function initializeFinalReviewViewer(active) {
       pending -= 1;
       if (!ok) failed += 1;
       if (viewer.disposed) return;
-      if (canRestoreCameraState) {
-        applyFinalReviewViewerCameraState(viewer, restoredCameraState);
-      } else {
+      if (
+        !canRestoreCameraState
+        && !(viewer.viewRotationMode === "reader" && viewer.readerLookPosition)
+      ) {
         fitInheritedTopologyPreviewCamera(viewer, root);
       }
       resetFinalReviewReaderLookAnchor(viewer);
@@ -19498,9 +20118,10 @@ function initializeFinalReviewViewer(active) {
       pending -= 1;
       if (!ok) failed += 1;
       if (viewer.disposed) return;
-      if (canRestoreCameraState) {
-        applyFinalReviewViewerCameraState(viewer, restoredCameraState);
-      } else {
+      if (
+        !canRestoreCameraState
+        && !(viewer.viewRotationMode === "reader" && viewer.readerLookPosition)
+      ) {
         fitInheritedTopologyPreviewCamera(viewer, root);
       }
       resetFinalReviewReaderLookAnchor(viewer);
@@ -19603,19 +20224,20 @@ function updateFinalReviewReaderHandRigViewport(readerHandRig, aspect, fov = FIN
     0,
     1,
   );
-  const offsetX = Number(state.finalReviewReaderHandOffset?.x) || 0;
-  const offsetY = Number(state.finalReviewReaderHandOffset?.y) || 0;
-  group.position.set(
-    THREE.MathUtils.lerp(-0.12, -0.06, compactness) + offsetX,
-    -0.16 + offsetY,
-    THREE.MathUtils.lerp(-0.52, -1.28, compactness),
-  );
   const numericFov = Number(fov);
   const referenceTangent = Math.tan(THREE.MathUtils.degToRad(FINAL_REVIEW_DESKTOP_PANEL_REFERENCE_FOV * 0.5));
   const renderTangent = Math.tan(THREE.MathUtils.degToRad(
     THREE.MathUtils.clamp(Number.isFinite(numericFov) ? numericFov : FINAL_REVIEW_DESKTOP_PANEL_REFERENCE_FOV, 5, 140) * 0.5,
   ));
-  group.scale.setScalar(THREE.MathUtils.clamp(renderTangent / referenceTangent, 0.28, 2.4));
+  const viewportScale = THREE.MathUtils.clamp(renderTangent / referenceTangent, 0.28, 2.4);
+  const offsetX = Number(state.finalReviewReaderHandOffset?.x) || 0;
+  const offsetY = Number(state.finalReviewReaderHandOffset?.y) || 0;
+  group.position.set(
+    (THREE.MathUtils.lerp(-0.12, -0.06, compactness) * viewportScale) + offsetX,
+    (-0.16 * viewportScale) + offsetY,
+    THREE.MathUtils.lerp(-0.52, -1.28, compactness),
+  );
+  group.scale.setScalar(viewportScale);
 }
 
 function syncFinalReviewReaderHandRigCamera(viewer, renderCamera = finalReviewRenderCamera(viewer)) {
@@ -19634,7 +20256,7 @@ function updateFinalReviewTextPanelViewport(viewer) {
   const side = viewer.readerHandRig?.handedness === "right" ? -1 : 1;
   const offsetX = Number(state.finalReviewTextPanelOffset?.x) || 0;
   const offsetY = Number(state.finalReviewTextPanelOffset?.y) || 0;
-  group.position.set((0.105 * side) + offsetX, 0.115 + offsetY, -0.32);
+  group.position.set((0.25 * side) + offsetX, 0.115 + offsetY, -0.32);
   group.rotation.set(-0.16, -0.12 * side, 0);
 }
 
@@ -19998,9 +20620,10 @@ function setFinalReviewXrTextPanelRayState(viewer, entry, active, action = "", d
 
 function loadFinalReviewAsset(viewer, asset, finishAsset) {
   const spatialEntity = lockedSpatialGlbEntityForViewer(viewer, asset.id);
+  const finalReviewFraming = finalReviewSpatialFraming(viewer, spatialEntity);
   const topologyWrapper = new THREE.Group();
   topologyWrapper.name = `StoryVR topology anchor · ${asset.id}`;
-  topologyWrapper.position.set(0, 0.2, 0);
+  topologyWrapper.position.set(0, finalReviewFraming?.anchorY ?? 0.2, 0);
   const authorWrapper = new THREE.Group();
   authorWrapper.name = `StoryVR author transform · ${asset.id}`;
   authorWrapper.userData.assetId = asset.id;
@@ -20040,7 +20663,15 @@ function loadFinalReviewAsset(viewer, asset, finishAsset) {
           group.remove(placeholder);
           disposeObject(placeholder);
         }
-        normalizeTopologyObject(gltf.scene, 1.12);
+        if (finalReviewFraming) {
+          normalizeSpatialRuntimeObject(
+            gltf.scene,
+            finalReviewFraming.targetSize,
+            finalReviewFraming.verticalAlignment,
+          );
+        } else {
+          normalizeTopologyObject(gltf.scene, 1.12);
+        }
         group.add(gltf.scene);
         viewer.finalReviewAssetEntry.sourceScene = gltf.scene;
         attachProceduralDynamicsPreviewMotion(viewer, viewer.finalReviewAssetEntry, gltf);
@@ -20290,11 +20921,12 @@ function addFinalReviewTextPanel(viewer, beat, region) {
       map: texture,
       transparent: true,
       side: THREE.DoubleSide,
-      depthTest: true,
+      depthTest: false,
       depthWrite: false,
       toneMapped: false,
     }),
   );
+  panel.renderOrder = READER_UI_RENDER_ORDER;
   panel.userData.finalReviewTextPanelAction = "scroll";
   expandedRoot.add(panel);
 
@@ -20417,11 +21049,12 @@ function makeFinalReviewTextPanelButton(presentation, action, targetContext, dis
       opacity: disabled ? 0.48 : 1,
       transparent: true,
       side: THREE.DoubleSide,
-      depthTest: true,
+      depthTest: false,
       depthWrite: false,
       toneMapped: false,
     }),
   );
+  mesh.renderOrder = READER_UI_RENDER_ORDER + 2;
   mesh.position.set(
     (x - 0.5) * FINAL_REVIEW_XR_TEXT_PANEL_WIDTH,
     (0.5 - y) * FINAL_REVIEW_XR_TEXT_PANEL_HEIGHT,
@@ -20489,11 +21122,12 @@ function makeFinalReviewTextPanelControl(label, action, size) {
       map: texture,
       transparent: true,
       side: THREE.DoubleSide,
-      depthTest: true,
+      depthTest: false,
       depthWrite: false,
       toneMapped: false,
     }),
   );
+  mesh.renderOrder = READER_UI_RENDER_ORDER + 2;
   mesh.name = `${label === "Aa" ? "Restore" : "Minimize"} text panel · Final Review`;
   mesh.userData.finalReviewTextPanelAction = action;
   return mesh;
@@ -20865,7 +21499,7 @@ function makeFinalReviewTextTexture(beat, region, variantState = null, requested
   const ctx = canvas.getContext("2d");
   const variantLayout = variantState ? finalReviewTextPanelVariantLayout(canvas.height) : null;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  drawRoundRect(ctx, 24, 24, canvas.width - 48, canvas.height - 48, 34, "rgba(255,253,244,0.96)");
+  drawRoundRect(ctx, 24, 24, canvas.width - 48, canvas.height - 48, 34, "rgba(255,253,244,1)");
   ctx.fillStyle = "#10201c";
   ctx.font = "900 48px Avenir Next, Gill Sans, sans-serif";
   wrapCanvasText(ctx, shortText(beat?.title || "Story beat", 86), 64, 96, 900, 54, 2);
@@ -21553,22 +22187,85 @@ function finalReviewSourcePlaybackEntry(viewer) {
   }) || null;
 }
 
+function syncFinalReviewSourceCameraRenderProxy(viewer, sourceCamera) {
+  const readerCamera = viewer?.camera;
+  if (!viewer?.scene || !readerCamera || !sourceCamera?.isCamera) return readerCamera;
+  let proxy = viewer.sourceCameraRenderProxy;
+  if (!proxy || proxy.type !== sourceCamera.type) {
+    proxy?.removeFromParent?.();
+    proxy = sourceCamera.clone(false);
+    proxy.name = "StoryVR source camera render proxy · Final Review";
+    viewer.scene.add(proxy);
+    viewer.sourceCameraRenderProxy = proxy;
+  }
+  sourceCamera.updateWorldMatrix(true, false);
+  viewer.sourceCameraRenderPosition ||= new THREE.Vector3();
+  viewer.sourceCameraRenderQuaternion ||= new THREE.Quaternion();
+  proxy.position.copy(sourceCamera.getWorldPosition(viewer.sourceCameraRenderPosition));
+  proxy.quaternion.copy(sourceCamera.getWorldQuaternion(viewer.sourceCameraRenderQuaternion));
+  proxy.scale.set(1, 1, 1);
+  proxy.near = Math.max(Number(sourceCamera.near) || readerCamera.near, 0.001);
+  proxy.far = Math.max(Number(sourceCamera.far) || readerCamera.far, proxy.near + 1);
+  if (proxy.isPerspectiveCamera && sourceCamera.isPerspectiveCamera) {
+    proxy.aspect = readerCamera.aspect;
+    proxy.fov = Number(sourceCamera.fov) || readerCamera.fov;
+    proxy.zoom = Number(sourceCamera.zoom) || 1;
+    proxy.focus = Number(sourceCamera.focus) || proxy.focus;
+    proxy.filmGauge = Number(sourceCamera.filmGauge) || proxy.filmGauge;
+    proxy.filmOffset = Number(sourceCamera.filmOffset) || 0;
+  } else if (proxy.isOrthographicCamera && sourceCamera.isOrthographicCamera) {
+    proxy.left = sourceCamera.left;
+    proxy.right = sourceCamera.right;
+    proxy.top = sourceCamera.top;
+    proxy.bottom = sourceCamera.bottom;
+    proxy.zoom = Number(sourceCamera.zoom) || 1;
+  }
+  proxy.updateProjectionMatrix();
+  proxy.updateMatrixWorld(true);
+  return proxy;
+}
+
+function sourcePlaybackPresentationBackground(asset) {
+  const value = asset?.presentation?.backgroundColor;
+  if (Array.isArray(value) && value.length >= 3) {
+    const components = value.slice(0, 3).map(Number);
+    if (components.every(Number.isFinite)) return new THREE.Color().setRGB(...components);
+  }
+  const text = String(value || "").trim();
+  if (!text) return null;
+  try {
+    return new THREE.Color(text);
+  } catch {
+    return null;
+  }
+}
+
+function syncFinalReviewSourcePresentation(viewer, playback) {
+  if (
+    !viewer?.scene
+    || !viewer?.renderer
+    || viewer.lockedEnvironmentActive
+    || viewer.authoredEnvironmentPolicyActive
+  ) return;
+  const background = sourcePlaybackPresentationBackground(playback?.asset);
+  if (!background) return;
+  const signature = background.getHexString();
+  if (viewer.sourcePlaybackPresentationSignature === signature) return;
+  viewer.sourcePlaybackPresentationSignature = signature;
+  viewer.scene.background = background;
+  viewer.scene.fog = null;
+  viewer.renderer.setClearColor(background, 1);
+}
+
 function finalReviewRenderCamera(viewer) {
   const readerCamera = viewer?.camera;
   const playback = finalReviewSourcePlaybackEntry(viewer)?.sourcePlayback;
-  const sourceCamera = playback?.sourceCamera;
-  if (!sourceCamera) return readerCamera;
-  const policy = String(
-    viewer?.renderer?.xr?.isPresenting
-      ? playback.asset?.camera?.xrPolicy || "preserve-viewer-camera"
-      : playback.asset?.camera?.desktopPolicy || "render-source-camera",
-  ).trim().toLowerCase();
-  if (!["render-source-camera", "source-camera"].includes(policy)) return readerCamera;
-  if (sourceCamera.isPerspectiveCamera && readerCamera?.aspect) {
-    sourceCamera.aspect = readerCamera.aspect;
-    sourceCamera.updateProjectionMatrix?.();
-  }
-  return sourceCamera;
+  syncFinalReviewSourcePresentation(viewer, playback);
+  // Final Review is the authored reader experience. Source cameras may still
+  // drive captured animation and presentation state, but rendering through one
+  // would bypass the Spatial Relations reader pose and the camera controlled by
+  // Reader look / Orbit scene.
+  return readerCamera;
 }
 
 function updateFinalReviewTransitionExecution(viewer, delta) {
@@ -23456,11 +24153,12 @@ function addInteractionSpatialReaderHands(readerRig, beat) {
       map: makeFinalReviewTextTexture(beat, null),
       transparent: true,
       side: THREE.DoubleSide,
-      depthTest: true,
+      depthTest: false,
       depthWrite: false,
       toneMapped: false,
     }),
   );
+  panel.renderOrder = READER_UI_RENDER_ORDER;
   panel.name = "StoryVR readable text surface · Interaction Control";
   textPanel.add(panel);
   panelAnchor.add(textPanel);
@@ -24151,7 +24849,11 @@ function loadAttentionGuidanceGlb(viewer, entity, index, total, done) {
     }
     wrapper.remove(placeholder);
     disposeObject(placeholder);
-    normalizeSpatialRuntimeObject(gltf.scene, topologyPose.targetSize);
+    normalizeSpatialRuntimeObject(
+      gltf.scene,
+      topologyPose.targetSize,
+      spatialEntityVerticalAlignment(entity),
+    );
     gltf.scene.userData.attentionStoryObject = true;
     gltf.scene.traverse((object) => { object.userData.attentionStoryObject = true; });
     wrapper.add(gltf.scene);
@@ -24562,7 +25264,22 @@ function spatialTopologyAssetPose(viewer, index, total) {
   };
 }
 
-function normalizeSpatialRuntimeObject(object, targetSize) {
+function normalizeSpatialVerticalAlignment(value, fallback = "center") {
+  const supplied = String(value || "").trim().toLowerCase();
+  if (["ground", "grounded", "floor"].includes(supplied)) return "ground";
+  if (["center", "centered", "centre", "centred"].includes(supplied)) return "center";
+  return String(fallback || "").trim().toLowerCase() === "ground" ? "ground" : "center";
+}
+
+function spatialEntityVerticalAlignment(entity) {
+  if (spatialEntityType(entity) !== "glb") return "center";
+  return normalizeSpatialVerticalAlignment(
+    entity?.verticalAlignment,
+    "ground",
+  );
+}
+
+function normalizeSpatialRuntimeObject(object, targetSize, verticalAlignment = "center") {
   const box = new THREE.Box3().setFromObject(object);
   if (box.isEmpty()) return;
   const center = box.getCenter(new THREE.Vector3());
@@ -24570,7 +25287,13 @@ function normalizeSpatialRuntimeObject(object, targetSize) {
   const maxSize = Math.max(size.x, size.y, size.z) || 1;
   const scale = targetSize / maxSize;
   object.scale.multiplyScalar(scale);
-  object.position.sub(center.multiplyScalar(scale));
+  object.position.x -= center.x * scale;
+  object.position.z -= center.z * scale;
+  object.position.y -= (
+    normalizeSpatialVerticalAlignment(verticalAlignment) === "ground"
+      ? box.min.y
+      : center.y
+  ) * scale;
 }
 
 function makeSpatialEditorFloorGuide(topologyKind, viewpoint) {
@@ -24876,7 +25599,11 @@ function loadSpatialRelationsGlb(viewer, assetLink, index, total, done) {
     authorWrapper.remove(placeholder);
     disposeObject(placeholder);
     viewer.spatialPickTargets = viewer.spatialPickTargets.filter((object) => object !== placeholder);
-    normalizeSpatialRuntimeObject(gltf.scene, topologyPose.targetSize);
+    normalizeSpatialRuntimeObject(
+      gltf.scene,
+      topologyPose.targetSize,
+      spatialEntityVerticalAlignment(entity),
+    );
     gltf.scene.userData.spatialEntityId = entityId;
     gltf.scene.traverse((object) => { object.userData.spatialEntityId = entityId; });
     authorWrapper.add(gltf.scene);
@@ -25450,6 +26177,7 @@ function syncSpatialToolbarState() {
   const space = document.querySelector("[data-spatial-toggle-space]");
   if (space) space.textContent = state.spatialTransformSpace === "local" ? "Local" : "World";
   syncSpatialClipboardControls();
+  syncSpatialPropagationControls();
 }
 
 function frameSpatialSceneOverview(viewer) {
@@ -27043,7 +27771,13 @@ function loadDynamicAsset(viewer, assetLink, index, total, active, finishAsset) 
           authorWrapper.remove(placeholder);
           disposeObject(placeholder);
         }
-        if (spatialTransformApplied) normalizeSpatialRuntimeObject(gltf.scene, targetSize);
+        if (spatialTransformApplied) {
+          normalizeSpatialRuntimeObject(
+            gltf.scene,
+            targetSize,
+            spatialEntityVerticalAlignment(spatialEntity),
+          );
+        }
         else normalizeTopologyObject(gltf.scene, targetSize);
         dynamicEntry.opacityMaterials.push(...preparePreviewOpacityTarget(gltf.scene));
         authorWrapper.add(gltf.scene);
@@ -27981,12 +28715,89 @@ function applySourcePlaybackAnnotationOpacity(bindingEntry, runtime) {
   updatePreviewMaterialOpacity(annotation.sprite.material);
 }
 
+function sourcePlaybackAnnotationPresentation(asset, definition) {
+  const assetStyle = asset?.presentation?.annotations;
+  const definitionStyle = definition?.presentation;
+  return {
+    ...(assetStyle && typeof assetStyle === "object" ? assetStyle : {}),
+    ...(definitionStyle && typeof definitionStyle === "object" ? definitionStyle : {}),
+  };
+}
+
+function sourcePlaybackAnnotationLines(text, maxLineCharacters = 44) {
+  const words = String(text || "").trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return [""];
+  const maximum = Math.max(18, Math.min(72, Math.round(Number(maxLineCharacters) || 44)));
+  const lines = [];
+  let line = "";
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (line && candidate.length > maximum) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.slice(0, 3);
+}
+
+function sourcePlaybackAnnotationLayout(text, definition, presentation) {
+  const lines = sourcePlaybackAnnotationLines(
+    text,
+    finiteSourcePlaybackNumber(definition?.maxLineCharacters, presentation?.maxLineCharacters, 44),
+  );
+  const longestLine = lines.reduce((longest, line) => Math.max(longest, line.length), 0);
+  const defaultHeight = lines.length === 1 ? 0.28 : 0.08 + lines.length * 0.22;
+  return {
+    lines,
+    width: finiteSourcePlaybackNumber(
+      definition?.width,
+      presentation?.width,
+      THREE.MathUtils.clamp(0.38 + longestLine * 0.06, 0.7, 4),
+    ),
+    height: finiteSourcePlaybackNumber(definition?.height, presentation?.height, defaultHeight),
+  };
+}
+
+function initializeFinalReviewSourcePlaybackAnnotationElement(viewer, id, text, definition, presentation) {
+  if (viewer?.componentId !== "transition-pacing" || !viewer.renderer?.domElement?.parentElement) return null;
+  const container = viewer.renderer.domElement.parentElement;
+  const element = document.createElement("div");
+  const background = definition.background ?? presentation.background ?? "rgba(255,253,244,0.9)";
+  const transparentBackground = !background || String(background).trim().toLowerCase() === "transparent";
+  element.dataset.storyvrSourceAnnotation = id;
+  element.textContent = text;
+  Object.assign(element.style, {
+    position: "absolute",
+    left: "0",
+    top: "0",
+    zIndex: "4",
+    pointerEvents: "none",
+    padding: transparentBackground ? "0" : "0.28rem 0.5rem",
+    borderRadius: transparentBackground ? "0" : "0.35rem",
+    color: String(definition.color ?? presentation.color ?? "#10201c"),
+    background: String(background || "transparent"),
+    font: `${Number(definition.fontWeight ?? presentation.fontWeight) || 600} 12px/1.25 system-ui, sans-serif`,
+    maxWidth: String(definition.maxWidth ?? presentation.maxWidth ?? "min(32rem, calc(100% - 24px))"),
+    whiteSpace: String(definition.whiteSpace ?? presentation.whiteSpace ?? "normal"),
+    textAlign: "center",
+    opacity: "0",
+    visibility: "hidden",
+    transform: "translate(-50%, -100%)",
+  });
+  container.appendChild(element);
+  return element;
+}
+
 function initializeSourcePlaybackAnnotations(viewer, entry, runtime) {
   // Contract annotations belong to the source asset's coordinate space. Keeping
   // them under the normalized GLB root preserves their intended scale and stops
   // fixed-size authoring sprites from expanding scene-fit bounds.
   const parent = runtime.root || entry.wrapper || entry.group || viewer.root;
   for (const [index, definition] of runtime.asset.annotations.entries()) {
+    if (!sourcePlaybackAnnotationIsReaderVisible(definition)) continue;
     const id = String(definition.id || definition.annotationId || `annotation:${index}`).trim();
     const text = String(definition.text || definition.label || "").trim();
     if (!text) {
@@ -27999,20 +28810,46 @@ function initializeSourcePlaybackAnnotations(viewer, entry, runtime) {
       continue;
     }
     const position = definition.position && typeof definition.position === "object" ? definition.position : {};
+    const presentation = sourcePlaybackAnnotationPresentation(runtime.asset, definition);
+    const layout = sourcePlaybackAnnotationLayout(text, definition, presentation);
     const sprite = makeTextSprite(text, {
       authoredSceneText: true,
-      width: finiteSourcePlaybackNumber(definition.width, 1.25),
-      height: finiteSourcePlaybackNumber(definition.height, 0.28),
+      width: layout.width,
+      height: layout.height,
+      lines: layout.lines,
       x: finiteSourcePlaybackNumber(position.x, definition.x, 0),
       y: finiteSourcePlaybackNumber(position.y, definition.y, 0.9),
       z: finiteSourcePlaybackNumber(position.z, definition.z, 0),
-      color: definition.color || "#10201c",
-      background: definition.background || "rgba(255,253,244,0.9)",
+      color: definition.color ?? presentation.color ?? "#10201c",
+      background: definition.background ?? presentation.background ?? "rgba(255,253,244,0.9)",
+      fontWeight: definition.fontWeight ?? presentation.fontWeight,
+      depthTest: definition.depthTest ?? presentation.depthTest ?? false,
+      depthWrite: definition.depthWrite ?? presentation.depthWrite ?? false,
+      toneMapped: definition.toneMapped ?? presentation.toneMapped ?? false,
+      renderOrder: definition.renderOrder ?? presentation.renderOrder ?? 9000,
     });
     parent.add(sprite);
     entry.opacityMaterials?.push(...preparePreviewOpacityTarget(sprite));
     const targetNode = sourcePlaybackFindNode(runtime.root, definition.node || definition.nodeName || definition.target);
-    runtime.annotations.set(id, { id, definition, sprite, parent, targetNode, opacity: 1 });
+    const element = initializeFinalReviewSourcePlaybackAnnotationElement(
+      viewer,
+      id,
+      text,
+      definition,
+      presentation,
+    );
+    runtime.annotations.set(id, {
+      id,
+      definition,
+      presentation,
+      sprite,
+      element,
+      parent,
+      targetNode,
+      opacity: 1,
+      projectedPosition: new THREE.Vector3(),
+      worldPosition: new THREE.Vector3(),
+    });
   }
 }
 
@@ -28040,6 +28877,52 @@ function updateSourcePlaybackAnnotations(runtime) {
       annotation.sprite.material.userData = { ...(annotation.sprite.material.userData || {}), storyvrSourceBindingOpacity: annotation.opacity };
       updatePreviewMaterialOpacity(annotation.sprite.material);
     }
+    const visibleThreshold = finiteSourcePlaybackNumber(
+      annotation.definition.visibleThreshold,
+      annotation.definition.threshold,
+      0.001,
+    );
+    const annotationVisible = annotation.opacity > visibleThreshold;
+    const viewer = runtime.viewer;
+    const xrPresenting = viewer?.renderer?.xr?.isPresenting === true;
+    annotation.sprite.visible = annotationVisible && (!annotation.element || xrPresenting);
+    if (!annotation.element || !viewer?.renderer?.domElement) continue;
+    if (!annotationVisible || xrPresenting) {
+      annotation.element.style.visibility = "hidden";
+      annotation.element.style.opacity = "0";
+      continue;
+    }
+    const renderCamera = finalReviewRenderCamera(viewer);
+    annotation.sprite.updateWorldMatrix?.(true, false);
+    annotation.sprite.getWorldPosition(annotation.worldPosition);
+    annotation.projectedPosition.copy(annotation.worldPosition).project(renderCamera);
+    const canvasBounds = viewer.renderer.domElement.getBoundingClientRect();
+    const containerBounds = viewer.renderer.domElement.parentElement.getBoundingClientRect();
+    const elementBounds = annotation.element.getBoundingClientRect();
+    const margin = Math.max(
+      0,
+      Number(annotation.definition.viewportMargin ?? annotation.presentation.viewportMargin) || 12,
+    );
+    const x = canvasBounds.left - containerBounds.left
+      + (annotation.projectedPosition.x * 0.5 + 0.5) * canvasBounds.width;
+    const y = canvasBounds.top - containerBounds.top
+      + (-annotation.projectedPosition.y * 0.5 + 0.5) * canvasBounds.height;
+    const minimumLeft = canvasBounds.left - containerBounds.left + margin + elementBounds.width / 2;
+    const maximumLeft = canvasBounds.right - containerBounds.left - margin - elementBounds.width / 2;
+    const minimumTop = canvasBounds.top - containerBounds.top + margin + elementBounds.height;
+    const maximumTop = canvasBounds.bottom - containerBounds.top - margin;
+    const left = maximumLeft >= minimumLeft
+      ? THREE.MathUtils.clamp(x, minimumLeft, maximumLeft)
+      : canvasBounds.left - containerBounds.left + canvasBounds.width / 2;
+    const top = maximumTop >= minimumTop
+      ? THREE.MathUtils.clamp(y, minimumTop, maximumTop)
+      : canvasBounds.top - containerBounds.top + canvasBounds.height / 2;
+    annotation.element.style.left = `${left}px`;
+    annotation.element.style.top = `${top}px`;
+    annotation.element.style.opacity = String(annotation.opacity);
+    annotation.element.style.visibility = annotation.projectedPosition.z >= -1 && annotation.projectedPosition.z <= 1
+      ? "visible"
+      : "hidden";
   }
 }
 
@@ -28177,6 +29060,7 @@ function seekSourceTransitionPlayback(entry, progress, clockSeconds = 0) {
   runtime.mixer.setTime(runtime.masterDuration * normalizedProgress);
   applySourcePlaybackBindings(runtime);
   updateSourcePlaybackAnnotations(runtime);
+  updateStoryVrPointCloudEffects(runtime.root, runtime.masterDuration * normalizedProgress);
   return true;
 }
 
@@ -28205,6 +29089,22 @@ function attachFinalReviewSourcePlayback(viewer, entry, gltf) {
   return attachSourceTransitionPlayback(viewer, entry, gltf);
 }
 
+function sourcePlaybackSceneVisibleForViewer(viewer, entry, contractActive) {
+  if (contractActive === true) return true;
+  // Transition owns appearance while it is actively presenting a boundary.
+  // Every other authoring preview inherits scene membership from Spatial
+  // Relations, so an absent motion window may pause a model but cannot remove
+  // an explicitly saved scene entity.
+  if (viewerExecutesInterBeatTransition(viewer)) return false;
+  if (viewer?.componentId === SPATIAL_RELATIONS_COMPONENT_ID) return true;
+  const spatialEntityId = entry?.entity?.id
+    || entry?.entityId
+    || entry?.step?.entityId
+    || entry?.authorWrapper?.userData?.spatialEntityId
+    || "";
+  return Boolean(String(spatialEntityId).trim());
+}
+
 function attachSourceTransitionPlayback(viewer, entry, gltf) {
   const assetId = entry.assetId || entry.step?.assetId;
   const asset = sourcePlaybackAssetForId(assetId);
@@ -28226,6 +29126,7 @@ function attachSourceTransitionPlayback(viewer, entry, gltf) {
     );
   const runtime = {
     asset,
+    viewer,
     root: gltf.scene,
     windowState,
     mixer: null,
@@ -28245,7 +29146,7 @@ function attachSourceTransitionPlayback(viewer, entry, gltf) {
   entry.sourcePlayback = runtime;
   entry.sourcePlaybackDiagnostics = runtime.diagnostics;
   entry.sourcePlaybackContractActive = sourcePlaybackWindowKeepsAssetActive(windowState);
-  gltf.scene.visible = entry.sourcePlaybackContractActive;
+  gltf.scene.visible = sourcePlaybackSceneVisibleForViewer(viewer, entry, entry.sourcePlaybackContractActive);
   if (windowState.mode === "none") {
     if (![SPATIAL_RELATIONS_COMPONENT_ID, "interaction-control"].includes(viewer.componentId)) {
       sourcePlaybackDiagnostic(runtime, "no-mapped-source-window", `${viewer.sourceMotionTransition?.fromBeatId || ""}->${viewer.sourceMotionTransition?.toBeatId || viewer.sourcePartToBeatId || ""}`);
@@ -28474,6 +29375,7 @@ function sourceMotionClipsForTrack(track, clips) {
 
 function requestSourceCameraCue(viewer) {
   if (!viewer || viewer.componentId !== "inter-beat-dynamics") return false;
+  if (!viewer.thumbnailMode && !state.sourceCameraPreviewEnabled) return false;
   viewer.sourceCameraCuePending = true;
   if (!viewer.sourceCamera || (!sourcePlaybackUsesDeclaredCamera(viewer) && !state.sourceCameraPreviewEnabled)) return false;
   const targetDistance = Math.max(0.4, viewer.camera.position.distanceTo(viewer.controls.target));
@@ -30543,72 +31445,6 @@ function spatialSceneContext(beatId, variantGroupId = null, variantOptionId = nu
   };
 }
 
-function manualSceneAssetLinkRecord(graph, contextInput) {
-  const store = graph?.manualSceneAssetLinks;
-  const context = spatialSceneContext(
-    contextInput?.beatId,
-    contextInput?.variantGroupId,
-    contextInput?.variantOptionId,
-  );
-  if (!store || !context.beatId) return null;
-  const byScope = store.byScope && typeof store.byScope === "object" ? store.byScope : {};
-  const bySceneKey = store.bySceneKey && typeof store.bySceneKey === "object" ? store.bySceneKey : {};
-  const candidateKeys = uniqueStrings([
-    proceduralDynamicsSceneKey(context),
-    spatialSceneRequestKey(context),
-    context.variantOptionId ? `beat:${context.beatId}:variant:${context.variantOptionId}` : `beat:${context.beatId}`,
-    context.variantOptionId ? `${context.beatId}::${context.variantOptionId}` : context.beatId,
-    JSON.stringify({
-      beatId: context.beatId,
-      ...(context.variantGroupId ? { variantGroupId: context.variantGroupId } : {}),
-      ...(context.variantOptionId ? { variantOptionId: context.variantOptionId } : {}),
-    }),
-  ]);
-  for (const key of candidateKeys) {
-    if (Object.prototype.hasOwnProperty.call(byScope, key)) return byScope[key];
-    if (Object.prototype.hasOwnProperty.call(bySceneKey, key)) return bySceneKey[key];
-    if (Object.prototype.hasOwnProperty.call(store, key)) return store[key];
-  }
-  const records = [
-    ...(Array.isArray(byScope) ? byScope : Object.values(byScope)),
-    ...(Array.isArray(bySceneKey) ? bySceneKey : Object.values(bySceneKey)),
-  ];
-  return records.find((record) => {
-    const scope = record?.scope || record?.sceneContext || record;
-    return String(scope?.beatId || "") === context.beatId
-      && String(scope?.variantOptionId || "") === String(context.variantOptionId || "")
-      && (
-        !context.variantGroupId
-        || !scope?.variantGroupId
-        || String(scope.variantGroupId) === context.variantGroupId
-      );
-  }) || null;
-}
-
-function manualSceneAssetIdsForContext(graph, context) {
-  const record = manualSceneAssetLinkRecord(graph, context);
-  if (Array.isArray(record)) return uniqueStrings(record);
-  if (!record || !Array.isArray(record.assetIds)) return null;
-  if (record.mode && record.mode !== "exact") return null;
-  return uniqueStrings(record.assetIds);
-}
-
-function sourceGraphEffectiveVariantAssetIds(beat, group, option) {
-  const override = manualSceneAssetIdsForContext(
-    state.data?.graph,
-    spatialSceneContext(beat?.id, group?.id, option?.id),
-  );
-  return override ?? variantOptionAssetIds(option);
-}
-
-function sourceGraphEffectiveBeatAssetIds(beat) {
-  const override = manualSceneAssetIdsForContext(
-    state.data?.graph,
-    spatialSceneContext(beat?.id),
-  );
-  return override ?? beatAssetIds(beat);
-}
-
 function activeDynamicSceneContext() {
   const context = state.dynamicEditorScene;
   if (!context?.beatId) return null;
@@ -30985,24 +31821,15 @@ function spatialSceneBeat(context) {
   if (!context?.beatId) return null;
   const beat = spatialPreviewBeats().find((candidate) => candidate.id === context.beatId);
   if (!beat) return null;
-  const manualAssetIds = manualSceneAssetIdsForContext(state.data?.graph, context);
-  if (!context.variantOptionId) {
-    return manualAssetIds === null
-      ? beat
-      : { ...beat, linkedAssetIds: manualAssetIds };
-  }
+  if (!context.variantOptionId) return beat;
   const group = variantGroupForBeat(beat);
   const option = (group?.options || []).find((candidate) => candidate.id === context.variantOptionId);
-  if (!option) {
-    return manualAssetIds === null
-      ? beat
-      : { ...beat, linkedAssetIds: manualAssetIds };
-  }
+  if (!option) return beat;
   return {
     ...beat,
     title: option.label || beat.title,
     text: option.text || beat.text,
-    linkedAssetIds: manualAssetIds ?? variantOptionAssetIds(option),
+    linkedAssetIds: variantOptionAssetIds(option),
     variantGroupId: group?.id || context.variantGroupId,
     variantOptionId: option.id,
   };
@@ -31096,8 +31923,6 @@ function spatialSceneLinkedAssetIds(scene, beat, option = null, contextInput = n
       : beat?.id
         ? spatialSceneContext(beat.id, beat.variantGroupId, option?.id || beat.variantOptionId)
         : null;
-  const manualAssetIds = manualSceneAssetIdsForContext(state.data?.graph, context);
-  if (manualAssetIds !== null) return manualAssetIds;
   if (Array.isArray(scene?.linkedAssetIds)) return uniqueStrings(scene.linkedAssetIds);
   return option ? variantOptionAssetIds(option) : beatAssetIds(beat);
 }
@@ -31184,6 +32009,10 @@ function resetSpatialRelationsDraftState() {
   state.spatialRelationsDraft = null;
   state.spatialRelationsDraftKey = "";
   state.selectedSpatialEntityId = null;
+  state.spatialPropagationSelectionId = null;
+  state.spatialPropagationTargetsOpen = false;
+  state.spatialPropagationTargetBeatIds = [];
+  state.spatialPropagationStatus = "Select a GLB model to reuse its transform in other scenes.";
   state.spatialDraftRevision = 0;
   state.spatialAutosaveTimer = null;
   state.spatialAutosaveStatus = "Draft ready";
@@ -31920,6 +32749,7 @@ function fallbackSpatialSceneEntities(context, proposal, legacyPlacement = null,
       ...(context.variantGroupId ? { variantGroupId: context.variantGroupId } : {}),
       ...(context.variantOptionId ? { variantOptionId: context.variantOptionId } : {}),
       assetId,
+      ...(type === "glb" ? { verticalAlignment: "ground" } : {}),
       inferredTransform: identity,
       transform: cloneJson(identity),
       anchor: { type: "scene" },
@@ -31949,7 +32779,7 @@ function spatialRelationSourceContract(proposal) {
   return null;
 }
 
-function normalizeSpatialRelationEntity(source, fallback) {
+function normalizeSpatialRelationEntity(source, fallback, options = {}) {
   const entity = { ...fallback, ...(source || {}) };
   entity.id = String(entity.id || fallback.id);
   entity.type = spatialEntityType(entity);
@@ -31996,6 +32826,17 @@ function normalizeSpatialRelationEntity(source, fallback) {
   } else delete entity.panel;
   entity.inference = { ...(fallback.inference || {}), ...(entity.inference || {}) };
   entity.manual = Boolean(entity.manual || !spatialTransformsEqual(entity.transform, entity.inferredTransform));
+  if (entity.type === "glb") {
+    const suppliedAlignment = !options.migrateLegacyVerticalAlignment
+      && source
+      && Object.hasOwn(source, "verticalAlignment")
+      ? source.verticalAlignment
+      : null;
+    entity.verticalAlignment = normalizeSpatialVerticalAlignment(
+      suppliedAlignment,
+      options.migrateLegacyVerticalAlignment ? "ground" : fallback.verticalAlignment || "ground",
+    );
+  } else delete entity.verticalAlignment;
   entity._inferredAnchor = cloneJson(entity.anchor);
   entity._inferredOrientationPolicy = entity.orientationPolicy;
   entity._inferredClearance = cloneJson(entity.clearance || null);
@@ -32008,6 +32849,7 @@ function ensureSpatialRelationsDraft(component = spatialRelationsComponent(), pr
   const source = spatialRelationSourceContract(selectedProposal);
   const legacyPlacement = !source ? state.data?.decisions?.[LEGACY_TEXT_COMFORT_COMPONENT_ID]?.textPlacement : null;
   const signature = source?.inputSignature || selectedProposal?.inputSignature || bundle?.inputSignature || "frontend-fallback";
+  const migrateLegacyVerticalAlignment = source?.inferenceVersion !== CURRENT_SPATIAL_RELATIONS_INFERENCE_VERSION;
   const contexts = spatialSceneContextsFromGraph();
   const draftKey = `${selectedProposal?.optionId || bundle?.defaultOptionId || "inferred-layout"}:${signature}:${contexts.length}:${source?.schemaVersion || "fallback"}`;
   if (!state.spatialRelationsDraft || state.spatialRelationsDraftKey !== draftKey) {
@@ -32031,12 +32873,12 @@ function ensureSpatialRelationsDraft(component = spatialRelationsComponent(), pr
           && (fallback.assetId ? entity.assetId === fallback.assetId : entity.beatId === fallback.beatId)
           && (!entity.variantOptionId || entity.variantOptionId === context.variantOptionId)
         ));
-        return normalizeSpatialRelationEntity(compatible, fallback);
+        return normalizeSpatialRelationEntity(compatible, fallback, { migrateLegacyVerticalAlignment });
       });
       for (const sourceEntity of sceneSourceEntities) {
         if (normalizedEntities.some((entity) => entity.id === sourceEntity.id)) continue;
         if (context.variantOptionId && spatialEntityType(sourceEntity) === "reader") continue;
-        normalizedEntities.push(normalizeSpatialRelationEntity(sourceEntity, sourceEntity));
+        normalizedEntities.push(normalizeSpatialRelationEntity(sourceEntity, sourceEntity, { migrateLegacyVerticalAlignment }));
       }
       const fallbackBeat = spatialSceneBeat(context);
       const sceneKey = sourceScene?.sceneKey || spatialSceneRequestKey(context);
@@ -32059,6 +32901,7 @@ function ensureSpatialRelationsDraft(component = spatialRelationsComponent(), pr
     state.spatialRelationsDraft = {
       ...(source ? cloneJson(source) : {}),
       schemaVersion: "storyvr-spatial-relations/v2",
+      inferenceVersion: CURRENT_SPATIAL_RELATIONS_INFERENCE_VERSION,
       inputSignature: signature,
       viewpoint: spatialRelationsViewpoint(source),
       entities,
@@ -32124,6 +32967,53 @@ function ensureSpatialSelection(draft, beat, context = activeSpatialSceneContext
   state.selectedSpatialEntityId = entities[0]?.id || null;
 }
 
+function spatialGlbCrossSceneMatchKey(entity) {
+  if (spatialEntityType(entity) !== "glb" || !entity?.assetId) return "";
+  if (entity.authoredInstance !== true) return `${entity.assetId}::base`;
+  const idOrdinal = String(entity.id || "").match(/:instance:(\d+)$/)?.[1];
+  const instanceIndex = Number(entity.instanceIndex || idOrdinal);
+  return Number.isSafeInteger(instanceIndex) && instanceIndex > 0
+    ? `${entity.assetId}::instance:${instanceIndex}`
+    : "";
+}
+
+function spatialMatchingGlbsInOtherScenes(
+  sourceEntity,
+  contract = state.spatialRelationsDraft,
+  sourceContext = activeSpatialSceneContext(),
+) {
+  const matchKey = spatialGlbCrossSceneMatchKey(sourceEntity);
+  if (!matchKey || !contract) return [];
+  const sourceScene = spatialSceneRecordForContext(contract, sourceContext);
+  return spatialAllSceneRecords(contract).flatMap((scene) => {
+    if (scene === sourceScene) return [];
+    return spatialRelationEntities(scene)
+      .filter((entity) => spatialGlbCrossSceneMatchKey(entity) === matchKey)
+      .map((entity) => ({ scene, entity }));
+  });
+}
+
+function spatialPropagationTargetBeats(
+  sourceEntity = selectedSpatialRelationEntity(),
+  contract = state.spatialRelationsDraft,
+  sourceContext = activeSpatialSceneContext(),
+) {
+  const activeBeatId = String(sourceContext?.beatId || sourceEntity?.beatId || "").trim();
+  const sceneCountsByBeat = new Map();
+  for (const { scene } of spatialMatchingGlbsInOtherScenes(sourceEntity, contract, sourceContext)) {
+    const beatId = String(scene?.beatId || "").trim();
+    if (!beatId || beatId === activeBeatId) continue;
+    sceneCountsByBeat.set(beatId, (sceneCountsByBeat.get(beatId) || 0) + 1);
+  }
+  return spatialPreviewBeats()
+    .map((beat, index) => ({
+      ...beat,
+      index,
+      matchingSceneCount: sceneCountsByBeat.get(beat.id) || 0,
+    }))
+    .filter((beat) => beat.matchingSceneCount > 0);
+}
+
 function spatialClipboardTargetBase(context = activeSpatialSceneContext()) {
   const clipboard = state.spatialClipboard;
   if (!clipboard?.assetId || !context?.beatId) return null;
@@ -32148,6 +33038,94 @@ function syncSpatialClipboardControls() {
   if (status) status.textContent = state.spatialClipboardStatus;
 }
 
+function bindSpatialPropagationTargetEvents() {
+  document.querySelector("[data-spatial-apply-toggle]")?.addEventListener("click", () => {
+    state.spatialPropagationTargetsOpen = !state.spatialPropagationTargetsOpen;
+    renderPreservingScroll();
+  });
+  const selectAll = document.querySelector("[data-spatial-apply-select-all]");
+  selectAll?.addEventListener("change", () => {
+    state.spatialPropagationTargetBeatIds = selectAll.checked
+      ? spatialPropagationTargetBeats().map((beat) => beat.id)
+      : [];
+    syncSpatialPropagationControls();
+  });
+  for (const checkbox of document.querySelectorAll("[data-spatial-apply-target]")) {
+    checkbox.addEventListener("change", () => {
+      const selected = new Set(state.spatialPropagationTargetBeatIds || []);
+      if (checkbox.checked) selected.add(checkbox.dataset.spatialApplyTarget);
+      else selected.delete(checkbox.dataset.spatialApplyTarget);
+      state.spatialPropagationTargetBeatIds = spatialPropagationTargetBeats()
+        .map((beat) => beat.id)
+        .filter((beatId) => selected.has(beatId));
+      syncSpatialPropagationControls();
+    });
+  }
+  document.querySelector("[data-spatial-apply-submit]")?.addEventListener("click", () => {
+    applySelectedSpatialGlbTransformToMatchingScenes();
+  });
+  syncSpatialPropagationControls();
+}
+
+function syncSpatialPropagationControls() {
+  const selected = selectedSpatialRelationEntity();
+  const targetBeats = spatialPropagationTargetBeats(selected);
+  const validIds = new Set(targetBeats.map((beat) => beat.id));
+  const selectedId = selected?.id || null;
+  if (state.spatialPropagationSelectionId !== selectedId) {
+    state.spatialPropagationSelectionId = selectedId;
+    state.spatialPropagationTargetsOpen = false;
+    state.spatialPropagationTargetBeatIds = [];
+    state.spatialPropagationStatus = spatialEntityType(selected) === "glb"
+      ? (targetBeats.length
+          ? `Choose which other beat${targetBeats.length === 1 ? "" : "s"} should receive the ${spatialRelationEntityLabel(selected)} transform.`
+          : "No matching instance of this GLB exists in another beat.")
+      : "Select a GLB model to reuse its transform in other scenes.";
+  }
+  const selectedIds = new Set(
+    (state.spatialPropagationTargetBeatIds || []).filter((beatId) => validIds.has(beatId)),
+  );
+  const currentBeatSelected = Boolean(activeSpatialSceneContext()?.beatId);
+  const selectedBeatCount = selectedIds.size + (currentBeatSelected ? 1 : 0);
+  const listedBeatCount = targetBeats.length + (currentBeatSelected ? 1 : 0);
+  state.spatialPropagationTargetBeatIds = targetBeats
+    .map((beat) => beat.id)
+    .filter((beatId) => selectedIds.has(beatId));
+  const toggle = document.querySelector("[data-spatial-apply-toggle]");
+  if (toggle) {
+    toggle.disabled = spatialEntityType(selected) !== "glb" || targetBeats.length === 0;
+    toggle.textContent = "Apply transform to other beats…";
+    toggle.title = targetBeats.length
+      ? `Choose which of ${targetBeats.length} other matching beat${targetBeats.length === 1 ? "" : "s"} receives this GLB transform.`
+      : "No matching instance of this GLB exists in another beat.";
+    toggle.setAttribute("aria-expanded", String(state.spatialPropagationTargetsOpen));
+  }
+  const panel = document.querySelector("[data-spatial-apply-target-panel]");
+  if (panel) panel.hidden = !state.spatialPropagationTargetsOpen;
+  const scope = document.querySelector(".spatial-apply-scope");
+  scope?.classList.toggle("open", state.spatialPropagationTargetsOpen);
+  const selectAll = document.querySelector("[data-spatial-apply-select-all]");
+  if (selectAll) {
+    selectAll.checked = Boolean(targetBeats.length) && selectedIds.size === targetBeats.length;
+    selectAll.indeterminate = selectedBeatCount > 0 && selectedBeatCount < listedBeatCount;
+  }
+  for (const checkbox of document.querySelectorAll("[data-spatial-apply-target]")) {
+    const checked = selectedIds.has(checkbox.dataset.spatialApplyTarget);
+    checkbox.checked = checked;
+    checkbox.closest(".spatial-apply-target-row")?.classList.toggle("selected", checked);
+  }
+  const count = document.querySelector("[data-spatial-apply-count]");
+  if (count) count.textContent = `${selectedBeatCount} selected`;
+  const submit = document.querySelector("[data-spatial-apply-submit]");
+  if (submit) {
+    submit.disabled = selectedIds.size === 0;
+    submit.textContent = "Apply to selected beats";
+  }
+  for (const status of document.querySelectorAll("[data-spatial-propagation-status]")) {
+    status.textContent = state.spatialPropagationStatus;
+  }
+}
+
 function copySelectedSpatialGlb() {
   const entity = selectedSpatialRelationEntity();
   if (spatialEntityType(entity) !== "glb") {
@@ -32163,6 +33141,64 @@ function copySelectedSpatialGlb() {
   };
   state.spatialClipboardStatus = `${spatialRelationEntityLabel(entity)} copied. Paste to add another instance.`;
   syncSpatialClipboardControls();
+  return true;
+}
+
+function applySelectedSpatialGlbTransformToMatchingScenes() {
+  const sourceEntity = selectedSpatialRelationEntity();
+  if (spatialEntityType(sourceEntity) !== "glb") {
+    state.spatialPropagationStatus = "Select a GLB model before applying its transform.";
+    syncSpatialPropagationControls();
+    return false;
+  }
+  const sourceBeatId = String(activeSpatialSceneContext()?.beatId || sourceEntity.beatId || "").trim();
+  const allMatches = spatialMatchingGlbsInOtherScenes(sourceEntity);
+  const availableBeatIds = new Set(allMatches
+    .map(({ scene }) => String(scene?.beatId || "").trim())
+    .filter((beatId) => beatId && beatId !== sourceBeatId));
+  const targetBeatIds = new Set((state.spatialPropagationTargetBeatIds || [])
+    .map((beatId) => String(beatId || "").trim())
+    .filter((beatId) => availableBeatIds.has(beatId)));
+  if (!targetBeatIds.size) {
+    state.spatialPropagationStatus = "Select one or more other beats before applying this transform.";
+    syncSpatialPropagationControls();
+    return false;
+  }
+  const matches = allMatches.filter(({ scene }) => targetBeatIds.has(String(scene?.beatId || "").trim()));
+  const sourceTransform = normalizeSpatialTransform(sourceEntity.transform, sourceEntity.inferredTransform);
+  const sourceVerticalAlignment = spatialEntityVerticalAlignment(sourceEntity);
+  const updates = matches.map(({ scene, entity }) => {
+    const transform = cloneJson(sourceTransform);
+    const manual = entity.authoredInstance === true
+      || !spatialTransformsEqual(transform, entity.inferredTransform);
+    return { scene, entity, transform, verticalAlignment: sourceVerticalAlignment, manual };
+  }).filter(({ entity, transform, verticalAlignment, manual }) => (
+    !spatialTransformsEqual(entity.transform, transform)
+    || spatialEntityVerticalAlignment(entity) !== verticalAlignment
+    || Boolean(entity.manual) !== manual
+  ));
+  if (!matches.length) {
+    state.spatialPropagationStatus = "No matching instance of this GLB exists in the selected beats.";
+    syncSpatialPropagationControls();
+    return false;
+  }
+  if (!updates.length) {
+    state.spatialPropagationStatus = `This GLB already has the same transform in ${targetBeatIds.size} selected beat${targetBeatIds.size === 1 ? "" : "s"}.`;
+    syncSpatialPropagationControls();
+    return false;
+  }
+  pushSpatialUndoSnapshot();
+  for (const { entity, transform, verticalAlignment, manual } of updates) {
+    entity.transform = transform;
+    entity.verticalAlignment = verticalAlignment;
+    entity.manual = manual;
+  }
+  const updatedBeatCount = new Set(updates.map(({ scene }) => String(scene?.beatId || "").trim())).size;
+  state.spatialPropagationTargetBeatIds = [];
+  state.spatialPropagationStatus = `Applied ${spatialRelationEntityLabel(sourceEntity)} transform to ${updatedBeatCount} selected beat${updatedBeatCount === 1 ? "" : "s"}.`;
+  commitSpatialDraftMutation();
+  finalizePersistentAuthorHistory(flushSpatialRelationsAutosave);
+  syncSpatialPropagationControls();
   return true;
 }
 

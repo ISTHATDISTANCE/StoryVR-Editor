@@ -14,11 +14,9 @@ import {
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import {
-  REPO_ROOT,
-  hostingRootForPath,
-  importFetchedStoryResources,
-} from "../storyvr-adapter/storyvr-adapter.mjs";
+import { fileURLToPath } from "node:url";
+import { parseCodexJsonObject as parseJsonObject } from "../codex-json.mjs";
+import { REPO_ROOT, importFetchedStoryResources } from "../storyvr-adapter/storyvr-adapter.mjs";
 import { normalizeEnvironmentMovementCue } from "./environment/store.mjs";
 import {
   applyMotionPlanToStore,
@@ -59,7 +57,7 @@ const SPATIAL_RELATIONS_COMPONENT_ID = "spatial-relations";
 const LEGACY_TEXT_COMFORT_COMPONENT_ID = "text-comfort";
 const LEGACY_SPATIAL_RELATIONS_SCHEMA_VERSION = "storyvr-spatial-relations/v1";
 const SPATIAL_RELATIONS_SCHEMA_VERSION = "storyvr-spatial-relations/v2";
-const SPATIAL_RELATIONS_INFERENCE_VERSION = "per-scene-exact-assets-v2";
+const SPATIAL_RELATIONS_INFERENCE_VERSION = "per-scene-exact-assets-v3";
 const TEXT_PANEL_CLEARANCE_STRATEGY = "visible-bounds-push-v2";
 const SPATIAL_RELATIONS_OPTION_ID = "spatial-relations-inferred-layout";
 const SPATIAL_TRAVERSAL_SCHEMA_VERSION = "storyvr-spatial-traversal/v1";
@@ -210,16 +208,45 @@ const READER_TEMPLATE_FILES = [
   { source: "reader-template/src/main.js", target: "src/main.js" },
   { source: "procedural-dynamics-runtime.js", target: "src/procedural-dynamics-runtime.js" },
   { source: "ground-movement-cue.js", target: "src/ground-movement-cue.js" },
+  { source: "point-cloud-runtime.js", target: "src/point-cloud-runtime.js" },
   { source: "reader-template/src/styles.css", target: "src/styles.css" },
   { source: "reader-template/public/draco/gltf/draco_decoder.js", target: "public/draco/gltf/draco_decoder.js" },
   { source: "reader-template/public/draco/gltf/draco_decoder.wasm", target: "public/draco/gltf/draco_decoder.wasm" },
   { source: "reader-template/public/draco/gltf/draco_wasm_wrapper.js", target: "public/draco/gltf/draco_wasm_wrapper.js" },
   { source: "reader-template/public/basis/basis_transcoder.js", target: "public/basis/basis_transcoder.js" },
   { source: "reader-template/public/basis/basis_transcoder.wasm", target: "public/basis/basis_transcoder.wasm" },
+  { source: "reader-template/public/webxr-input-profiles/LICENSE.md", target: "public/webxr-input-profiles/LICENSE.md" },
+  {
+    source: "reader-template/public/webxr-input-profiles/profiles/profilesList.json",
+    target: "public/webxr-input-profiles/profiles/profilesList.json",
+  },
+  {
+    source: "reader-template/public/webxr-input-profiles/profiles/meta-quest-touch-plus-v2/profile.json",
+    target: "public/webxr-input-profiles/profiles/meta-quest-touch-plus-v2/profile.json",
+  },
+  {
+    source: "reader-template/public/webxr-input-profiles/profiles/meta-quest-touch-plus-v2/left.glb",
+    target: "public/webxr-input-profiles/profiles/meta-quest-touch-plus-v2/left.glb",
+  },
+  {
+    source: "reader-template/public/webxr-input-profiles/profiles/meta-quest-touch-plus-v2/right.glb",
+    target: "public/webxr-input-profiles/profiles/meta-quest-touch-plus-v2/right.glb",
+  },
 ];
 const READER_TEMPLATE_MANIFEST_SCHEMA_VERSION = "storyvr-reader-template-manifest/v1";
 const READER_TEMPLATE_MANIFEST_FILE = ".storyvr-reader-template.json";
 const READER_TEMPLATE_CUSTOM_OPT_OUT_PATTERN = /@storyvr-custom-reader|storyvr-template-managed\s*:\s*false/i;
+const READER_DIST_BUILD_SCHEMA_VERSION = "storyvr-reader-dist-build/v1";
+const READER_DIST_BUILD_SCRIPT = fileURLToPath(new URL("./build-reader-dist.mjs", import.meta.url));
+const PERFORMANCE_OPTIMIZATION_SCHEMA_VERSION = "storyvr-performance-optimization/v1";
+const PERFORMANCE_OPTIMIZATION_PROFILES = new Set(["quality", "balanced", "performance"]);
+const PERFORMANCE_OPTIMIZATION_DEFAULT_SETTINGS = Object.freeze({
+  desktopPixelRatioCap: 2,
+  antialias: true,
+  desktopShadows: true,
+  xrFramebufferScaleFactor: 0.8,
+  xrFixedFoveation: 1,
+});
 const ANIMATION_PROBE_JUDGMENT_FILE = "codex-animation-judgment.json";
 const ANIMATION_PROBE_MIN_CONFIDENCE = 0.35;
 const SOURCE_MOTION_LINKING_SCHEMA_VERSION = "storyvr-source-motion-linking/v1";
@@ -227,7 +254,6 @@ const SOURCE_MOTION_OVERRIDES_SCHEMA_VERSION = "storyvr-source-motion-overrides/
 const SOURCE_MOTION_PLAYBACK_SCHEMA_VERSION = "storyvr-source-motion-playback/v1";
 const SOURCE_SPATIAL_CUES_SCHEMA_VERSION = "storyvr-source-spatial-cues/v1";
 const MANUAL_BEAT_ASSET_LINKS_SCHEMA_VERSION = "storyvr-manual-beat-asset-links/v1";
-const MANUAL_SCENE_ASSET_LINKS_SCHEMA_VERSION = "storyvr-manual-scene-asset-links/v1";
 const SOURCE_GRAPH_INFERENCE_SCHEMA_VERSION = "storyvr-source-graph-inference/v1";
 const SOURCE_GRAPH_TRANSITION_SCHEMA_VERSION = "storyvr-source-transition/v1";
 const SOURCE_GRAPH_TRANSITION_CARD_KINDS = new Set(["beat", "variant"]);
@@ -361,7 +387,6 @@ export async function saveStoryGraph(options, graph) {
     updatedAt: new Date().toISOString(),
   });
   next.manualBeatAssetLinks = mergeManualBeatAssetLinkOverrides(previous, next);
-  next.manualSceneAssetLinks = mergeManualSceneAssetLinkOverrides(previous, next);
   next = applyManualBeatAssetLinkOverrides(next);
   const structureChanged = Boolean(previous)
     && authoredBeatDependencySignature(previous) !== authoredBeatDependencySignature(next);
@@ -975,7 +1000,6 @@ function dynamicsSceneBaseline(state) {
     proceduralDynamicsRevision: state.proceduralDynamics.revision,
     sourceGraphSignature: dynamicsJsonSignature({
       inference: sourceGraphInferenceSignature(state.graph),
-      manualSceneAssetLinks: manualSceneAssetLinkDependencyState(state.graph),
     }),
     spatialRelationsSignature: dynamicsSpatialRelationsSignature(spatial),
     attentionGuidanceSignature: dynamicsAttentionGuidanceSignature(attention),
@@ -3601,6 +3625,9 @@ export async function compileAuthorRuntime(options) {
   const authoredContentUnits = authoredContentUnitsFromGraph(graph, runtime);
   const sourceDynamics = sourceDynamicsRuntimeContract(graph, authoredContentUnits);
   const sourceMotionLinking = sourceMotionRuntimeLinking(graph);
+  const pointCloudEffects = Array.isArray(graph.pointCloudEffects) && graph.pointCloudEffects.length
+    ? cloneJson(graph.pointCloudEffects)
+    : Array.isArray(runtime.pointCloudEffects) ? cloneJson(runtime.pointCloudEffects) : [];
   const proceduralDynamics = await readProceduralDynamicsStore(
     paths,
     graph,
@@ -3760,6 +3787,7 @@ export async function compileAuthorRuntime(options) {
     sourceDynamics,
     proceduralDynamics,
     sourceMotionLinking,
+    ...(pointCloudEffects.length ? { pointCloudEffects } : {}),
     sourceMotionPlayback: graph.sourceMotionPlayback || emptySourceMotionPlayback(),
     sourcePartStates,
     sourceSpatialCues,
@@ -3863,8 +3891,326 @@ export async function compileAuthorRuntime(options) {
   const readerTemplateSync = await ensureReaderApp(paths, compiled);
   compiled.provenance.readerTemplate = readerTemplateSync.provenance;
   compiled.diagnostics.push(...readerTemplateSync.diagnostics);
+  if (options.performanceOptimizationEnabled === true) {
+    await writeJson(paths.compiledRuntimePath, compiled);
+    const performanceResult = await optimizeCompiledRuntimePerformance(paths, compiled, options);
+    compiled.performanceOptimization = performanceResult.optimization;
+    compiled.provenance.performanceOptimization = {
+      schemaVersion: PERFORMANCE_OPTIMIZATION_SCHEMA_VERSION,
+      status: performanceResult.optimization.status,
+      profile: performanceResult.optimization.profile,
+      artifactPath: performanceResult.optimization.artifactPath,
+      generatedAt: performanceResult.optimization.generatedAt,
+      engine: performanceResult.optimization.engine,
+    };
+    compiled.diagnostics.push(...performanceResult.diagnostics);
+  }
   await writeJson(paths.compiledRuntimePath, compiled);
+  if (options.readerDistBuildEnabled === true) {
+    try {
+      const readerBuild = await buildReaderDist(paths, options);
+      compiled.readerBuild = readerBuild;
+      compiled.provenance.readerBuild = {
+        schemaVersion: readerBuild.schemaVersion,
+        status: readerBuild.status,
+        distPath: readerBuild.distPath,
+        buildBase: readerBuild.buildBase,
+        builtAt: readerBuild.builtAt,
+      };
+      await writeJson(paths.compiledRuntimePath, compiled);
+    } catch (error) {
+      const message = performanceOptimizationText(error?.message || error, 1_200, "Unknown reader build error.");
+      const distPath = toPosix(path.relative(REPO_ROOT, path.join(paths.storyFolder, "dist-webxr-adaptation")));
+      const diagnostic = {
+        severity: "error",
+        code: "READER_DIST_BUILD_FAILED",
+        component: "compile",
+        path: distPath,
+        message: `The runtime and reader source were saved, but the production reader build failed: ${message}`,
+      };
+      const readerBuild = {
+        schemaVersion: READER_DIST_BUILD_SCHEMA_VERSION,
+        status: "failed",
+        attemptedAt: new Date().toISOString(),
+        distPath,
+        error: message,
+      };
+      compiled.readerBuild = readerBuild;
+      compiled.provenance.readerBuild = {
+        schemaVersion: readerBuild.schemaVersion,
+        status: readerBuild.status,
+        distPath: readerBuild.distPath,
+        attemptedAt: readerBuild.attemptedAt,
+      };
+      compiled.diagnostics.push(diagnostic);
+      await writeJson(paths.compiledRuntimePath, compiled);
+      throw Object.assign(new Error(diagnostic.message), {
+        statusCode: 500,
+        diagnostics: [diagnostic],
+      });
+    }
+  }
   return compiled;
+}
+
+export async function optimizeCompiledRuntimePerformance(paths, compiled, options = {}) {
+  const generatedAt = new Date().toISOString();
+  const artifactPath = paths.performanceOptimizationPath
+    || path.join(paths.storyFolder, "analysis", "storyvr", "performance-optimization.json");
+  const publicArtifactPath = toPosix(path.relative(REPO_ROOT, artifactPath));
+  const evidence = performanceOptimizationEvidence(compiled);
+  const writeResult = async (optimization, diagnostics = []) => {
+    const result = {
+      ...optimization,
+      artifactPath: publicArtifactPath,
+      evidence,
+    };
+    await writeJson(artifactPath, result);
+    return { optimization: result, diagnostics };
+  };
+
+  if (options.codexAuthenticated === false) {
+    return writeResult({
+      schemaVersion: PERFORMANCE_OPTIMIZATION_SCHEMA_VERSION,
+      status: "skipped",
+      generatedAt,
+      profile: "unchanged",
+      settings: { ...PERFORMANCE_OPTIMIZATION_DEFAULT_SETTINGS },
+      summary: "Codex performance optimization was skipped because the local Codex CLI is not signed in. Existing reader render settings remain active.",
+      bottlenecks: [],
+      appliedOptimizations: [],
+      risks: [],
+      engine: {
+        provider: "codex-cli",
+        version: options.codexVersion || null,
+      },
+    }, [{
+      severity: "warning",
+      code: "CODEX_PERFORMANCE_OPTIMIZATION_SKIPPED",
+      component: "compile",
+      message: "The runtime compiled successfully, but the Codex performance pass was skipped because Codex CLI is not signed in.",
+    }]);
+  }
+
+  try {
+    const context = {
+      task: "Choose a safe StoryVR reader performance profile after final compilation.",
+      constraints: {
+        preserveAuthoredAssets: true,
+        preserveTransformsAndCamera: true,
+        preserveStorySequenceAndTiming: true,
+        preserveInteractionBehavior: true,
+        permittedSettings: {
+          desktopPixelRatioCap: { minimum: 1, maximum: 2 },
+          antialias: { type: "boolean" },
+          desktopShadows: { type: "boolean" },
+          xrFramebufferScaleFactor: { minimum: 0.65, maximum: 1 },
+          xrFixedFoveation: { minimum: 0, maximum: 1 },
+        },
+      },
+      currentSettings: PERFORMANCE_OPTIMIZATION_DEFAULT_SETTINGS,
+      evidence,
+    };
+    const generated = options.performanceOptimizationGenerator
+      ? await options.performanceOptimizationGenerator(context)
+      : await generatePerformanceOptimizationWithCodex(context, options);
+    const optimization = normalizePerformanceOptimizationPlan(generated, {
+      generatedAt,
+      engine: generated?.engine || {
+        provider: "codex-cli",
+        version: options.codexVersion || null,
+      },
+    });
+    return writeResult(optimization);
+  } catch (error) {
+    const failureMessage = performanceOptimizationText(error?.message || error, 600);
+    return writeResult({
+      schemaVersion: PERFORMANCE_OPTIMIZATION_SCHEMA_VERSION,
+      status: "failed",
+      generatedAt,
+      profile: "unchanged",
+      settings: { ...PERFORMANCE_OPTIMIZATION_DEFAULT_SETTINGS },
+      summary: "Codex could not complete the performance pass. StoryVR retained the existing reader render settings and kept the compiled runtime usable.",
+      bottlenecks: [],
+      appliedOptimizations: [],
+      risks: failureMessage ? [failureMessage] : [],
+      engine: {
+        provider: "codex-cli",
+        version: options.codexVersion || null,
+      },
+    }, [{
+      severity: "warning",
+      code: "CODEX_PERFORMANCE_OPTIMIZATION_FAILED",
+      component: "compile",
+      message: `The runtime compiled successfully, but the Codex performance pass failed${failureMessage ? `: ${failureMessage}` : "."}`,
+    }]);
+  }
+}
+
+async function generatePerformanceOptimizationWithCodex(context, options = {}) {
+  const codexBin = options.codexBin || process.env.CODEX_BIN || "codex";
+  const prompt = [
+    "You are the final StoryVR WebXR performance planner running inside Codex.",
+    "Analyze the supplied compiled-reader workload and choose only the bounded renderer settings listed in the context.",
+    "Do not edit files. Do not run commands. Do not add, remove, compress, replace, or reinterpret assets.",
+    "Preserve authored transforms, camera poses, story order, timing, text, interaction behavior, and visual content.",
+    "Prefer standalone-headset frame stability while retaining reasonable desktop quality.",
+    "Return one JSON object and no Markdown.",
+    "Use exactly this shape: {\"profile\":\"quality|balanced|performance\",\"settings\":{\"desktopPixelRatioCap\":1.5,\"antialias\":true,\"desktopShadows\":true,\"xrFramebufferScaleFactor\":0.8,\"xrFixedFoveation\":1},\"summary\":\"string\",\"bottlenecks\":[\"string\"],\"appliedOptimizations\":[\"string\"],\"risks\":[\"string\"]}.",
+    `Context JSON:\n${JSON.stringify(context, null, 2)}`,
+  ].join("\n\n");
+  const result = await runCodexExec(codexBin, prompt, {
+    cwd: options.codexWorkspace || REPO_ROOT,
+    timeoutMs: options.performanceOptimizationTimeoutMs || 180_000,
+    requestLabel: "Codex performance optimization request",
+  });
+  const finalText = extractCodexFinalText(result.stdout) || result.stdout;
+  return {
+    ...parseJsonObject(finalText),
+    engine: {
+      provider: "codex-cli",
+      codexBin,
+      version: options.codexVersion || null,
+    },
+  };
+}
+
+export function normalizePerformanceOptimizationPlan(plan, metadata = {}) {
+  const requestedProfile = String(plan?.profile || "").trim().toLowerCase();
+  const profile = PERFORMANCE_OPTIMIZATION_PROFILES.has(requestedProfile) ? requestedProfile : "balanced";
+  const supplied = plan?.settings && typeof plan.settings === "object" ? plan.settings : {};
+  const settings = {
+    desktopPixelRatioCap: performanceOptimizationNumber(
+      supplied.desktopPixelRatioCap,
+      PERFORMANCE_OPTIMIZATION_DEFAULT_SETTINGS.desktopPixelRatioCap,
+      1,
+      2,
+    ),
+    antialias: typeof supplied.antialias === "boolean"
+      ? supplied.antialias
+      : PERFORMANCE_OPTIMIZATION_DEFAULT_SETTINGS.antialias,
+    desktopShadows: typeof supplied.desktopShadows === "boolean"
+      ? supplied.desktopShadows
+      : PERFORMANCE_OPTIMIZATION_DEFAULT_SETTINGS.desktopShadows,
+    xrFramebufferScaleFactor: performanceOptimizationNumber(
+      supplied.xrFramebufferScaleFactor,
+      PERFORMANCE_OPTIMIZATION_DEFAULT_SETTINGS.xrFramebufferScaleFactor,
+      0.65,
+      1,
+    ),
+    xrFixedFoveation: performanceOptimizationNumber(
+      supplied.xrFixedFoveation,
+      PERFORMANCE_OPTIMIZATION_DEFAULT_SETTINGS.xrFixedFoveation,
+      0,
+      1,
+    ),
+  };
+  return {
+    schemaVersion: PERFORMANCE_OPTIMIZATION_SCHEMA_VERSION,
+    status: "applied",
+    generatedAt: metadata.generatedAt || new Date().toISOString(),
+    profile,
+    settings,
+    summary: performanceOptimizationText(
+      plan?.summary,
+      800,
+      `Codex selected the ${profile} reader render profile from the compiled workload.`,
+    ),
+    bottlenecks: performanceOptimizationTextList(plan?.bottlenecks, 8),
+    appliedOptimizations: performanceOptimizationTextList(plan?.appliedOptimizations, 8),
+    risks: performanceOptimizationTextList(plan?.risks, 8),
+    engine: metadata.engine || plan?.engine || { provider: "codex-cli" },
+  };
+}
+
+function performanceOptimizationEvidence(runtime) {
+  const assets = Array.isArray(runtime?.assets) ? runtime.assets : [];
+  const renderableAssets = assets.filter((asset) => performanceOptimizationRenderableAsset(asset));
+  const assetTypes = {};
+  let renderableBytes = 0;
+  for (const asset of renderableAssets) {
+    const type = performanceOptimizationAssetType(asset);
+    const bytes = Math.max(0, Number(asset?.bytes) || 0);
+    renderableBytes += bytes;
+    assetTypes[type] = {
+      count: (assetTypes[type]?.count || 0) + 1,
+      bytes: (assetTypes[type]?.bytes || 0) + bytes,
+    };
+  }
+  const largestAssets = renderableAssets
+    .map((asset) => ({
+      id: performanceOptimizationText(asset?.id || asset?.path, 160),
+      type: performanceOptimizationAssetType(asset),
+      bytes: Math.max(0, Number(asset?.bytes) || 0),
+    }))
+    .sort((left, right) => right.bytes - left.bytes)
+    .slice(0, 12);
+  const spatialSceneCount = Array.isArray(runtime?.spatialRelations?.scenes)
+    ? runtime.spatialRelations.scenes.length
+    : Object.keys(runtime?.spatialRelations?.resolvedByBeat || {}).length
+      + Object.keys(runtime?.spatialRelations?.resolvedByVariant || {}).length;
+  return {
+    story: {
+      slug: performanceOptimizationText(runtime?.slug, 160),
+      title: performanceOptimizationText(runtime?.title, 240),
+      authoredBeatCount: Array.isArray(runtime?.contentUnits) ? runtime.contentUnits.length : 0,
+    },
+    workload: {
+      capturedAssetCount: assets.length,
+      renderableAssetCount: renderableAssets.length,
+      renderableBytes,
+      assetTypes,
+      largestAssets,
+      spatialSceneCount,
+      proceduralDynamicsPlanCount: Array.isArray(runtime?.proceduralDynamics?.plans)
+        ? runtime.proceduralDynamics.plans.length
+        : 0,
+      pointCloudEffectCount: Array.isArray(runtime?.pointCloudEffects) ? runtime.pointCloudEffects.length : 0,
+      sourceMotionTrackCount: Array.isArray(runtime?.sourceMotionLinking?.tracks)
+        ? runtime.sourceMotionLinking.tracks.length
+        : 0,
+      hasEnvironmentEnhancement: Boolean(runtime?.environmentEnhancement),
+      hasDirectManipulation: (runtime?.interactions?.inBeatInteractions || []).length > 0,
+    },
+    target: {
+      desktop: true,
+      standaloneWebXrHeadset: true,
+      expectedRefreshRatesHz: [72, 90],
+    },
+  };
+}
+
+function performanceOptimizationRenderableAsset(asset) {
+  const type = String(asset?.type || "").trim().toLowerCase();
+  const value = String(asset?.path || asset?.url || "").trim().toLowerCase();
+  return /model|image|texture|video|audio|environment|point.?cloud/.test(type)
+    || /\.(glb|gltf|png|jpe?g|webp|avif|ktx2?|basis|hdr|exr|mp4|webm|mp3|wav|ogg|pcd)(?:[?#]|$)/.test(value);
+}
+
+function performanceOptimizationAssetType(asset) {
+  const type = String(asset?.type || "").trim().toLowerCase();
+  if (type) return type.slice(0, 80);
+  const extension = path.extname(String(asset?.path || "")).replace(/^\./, "").toLowerCase();
+  return extension || "unknown";
+}
+
+function performanceOptimizationNumber(value, fallback, minimum, maximum) {
+  const number = Number(value);
+  const bounded = Number.isFinite(number) ? Math.max(minimum, Math.min(maximum, number)) : fallback;
+  return Number(bounded.toFixed(2));
+}
+
+function performanceOptimizationTextList(values, maximumItems) {
+  if (!Array.isArray(values)) return [];
+  return values
+    .map((value) => performanceOptimizationText(value, 400))
+    .filter(Boolean)
+    .slice(0, maximumItems);
+}
+
+function performanceOptimizationText(value, maximumLength, fallback = "") {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return (text || fallback).slice(0, maximumLength);
 }
 
 function finalTuningFromDecision(decision) {
@@ -3986,6 +4332,115 @@ export async function ensureReaderApp(paths, runtime) {
   };
 }
 
+export async function buildReaderDist(paths, options = {}) {
+  const repoRoot = path.resolve(options.readerBuildRepoRoot || REPO_ROOT);
+  const storyFolder = path.resolve(paths.storyFolder);
+  const hostingLayout = resolveReaderHostingLayout(storyFolder, repoRoot);
+  const readerSource = path.join(storyFolder, "webxr-adaptation");
+  const readerIndexPath = path.join(readerSource, "index.html");
+  const distFolder = path.join(storyFolder, "dist-webxr-adaptation");
+  const distIndexPath = path.join(distFolder, "index.html");
+  if (!await exists(readerIndexPath)) {
+    throw new Error(`Reader source is missing ${toPosix(path.relative(repoRoot, readerIndexPath))}.`);
+  }
+
+  const readerSourcePath = toPosix(path.relative(repoRoot, readerSource));
+  const distPath = `${hostingLayout.readerStoryPath}/dist-webxr-adaptation`;
+  const buildBase = `/${distPath}/`;
+  const instanceBuildScript = path.join(readerSource, "tools", "build-story-instance.mjs");
+  const builtStoryInstance = await exists(instanceBuildScript);
+  if (builtStoryInstance) {
+    const runner = options.readerBuildStepRunner || runReaderBuildProcess;
+    await runner(process.execPath, [instanceBuildScript], {
+      cwd: repoRoot,
+      timeoutMs: options.readerBuildTimeoutMs || 180_000,
+      label: "StoryVR reader data build",
+    });
+  }
+
+  const viteConfig = {
+    root: readerSource,
+    base: buildBase,
+    logLevel: options.readerBuildLogLevel || "warn",
+    clearScreen: false,
+    build: {
+      outDir: distFolder,
+      emptyOutDir: true,
+    },
+  };
+  if (options.readerViteBuild) {
+    await options.readerViteBuild(viteConfig);
+  } else {
+    const runner = options.readerBuildStepRunner || runReaderBuildProcess;
+    await runner(process.execPath, [
+      READER_DIST_BUILD_SCRIPT,
+      toPosix(path.relative(hostingLayout.hostingRoot, readerSource)),
+      toPosix(path.relative(hostingLayout.hostingRoot, distFolder)),
+      buildBase,
+      repoRoot,
+    ], {
+      cwd: hostingLayout.hostingRoot,
+      timeoutMs: options.readerBuildTimeoutMs || 180_000,
+      label: "StoryVR production reader build",
+      env: {
+        STORYVR_READER_BUILD_LOG_LEVEL: options.readerBuildLogLevel || "warn",
+      },
+    });
+  }
+  if (!await exists(distIndexPath)) {
+    throw new Error(`Vite completed without creating ${distPath}/index.html.`);
+  }
+
+  return {
+    schemaVersion: READER_DIST_BUILD_SCHEMA_VERSION,
+    status: "built",
+    builtAt: new Date().toISOString(),
+    readerSourcePath,
+    distPath,
+    buildBase,
+    builtStoryInstance,
+  };
+}
+
+function runReaderBuildProcess(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: { ...process.env, NO_COLOR: "1", ...(options.env || {}) },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const maximumOutputLength = 120_000;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, options.timeoutMs || 180_000);
+    const appendOutput = (current, chunk) => (
+      `${current}${chunk.toString("utf8")}`.slice(-maximumOutputLength)
+    );
+    child.stdout.on("data", (chunk) => { stdout = appendOutput(stdout, chunk); });
+    child.stderr.on("data", (chunk) => { stderr = appendOutput(stderr, chunk); });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new Error(`${options.label || "Reader build"} timed out.`));
+        return;
+      }
+      if (code !== 0) {
+        reject(new Error(`${options.label || "Reader build"} failed: ${stderr || stdout || `exit ${code}`}`));
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
 function readerTemplateContentHash(content) {
   return createHash("sha256").update(content).digest("hex");
 }
@@ -4028,6 +4483,7 @@ function isKnownLegacyManagedReaderTemplate(target, currentContent, desiredConte
     'import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";',
     'import { clone as cloneSkinnedObject } from "three/addons/utils/SkeletonUtils.js";',
     'import { VRButton } from "three/addons/webxr/VRButton.js";',
+    'import { XRControllerModelFactory } from "three/addons/webxr/XRControllerModelFactory.js";',
     'import { createGroundMovementCue, normalizeGroundMovementCue } from "./ground-movement-cue.js";',
     'import { clampProceduralDynamicsPlan, expandProceduralDynamicsInstances, proceduralDynamicsPlansForScene, sampleProceduralDynamicsTransform } from "./procedural-dynamics-runtime.js";',
     "import {",
@@ -4252,6 +4708,7 @@ export function resolveAuthorPaths(options) {
     projectPath: path.join(analysisRoot, "project.json"),
     storyGraphPath: path.join(analysisRoot, "story-graph.json"),
     environmentSearchRecommendationPath: path.join(analysisRoot, "environment-search-recommendation.json"),
+    performanceOptimizationPath: path.join(analysisRoot, "performance-optimization.json"),
     proceduralDynamicsPath: path.join(analysisRoot, "procedural-dynamics.json"),
     sourceMotionOverridesPath: path.join(analysisRoot, "source-motion-overrides.json"),
     sourceMotionPlaybackPath: path.join(analysisRoot, "source-motion-playback.json"),
@@ -4627,6 +5084,9 @@ async function generateStoryGraph(paths, runtime, options = {}) {
     ...(Array.isArray(runtime.variantGroups) && runtime.variantGroups.length
       ? { variantGroups: normalizeSourceVariantGroups(runtime.variantGroups) }
       : {}),
+    ...(Array.isArray(runtime.pointCloudEffects) && runtime.pointCloudEffects.length
+      ? { pointCloudEffects: cloneJson(runtime.pointCloudEffects) }
+      : {}),
     entities: extractEntities(runtime.contentUnits),
     assetInventory: runtime.assets.map((asset) => ({
       id: asset.id,
@@ -4677,7 +5137,10 @@ async function enrichSourceGraphWithAnimationProbe(paths, graph, runtime) {
 }
 
 export function applyAnimationProbeLinksToGraph(graph, runtime, artifacts = [], overrides = null, sourceMotionPlayback = null) {
-  graph = refreshSourceGraphCanonicalVariantText(graph, runtime);
+  graph = synchronizePointCloudEffects(
+    refreshSourceGraphCanonicalVariantText(graph, runtime),
+    runtime,
+  );
   const selectedArtifact = selectAnimationProbeArtifact(artifacts, runtime);
   if (!selectedArtifact) {
     const normalized = normalizeSourceGraph(graph);
@@ -4810,6 +5273,14 @@ export function applyAnimationProbeLinksToGraph(graph, runtime, artifacts = [], 
     };
   }
   return normalized;
+}
+
+function synchronizePointCloudEffects(graph, runtime) {
+  const next = graph && typeof graph === "object" ? { ...graph } : {};
+  const effects = Array.isArray(runtime?.pointCloudEffects) ? runtime.pointCloudEffects : [];
+  if (effects.length) next.pointCloudEffects = cloneJson(effects);
+  else delete next.pointCloudEffects;
+  return next;
 }
 
 async function findAnimationProbeArtifacts(paths, runtime) {
@@ -5121,6 +5592,9 @@ function buildSourceMotionPlayback(value, runtime, graph, sourceMotionLinking) {
       coordinatedClips,
       camera,
       ...(framing ? { framing } : {}),
+      ...(rawAsset?.presentation && typeof rawAsset.presentation === "object"
+        ? { presentation: cloneJson(rawAsset.presentation) }
+        : {}),
       anchors,
       materials: Array.isArray(rawAsset?.materials) ? cloneJson(rawAsset.materials) : [],
       bindings: Array.isArray(rawAsset?.bindings) ? cloneJson(rawAsset.bindings) : [],
@@ -7782,9 +8256,6 @@ function spatialRelationsInputSignature(graph, runtime, decisions) {
       assetIds: beatAssetIds(beat).sort(),
     })),
     variantGroups: variantGroupDependencyState(graph || {}),
-    ...(Object.keys(manualSceneAssetLinkDependencyState(graph || {})).length
-      ? { manualSceneAssetLinks: manualSceneAssetLinkDependencyState(graph || {}) }
-      : {}),
     spatialAssets: (runtime?.assets || [])
       .filter((asset) => isSpatialVisualAsset(asset))
       .map((asset) => ({ id: asset.id, type: spatialVisualAssetKind(asset), path: asset.path || asset.url || "" }))
@@ -7865,11 +8336,7 @@ function spatialSceneDefinitions(graph, runtime) {
       sourceOrder,
       variantOrder: null,
       text: spatialSceneText(beat),
-      linkedAssetIds: effectiveSceneAssetIds(
-        graph,
-        { beatId },
-        beatLinkedAssetIds,
-      ).filter((assetId) => knownAssetIds.has(assetId)),
+      linkedAssetIds: beatLinkedAssetIds,
     });
     const groups = variantGroups.filter((group) => authoredBeatHostsVariantGroup(beat, group));
     for (const group of groups) {
@@ -7885,15 +8352,7 @@ function spatialSceneDefinitions(graph, runtime) {
           sourceOrder,
           variantOrder,
           text: String(option.text || option.label || "").replace(/\s+/g, " ").trim(),
-          linkedAssetIds: effectiveSceneAssetIds(
-            graph,
-            {
-              beatId,
-              variantGroupId: group.id,
-              variantOptionId: option.id,
-            },
-            variantAssetIds,
-          ).filter((assetId) => knownAssetIds.has(assetId)),
+          linkedAssetIds: variantAssetIds,
         });
       }
     }
@@ -7953,6 +8412,7 @@ function inferSpatialScene({ definition, assetById, cue, viewpoint, inputSignatu
       variantOptionId: definition.variantOptionId,
       assetId: asset.id,
       anchor: { type: "scene", assetId: null, cueId: null },
+      ...(kind === "glb" ? { verticalAlignment: "ground" } : {}),
       inferredTransform: cloneJson(transform),
       transform: cloneJson(transform),
       orientationPolicy: "fixed",
@@ -8237,9 +8697,13 @@ function validateSpatialAuthoredInstance(entity, inferredById, contract, options
   return base;
 }
 
-function sanitizeSpatialAuthoredInstance(value, base, inputSignature) {
+function sanitizeSpatialAuthoredInstance(value, base, inputSignature, options = {}) {
   const id = String(value.id);
   const instanceIndex = Number(id.slice(`${base.id}:instance:`.length));
+  const verticalAlignment = sanitizeSpatialVerticalAlignment(
+    options.migrateLegacyVerticalAlignment ? base.verticalAlignment : value.verticalAlignment,
+    base.verticalAlignment,
+  );
   const inferredTransform = sanitizeSpatialTransform(
     value.inferredTransform || value.transform || base.inferredTransform,
     base.inferredTransform,
@@ -8256,6 +8720,7 @@ function sanitizeSpatialAuthoredInstance(value, base, inputSignature) {
     authoredInstance: true,
     instanceOfEntityId: base.id,
     instanceIndex,
+    verticalAlignment,
     anchor: { type: "scene", assetId: null, cueId: null },
     inferredTransform,
     transform,
@@ -8275,6 +8740,7 @@ export function validateSpatialRelationsContract(value, inferred) {
   }
   const source = value && typeof value === "object" ? value : inferred;
   const legacySource = source.schemaVersion === LEGACY_SPATIAL_RELATIONS_SCHEMA_VERSION;
+  const migrateLegacyVerticalAlignment = source.inferenceVersion !== SPATIAL_RELATIONS_INFERENCE_VERSION;
   if (source.schemaVersion && ![SPATIAL_RELATIONS_SCHEMA_VERSION, LEGACY_SPATIAL_RELATIONS_SCHEMA_VERSION].includes(source.schemaVersion)) {
     throw Object.assign(new Error(`Unsupported Spatial Relations schema: ${source.schemaVersion}`), { statusCode: 409 });
   }
@@ -8346,10 +8812,13 @@ export function validateSpatialRelationsContract(value, inferred) {
       || null;
     return [base.id, sanitizeSpatialRelationEntity(submitted, base, inferred.inputSignature, inferredById, {
       allowAutomaticAnchorFallback: legacySource,
+      migrateLegacyVerticalAlignment,
     })];
   }));
   for (const { entity, base } of submittedAuthoredInstances) {
-    sanitizedById.set(entity.id, sanitizeSpatialAuthoredInstance(entity, base, inferred.inputSignature));
+    sanitizedById.set(entity.id, sanitizeSpatialAuthoredInstance(entity, base, inferred.inputSignature, {
+      migrateLegacyVerticalAlignment,
+    }));
   }
   const resolvedByBeat = Object.fromEntries(Object.entries(inferred.resolvedByBeat || {}).map(([beatId, baseScene]) => {
     const submittedScene = source.resolvedByBeat?.[beatId];
@@ -8377,6 +8846,7 @@ function spatialRelationEntityAuthoredState(entity) {
   return {
     authoredInstance: entity?.authoredInstance === true,
     instanceOfEntityId: entity?.instanceOfEntityId || null,
+    verticalAlignment: entity?.verticalAlignment || null,
     transform: entity?.transform || entity?.effectiveTransform || null,
     anchor: entity?.anchor || null,
     orientationPolicy: entity?.orientationPolicy || null,
@@ -8495,6 +8965,12 @@ function sanitizeSpatialRelationEntity(value, base, inputSignature, inferredById
   const source = value && typeof value === "object" ? value : base;
   const transform = sanitizeSpatialTransform(source.transform || source.effectiveTransform || base.transform, base.transform, base.id);
   if (base.kind === "reader") transform.scale = [1, 1, 1];
+  const verticalAlignment = base.kind === "glb"
+    ? sanitizeSpatialVerticalAlignment(
+      options.migrateLegacyVerticalAlignment ? base.verticalAlignment : source.verticalAlignment,
+      base.verticalAlignment,
+    )
+    : undefined;
   let anchorSource = source.anchor && typeof source.anchor === "object" ? source.anchor : base.anchor;
   let anchorType = String(anchorSource?.type || base.anchor.type);
   const visualEntity = ["glb", "image-plane"].includes(base.kind);
@@ -8555,6 +9031,7 @@ function sanitizeSpatialRelationEntity(value, base, inputSignature, inferredById
   return {
     ...base,
     anchor,
+    ...(verticalAlignment ? { verticalAlignment } : {}),
     inferredTransform: cloneJson(base.inferredTransform),
     transform,
     orientationPolicy,
@@ -8568,6 +9045,13 @@ function sanitizeSpatialRelationEntity(value, base, inputSignature, inferredById
     },
     manual,
   };
+}
+
+function sanitizeSpatialVerticalAlignment(value, fallback = "ground") {
+  const supplied = String(value || "").trim().toLowerCase();
+  if (["ground", "grounded", "floor"].includes(supplied)) return "ground";
+  if (["center", "centered", "centre", "centred"].includes(supplied)) return "center";
+  return String(fallback || "").trim().toLowerCase() === "center" ? "center" : "ground";
 }
 
 function sanitizeSpatialImageDimensions(value, fallback) {
@@ -9600,8 +10084,8 @@ function normalizeSourceGraph(graph) {
     schemaVersion: "storyvr-source-graph/v1",
     atomicBeats,
     beats,
-    manualSceneAssetLinks: normalizeManualSceneAssetLinks(graph.manualSceneAssetLinks),
   };
+  delete next.manualSceneAssetLinks;
   removeVariantHostAssetState(next, variantGroups);
   if (Array.isArray(graph.variantGroups) && graph.variantGroups.length) {
     next.variantGroups = variantGroups;
@@ -9677,13 +10161,6 @@ function removeVariantHostAssetState(
     .filter(([beatId]) => !hostBeatIds.has(beatId) && !hostAtomicBeatIds.has(beatId)));
   graph.manualBeatAssetLinks = manualBeatLinks;
 
-  const manualSceneLinks = normalizeManualSceneAssetLinks(graph.manualSceneAssetLinks);
-  manualSceneLinks.byScope = Object.fromEntries(Object.entries(manualSceneLinks.byScope)
-    .filter(([, entry]) => !(
-      hostBeatIds.has(String(entry?.beatId || "").trim())
-      && !String(entry?.variantOptionId || "").trim()
-    )));
-  graph.manualSceneAssetLinks = manualSceneLinks;
   return graph;
 }
 
@@ -9706,11 +10183,7 @@ function variantHostAssetStateExists(graph) {
   if (Object.keys(manualBeatLinks.byBeatId).some((beatId) => (
     hostBeatIds.has(beatId) || hostAtomicBeatIds.has(beatId)
   ))) return true;
-  const manualSceneLinks = normalizeManualSceneAssetLinks(graph.manualSceneAssetLinks);
-  return Object.values(manualSceneLinks.byScope).some((entry) => (
-    hostBeatIds.has(String(entry?.beatId || "").trim())
-    && !String(entry?.variantOptionId || "").trim()
-  ));
+  return false;
 }
 
 function sourceGraphHasExplicitTransitions(graph) {
@@ -10887,90 +11360,6 @@ function variantGroupDependencyState(graph) {
   }));
 }
 
-export function normalizeManualSceneAssetLinks(value) {
-  const source = value?.byScope && typeof value.byScope === "object" && !Array.isArray(value.byScope)
-    ? value.byScope
-    : {};
-  const byScope = Object.fromEntries(Object.entries(source).flatMap(([scopeKey, entry]) => {
-    const key = String(scopeKey || "").trim();
-    if (!key || key.length > 420 || !entry || typeof entry !== "object" || Array.isArray(entry)) return [];
-    const assetIds = uniqueStrings(entry.assetIds).sort();
-    return [[key, {
-      mode: "exact",
-      assetIds,
-      beatId: String(entry.beatId || "").trim() || null,
-      variantGroupId: String(entry.variantGroupId || "").trim() || null,
-      variantOptionId: String(entry.variantOptionId || "").trim() || null,
-      source: String(entry.source || "author").trim().slice(0, 80) || "author",
-      updatedAt: entry.updatedAt || null,
-    }]];
-  }));
-  return {
-    schemaVersion: MANUAL_SCENE_ASSET_LINKS_SCHEMA_VERSION,
-    byScope,
-  };
-}
-
-function mergeManualSceneAssetLinkOverrides(previous, next) {
-  const previousManual = normalizeManualSceneAssetLinks(previous?.manualSceneAssetLinks);
-  const nextManual = normalizeManualSceneAssetLinks(next?.manualSceneAssetLinks);
-  return {
-    schemaVersion: MANUAL_SCENE_ASSET_LINKS_SCHEMA_VERSION,
-    byScope: {
-      ...previousManual.byScope,
-      ...nextManual.byScope,
-    },
-  };
-}
-
-export function manualSceneAssetScopeKey(scope) {
-  try {
-    return requireSceneContext(scope).sceneKey;
-  } catch {
-    return "";
-  }
-}
-
-export function effectiveSceneAssetIds(graph, scope, inheritedAssetIds = []) {
-  const key = manualSceneAssetScopeKey(scope);
-  const manual = normalizeManualSceneAssetLinks(graph?.manualSceneAssetLinks);
-  const override = key ? manual.byScope[key] : null;
-  return override?.mode === "exact"
-    ? uniqueStrings(override.assetIds)
-    : uniqueStrings(inheritedAssetIds);
-}
-
-export function applyExactSceneAssetLinkOverride(graph, scope, assetIds, options = {}) {
-  const scene = requireSceneContext(scope);
-  const next = cloneJson(graph || {});
-  const manual = normalizeManualSceneAssetLinks(next.manualSceneAssetLinks);
-  manual.byScope[scene.sceneKey] = {
-    mode: "exact",
-    assetIds: uniqueStrings(assetIds).sort(),
-    beatId: scene.beatId,
-    variantGroupId: scene.variantGroupId,
-    variantOptionId: scene.variantOptionId,
-    source: String(options.source || "generated-dynamics").trim().slice(0, 80) || "generated-dynamics",
-    updatedAt: options.updatedAt || new Date().toISOString(),
-  };
-  next.manualSceneAssetLinks = manual;
-  return next;
-}
-
-function manualSceneAssetLinkDependencyState(graph) {
-  const manual = normalizeManualSceneAssetLinks(graph?.manualSceneAssetLinks);
-  return Object.fromEntries(Object.entries(manual.byScope).map(([scopeKey, entry]) => [
-    scopeKey,
-    {
-      mode: "exact",
-      assetIds: uniqueStrings(entry.assetIds).sort(),
-      beatId: entry.beatId,
-      variantGroupId: entry.variantGroupId,
-      variantOptionId: entry.variantOptionId,
-    },
-  ]));
-}
-
 function normalizeManualBeatAssetLinkOverrides(value) {
   const byBeatId = value?.byBeatId && typeof value.byBeatId === "object" && !Array.isArray(value.byBeatId)
     ? Object.fromEntries(Object.entries(value.byBeatId).flatMap(([beatId, entry]) => {
@@ -11493,21 +11882,6 @@ function extractCodexFinalText(stdout) {
     }
   }
   return completed || deltas;
-}
-
-function parseJsonObject(text) {
-  const cleaned = String(text || "")
-    .replace(/^```(?:json)?/i, "")
-    .replace(/```$/i, "")
-    .trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    const start = cleaned.indexOf("{");
-    const end = cleaned.lastIndexOf("}");
-    if (start === -1 || end === -1 || end <= start) throw new Error("Codex response did not contain a JSON object.");
-    return JSON.parse(cleaned.slice(start, end + 1));
-  }
 }
 
 function nextRegenerationIndex(bundle) {
@@ -13067,6 +13441,9 @@ function summarizeRuntime(runtime) {
       role: asset.role,
       path: asset.path,
     })).slice(0, 80),
+    ...(Array.isArray(runtime.pointCloudEffects) && runtime.pointCloudEffects.length
+      ? { pointCloudEffects: cloneJson(runtime.pointCloudEffects) }
+      : {}),
     diagnostics: runtime.diagnostics || [],
   };
 }
@@ -13078,6 +13455,9 @@ function summarizeGraph(graph) {
     ...(sourceGraphHasExplicitTransitions(graph) ? { edges: (graph.edges || []).slice(0, 120) } : {}),
     entities: (graph.entities || []).slice(0, 30),
     assetInventory: (graph.assetInventory || []).slice(0, 60),
+    ...(Array.isArray(graph.pointCloudEffects) && graph.pointCloudEffects.length
+      ? { pointCloudEffects: cloneJson(graph.pointCloudEffects) }
+      : {}),
     ...(Array.isArray(graph.variantGroups) && graph.variantGroups.length ? { variantGroups: graph.variantGroups } : {}),
     animationProbeLinking: graph.animationProbeLinking || null,
     sourceDynamics: graph.sourceDynamics || sourceDynamicsSummaryForGraph(graph),
@@ -13098,6 +13478,7 @@ async function resolveReaderRun(paths) {
   const runtimePath = toPosix(path.relative(REPO_ROOT, paths.compiledRuntimePath));
   const storyFolder = toPosix(path.relative(REPO_ROOT, paths.storyFolder));
   const directReaderStoryFolder = paths.storyFolder;
+  const hostingLayout = resolveReaderHostingLayout(directReaderStoryFolder);
   const directReaderSource = path.join(directReaderStoryFolder, "webxr-adaptation");
   const directReaderExists = await exists(path.join(directReaderSource, "index.html"));
 
@@ -13108,31 +13489,32 @@ async function resolveReaderRun(paths) {
       storyFolder,
       commandRoot: REPO_ROOT,
       readerSourcePath: toPosix(path.relative(REPO_ROOT, directReaderSource)),
-      message: `Click Compile + prepare reader app to create ${storyFolder}/webxr-adaptation/index.html and enable the copy-paste run command.`,
+      message: `Click Compile + Codex optimize reader to create ${storyFolder}/webxr-adaptation/index.html, apply the bounded performance profile, and enable the copy-paste run command.`,
     };
   }
 
   const readerSourcePath = toPosix(path.relative(REPO_ROOT, directReaderSource));
-  const hostingRoot = hostingRootForPath(directReaderStoryFolder, REPO_ROOT);
-  const readerStoryPublicPath = toPosix(path.relative(hostingRoot, directReaderStoryFolder));
-  const distPath = `${readerStoryPublicPath}/dist-webxr-adaptation`;
-  const storyIsOutsideRepo = hostingRoot !== REPO_ROOT;
+  const readerStoryPath = hostingLayout.readerStoryPath;
+  const distPath = `${readerStoryPath}/dist-webxr-adaptation`;
+  const distReady = await exists(path.join(directReaderStoryFolder, "dist-webxr-adaptation", "index.html"));
   const devPort = 5177;
   const instanceBuildScript = path.join(directReaderSource, "tools", "build-story-instance.mjs");
   const instanceBuildPrefix = await exists(instanceBuildScript)
     ? `node ${shellQuote(toPosix(path.relative(REPO_ROOT, instanceBuildScript)))} && `
     : "";
+  const storyIsOutsideRepo = hostingLayout.hostingRoot !== REPO_ROOT;
   const viteDevRoot = storyIsOutsideRepo ? `${shellQuote(readerSourcePath)} ` : "";
   const devCommand = `cd ${shellQuote(REPO_ROOT)} && ${instanceBuildPrefix}npx vite ${viteDevRoot}--host 127.0.0.1 --port ${devPort} --strictPort`;
   const buildCommand = `cd ${shellQuote(REPO_ROOT)} && ${instanceBuildPrefix}npx vite build ${shellQuote(readerSourcePath)} --outDir ../dist-webxr-adaptation --base /${distPath}/ --emptyOutDir`;
-  const httpsRoot = storyIsOutsideRepo
-    ? ` --root ${shellQuote(toPosix(path.relative(REPO_ROOT, hostingRoot)))}`
-    : "";
-  const httpsCommand = `python3 https_server.py${httpsRoot} --lan --story-path ${shellQuote(`/${distPath}`)}`;
+  const hostingRootArgument = hostingLayout.hostingRoot === REPO_ROOT
+    ? ""
+    : ` --root ${shellQuote(toPosix(path.relative(REPO_ROOT, hostingLayout.hostingRoot)))}`;
+  const httpsCommand = `python3 https_server.py --lan${hostingRootArgument} --story-path ${shellQuote(distPath)}`;
 
   return {
     status: "ready",
     source: "story-container",
+    distReady,
     runtimePath,
     storyFolder,
     commandRoot: REPO_ROOT,
@@ -13146,7 +13528,34 @@ async function resolveReaderRun(paths) {
       ? `http://127.0.0.1:${devPort}/`
       : `http://127.0.0.1:${devPort}/${readerSourcePath}/`,
     staticUrl: `https://<PREFERRED-LAN-IP>:8443/${distPath}/`,
-    message: "Reader app is ready. The HTTPS host advertises the active Wi-Fi address before Ethernet.",
+    message: distReady
+      ? "Reader source and production dist are ready. The HTTPS host advertises the active Wi-Fi address before Ethernet."
+      : "Reader source is ready. Compile to generate the production dist before serving it.",
+  };
+}
+
+function resolveReaderHostingLayout(storyFolder, repoRoot = REPO_ROOT) {
+  const resolvedRepoRoot = path.resolve(repoRoot);
+  const resolvedStoryFolder = path.resolve(storyFolder);
+  const repoRelativeStory = path.relative(resolvedRepoRoot, resolvedStoryFolder);
+  if (repoRelativeStory && repoRelativeStory !== ".." && !repoRelativeStory.startsWith(`..${path.sep}`)) {
+    return {
+      hostingRoot: resolvedRepoRoot,
+      readerStoryPath: toPosix(repoRelativeStory),
+    };
+  }
+
+  const siblingHostingRoot = path.dirname(resolvedRepoRoot);
+  const siblingRelativeStory = path.relative(siblingHostingRoot, resolvedStoryFolder);
+  if (siblingRelativeStory && siblingRelativeStory !== ".." && !siblingRelativeStory.startsWith(`..${path.sep}`)) {
+    return {
+      hostingRoot: siblingHostingRoot,
+      readerStoryPath: toPosix(siblingRelativeStory),
+    };
+  }
+  return {
+    hostingRoot: path.dirname(resolvedStoryFolder),
+    readerStoryPath: path.basename(resolvedStoryFolder),
   };
 }
 

@@ -1,0 +1,20 @@
+{
+  "meta-quest-touch-plus-v2": {
+    "path": "meta-quest-touch-plus-v2/profile.json"
+  },
+  "meta-quest-touch-plus": {
+    "path": "meta-quest-touch-plus-v2/profile.json"
+  },
+  "oculus-touch-v3": {
+    "path": "meta-quest-touch-plus-v2/profile.json"
+  },
+  "oculus-touch": {
+    "path": "meta-quest-touch-plus-v2/profile.json"
+  },
+  "generic-trigger-squeeze-thumbstick": {
+    "path": "meta-quest-touch-plus-v2/profile.json"
+  },
+  "generic-trigger": {
+    "path": "meta-quest-touch-plus-v2/profile.json"
+  }
+}

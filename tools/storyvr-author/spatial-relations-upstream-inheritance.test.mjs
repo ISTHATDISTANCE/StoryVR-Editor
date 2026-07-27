@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import * as THREE from "three";
 
 const source = await readFile(new URL("./app/src/main.js", import.meta.url), "utf8");
 const readerSource = await readFile(new URL("./reader-template/src/main.js", import.meta.url), "utf8");
@@ -40,22 +41,47 @@ test("Spatial Relations inherits topology scale instead of applying an editor-on
   );
 });
 
-test("Spatial Relations uses the final reader base size, pivot, and a grounded editor-only reader", () => {
+test("Spatial Relations and the reader use a floor-contact GLB pivot without changing the author transform", () => {
   const pose = functionSource("spatialTopologyAssetPose");
+  const normalizeAlignment = functionSource("normalizeSpatialVerticalAlignment");
   const normalize = functionSource("normalizeSpatialRuntimeObject");
   const loader = functionSource("loadSpatialRelationsGlb");
   const proxy = functionSource("makeSpatialReaderProxy");
   const readerTopologyKind = readerFunctionSource("activeRuntimeTopologyKind");
   const readerFrameTarget = readerFunctionSource("modelFrameTarget");
+  const readerShowModel = readerFunctionSource("showModel");
+  const readerGroundAlignment = readerFunctionSource("runtimeSpatialEntityGroundAligned");
 
   assert.match(readerFrameTarget, /egocentric" && activeRuntimeTopologyKind\(\) === "single"\) return 5\.4;/, "reader runtime declares the room-scale target for the active beat scene");
   assert.match(readerTopologyKind, /sceneRecord\?\.topology[\s\S]*topologyKindFromLabel/, "reader resolves each v2 beat's topology before choosing its frame target");
   assert.match(pose, /targetSize:\s*5\.4/, "Spatial Relations uses the same egocentric single-anchor target");
   assert.match(pose, /position:\s*new THREE\.Vector3\(0, 1\.18, -0\.18\)/, "Spatial Relations uses the same reader model-root pose");
-  assert.match(normalize, /object\.position\.sub\(center\.multiplyScalar\(scale\)\)/, "the editor shares the reader's centered author-transform pivot");
-  assert.match(loader, /normalizeSpatialRuntimeObject\(gltf\.scene, topologyPose\.targetSize\)/, "GLB loading uses final-reader normalization");
+  assert.match(normalize, /object\.position\.x -= center\.x \* scale/);
+  assert.match(normalize, /object\.position\.z -= center\.z \* scale/);
+  assert.match(normalize, /box\.min\.y[\s\S]*center\.y/, "vertical normalization supports floor contact without losing the centered legacy mode");
+  assert.match(loader, /normalizeSpatialRuntimeObject\([\s\S]*?spatialEntityVerticalAlignment\(entity\)/, "GLB loading uses the entity's persisted vertical alignment");
+  assert.match(readerShowModel, /runtimeSpatialEntityGroundAligned\([\s\S]*options\.spatialEntity,[\s\S]*sharedTimelineContract,[\s\S]*runtimeSpatialRelations/, "the compiled reader consumes the same versioned spatial alignment");
+  assert.match(readerGroundAlignment, /inferenceVersion[\s\S]*return true;[\s\S]*if \(entity\) return true;/, "legacy authored GLBs migrate to the current grounded pivot");
   assert.match(proxy, /bodyHeight[\s\S]*eyeHeight[\s\S]*RingGeometry/, "the reader proxy extends from eye height to a visible floor contact");
   assert.match(source, /makeSpatialEditorFloorGuide\(layoutKind, layers\.viewpointKind\)/, "the editor displays a non-authored floor reference");
+
+  const normalizeObject = new Function("THREE", `
+    ${normalizeAlignment}
+    ${normalize}
+    return normalizeSpatialRuntimeObject;
+  `)(THREE);
+  const authorRoot = new THREE.Group();
+  const model = new THREE.Group();
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(2, 4, 6), new THREE.MeshBasicMaterial());
+  mesh.position.set(3, 1, -2);
+  model.add(mesh);
+  normalizeObject(model, 3, "ground");
+  authorRoot.position.set(0.25, 0.7, -0.4);
+  authorRoot.add(model);
+  const groundedBounds = new THREE.Box3().setFromObject(authorRoot);
+  assert.ok(Math.abs(groundedBounds.min.y - 0.7) < 1e-9, "the normalized GLB contacts the author transform's local floor");
+  assert.ok(Math.abs(groundedBounds.getCenter(new THREE.Vector3()).x - 0.25) < 1e-9, "X remains centered beneath the author transform");
+  assert.ok(Math.abs(groundedBounds.getCenter(new THREE.Vector3()).z + 0.4) < 1e-9, "Z remains centered beneath the author transform");
 });
 
 test("egocentric GLBs preserve authored depth materials in previews and the final reader", () => {
@@ -85,11 +111,17 @@ test("the outside Spatial camera cannot orbit beneath the scene floor", () => {
   assert.match(functionSource("applyReaderViewerCameraState"), /viewer\.controls\.update\(\)/, "restored positions are clamped by OrbitControls");
 });
 
-test("Spatial Relations consumes the per-beat source playback contract", () => {
+test("saved Spatial Relations membership survives inactive source playback across authoring previews", () => {
   const initializer = functionSource("initializeSpatialRelationsViewer");
   const loader = functionSource("loadSpatialRelationsGlb");
   const attachment = functionSource("attachSpatialUpstreamPlayback");
+  const attachSourcePlayback = functionSource("attachSourceTransitionPlayback");
   const update = functionSource("updateSpatialUpstreamPlayback");
+  const sourcePlaybackSceneVisibleForViewer = new Function("SPATIAL_RELATIONS_COMPONENT_ID", `
+    ${functionSource("viewerExecutesInterBeatTransition")}
+    ${functionSource("sourcePlaybackSceneVisibleForViewer")}
+    return sourcePlaybackSceneVisibleForViewer;
+  `)("spatial-relations");
 
   assert.match(initializer, /sourceMotionTransition/, "the viewer carries the selected beat boundary into playback");
   assert.match(initializer, /sourcePartToBeatId/, "the viewer identifies the destination beat for resolved part state");
@@ -98,6 +130,76 @@ test("Spatial Relations consumes the per-beat source playback contract", () => {
   assert.match(attachment, /sourcePlaybackWindowForAsset|attachSourceTransitionPlayback/, "playback is selected from the saved beat and boundary windows");
   assert.match(attachment, /applySourcePartMask|applyInterBeatSourcePartMaskToEntry/, "beat-specific source part visibility is applied");
   assert.match(attachment, /initializeSourcePlaybackMaterials|attachSourceTransitionPlayback/, "source material recipes and bindings remain active");
+  assert.match(attachSourcePlayback, /sourcePlaybackSceneVisibleForViewer\(viewer,\s*entry,\s*entry\.sourcePlaybackContractActive\)/);
+  assert.equal(
+    sourcePlaybackSceneVisibleForViewer({ componentId: "spatial-relations" }, {}, false),
+    true,
+    "a linked Spatial Relations GLB remains visible when its source-motion timeline has no window for this beat",
+  );
+  assert.equal(
+    sourcePlaybackSceneVisibleForViewer(
+      { componentId: "attention-guidance" },
+      { entityId: "glb:nurse:beat:slide-1" },
+      false,
+    ),
+    true,
+    "Attention keeps an explicitly authored scene entity visible and selectable",
+  );
+  assert.equal(
+    sourcePlaybackSceneVisibleForViewer(
+      { componentId: "dynamic-geometry" },
+      { authorWrapper: { userData: { spatialEntityId: "glb:nurse:beat:slide-1" } } },
+      false,
+    ),
+    true,
+    "Dynamics preserves inherited Spatial Relations membership while applying motion",
+  );
+  assert.equal(
+    sourcePlaybackSceneVisibleForViewer(
+      { componentId: "interaction-control" },
+      { step: { entityId: "glb:nurse:beat:slide-1" } },
+      false,
+    ),
+    true,
+    "Interaction Control preserves inherited Spatial Relations membership",
+  );
+  assert.equal(
+    sourcePlaybackSceneVisibleForViewer(
+      { componentId: "transition-pacing", finalReviewTransitionPlayback: false },
+      { entity: { id: "glb:nurse:beat:slide-1" } },
+      false,
+    ),
+    true,
+    "a settled Final Review scene preserves explicit Spatial Relations membership",
+  );
+  assert.equal(
+    sourcePlaybackSceneVisibleForViewer(
+      { componentId: "inter-beat-dynamics" },
+      { entityId: "glb:nurse:beat:slide-1" },
+      false,
+    ),
+    false,
+    "Transition retains source-timeline visibility while presenting a boundary",
+  );
+  assert.equal(
+    sourcePlaybackSceneVisibleForViewer(
+      { componentId: "transition-pacing", finalReviewTransitionPlayback: true },
+      { entityId: "glb:nurse:beat:slide-1" },
+      false,
+    ),
+    false,
+    "Final Review transition playback retains intentional appearance sequencing",
+  );
+  assert.equal(
+    sourcePlaybackSceneVisibleForViewer({ componentId: "dynamic-geometry" }, {}, false),
+    false,
+    "an inactive source asset without saved scene membership stays hidden",
+  );
+  assert.equal(
+    sourcePlaybackSceneVisibleForViewer({ componentId: "inter-beat-dynamics" }, {}, true),
+    true,
+    "active source-timeline assets remain visible in every preview",
+  );
   assert.match(update, /updateSourceTransitionPlayback|seekSourceTransitionPlayback/, "Spatial Relations updates or settles the canonical source timeline");
 
   assert.doesNotMatch(
