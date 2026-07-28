@@ -31,6 +31,7 @@ import {
   removeMotionPlanFromStore,
   requireSceneContext,
 } from "./procedural-dynamics.mjs";
+import { normalizeStoryCanvasSegments } from "./story-canvas-segments.mjs";
 
 export const AUTHOR_SCHEMA_VERSION = "storyvr-author/v1";
 const DECISION_SCHEMA_VERSION = "storyvr-decision/v2";
@@ -329,6 +330,10 @@ export async function loadAuthorProject(options) {
     runtime,
     proceduralDynamicsContexts(graph, runtime, spatialRelations),
   );
+  const storyCanvasSegments = normalizeStoryCanvasSegments(
+    await readJsonIfExists(paths.storyCanvasSegmentsPath),
+    graph,
+  );
 
   return {
     paths: publicPaths(paths),
@@ -346,6 +351,7 @@ export async function loadAuthorProject(options) {
     attentionGuidance,
     interactionControlDraft,
     proceduralDynamics,
+    storyCanvasSegments,
     runtimeSummary: summarizeRuntime(runtime),
     readiness: readinessFor(decisions),
   };
@@ -1792,6 +1798,7 @@ function sanitizeInBeatInteractionTarget(value) {
   const oneHandGrabbable = value.oneHandGrabbable === true;
   const twoHandScalable = value.twoHandScalable === true;
   if (!oneHandGrabbable && !twoHandScalable) return null;
+  const elasticDragging = oneHandGrabbable && value.elasticDragging === true;
   const nodePath = interactionConfigurationString(value.nodePath || value.partSelector, "", 512);
   const suppliedNodeIndex = Number(value.nodeIndex);
   const nodeIndex = Number.isInteger(suppliedNodeIndex) && suppliedNodeIndex >= 0 && suppliedNodeIndex <= 1_000_000
@@ -1805,6 +1812,7 @@ function sanitizeInBeatInteractionTarget(value) {
     coordinateSpace: "local",
     oneHandGrabbable,
     twoHandScalable,
+    ...(elasticDragging ? { elasticDragging: true } : {}),
     initialTransform: interactionConfigurationTransform(value.initialTransform || value.transform),
   };
   const constraints = sanitizeInBeatInteractionConstraints(value.constraints, target);
@@ -1924,6 +1932,7 @@ function directManipulationTargetForInteractable(target, interactable) {
     coordinateSpace: _coordinateSpace,
     oneHandGrabbable: _oneHandGrabbable,
     twoHandScalable: _twoHandScalable,
+    elasticDragging: _elasticDragging,
     initialTransform: _initialTransform,
     constraints: _constraints,
     ...destinationTarget
@@ -1937,6 +1946,9 @@ function directManipulationTargetForInteractable(target, interactable) {
     coordinateSpace: "local",
     oneHandGrabbable: interactable.oneHandGrabbable === true,
     twoHandScalable: interactable.twoHandScalable === true,
+    ...(interactable.oneHandGrabbable === true && interactable.elasticDragging === true
+      ? { elasticDragging: true }
+      : {}),
     initialTransform,
     ...(interactable.constraints ? { constraints: cloneJson(interactable.constraints) } : {}),
     destinationTransform: {
@@ -1989,10 +2001,15 @@ function sanitizeDirectManipulationTargets(value, defaultTolerance) {
       source,
       ...(typeof raw.destinationAuthored === "boolean" ? { destinationAuthored: raw.destinationAuthored } : {}),
     };
-    if (typeof raw.oneHandGrabbable === "boolean" || typeof raw.twoHandScalable === "boolean") {
+    if (
+      typeof raw.oneHandGrabbable === "boolean"
+      || typeof raw.twoHandScalable === "boolean"
+      || typeof raw.elasticDragging === "boolean"
+    ) {
       target.coordinateSpace = "local";
       target.oneHandGrabbable = raw.oneHandGrabbable === true;
       target.twoHandScalable = raw.twoHandScalable === true;
+      if (target.oneHandGrabbable && raw.elasticDragging === true) target.elasticDragging = true;
       target.initialTransform = interactionConfigurationTransform(raw.initialTransform);
       const constraints = sanitizeInBeatInteractionConstraints(raw.constraints, target);
       if (constraints) target.constraints = constraints;
@@ -4707,6 +4724,7 @@ export function resolveAuthorPaths(options) {
     discoveryRoot: path.join(storyFolder, "discovery"),
     projectPath: path.join(analysisRoot, "project.json"),
     storyGraphPath: path.join(analysisRoot, "story-graph.json"),
+    storyCanvasSegmentsPath: path.join(analysisRoot, "story-canvas-segments.json"),
     environmentSearchRecommendationPath: path.join(analysisRoot, "environment-search-recommendation.json"),
     performanceOptimizationPath: path.join(analysisRoot, "performance-optimization.json"),
     proceduralDynamicsPath: path.join(analysisRoot, "procedural-dynamics.json"),

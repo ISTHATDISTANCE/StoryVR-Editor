@@ -545,6 +545,7 @@ test("authors can toggle grab and scale affordances and enable only compatible t
   const binder = functionSource("bindInteractionInBeatEditorEvents");
 
   assert.match(controls, /data-interaction-inbeat-capability="oneHandGrabbable"/);
+  assert.match(controls, /data-interaction-inbeat-elastic-dragging/);
   assert.match(controls, /data-interaction-inbeat-capability="twoHandScalable"/);
   assert.match(controls, /data-interaction-inbeat-constraint-toggle="position"[\s\S]*target\.oneHandGrabbable/);
   assert.match(controls, /data-interaction-inbeat-constraint-toggle="rotation"[\s\S]*target\.oneHandGrabbable/);
@@ -555,6 +556,8 @@ test("authors can toggle grab and scale affordances and enable only compatible t
   assert.match(binder, /\[data-interaction-inbeat-capability\]/);
   assert.match(binder, /\["oneHandGrabbable", "twoHandScalable"\]\.includes\(capability\)/);
   assert.match(binder, /target\[capability\] = input\.checked/);
+  assert.match(binder, /target\.elasticDragging = true/);
+  assert.match(binder, /delete target\.elasticDragging/);
   assert.match(binder, /!target\.oneHandGrabbable[\s\S]*delete target\.constraints\.position[\s\S]*delete target\.constraints\.rotation/);
   assert.match(binder, /!target\.twoHandScalable[\s\S]*delete target\.constraints\.scale/);
   assert.match(binder, /An interactable needs one-hand grab, two-hand scale, or both/,

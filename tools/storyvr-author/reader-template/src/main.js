@@ -63,6 +63,14 @@ const DEFAULT_LOCOMOTION_DWELL_SECONDS = 1.25;
 const DEFAULT_DIRECT_POSITION_TOLERANCE_METERS = 0.12;
 const DEFAULT_DIRECT_ROTATION_TOLERANCE_DEGREES = 12;
 const DEFAULT_DIRECT_SCALE_TOLERANCE_RATIO = 0.12;
+const ELASTIC_DRAG_MIN_SPEED_METERS_PER_SECOND = 0.35;
+const ELASTIC_DRAG_MAX_SPEED_METERS_PER_SECOND = 1.5;
+const ELASTIC_DRAG_MAX_POSITION_GAIN = 4;
+const ELASTIC_DRAG_MIN_SAMPLE_DISTANCE_METERS = 0.002;
+const ELASTIC_DRAG_MAX_SAMPLE_DISTANCE_METERS = 0.2;
+const ELASTIC_DRAG_MAX_SAMPLE_SECONDS = 0.12;
+const ELASTIC_DRAG_INERTIA_SECONDS = 0.09;
+const ELASTIC_DRAG_MAX_INERTIA_SPEED_METERS_PER_SECOND = 3;
 const DIRECT_GHOST_OPACITY = 0.32;
 const DIRECT_GHOST_VELOCITY_METERS_PER_SECOND = 0.75;
 const DIRECT_GHOST_MIN_TRAVEL_SECONDS = 0.75;
@@ -1681,6 +1689,7 @@ function normalizeRuntimeInBeatInteractionTarget(value, index = 0) {
   const oneHandGrabbable = value.oneHandGrabbable === true || value.grabbable === true;
   const twoHandScalable = value.twoHandScalable === true || value.scalable === true;
   if (!oneHandGrabbable && !twoHandScalable) return null;
+  const elasticDragging = oneHandGrabbable && value.elasticDragging === true;
   const initialTransform = normalizeRuntimeTransform(value.initialTransform);
   initialTransform.scale = initialTransform.scale.map((component) => (
     Number.isFinite(component) && component > 0 ? component : 1
@@ -1702,6 +1711,7 @@ function normalizeRuntimeInBeatInteractionTarget(value, index = 0) {
     coordinateSpace: "local",
     oneHandGrabbable,
     twoHandScalable,
+    elasticDragging,
     initialTransform,
     constraints,
   };
@@ -4257,24 +4267,164 @@ function runtimeControllerWorldPosition(entry) {
   return entry?.controller?.getWorldPosition?.(new THREE.Vector3()) || null;
 }
 
+function runtimeControllerRayDirection(entry) {
+  entry?.controller?.updateWorldMatrix?.(true, false);
+  if (!entry?.controller?.matrixWorld) return null;
+  return new THREE.Vector3(0, 0, -1)
+    .transformDirection(entry.controller.matrixWorld)
+    .normalize();
+}
+
 function runtimeBimanualScaleRatio(startDistance, currentDistance) {
   const start = Math.max(0.0001, Number(startDistance) || 0);
   const current = Math.max(0, Number(currentDistance) || 0);
   return current / start;
 }
 
+function runtimeElasticDragGain(speedMetersPerSecond) {
+  const progress = THREE.MathUtils.smoothstep(
+    Math.max(0, Number(speedMetersPerSecond) || 0),
+    ELASTIC_DRAG_MIN_SPEED_METERS_PER_SECOND,
+    ELASTIC_DRAG_MAX_SPEED_METERS_PER_SECOND,
+  );
+  return 1 + ((ELASTIC_DRAG_MAX_POSITION_GAIN - 1) * progress);
+}
+
+function resetRuntimeElasticDragState(grab, now = elapsedSeconds) {
+  if (!grab) return false;
+  grab.elasticOffsetWorld = new THREE.Vector3();
+  grab.elasticVelocityWorld = new THREE.Vector3();
+  grab.elasticLastControllerPosition = runtimeControllerWorldPosition(grab.entry);
+  grab.elasticLastRayDirection = runtimeControllerRayDirection(grab.entry);
+  grab.elasticLastSampleAt = Number(now) || 0;
+  return grab.targetEntry?.target?.elasticDragging === true
+    && Boolean(grab.elasticLastControllerPosition)
+    && Boolean(grab.elasticLastRayDirection);
+}
+
+function integrateRuntimeElasticDragVelocity(grab, targetVelocity, deltaSeconds) {
+  if (
+    !grab?.elasticOffsetWorld
+    || !grab.elasticVelocityWorld
+    || !targetVelocity
+    || !(deltaSeconds > 0)
+  ) return false;
+  const responseSeconds = Math.max(0.001, ELASTIC_DRAG_INERTIA_SECONDS);
+  const decay = Math.exp(-deltaSeconds / responseSeconds);
+  const velocityDelta = grab.elasticVelocityWorld.clone().sub(targetVelocity);
+  grab.elasticOffsetWorld
+    .addScaledVector(targetVelocity, deltaSeconds)
+    .addScaledVector(velocityDelta, responseSeconds * (1 - decay));
+  grab.elasticVelocityWorld
+    .copy(targetVelocity)
+    .addScaledVector(velocityDelta, decay);
+  return targetVelocity.lengthSq() > 0 || grab.elasticVelocityWorld.lengthSq() > 0;
+}
+
+function updateRuntimeElasticDragOffset(grab, now = elapsedSeconds) {
+  if (
+    grab?.targetEntry?.target?.elasticDragging !== true
+    || !grab.elasticOffsetWorld
+    || !grab.elasticVelocityWorld
+  ) return false;
+  const currentPosition = runtimeControllerWorldPosition(grab.entry);
+  const rayDirection = runtimeControllerRayDirection(grab.entry);
+  const previousPosition = grab.elasticLastControllerPosition;
+  const previousRayDirection = grab.elasticLastRayDirection;
+  const previousSampleAt = Number(grab.elasticLastSampleAt);
+  grab.elasticLastControllerPosition = currentPosition;
+  grab.elasticLastRayDirection = rayDirection;
+  grab.elasticLastSampleAt = Number(now) || 0;
+  if (!currentPosition || !rayDirection || !previousPosition || !Number.isFinite(previousSampleAt)) {
+    grab.elasticVelocityWorld.set(0, 0, 0);
+    return false;
+  }
+  const deltaSeconds = (Number(now) || 0) - previousSampleAt;
+  if (deltaSeconds <= 0 || deltaSeconds > ELASTIC_DRAG_MAX_SAMPLE_SECONDS) {
+    grab.elasticVelocityWorld.set(0, 0, 0);
+    return false;
+  }
+  const controllerDelta = currentPosition.clone().sub(previousPosition);
+  const distance = controllerDelta.length();
+  if (distance > ELASTIC_DRAG_MAX_SAMPLE_DISTANCE_METERS) {
+    grab.elasticVelocityWorld.set(0, 0, 0);
+    return false;
+  }
+  if (previousRayDirection && grab.elasticVelocityWorld.lengthSq() > 0) {
+    const offsetAlongPreviousRay = grab.elasticOffsetWorld.dot(previousRayDirection);
+    const speedAlongPreviousRay = grab.elasticVelocityWorld.dot(previousRayDirection);
+    grab.elasticOffsetWorld.copy(rayDirection).multiplyScalar(offsetAlongPreviousRay);
+    grab.elasticVelocityWorld.copy(rayDirection).multiplyScalar(speedAlongPreviousRay);
+  }
+  const targetVelocity = grab.elasticVelocityWorld.clone();
+  const distanceAlongRay = controllerDelta.dot(rayDirection);
+  const axialDistance = Math.abs(distanceAlongRay);
+  if (axialDistance >= ELASTIC_DRAG_MIN_SAMPLE_DISTANCE_METERS) {
+    const gain = runtimeElasticDragGain(axialDistance / deltaSeconds);
+    if (gain > 1) {
+      targetVelocity
+        .copy(rayDirection)
+        .multiplyScalar((gain - 1) * distanceAlongRay / deltaSeconds)
+        .clampLength(0, ELASTIC_DRAG_MAX_INERTIA_SPEED_METERS_PER_SECOND);
+    }
+  }
+  return integrateRuntimeElasticDragVelocity(grab, targetVelocity, deltaSeconds);
+}
+
+function applyRuntimeElasticGrabOffset(grab) {
+  if (
+    grab?.targetEntry?.target?.elasticDragging !== true
+    || !grab.elasticOffsetWorld
+    || !grab.root?.parent
+  ) return false;
+  const desiredWorldPosition = grab.root
+    .getWorldPosition(new THREE.Vector3())
+    .add(grab.elasticOffsetWorld);
+  grab.root.parent.worldToLocal(desiredWorldPosition);
+  grab.root.position.copy(desiredWorldPosition);
+  grab.root.updateMatrixWorld(true);
+  return true;
+}
+
+function syncRuntimeElasticGrabOffset(grab) {
+  if (
+    grab?.targetEntry?.target?.elasticDragging !== true
+    || !grab.elasticOffsetWorld
+    || !grab.controllerMatrix
+    || grab.root?.parent !== grab.entry?.controller
+  ) return false;
+  grab.entry.controller.updateWorldMatrix(true, false);
+  const baseWorldPosition = new THREE.Vector3().setFromMatrixPosition(
+    new THREE.Matrix4().multiplyMatrices(grab.entry.controller.matrixWorld, grab.controllerMatrix),
+  );
+  const previousOffset = grab.elasticOffsetWorld.clone();
+  grab.elasticOffsetWorld.copy(
+    grab.root.getWorldPosition(new THREE.Vector3()).sub(baseWorldPosition),
+  );
+  if (
+    grab.elasticVelocityWorld
+    && previousOffset.distanceToSquared(grab.elasticOffsetWorld) > 1e-10
+  ) {
+    grab.elasticVelocityWorld.set(0, 0, 0);
+  }
+  return true;
+}
+
 function captureRuntimeGrabControllerMatrix(grab) {
   if (!grab?.root || grab.root.parent !== grab.entry?.controller) return false;
   grab.root.updateMatrix();
   grab.controllerMatrix = grab.root.matrix.clone();
+  resetRuntimeElasticDragState(grab);
   return true;
 }
 
 function applyRuntimeGrabControllerMatrix(grab) {
   if (!grab?.root || !grab.controllerMatrix || grab.root.parent !== grab.entry?.controller) return false;
+  updateRuntimeElasticDragOffset(grab);
   grab.controllerMatrix.decompose(grab.root.position, grab.root.quaternion, grab.root.scale);
   grab.root.quaternion.normalize();
   grab.root.updateMatrixWorld(true);
+  applyRuntimeElasticGrabOffset(grab);
   return true;
 }
 
@@ -4360,7 +4510,9 @@ function updateRuntimeDirectManipulation() {
   }
   if (grab.mode === "grab") {
     applyRuntimeGrabControllerMatrix(grab);
-    return clampRuntimeInteractionTarget(grab.targetEntry);
+    const clamped = clampRuntimeInteractionTarget(grab.targetEntry);
+    syncRuntimeElasticGrabOffset(grab);
+    return clamped;
   }
   return grab.mode === "armed-scale";
 }

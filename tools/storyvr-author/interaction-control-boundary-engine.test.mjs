@@ -770,6 +770,7 @@ test("in-beat interaction scenes canonicalize capabilities, constraints, and ove
         assetId: "shark-glb",
         nodeIndex: 7,
         oneHandGrabbable: true,
+        elasticDragging: true,
         constraints: {
           position: { min: [5, 0, 0], max: [-5, 1, 0] },
           rotation: { minDegrees: [100, 0, 0], maxDegrees: [-100, 20, 0] },
@@ -821,6 +822,7 @@ test("in-beat interaction scenes canonicalize capabilities, constraints, and ove
     position: { min: [-5, 0, 0], max: [5, 1, 0] },
     rotation: { minDegrees: [-100, 0, 0], maxDegrees: [100, 20, 0] },
   });
+  assert.equal(scenes[0].targets[1].elasticDragging, true);
   assert.ok(JSON.stringify(scenes).includes('"coordinateSpace":"local"'));
   assert.equal(JSON.stringify(scenes).includes("NaN"), false);
 });
@@ -834,6 +836,7 @@ test("Direct manipulation keeps only exact-scene interactables and enforces capa
           entityId: "grab-entity",
           assetId: "grab-glb",
           oneHandGrabbable: true,
+          elasticDragging: true,
           initialTransform: {
             position: [0, 1, 2],
             quaternion: [0, 0, 0, 1],
@@ -917,6 +920,7 @@ test("Direct manipulation keeps only exact-scene interactables and enforces capa
     scale: [1, 2, 3],
   }, "grab-only targets cannot acquire a scale destination");
   assert.equal(direct.targets[0].destinationAuthored, true);
+  assert.equal(direct.targets[0].elasticDragging, true);
   assert.deepEqual(direct.targets[0].constraints.position, { min: [-1, 0, 1], max: [1, 2, 3] });
   assert.deepEqual(direct.targets[1].destinationTransform, {
     position: [4, 5, 6],

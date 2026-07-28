@@ -442,6 +442,7 @@ test("reader selects only the exact beat or group-qualified variant interaction 
         nodeIndex: 7,
         oneHandGrabbable: true,
         twoHandScalable: true,
+        elasticDragging: true,
         initialTransform: { position: [0, 1, 0], scale: [1, 1, 1] },
         constraints: {
           position: { min: [2, 0, 0], max: [-2, 3, 4] },
@@ -471,6 +472,7 @@ test("reader selects only the exact beat or group-qualified variant interaction 
     { id: "blue" },
   );
   assert.equal(blue.targets[0].nodeIndex, 7);
+  assert.equal(blue.targets[0].elasticDragging, true);
   assert.deepEqual(blue.targets[0].constraints.position.min, [-2, 0, 0]);
   assert.deepEqual(blue.targets[0].constraints.position.max, [2, 3, 4]);
   assert.deepEqual(blue.targets[0].constraints.scale, {
@@ -1510,6 +1512,188 @@ test("reader keeps beat manipulation independent of transition policy and update
     return applied.scale.toArray();
   `)(THREE);
   assert.deepEqual(updateScale, [2, 3, 2], "controller distance scales uniformly before authored range clamping");
+});
+
+test("elastic dragging preserves Grip-held inertia on the controller-ray axis", () => {
+  const result = new Function("THREE", `
+    const ELASTIC_DRAG_MIN_SPEED_METERS_PER_SECOND = 0.35;
+    const ELASTIC_DRAG_MAX_SPEED_METERS_PER_SECOND = 1.5;
+    const ELASTIC_DRAG_MAX_POSITION_GAIN = 4;
+    const ELASTIC_DRAG_MIN_SAMPLE_DISTANCE_METERS = 0.002;
+    const ELASTIC_DRAG_MAX_SAMPLE_DISTANCE_METERS = 0.2;
+    const ELASTIC_DRAG_MAX_SAMPLE_SECONDS = 0.12;
+    const ELASTIC_DRAG_INERTIA_SECONDS = 0.09;
+    const ELASTIC_DRAG_MAX_INERTIA_SPEED_METERS_PER_SECOND = 3;
+    let elapsedSeconds = 0;
+    ${functionSource("runtimeControllerWorldPosition")}
+    ${functionSource("runtimeControllerRayDirection")}
+    ${functionSource("runtimeElasticDragGain")}
+    ${functionSource("resetRuntimeElasticDragState")}
+    ${functionSource("integrateRuntimeElasticDragVelocity")}
+    ${functionSource("updateRuntimeElasticDragOffset")}
+    ${functionSource("applyRuntimeElasticGrabOffset")}
+    ${functionSource("syncRuntimeElasticGrabOffset")}
+    ${functionSource("captureRuntimeGrabControllerMatrix")}
+    ${functionSource("applyRuntimeGrabControllerMatrix")}
+
+    const controller = new THREE.Group();
+    const root = new THREE.Group();
+    root.position.set(0, 0, -5);
+    controller.add(root);
+    controller.updateMatrixWorld(true);
+    const grab = {
+      entry: { controller },
+      root,
+      targetEntry: { target: { oneHandGrabbable: true, elasticDragging: true } },
+    };
+    captureRuntimeGrabControllerMatrix(grab);
+
+    elapsedSeconds = 0.05;
+    controller.position.set(0.08, 0, 0.1);
+    controller.updateMatrixWorld(true);
+    applyRuntimeGrabControllerMatrix(grab);
+    const amplifiedPosition = root.getWorldPosition(new THREE.Vector3()).z;
+    const amplifiedOffset = grab.elasticOffsetWorld.z;
+    const amplifiedOffsetX = grab.elasticOffsetWorld.x;
+    const velocityAfterFastMotion = grab.elasticVelocityWorld.z;
+    const velocityOffRay = grab.elasticVelocityWorld
+      .clone()
+      .cross(runtimeControllerRayDirection(grab.entry))
+      .length();
+
+    const heldPositions = [amplifiedPosition];
+    for (let index = 0; index < 12; index += 1) {
+      elapsedSeconds += 0.05;
+      controller.updateMatrixWorld(true);
+      applyRuntimeGrabControllerMatrix(grab);
+      heldPositions.push(root.getWorldPosition(new THREE.Vector3()).z);
+    }
+    const heldStepSizes = heldPositions.slice(1).map(
+      (position, index) => position - heldPositions[index],
+    );
+    const heldVelocity = grab.elasticVelocityWorld.z;
+
+    elapsedSeconds += 0.05;
+    controller.rotation.y = Math.PI / 4;
+    controller.updateMatrixWorld(true);
+    applyRuntimeGrabControllerMatrix(grab);
+    const turnedRayDirection = runtimeControllerRayDirection(grab.entry);
+    const turnedVelocityOffRay = grab.elasticVelocityWorld
+      .clone()
+      .cross(turnedRayDirection)
+      .length();
+    const turnedOffsetOffRay = grab.elasticOffsetWorld
+      .clone()
+      .cross(turnedRayDirection)
+      .length();
+
+    const offsetBeforeSlowMotion = grab.elasticOffsetWorld.clone();
+    const velocityBeforeSlowMotion = grab.elasticVelocityWorld.clone();
+    elapsedSeconds += 0.1;
+    controller.position.z += 0.01;
+    controller.updateMatrixWorld(true);
+    applyRuntimeGrabControllerMatrix(grab);
+    const slowAddedOffset = grab.elasticOffsetWorld.clone().sub(offsetBeforeSlowMotion).length();
+    const velocityAfterSlowMotion = grab.elasticVelocityWorld.clone();
+
+    const offsetBeforeConstraint = grab.elasticOffsetWorld.z;
+    root.position.z -= 0.2;
+    root.updateMatrixWorld(true);
+    syncRuntimeElasticGrabOffset(grab);
+    const reconciledOffset = grab.elasticOffsetWorld.z;
+    const velocityAfterConstraint = grab.elasticVelocityWorld.length();
+
+    elapsedSeconds += 0.05;
+    controller.position.z += 0.1;
+    controller.updateMatrixWorld(true);
+    applyRuntimeGrabControllerMatrix(grab);
+    const velocityBeforeJump = grab.elasticVelocityWorld.length();
+    const offsetBeforeJump = grab.elasticOffsetWorld.clone();
+
+    elapsedSeconds += 0.01;
+    controller.position.z += 0.5;
+    controller.updateMatrixWorld(true);
+    applyRuntimeGrabControllerMatrix(grab);
+    const jumpAddedOffset = grab.elasticOffsetWorld.clone().sub(offsetBeforeJump).length();
+    const velocityAfterJump = grab.elasticVelocityWorld.length();
+
+    const lateralController = new THREE.Group();
+    const lateralRoot = new THREE.Group();
+    lateralRoot.position.set(0, 0, -5);
+    lateralController.add(lateralRoot);
+    lateralController.updateMatrixWorld(true);
+    const lateralGrab = {
+      entry: { controller: lateralController },
+      root: lateralRoot,
+      targetEntry: { target: { oneHandGrabbable: true, elasticDragging: true } },
+    };
+    captureRuntimeGrabControllerMatrix(lateralGrab);
+    elapsedSeconds += 0.05;
+    lateralController.position.x = 0.1;
+    lateralController.updateMatrixWorld(true);
+    applyRuntimeGrabControllerMatrix(lateralGrab);
+
+    return {
+      amplifiedPosition,
+      amplifiedOffset,
+      amplifiedOffsetX,
+      velocityAfterFastMotion,
+      velocityOffRay,
+      heldPositions,
+      heldStepSizes,
+      heldVelocity,
+      turnedVelocityOffRay,
+      turnedOffsetOffRay,
+      slowAddedOffset,
+      velocityBeforeSlowMotion: velocityBeforeSlowMotion.length(),
+      velocityAfterSlowMotion: velocityAfterSlowMotion.length(),
+      offsetBeforeConstraint,
+      velocityAfterConstraint,
+      jumpAddedOffset,
+      velocityBeforeJump,
+      velocityAfterJump,
+      reconciledOffset,
+      lateralOffset: lateralGrab.elasticOffsetWorld.length(),
+      lateralVelocity: lateralGrab.elasticVelocityWorld.length(),
+      lowGain: runtimeElasticDragGain(0.1),
+      highGain: runtimeElasticDragGain(2),
+    };
+  `)(THREE);
+
+  assert.ok(result.amplifiedPosition > -4.9 && result.amplifiedPosition < -4.6,
+    "the fast pull begins between the 1:1 and final gained positions");
+  assert.ok(result.amplifiedOffset > 0 && result.amplifiedOffset < 0.3);
+  assert.ok(Math.abs(result.amplifiedOffsetX) < 1e-9,
+    "sideways hand motion does not create sideways elastic displacement");
+  assert.ok(result.velocityAfterFastMotion > 0 && result.velocityAfterFastMotion <= 3);
+  assert.ok(result.velocityOffRay < 1e-9,
+    "elastic velocity remains parallel to the controller-ray axis");
+  assert.ok(result.heldPositions.every((position, index, values) => (
+    index === 0 || position > values[index - 1]
+  )), "the object keeps coasting while Grip stays held");
+  assert.ok(Math.max(...result.heldStepSizes) - Math.min(...result.heldStepSizes) < 1e-9,
+    "held inertial motion advances at a stable velocity");
+  assert.ok(Math.abs(result.heldVelocity - result.velocityAfterFastMotion) < 1e-9,
+    "the inertial velocity does not decay while Grip remains held");
+  assert.ok(result.turnedVelocityOffRay < 1e-9,
+    "turning the held controller redirects the coast onto the current ray");
+  assert.ok(result.turnedOffsetOffRay < 1e-9,
+    "the gained model displacement remains on the current ray");
+  assert.ok(result.slowAddedOffset > 0,
+    "slow controller motion does not cancel an already active inertial coast");
+  assert.ok(Math.abs(result.velocityAfterSlowMotion - result.velocityBeforeSlowMotion) < 1e-9);
+  assert.ok(result.reconciledOffset < result.offsetBeforeConstraint,
+    "constraint reconciliation prevents invisible elastic-offset windup");
+  assert.equal(result.velocityAfterConstraint, 0,
+    "reaching an authored constraint stops the held inertia");
+  assert.ok(result.velocityBeforeJump > 0);
+  assert.equal(result.jumpAddedOffset, 0, "a tracking discontinuity is not amplified");
+  assert.equal(result.velocityAfterJump, 0);
+  assert.equal(result.lateralOffset, 0,
+    "a fast motion perpendicular to the ray does not begin elastic sliding");
+  assert.equal(result.lateralVelocity, 0);
+  assert.equal(result.lowGain, 1);
+  assert.equal(result.highGain, 4);
 });
 
 test("reader accepts configured locomotion tolerances and whole-GLB or safe named-node completion targets", () => {

@@ -38,6 +38,11 @@ import {
   transferSourceGraphAsset,
 } from "./source-graph-canvas.js";
 import {
+  sourceGraphProgressSegmentIndexForPosition,
+  sourceGraphProgressStatusForBeats,
+  sourceGraphProgressTargetScrollLeft,
+} from "./source-graph-progress.js";
+import {
   AuthorHistory,
   historyShortcutForEvent,
 } from "./author-history.js";
@@ -1801,6 +1806,7 @@ function renderBeatTimeline() {
   const atomicCount = (state.data.graph.atomicBeats || beats).length;
   const textOnlyCount = beats.filter(isTextOnlyBeat).length;
   const visualBeatCount = beats.length - textOnlyCount;
+  const progressStrip = renderSourceGraphProgressStrip(beats);
   if (!beats.length) {
     return `
       <section class="visual-card source-graph-canvas-shell">
@@ -1810,7 +1816,7 @@ function renderBeatTimeline() {
     `;
   }
   return `
-    <section class="visual-card source-graph-canvas-shell">
+    <section class="visual-card source-graph-canvas-shell ${progressStrip ? "has-story-progress" : ""}">
       <div class="visual-card-head">
         <div>
           <h3>Story canvas</h3>
@@ -1818,6 +1824,7 @@ function renderBeatTimeline() {
         </div>
         <span>${beats.length} authored · ${atomicCount} fine-grained${textOnlyCount ? ` · ${visualBeatCount} visual · ${textOnlyCount} text-only` : ""}</span>
       </div>
+      ${progressStrip}
       <div class="source-graph-canvas-toolbar source-graph-arrow-toolbar">
         <span>Select an arrow on the canvas to remove it.</span>
         <button
@@ -1832,7 +1839,7 @@ function renderBeatTimeline() {
         <strong class="source-graph-remove-drop-blocked">Keep at least one beat</strong>
         <span>You can undo this change before saving.</span>
       </div>
-      <div class="source-graph-canvas-viewport" data-source-graph-canvas-viewport tabindex="0" aria-label="Ordered Source Graph beat canvas">
+      <div class="source-graph-canvas-viewport" id="source-graph-canvas-viewport" data-source-graph-canvas-viewport tabindex="0" aria-label="Ordered Source Graph beat canvas">
         ${renderSourceGraphLinkLayer()}
         <ol class="source-graph-canvas-track">
         ${beats.map((beat, index) => {
@@ -1929,6 +1936,67 @@ function renderBeatTimeline() {
       </div>
     </section>
   `;
+}
+
+function renderSourceGraphProgressStrip(beats) {
+  const navigation = state.data?.storyCanvasSegments;
+  if (!navigation) return "";
+  if (sourceGraphProgressStatusForBeats(navigation, beats) !== "current") {
+    return `
+      <div class="source-graph-progress-review" role="status">
+        Story progress navigation needs review after the Source Graph structure changed.
+      </div>
+    `;
+  }
+  const segments = Array.isArray(navigation.segments) ? navigation.segments : [];
+  if (segments.length < 2) return "";
+  const totalBeats = beats.length;
+  return `
+    <nav class="source-graph-progress" data-source-graph-progress aria-label="Story sections">
+      <div class="source-graph-progress-head">
+        <strong>Story progress</strong>
+        <span data-source-graph-progress-status>${escapeHtml(sourceGraphProgressRangeLabel(segments[0], totalBeats))}</span>
+      </div>
+      <div class="source-graph-progress-track" role="group" aria-label="Navigate the continuous story canvas by section">
+        ${segments.map((segment, index) => `
+          <button
+            class="source-graph-progress-segment ${index === 0 ? "is-current" : "is-upcoming"}"
+            type="button"
+            style="--source-graph-progress-share: ${Math.max(1, Number(segment.beatCount) || segment.beatIds?.length || 1)}"
+            data-source-graph-progress-target="${escapeHtml(segment.beatIds?.[0] || "")}"
+            data-source-graph-progress-index="${index}"
+            aria-controls="source-graph-canvas-viewport"
+            aria-label="${escapeHtml(sourceGraphProgressButtonLabel(segment))}"
+            ${index === 0 ? 'aria-current="location"' : ""}
+          ><span>${Math.max(1, Number(segment.beatCount) || segment.beatIds?.length || 1)}</span></button>
+        `).join("")}
+      </div>
+      <div class="source-graph-progress-legend" aria-label="Story section colors">
+        ${segments.map((segment, index) => `
+          <span data-source-graph-progress-legend-index="${index}" class="${index === 0 ? "is-current" : ""}">
+            <i aria-hidden="true"></i>
+            <strong>${escapeHtml(segment.label)}</strong>
+            <small>${Math.max(1, Number(segment.beatCount) || segment.beatIds?.length || 1)}</small>
+          </span>
+        `).join("")}
+      </div>
+    </nav>
+  `;
+}
+
+function sourceGraphProgressRangeLabel(segment, totalBeats) {
+  const start = Math.max(0, Number(segment?.startIndex) || 0) + 1;
+  const end = Math.max(start, Number(segment?.endIndex) + 1 || start);
+  return start === end
+    ? `Beat ${start} of ${totalBeats}`
+    : `Beats ${start}–${end} of ${totalBeats}`;
+}
+
+function sourceGraphProgressButtonLabel(segment) {
+  const start = Math.max(0, Number(segment?.startIndex) || 0) + 1;
+  const end = Math.max(start, Number(segment?.endIndex) + 1 || start);
+  const range = start === end ? `beat ${start}` : `beats ${start} through ${end}`;
+  return `Jump to ${segment?.label || "story section"}, ${range}`;
 }
 
 function sourceGraphDefaultVariantOption(group) {
@@ -9394,6 +9462,8 @@ function renderInteractionInBeatTargetControls(target) {
     <fieldset class="interaction-inbeat-capabilities">
       <legend>Reader affordances</legend>
       <label><input type="checkbox" data-interaction-inbeat-capability="oneHandGrabbable" data-interaction-inbeat-target-key="${escapeHtml(key)}" ${target.oneHandGrabbable ? "checked" : ""}/> One-hand grabbable</label>
+      <label class="${target.oneHandGrabbable ? "" : "disabled"}"><input type="checkbox" data-interaction-inbeat-elastic-dragging data-interaction-inbeat-target-key="${escapeHtml(key)}" ${target.elasticDragging ? "checked" : ""} ${target.oneHandGrabbable ? "" : "disabled"}/> Elastic dragging</label>
+      <small>Fast pulls and pushes along the controller ray build smoothly eased translation that keeps coasting on that ray while Grip is held; release Grip to stop it.</small>
       <label><input type="checkbox" data-interaction-inbeat-capability="twoHandScalable" data-interaction-inbeat-target-key="${escapeHtml(key)}" ${target.twoHandScalable ? "checked" : ""}/> Two-hand scalable</label>
     </fieldset>
     <fieldset class="interaction-inbeat-constraints">
@@ -9774,7 +9844,11 @@ function renderInteractionDirectEditor(editorContext) {
               const included = Boolean(configuredTarget);
               const outsideRange = configuredTarget ? !interactionDirectDestinationIsReachable(configuredTarget) : false;
               const label = target.nodePath ? `${target.label} · ${target.nodePath}` : target.label;
-              const capability = [target.oneHandGrabbable ? "grab" : "", target.twoHandScalable ? "scale" : ""].filter(Boolean).join(" + ");
+              const capability = [
+                target.oneHandGrabbable ? "grab" : "",
+                target.elasticDragging ? "elastic" : "",
+                target.twoHandScalable ? "scale" : "",
+              ].filter(Boolean).join(" + ");
               return `<label class="${targetKey === selectedKey ? "selected" : ""} ${outsideRange ? "outside-range" : ""}"><input type="checkbox" data-interaction-direct-target="${escapeHtml(targetKey)}" data-interaction-direct-entity-id="${escapeHtml(target.entityId)}" ${target.nodePath ? `data-interaction-direct-node-path="${escapeHtml(target.nodePath)}"` : ""} ${target.nodeIndex != null ? `data-interaction-direct-node-index="${target.nodeIndex}"` : ""} ${included ? "checked" : ""}/><button type="button" data-interaction-select-direct-target="${escapeHtml(targetKey)}"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(`${target.assetId} · ${capability}${outsideRange ? " · outside range" : ""}`)}</small></button></label>`;
             }).join("") || `<p class="muted">This source scene has no in-beat interactables. Return to its beat card and add one before using Direct manipulation.</p>`}
           </div>
@@ -11329,6 +11403,7 @@ function bindInteractionOptionEditorEvents() {
           coordinateSpace: "local",
           oneHandGrabbable: sceneTarget.oneHandGrabbable,
           twoHandScalable: sceneTarget.twoHandScalable,
+          ...(sceneTarget.elasticDragging ? { elasticDragging: true } : {}),
           initialTransform: cloneJson(sceneTarget.sourceTransform),
           constraints: cloneJson(sceneTarget.constraints || {}),
           destinationTransform: cloneJson(sceneTarget.sourceTransform),
@@ -11424,7 +11499,19 @@ function bindInteractionInBeatEditorEvents(root) {
           delete target.constraints.position;
           delete target.constraints.rotation;
         }
+        if (!target.oneHandGrabbable) delete target.elasticDragging;
         if (!target.twoHandScalable && target.constraints) delete target.constraints.scale;
+      });
+    });
+  }
+  for (const input of root.querySelectorAll("[data-interaction-inbeat-elastic-dragging]")) {
+    input.addEventListener("change", () => {
+      const key = input.dataset.interactionInbeatTargetKey;
+      commitInteractionInBeatMutation("Edit elastic dragging affordance", (record) => {
+        const target = interactionInBeatTargetByKey(record, key);
+        if (!target?.oneHandGrabbable) return;
+        if (input.checked) target.elasticDragging = true;
+        else delete target.elasticDragging;
       });
     });
   }
@@ -13501,6 +13588,7 @@ function bindSourceGraphCanvasEvents() {
   sourceGraphDocumentDragController = new AbortController();
   const documentDragSignal = sourceGraphDocumentDragController.signal;
   bindSourceGraphLinkEvents(documentDragSignal);
+  bindSourceGraphProgressNavigation(documentDragSignal);
 
   for (const button of document.querySelectorAll("[data-source-graph-asset-filter]")) {
     button.addEventListener("click", () => {
@@ -13943,6 +14031,140 @@ function bindSourceGraphCanvasEvents() {
 
   const viewport = document.querySelector("[data-source-graph-canvas-viewport]");
   if (viewport) bindSourceGraphCanvasPanning(viewport);
+}
+
+function bindSourceGraphProgressNavigation(signal) {
+  const viewport = document.querySelector("[data-source-graph-canvas-viewport]");
+  const progress = document.querySelector("[data-source-graph-progress]");
+  if (!viewport || !progress) return;
+  const navigation = state.data?.storyCanvasSegments;
+  const beats = state.data?.graph?.beats || [];
+  const segments = sourceGraphProgressStatusForBeats(navigation, beats) === "current"
+    && Array.isArray(navigation.segments)
+    ? navigation.segments
+    : [];
+  const buttons = [...progress.querySelectorAll("[data-source-graph-progress-target]")];
+  if (!segments.length || buttons.length !== segments.length) return;
+
+  const targetCards = buttons.map((button) => sourceGraphProgressTargetCard(
+    viewport,
+    button.dataset.sourceGraphProgressTarget,
+  ));
+  const status = progress.querySelector("[data-source-graph-progress-status]");
+  const legends = [...progress.querySelectorAll("[data-source-graph-progress-legend-index]")];
+  let updateFrame = null;
+  let startupFrame = null;
+  let startupInnerFrame = null;
+
+  const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const usesVerticalCanvas = () => getComputedStyle(viewport).overflowY === "visible";
+  const setActiveSegment = (activeIndex) => {
+    buttons.forEach((button, index) => {
+      button.classList.toggle("is-current", index === activeIndex);
+      button.classList.toggle("is-complete", index < activeIndex);
+      button.classList.toggle("is-upcoming", index > activeIndex);
+      if (index === activeIndex) button.setAttribute("aria-current", "location");
+      else button.removeAttribute("aria-current");
+    });
+    legends.forEach((legend, index) => legend.classList.toggle("is-current", index === activeIndex));
+    if (status && segments[activeIndex]) {
+      status.textContent = sourceGraphProgressRangeLabel(
+        segments[activeIndex],
+        state.data?.graph?.beats?.length || 0,
+      );
+    }
+  };
+  const activeSegmentIndex = () => {
+    if (usesVerticalCanvas()) {
+      const starts = targetCards.map((card) => (
+        card ? card.getBoundingClientRect().top + window.scrollY : Number.NaN
+      ));
+      const pageBottom = window.scrollY + window.innerHeight;
+      const hasVerticalScrollRange = document.documentElement.scrollHeight > window.innerHeight + 1;
+      if (
+        hasVerticalScrollRange
+        && pageBottom >= document.documentElement.scrollHeight - 1
+      ) return segments.length - 1;
+      return sourceGraphProgressSegmentIndexForPosition(
+        starts,
+        window.scrollY + Math.min(96, window.innerHeight * 0.2),
+      );
+    }
+    const viewportRect = viewport.getBoundingClientRect();
+    const starts = targetCards.map((card) => (
+      card
+        ? viewport.scrollLeft + card.getBoundingClientRect().left - viewportRect.left
+        : Number.NaN
+    ));
+    const maxScrollLeft = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
+    if (maxScrollLeft > 1 && viewport.scrollLeft >= maxScrollLeft - 1) {
+      return segments.length - 1;
+    }
+    return sourceGraphProgressSegmentIndexForPosition(
+      starts,
+      viewport.scrollLeft + 28,
+    );
+  };
+  const updateActiveSegment = () => {
+    updateFrame = null;
+    if (signal.aborted) return;
+    const activeIndex = activeSegmentIndex();
+    if (activeIndex >= 0) setActiveSegment(activeIndex);
+  };
+  const scheduleActiveSegmentUpdate = () => {
+    if (signal.aborted || updateFrame !== null) return;
+    updateFrame = requestAnimationFrame(updateActiveSegment);
+  };
+
+  buttons.forEach((button, index) => {
+    button.addEventListener("click", () => {
+      const targetCard = targetCards[index];
+      if (!targetCard) return;
+      setActiveSegment(index);
+      const behavior = reducedMotion() ? "auto" : "smooth";
+      if (usesVerticalCanvas()) {
+        targetCard.scrollIntoView({ behavior, block: "start", inline: "nearest" });
+        return;
+      }
+      const viewportRect = viewport.getBoundingClientRect();
+      const targetRect = targetCard.getBoundingClientRect();
+      const left = sourceGraphProgressTargetScrollLeft({
+        viewportScrollLeft: viewport.scrollLeft,
+        viewportClientWidth: viewport.clientWidth,
+        viewportScrollWidth: viewport.scrollWidth,
+        viewportLeft: viewportRect.left,
+        targetLeft: targetRect.left,
+        inset: 28,
+      });
+      viewport.scrollTo({
+        left,
+        top: viewport.scrollTop,
+        behavior,
+      });
+    }, { signal });
+  });
+
+  viewport.addEventListener("scroll", scheduleActiveSegmentUpdate, { passive: true, signal });
+  window.addEventListener("scroll", scheduleActiveSegmentUpdate, { passive: true, signal });
+  window.addEventListener("resize", scheduleActiveSegmentUpdate, { passive: true, signal });
+  signal.addEventListener("abort", () => {
+    if (updateFrame !== null) cancelAnimationFrame(updateFrame);
+    if (startupFrame !== null) cancelAnimationFrame(startupFrame);
+    if (startupInnerFrame !== null) cancelAnimationFrame(startupInnerFrame);
+  }, { once: true });
+  startupFrame = requestAnimationFrame(() => {
+    startupFrame = null;
+    if (signal.aborted) return;
+    startupInnerFrame = requestAnimationFrame(() => {
+      startupInnerFrame = null;
+      scheduleActiveSegmentUpdate();
+    });
+  });
+}
+
+function sourceGraphProgressTargetCard(viewport, beatId) {
+  return [...viewport.querySelectorAll(".source-graph-beat-item > [data-source-graph-card-beat]")]
+    .find((card) => card.dataset.sourceGraphCardBeat === beatId) || null;
 }
 
 function sourceGraphDragPayloadHasSource(payload) {
@@ -33802,6 +34024,7 @@ function normalizeInteractionInBeatTarget(value) {
   const oneHandGrabbable = value.oneHandGrabbable === true;
   const twoHandScalable = value.twoHandScalable === true;
   if (!entityId || !assetId || (!oneHandGrabbable && !twoHandScalable)) return null;
+  const elasticDragging = oneHandGrabbable && value.elasticDragging === true;
   const initialTransform = normalizeSpatialTransform(value.initialTransform);
   const nodeIndex = Number(value.nodeIndex);
   const target = {
@@ -33812,6 +34035,7 @@ function normalizeInteractionInBeatTarget(value) {
     coordinateSpace: "local",
     oneHandGrabbable,
     twoHandScalable,
+    ...(elasticDragging ? { elasticDragging: true } : {}),
     initialTransform,
   };
   const constraints = normalizeInteractionInBeatConstraints(value.constraints, initialTransform);
@@ -33975,6 +34199,7 @@ function interactionDirectSceneTargets(context) {
       coordinateSpace: "local",
       oneHandGrabbable: target.oneHandGrabbable,
       twoHandScalable: target.twoHandScalable,
+      ...(target.elasticDragging ? { elasticDragging: true } : {}),
       constraints: cloneJson(target.constraints || {}),
       label: entity ? spatialRelationEntityLabel(entity) : target.assetId,
       sourceTransform: cloneJson(target.initialTransform),
@@ -34143,6 +34368,7 @@ function normalizeInteractionConfiguration(value, kind, context = {}) {
         coordinateSpace: "local",
         oneHandGrabbable: sceneTarget.oneHandGrabbable,
         twoHandScalable: sceneTarget.twoHandScalable,
+        ...(sceneTarget.elasticDragging ? { elasticDragging: true } : {}),
         initialTransform: sourceTransform,
         constraints: cloneJson(sceneTarget.constraints || {}),
         destinationTransform,
@@ -34992,6 +35218,7 @@ function interactionMappedTransformSuggestions(editorContext) {
         coordinateSpace: "local",
         oneHandGrabbable: sourceTarget.oneHandGrabbable,
         twoHandScalable: sourceTarget.twoHandScalable,
+        ...(sourceTarget.elasticDragging ? { elasticDragging: true } : {}),
         initialTransform: cloneJson(sourceTarget.sourceTransform),
         constraints: cloneJson(sourceTarget.constraints || {}),
         destinationTransform,
