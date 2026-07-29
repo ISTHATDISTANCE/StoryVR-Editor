@@ -92,12 +92,15 @@ test("the strip is accessible navigation with semantic colors and a visible curr
     readFile(mainUrl, "utf8"),
     readFile(stylesUrl, "utf8"),
   ]);
+  const navigationStart = source.indexOf("function renderSourceGraphProgressNavigation");
+  const navigationEnd = source.indexOf("function renderStoryCanvasGroupingNotice", navigationStart);
+  const navigation = source.slice(navigationStart, navigationEnd);
 
   assert.match(source, /<nav class="source-graph-progress"[^>]*aria-label="Story sections">/);
   assert.match(source, /class="source-graph-progress-segment/);
   assert.match(source, /aria-controls="source-graph-canvas-viewport"/);
   assert.match(source, /aria-current="location"/);
-  assert.match(source, /const range = start === end \? `beat \$\{start\}` : `beats \$\{start\} through \$\{end\}`;/);
+  assert.match(source, /const range = start === end \? `card \$\{start\}` : `cards \$\{start\} through \$\{end\}`;/);
   assert.match(source, /return `Jump to \$\{segment\?\.label \|\| "story section"\}, \$\{range\}`;/);
   assert.match(styles, /\.source-graph-canvas-shell\.has-story-progress\s*\{[^}]*grid-template-rows:\s*auto auto auto minmax\(0, 1fr\);/s);
   assert.match(styles, /\.source-graph-progress-segment\s*\{[^}]*min-height:\s*44px;/s);
@@ -109,6 +112,9 @@ test("the strip is accessible navigation with semantic colors and a visible curr
   assert.match(styles, /\.source-graph-progress-segment\.is-current::after,[\s\S]*border-top:\s*8px solid var\(--ink\);/s);
   assert.match(styles, /\.source-graph-progress-track\s*\{[^}]*overflow-x:\s*auto;[^}]*padding:\s*3px 3px 12px;/s);
   assert.match(styles, /\.source-graph-progress-legend\s*\{[^}]*repeat\(auto-fit, minmax\(128px, 1fr\)\);/s);
+  assert.match(styles, /\.source-graph-progress-legend > span\s*\{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\);/s);
+  assert.doesNotMatch(navigation, /<small>/);
+  assert.doesNotMatch(styles, /\.source-graph-progress-legend small/);
   assert.match(styles, /--source-graph-progress-color-1:\s*oklch\(83% 0\.035 178\);/);
   assert.match(styles, /--source-graph-progress-color-2:\s*oklch\(82% 0\.032 230\);/);
   assert.match(styles, /--source-graph-progress-color-3:\s*oklch\(85% 0\.042 100\);/);
@@ -136,5 +142,49 @@ test("segment activation scrolls only and never changes Source Graph authoring s
   assert.doesNotMatch(
     binding,
     /renderPreservingScroll|updateGraphDraftFromState|markGraphDirty|beginAuthorHistory|commitAuthorHistory|history\.|pushState|replaceState/,
+  );
+});
+
+test("StoryVR checks every opened story for missing progress and generates asynchronously without replacing draft edits", async () => {
+  const source = await readFile(mainUrl, "utf8");
+  const renderStart = source.indexOf("function render()");
+  const renderEnd = source.indexOf("function renderInitialLoadError", renderStart);
+  const renderSource = source.slice(renderStart, renderEnd);
+  const maybeStart = source.indexOf("function maybeRequestStoryCanvasGrouping()");
+  const maybeEnd = source.indexOf("async function requestStoryCanvasGrouping", maybeStart);
+  const maybeRequest = source.slice(maybeStart, maybeEnd);
+  const requestStart = source.indexOf("async function requestStoryCanvasGrouping");
+  const requestEnd = source.indexOf("function sourceGraphProgressRangeLabel", requestStart);
+  const request = source.slice(requestStart, requestEnd);
+
+  assert.match(renderSource, /bindEvents\(\);\s*maybeRequestStoryCanvasGrouping\(\);\s*if \(!activeBlocked\)/);
+  assert.doesNotMatch(maybeRequest, /active\?\.id|state\.activeId/);
+  assert.match(source, /state\.graphDirty\s*\|\|\s*state\.storyCanvasGroupingUi\.flowDirty/);
+  assert.match(source, /markGraphDirty\(\{ storyFlowChanged: true \}\)/);
+  assert.match(request, /api\.post\("\/api\/story-canvas-segments\/generate"/);
+  assert.match(request, /expectedGenerationSignature/);
+  assert.match(request, /sourceGraphProgressStructureMatches\(/);
+  assert.match(request, /requestId !== state\.storyCanvasGroupingUi\.requestId/);
+  assert.doesNotMatch(request, /\brefresh\(/);
+  assert.match(source, /function updateStoryCanvasGroupingDraftDom\(\)/);
+  assert.match(source, /updateStoryCanvasGroupingDraftDom\(\);/);
+  assert.match(source, /notice\.replaceChildren\(message\)/);
+  assert.match(source, /Story progress will update after you save the changed story flow\./);
+  assert.match(source, /Codex is organizing this story into sections/);
+  assert.match(source, /data-story-canvas-grouping-retry/);
+});
+
+test("the server keeps Codex generation outside the long mutation lock and serializes snapshot and commit", async () => {
+  const server = await readFile(new URL("./server.mjs", import.meta.url), "utf8");
+
+  assert.match(server, /POST \/api\/story-canvas-segments\/generate/);
+  assert.match(server, /storyCanvasSegmentsSnapshot:\s*serializeAuthorMutation/);
+  assert.match(server, /storyCanvasSegmentsFinalize:\s*serializeAuthorMutation/);
+  assert.match(server, /generateStoryCanvasSegmentsWithCodex/);
+  assert.match(server, /if \(!codexStatus\.authenticated\)/);
+  assert.match(server, /assertSameOriginJsonRequest\(req\)/);
+  assert.doesNotMatch(
+    server,
+    /pathname\.startsWith\("\/api\/story-canvas-segments\/"\)/,
   );
 });

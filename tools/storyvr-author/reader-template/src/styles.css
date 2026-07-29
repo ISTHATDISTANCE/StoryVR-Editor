@@ -59,11 +59,13 @@ button:disabled {
   position: fixed;
   left: 24px;
   top: 24px;
-  display: grid;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
   gap: 0.65rem;
   width: min(460px, calc(100vw - 48px));
-  max-height: calc(100vh - 48px);
-  overflow: auto;
+  max-height: calc(100vh - 112px);
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 24px;
   padding: 1rem;
@@ -71,6 +73,15 @@ button:disabled {
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
   backdrop-filter: blur(18px);
   transition: width 160ms ease, height 160ms ease, padding 160ms ease, border-radius 160ms ease;
+}
+
+.reader-content {
+  display: grid;
+  gap: 0.65rem;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 0.25rem;
 }
 
 .reader-panel {
@@ -137,8 +148,9 @@ p {
 
 h1 {
   margin-bottom: 0.2rem;
-  font-size: clamp(1.7rem, 4vw, 3.2rem);
-  line-height: 0.95;
+  padding-right: 2.6rem;
+  font-size: clamp(1.35rem, 2vw, 1.85rem);
+  line-height: 1.02;
 }
 
 h2 {
@@ -152,6 +164,95 @@ h2 {
   color: var(--muted);
   font-size: 1rem;
   line-height: 1.45;
+}
+
+.reader-guidance,
+.story-complete {
+  display: grid;
+  gap: 0.28rem;
+  border: 1px solid rgba(229, 170, 99, 0.34);
+  border-radius: 14px;
+  padding: 0.7rem 0.78rem;
+  background: rgba(229, 170, 99, 0.1);
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+
+.reader-guidance strong,
+.story-complete strong {
+  color: #fff5df;
+}
+
+.story-complete {
+  border-color: rgba(110, 216, 194, 0.44);
+  background: rgba(110, 216, 194, 0.1);
+}
+
+.story-complete button {
+  justify-self: start;
+  margin-top: 0.25rem;
+}
+
+.reader-guidance[hidden],
+.story-complete[hidden] {
+  display: none;
+}
+
+.reader-startup-alert {
+  display: grid;
+  gap: 0.65rem;
+  border: 2px solid #ffb4a2;
+  border-radius: 18px;
+  padding: 1rem;
+  background: rgba(92, 25, 20, 0.94);
+  color: #fff8f4;
+  line-height: 1.42;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
+}
+
+.reader-startup-alert[hidden] {
+  display: none;
+}
+
+.reader-startup-alert > strong {
+  font-size: 1.15rem;
+}
+
+.reader-startup-alert p {
+  margin: 0;
+}
+
+.reader-startup-location {
+  display: grid;
+  gap: 0.2rem;
+  border-left: 3px solid #ffb4a2;
+  padding-left: 0.7rem;
+}
+
+.reader-startup-location span {
+  color: rgba(255, 248, 244, 0.74);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.reader-startup-location code {
+  overflow-wrap: anywhere;
+  color: #ffe1d7;
+}
+
+.reader-panel.startup-failed .reader-content > :not(.kicker):not(#story-title):not(.reader-startup-alert) {
+  display: none;
+}
+
+.reader-panel.startup-failed .reader-actions {
+  display: none;
+}
+
+.reader-panel.startup-failed .reader-panel-toggle {
+  display: none;
 }
 
 .variant-controls {
@@ -261,11 +362,19 @@ h2 {
   letter-spacing: 0.04em;
 }
 
+.decision-row[hidden] {
+  display: none;
+}
+
 .reader-actions {
+  flex: 0 0 auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   gap: 0.55rem;
   align-items: center;
+  border-top: 1px solid var(--line);
+  padding-top: 0.65rem;
+  background: linear-gradient(to bottom, transparent, rgba(12, 22, 19, 0.34));
 }
 
 .xr-button-slot {
@@ -275,26 +384,97 @@ h2 {
 .beat-strip {
   position: fixed;
   left: 24px;
-  right: 24px;
+  right: auto;
   bottom: 20px;
-  display: flex;
-  gap: 0.45rem;
-  overflow-x: auto;
-  padding: 0.25rem 0 0.5rem;
+  z-index: 30;
+  display: block;
+  width: min(460px, calc(100vw - 48px));
+  overflow: visible;
+  padding: 0;
 }
 
-.beat-strip button {
-  flex: 0 0 46px;
-  width: 46px;
-  height: 46px;
+.beat-strip[hidden] {
+  display: none;
+}
+
+.part-picker {
+  position: relative;
+}
+
+.part-picker summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.68rem 0.9rem;
+  background: rgba(12, 22, 19, 0.94);
+  color: #fff5df;
+  cursor: pointer;
+  font-weight: 900;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(14px);
+  list-style: none;
+}
+
+.part-picker summary::-webkit-details-marker {
+  display: none;
+}
+
+.part-picker summary::after {
+  content: "▾";
+  color: var(--accent);
+  font-size: 1rem;
+}
+
+.part-picker[open] summary::after {
+  content: "▴";
+}
+
+.part-picker-summary-prompt {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 0.78rem;
+}
+
+.part-picker-list {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 0.65rem);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
+  gap: 0.5rem;
+  width: min(560px, calc(100vw - 48px));
+  max-height: min(46vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 0.85rem;
+  background: rgba(8, 18, 15, 0.98);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.48);
+}
+
+.part-picker:not([open]) .part-picker-list {
+  display: none;
+}
+
+.part-picker-list button {
+  width: 100%;
+  min-width: 44px;
+  height: 44px;
   padding: 0;
-  background: rgba(12, 22, 19, 0.72);
+  background: rgba(246, 242, 231, 0.08);
 }
 
 .beat-strip button.active {
   border-color: var(--warm);
   background: rgba(229, 170, 99, 0.24);
   color: #fff5df;
+  outline: 3px solid var(--warm);
+  outline-offset: 2px;
 }
 
 .beat-strip button.has-model {
@@ -305,6 +485,7 @@ h2 {
   position: fixed;
   right: 24px;
   top: 24px;
+  z-index: 15;
   max-width: min(360px, calc(100vw - 48px));
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -314,6 +495,19 @@ h2 {
   font-size: 0.86rem;
   font-weight: 800;
   backdrop-filter: blur(14px);
+}
+
+.runtime-status.error {
+  border-color: #ffb4a2;
+  background: rgba(92, 25, 20, 0.94);
+  color: #fff8f4;
+}
+
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
 }
 
 @media (max-width: 760px) {
@@ -326,7 +520,7 @@ h2 {
     right: 12px;
     top: 12px;
     width: auto;
-    max-height: 52vh;
+    max-height: calc(100vh - 112px);
   }
 
   .reader-panel.minimized {
@@ -348,5 +542,11 @@ h2 {
     left: 12px;
     right: 12px;
     bottom: 12px;
+    width: auto;
+  }
+
+  .part-picker-list {
+    width: 100%;
+    max-height: 42vh;
   }
 }

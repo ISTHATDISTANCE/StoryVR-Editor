@@ -76,8 +76,10 @@ test("physical traversal exposes an authored station zone and never forces camer
   assert.match(apply, /traversalDestinationRoot\.position\.set\(destination\.x, 0, destination\.z\)/);
   assert.match(functionSource("updatePhysicalTraversal"), /traversalDestinationRoot\.position\.set\(destination\.x, 0, destination\.z\)/);
   assert.doesNotMatch(functionSource("updatePhysicalTraversal"), /teleportReaderTo|camera\.position|readerRig\.position/);
-  assert.match(functionSource("configureTraversalControls"), /prevButton\.hidden = isPhysicalLocomotionBoundary\(incoming\)/);
-  assert.match(functionSource("configureTraversalControls"), /nextButton\.hidden = isPhysicalLocomotionBoundary\(outgoing\)/);
+  assert.match(functionSource("configureTraversalControls"), /prevButton\.hidden = false/);
+  assert.match(functionSource("configureTraversalControls"), /nextButton\.hidden = false/);
+  assert.match(functionSource("configureTraversalControls"), /prevButton\.disabled = activeIndex === 0 \|\| isPhysicalLocomotionBoundary\(incoming\)/);
+  assert.match(functionSource("configureTraversalControls"), /nextButton\.disabled = !atEnd && isPhysicalLocomotionBoundary\(outgoing\)/);
   assert.match(functionSource("navigateInteraction"), /isPhysicalLocomotionBoundary\(boundary\)/);
   assert.match(functionSource("updatePhysicalTraversal"), /runtimeInteractionForBoundary\(activeIndex, activeIndex \+ 1\)/);
 });

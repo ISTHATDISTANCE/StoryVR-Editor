@@ -110,10 +110,16 @@ The editor keeps one browser-session Undo/Redo history. Use `Command-Z` and
 `Command-Shift-Z` on macOS, or `Ctrl-Z` and `Ctrl-Shift-Z`/`Ctrl-Y` on
 Windows and Linux.
 
+When a project opens, StoryVR can use the signed-in Codex CLI to generate a
+semantic progress strip for the saved Source Graph. Missing or stale grouping
+is refreshed in the background after the story order is saved; the continuous
+beat and variant graph remains the source of truth.
+
 ### Optional AI features
 
-StoryVR remains usable without an AI login, but environment generation and some
-motion-generation features require a signed-in Codex CLI:
+StoryVR remains usable without an AI login, but Source Graph progress grouping,
+environment generation, and some motion-generation features require a signed-in
+Codex CLI:
 
 ```sh
 codex login --device-auth

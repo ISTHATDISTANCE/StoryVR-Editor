@@ -15,6 +15,8 @@ import {
   compileAuthorRuntime,
   generateComponentProposals,
   generateProceduralDynamicsPlan,
+  generateStoryCanvasSegments,
+  generateStoryCanvasSegmentsWithCodex,
   environmentSearchRecommendationSignature,
   loadAuthorProject,
   loadEnvironmentSearchRecommendation,
@@ -83,6 +85,7 @@ let environmentGenerationBusy = false;
 const MAX_ENVIRONMENT_JSON_BYTES = 64 * 1024;
 const MAX_ENVIRONMENT_GENERATION_JSON_BYTES = 32 * 1024 * 1024;
 const MAX_DYNAMICS_JSON_BYTES = 512 * 1024;
+const MAX_STORY_CANVAS_SEGMENTS_JSON_BYTES = 16 * 1024;
 let environmentProviderStatus = initialEnvironmentProviderStatus();
 
 if (!options.resourceFolder && !options.storyFolder) {
@@ -534,6 +537,35 @@ async function handleApi(req, res) {
       return;
     }
 
+    if (route === "POST /api/story-canvas-segments/generate") {
+      assertSameOriginJsonRequest(req);
+      const body = await readLimitedJsonBody(req, MAX_STORY_CANVAS_SEGMENTS_JSON_BYTES);
+      if (body.force === true) {
+        throw httpError(400, "Forced story progress regeneration is not available from this endpoint.");
+      }
+      const storyCanvasSegments = await generateStoryCanvasSegments({
+        ...authorOptions(),
+        storyCanvasSegmentsSnapshot: serializeAuthorMutation,
+        storyCanvasSegmentsFinalize: serializeAuthorMutation,
+        storyCanvasSegmentsGenerator: async (context, generationOptions) => {
+          const codexStatus = await getCodexStatus();
+          if (!codexStatus.codexAvailable) {
+            throw httpError(503, "Codex CLI is not available on this authoring server.");
+          }
+          if (!codexStatus.authenticated) {
+            throw httpError(409, "Sign in to Codex CLI before generating story progress.");
+          }
+          return generateStoryCanvasSegmentsWithCodex(context, {
+            ...generationOptions,
+            codexBin: CODEX_BIN,
+            codexVersion: codexStatus.version,
+          });
+        },
+      }, body);
+      writeJsonResponse(res, 200, { storyCanvasSegments });
+      return;
+    }
+
     if (route === "POST /api/source-motion-links") {
       writeJsonResponse(res, 200, await saveSourceMotionLinks(authorOptions(), await readJsonBody(req)));
       return;
@@ -978,6 +1010,24 @@ async function readLimitedJsonBody(req, maximumBytes) {
 
 function httpError(statusCode, message) {
   return Object.assign(new Error(message), { statusCode });
+}
+
+function assertSameOriginJsonRequest(req) {
+  const contentType = String(req.headers["content-type"] || "").toLowerCase();
+  if (!contentType.startsWith("application/json")) {
+    throw httpError(415, "Story progress generation requires application/json.");
+  }
+  const origin = String(req.headers.origin || "").trim();
+  if (!origin) return;
+  let originHost;
+  try {
+    originHost = new URL(origin).host;
+  } catch {
+    throw httpError(403, "Story progress generation requires a same-origin request.");
+  }
+  if (originHost !== String(req.headers.host || "").trim()) {
+    throw httpError(403, "Story progress generation requires a same-origin request.");
+  }
 }
 
 function environmentErrorStatus(error) {

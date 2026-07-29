@@ -141,8 +141,10 @@ assert.doesNotMatch(dynamicAnimation, /Math\.sin|animateDynamicEffectOverlays|wr
 assert.match(functionSource("dynamicSourceMotionTracksForPreview"), /sourceMotionDraftForTrack\(track\)[^]*beatIds\.has/s, "Dynamics resolves embedded clips from the active beat mapping");
 assert.match(functionSource("attachSourceDynamicsPreviewAnimation"), /dynamicSourceMotionTracksForPreview\(viewer, assetId\)/, "Dynamics playback is driven by mapped GLB tracks rather than the advanced-editor selection");
 assert.match(functionSource("dynamicPreviewHasEmbeddedGlbAnimation"), /hasEmbeddedAnimation/, "Dynamics only exposes playback controls when the active GLB has mapped animation evidence");
-assert.match(functionSource("renderDynamicPreview"), /hasSourceAnimation \? "Generated \+ GLB motion" : "Generated motion"/,
-  "Dynamics distinguishes an explicit generated plan from embedded GLB playback and static scenes");
+assert.match(functionSource("renderDynamicPreview"), /hasSourceAnimation \? "Saved \+ added movement" : "Added movement"/,
+  "Dynamics distinguishes added movement from movement already saved with the story");
+assert.match(functionSource("renderDynamicPreview"), /\? "Saved movement"\s*:\s*"Still"/,
+  "Dynamics keeps saved movement distinct from scenes that stay still");
 assert.match(functionSource("initializeDynamicGeometryViewer"), /attachLockedEnvironmentToViewer\(viewer\)/, "Dynamics inherits the current saved Environment Enhancement");
 assert.match(functionSource("initializeDynamicGeometryViewer"), /createSpatialReaderRig\(root, layers\.viewpointKind, layoutKind, readerEntity\)/, "Dynamics shows the saved Reader model in its spatial editor");
 assert.doesNotMatch(functionSource("initializeDynamicGeometryViewer"), /addInheritedTextComfortLayer/, "Dynamics does not materialize the reader-hand text system surface");

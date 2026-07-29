@@ -124,7 +124,17 @@ const beatTitle = document.querySelector("#beat-title");
 const beatText = document.querySelector("#beat-text");
 const variantControls = document.querySelector("#variant-controls");
 const readerPanel = document.querySelector(".reader-panel");
+const readerContent = document.querySelector(".reader-content");
 const readerPanelToggle = document.querySelector("#reader-panel-toggle");
+const readerGuidanceText = document.querySelector("#reader-guidance-text");
+const storyComplete = document.querySelector("#story-complete");
+const restartStoryButton = document.querySelector("#restart-story");
+const readerStartupAlert = document.querySelector("#reader-startup-alert");
+const readerStartupAlertMessage = document.querySelector("#reader-startup-alert-message");
+const readerStartupAlertLocation = document.querySelector("#reader-startup-alert-location");
+const readerStartupAlertFile = document.querySelector("#reader-startup-alert-file");
+const readerStartupAlertRecovery = document.querySelector("#reader-startup-alert-recovery");
+const reloadReaderButton = document.querySelector("#reload-reader");
 const beatStrip = document.querySelector("#beat-strip");
 const status = document.querySelector("#runtime-status");
 const environmentInfo = document.querySelector("#environment-info");
@@ -132,15 +142,54 @@ const prevButton = document.querySelector("#prev-beat");
 const nextButton = document.querySelector("#next-beat");
 const xrButtonSlot = document.querySelector("#xr-button-slot");
 
+const READER_STORY_GUIDANCE_PROFILES = Object.freeze({
+  "shark-season-attacks-survival-tips": Object.freeze({
+    key: "shark",
+    context: "Follow each shark-safety step.",
+    next: "Follow each shark-safety step. Select Next to continue; in a headset, use A for next and X for back.",
+    variant: "Compare the shark choices below, then select Next. In a headset, use Trigger to choose.",
+    final: "This is the final shark-safety part. Select Finish when you are ready.",
+  }),
+  "reopen-schools-safety-ventilation": Object.freeze({
+    key: "classroom",
+    context: "Follow how fresh air moves through the classroom.",
+    next: "Follow how fresh air moves through the classroom. Select Next to continue; in a headset, use A for next and X for back.",
+    variant: "Compare the classroom ventilation choices below, then select Next. In a headset, use Trigger to choose.",
+    final: "This is the final classroom ventilation part. Select Finish when you are ready.",
+  }),
+  "coronavirus-transmission-cough-6-feet-ar-ul": Object.freeze({
+    key: "transmission",
+    context: "Watch how cough droplets spread at different distances.",
+    next: "Watch how cough droplets spread at different distances. Select Next to continue; in a headset, use A for next and X for back.",
+    variant: "Choose a cough-distance view below, then select Next to reveal its droplets. In a headset, use Trigger to choose.",
+    final: "This is the final cough-distance view. Select Finish when you are ready.",
+  }),
+});
+const GENERIC_READER_STORY_GUIDANCE_PROFILE = Object.freeze({
+  key: "generic",
+  context: "Follow the story one part at a time.",
+  next: "Select Next or use the Right Arrow key. In a headset, use A for next and X for back.",
+  variant: "Choose an option below, then select Next. In a headset, use Trigger to choose.",
+  final: "This is the last part. Select Finish when you are ready.",
+});
+const READER_STORY_SLUG_BY_PATH_SEGMENT = Object.freeze({
+  shark: "shark-season-attacks-survival-tips",
+  classroom: "reopen-schools-safety-ventilation",
+  transmission: "coronavirus-transmission-cough-6-feet-ar-ul",
+});
+
+reloadReaderButton?.addEventListener("click", () => window.location.reload());
+
 let runtime;
 try {
   runtime = await loadRuntime();
 } catch (error) {
-  status.textContent = error.message;
-  throw error;
+  showReaderStartupFailure("runtime-data", error);
+  throw new Error("Story could not start.");
 }
 
 const beats = runtime.contentUnits || [];
+const activeReaderStoryGuidance = resolveReaderStoryGuidanceProfile(runtime, window.location.pathname);
 const runtimePointCloudEffects = Array.isArray(runtime.pointCloudEffects) ? runtime.pointCloudEffects : [];
 const graphBeats = new Map((runtime.sceneTopology?.storyGraph?.beats || []).map((beat) => [beat.id, beat]));
 const runtimeHasAuthoredEnvironmentPolicy = hasAuthoredRuntimeEnvironmentPolicy(runtime);
@@ -240,7 +289,7 @@ let spatialTextCollisionProxyCache = { root: null, checkedAt: -Infinity, entries
 let lastFrameTime = performance.now();
 let elapsedSeconds = 0;
 
-let activeIndex = firstTraversalBeatIndex();
+let activeIndex = 0;
 const runtimeProgressionRouteHistory = new Map();
 let activeModel = null;
 let activeModelAsset = null;
@@ -290,8 +339,8 @@ let textPanelMinimized = false;
 let readerPanelDrag = null;
 let suppressReaderPanelToggleClick = false;
 
-storyTitle.textContent = runtime.title || runtime.slug || "Compiled StoryVR";
-decisionRow.innerHTML = designChips().map((label) => `<span>${escapeHtml(label)}</span>`).join("");
+storyTitle.textContent = runtime.title || runtime.slug || "StoryVR experience";
+decisionRow.replaceChildren();
 
 const renderer = new THREE.WebGLRenderer({
   antialias: performanceOptimization.settings.antialias,
@@ -492,6 +541,14 @@ directManipulationCueRoot.name = "storyvr-direct-manipulation-cues";
 scene.add(directManipulationCueRoot);
 
 const xrButton = VRButton.createButton(renderer);
+const labelUnsupportedXrButton = () => {
+  if (!/not supported/i.test(xrButton.textContent || "")) return;
+  xrButton.textContent = "Headset unavailable";
+  xrButton.setAttribute("aria-label", "Headset mode is unavailable in this browser");
+  xrButton.title = "Use a compatible headset browser to enter VR";
+};
+new MutationObserver(labelUnsupportedXrButton).observe(xrButton, { childList: true, subtree: true });
+labelUnsupportedXrButton();
 Object.assign(xrButton.style, {
   position: "static",
   bottom: "auto",
@@ -503,7 +560,15 @@ xrButtonSlot.appendChild(xrButton);
 configureXrInteractionControllers();
 
 prevButton.addEventListener("click", () => navigateInteraction(-1));
-nextButton.addEventListener("click", () => navigateInteraction(1));
+nextButton.addEventListener("click", () => {
+  if (activeIndex === beats.length - 1) completeStory();
+  else navigateInteraction(1);
+});
+restartStoryButton?.addEventListener("click", async () => {
+  await setBeat(0);
+  if (readerContent) readerContent.scrollTop = 0;
+  beatTitle.focus();
+});
 readerPanelToggle?.addEventListener("click", (event) => {
   if (suppressReaderPanelToggleClick) {
     suppressReaderPanelToggleClick = false;
@@ -519,8 +584,16 @@ renderer.domElement.addEventListener("pointerdown", () => renderer.domElement.fo
 renderer.domElement.addEventListener("blur", () => desktopReaderMovementKeys.clear());
 window.addEventListener("blur", () => desktopReaderMovementKeys.clear());
 window.addEventListener("keydown", (event) => {
-  if (event.key === "ArrowLeft") navigateInteraction(-1);
-  if (event.key === "ArrowRight") navigateInteraction(1);
+  const interactiveTarget = event.target instanceof Element
+    && event.target.closest("button, a, input, select, textarea, summary, [role='tab']");
+  if (!interactiveTarget && event.key === "ArrowLeft") {
+    event.preventDefault();
+    navigateInteraction(-1);
+  }
+  if (!interactiveTarget && event.key === "ArrowRight") {
+    event.preventDefault();
+    navigateInteraction(1);
+  }
   const key = event.key.toLowerCase();
   if (
     !renderer.xr.isPresenting
@@ -536,16 +609,12 @@ window.addEventListener("keyup", (event) => {
   if (["w", "a", "s", "d"].includes(key)) desktopReaderMovementKeys.delete(key);
 });
 
-buildBeatStrip();
-configureTraversalControls();
 if (beats.length) {
+  buildBeatStrip();
+  configureTraversalControls();
   await setBeat(activeIndex);
 } else {
-  beatProgress.textContent = "No beats in compiled runtime";
-  beatTitle.textContent = "No story beats";
-  beatText.textContent = "Compile again after the source graph contains story beats.";
-  prevButton.disabled = true;
-  nextButton.disabled = true;
+  showReaderStartupFailure("reader-start");
 }
 renderer.setAnimationLoop(render);
 
@@ -553,6 +622,63 @@ async function loadRuntime() {
   const response = await fetch(runtimeUrl, { cache: "no-store" });
   if (!response.ok) throw new Error(`Could not load ${runtimeUrl}`);
   return response.json();
+}
+
+function safeReaderRuntimeFileLocation(value = runtimeUrl) {
+  const path = String(value || "").split(/[?#]/, 1)[0].replace(/\\/g, "/");
+  const safeSegments = path.split("/").filter((segment) => (
+    segment
+    && segment !== "."
+    && segment !== ".."
+    && /^[a-z0-9._-]+$/i.test(segment)
+  ));
+  return safeSegments.slice(-2).join("/").slice(0, 120) || "storyvr-runtime.json";
+}
+
+function readerStartupFailureMessage(kind, error) {
+  if (kind !== "runtime-data") return "No story parts are available.";
+  const message = String(error?.message || "").toLowerCase();
+  return /json|parse|unexpected token|syntax/.test(message)
+    ? "The story data file could not be read."
+    : "The story data file could not be loaded.";
+}
+
+function showReaderStartupFailure(kind = "reader-start", error = null) {
+  const runtimeDataFailure = kind === "runtime-data";
+  readerPanel?.classList.add("startup-failed");
+  if (readerStartupAlert) readerStartupAlert.hidden = false;
+  if (readerStartupAlertMessage) readerStartupAlertMessage.textContent = readerStartupFailureMessage(kind, error);
+  if (readerStartupAlertLocation) readerStartupAlertLocation.textContent = "Reader start";
+  if (readerStartupAlertFile) {
+    readerStartupAlertFile.hidden = !runtimeDataFailure;
+    readerStartupAlertFile.textContent = runtimeDataFailure
+      ? `Runtime data file: ${safeReaderRuntimeFileLocation(runtimeUrl)}`
+      : "";
+  }
+  if (readerStartupAlertRecovery) {
+    readerStartupAlertRecovery.textContent = runtimeDataFailure
+      ? "Make sure the runtime data file is available and valid, then reload."
+      : "Check the Reader story data, then reload.";
+  }
+  storyTitle.textContent = "Story could not start";
+  beatStrip.hidden = true;
+  status.textContent = "Story could not start.";
+  status.classList.add("error");
+  stage.setAttribute("aria-label", "Story scene unavailable");
+  requestAnimationFrame(() => reloadReaderButton?.focus());
+}
+
+function resolveReaderStoryGuidanceProfile(runtimeValue, pathname = "") {
+  const runtimeSlug = String(runtimeValue?.slug || "").trim().toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(READER_STORY_GUIDANCE_PROFILES, runtimeSlug)) {
+    return READER_STORY_GUIDANCE_PROFILES[runtimeSlug];
+  }
+  const pathSegments = String(pathname || "").toLowerCase().split("/").filter(Boolean);
+  const matchedSegment = pathSegments.find((segment) => (
+    Object.prototype.hasOwnProperty.call(READER_STORY_SLUG_BY_PATH_SEGMENT, segment)
+  ));
+  const fallbackSlug = matchedSegment ? READER_STORY_SLUG_BY_PATH_SEGMENT[matchedSegment] : "";
+  return READER_STORY_GUIDANCE_PROFILES[fallbackSlug] || GENERIC_READER_STORY_GUIDANCE_PROFILE;
 }
 
 function hasAuthoredRuntimeEnvironmentPolicy(runtimeValue) {
@@ -920,10 +1046,10 @@ function renderEnvironmentInformation(result, runtimeEnvironment = activeRuntime
   const evidence = runtimeEnvironment.provenance;
   const label = document.createElement("span");
   label.textContent = result.loaded
-    ? `Environment: ${evidence.title || "selected surrounding"}`
-    : `Environment fallback: ${result.error || "the selected surrounding could not be loaded"}`;
+    ? `Setting: ${evidence.title || "story environment"}`
+    : "A simple background is being used because the selected setting could not load.";
   environmentInfo.append(label);
-  const details = [evidence.provider, runtimeLicenseLabel(evidence.license), evidence.attribution].filter(Boolean).join(" · ");
+  const details = [runtimeLicenseLabel(evidence.license), evidence.attribution].filter(Boolean).join(" · ");
   if (details) environmentInfo.append(document.createTextNode(` — ${details}`));
   if (evidence.sourceUrl) {
     environmentInfo.append(document.createTextNode(" "));
@@ -1886,6 +2012,9 @@ function normalizeRuntimeInteractionConfiguration(value, policy) {
         targetKind,
         coordinateSpace: String(target.coordinateSpace || "scene").trim().toLowerCase(),
         destinationTransform: normalizeRuntimeTransform(target.destinationTransform),
+        ...(Array.isArray(target.triggerComponents) ? {
+          triggerComponents: runtimeDirectTriggerComponents(target, target),
+        } : {}),
         tolerance: {
           positionMeters: finiteInteractionNumber(targetTolerance.positionMeters, normalizedTolerance.positionMeters, 0.001),
           rotationDegrees: finiteInteractionNumber(targetTolerance.rotationDegrees, normalizedTolerance.rotationDegrees, 0.1),
@@ -3940,6 +4069,32 @@ function runtimeInteractionReachableChannels(value = null) {
   };
 }
 
+function runtimeDirectTriggerComponents(target, interactable = null) {
+  const availableFlags = runtimeInteractionReachableChannels(interactable || target);
+  const available = [
+    availableFlags.position ? "position" : null,
+    availableFlags.rotation ? "rotation" : null,
+    availableFlags.scale ? "scale" : null,
+  ].filter(Boolean);
+  if (!Array.isArray(target?.triggerComponents)) return available;
+  const availableSet = new Set(available);
+  const requested = [...new Set(target.triggerComponents
+    .map((component) => String(component || "").trim().toLowerCase())
+    .filter((component) => availableSet.has(component)))];
+  return requested.length
+    ? ["position", "rotation", "scale"].filter((component) => requested.includes(component))
+    : available;
+}
+
+function runtimeDirectTriggerChannels(target, interactable = null) {
+  const components = new Set(runtimeDirectTriggerComponents(target, interactable));
+  return {
+    position: components.has("position"),
+    rotation: components.has("rotation"),
+    scale: components.has("scale"),
+  };
+}
+
 function runtimeDirectTransformError(root, target, interactable = null) {
   const destination = target?.destinationTransform;
   if (!root || !destination) return null;
@@ -3958,7 +4113,7 @@ function runtimeDirectTransformError(root, target, interactable = null) {
     Math.abs(currentScale.z - targetScale.z) / Math.max(Math.abs(targetScale.z), 0.0001),
   );
   return {
-    reachable: runtimeInteractionReachableChannels(interactable),
+    reachable: runtimeDirectTriggerChannels(target, interactable),
     positionMeters: currentPosition.distanceTo(targetPosition),
     rotationDegrees: THREE.MathUtils.radToDeg(currentQuaternion.angleTo(targetQuaternion)),
     scaleRatio: scaleError,
@@ -3990,7 +4145,7 @@ function runtimeDirectDestinationWorldTransform(root, target, interactable = nul
   const destination = target?.destinationTransform;
   if (!root || !destination) return null;
   const entry = runtimeInteractionEntryFor(root, interactable);
-  const reachable = runtimeInteractionReachableChannels(entry || interactable);
+  const reachable = runtimeDirectTriggerChannels(target, entry || interactable);
   const current = target.coordinateSpace === "local"
     ? runtimeInteractionLogicalTransform(root, entry)
     : runtimeObjectWorldTransform(root);
@@ -4505,13 +4660,15 @@ function updateRuntimeDirectManipulation() {
       scale: scale.startLogical.scale.clone().multiplyScalar(ratio),
     };
     const clamped = clampRuntimeInteractionLogicalTransform(logical, scale.targetEntry.target.constraints);
-    applyRuntimeInteractionLogicalTransform(scale.targetEntry, clamped);
-    return true;
+    const applied = applyRuntimeInteractionLogicalTransform(scale.targetEntry, clamped);
+    if (applied) evaluateRuntimeDirectManipulationCompletion();
+    return applied;
   }
   if (grab.mode === "grab") {
     applyRuntimeGrabControllerMatrix(grab);
     const clamped = clampRuntimeInteractionTarget(grab.targetEntry);
     syncRuntimeElasticGrabOffset(grab);
+    if (clamped) evaluateRuntimeDirectManipulationCompletion();
     return clamped;
   }
   return grab.mode === "armed-scale";
@@ -4522,6 +4679,7 @@ function endXrDirectManipulationScale(entry) {
   const grab = xrDirectManipulationGrab;
   if (!scale || !grab || (scale.primaryEntry !== entry && scale.secondaryEntry !== entry)) return false;
   updateRuntimeDirectManipulation();
+  if (directManipulationAdvancePending || !xrDirectManipulationGrab) return true;
   const remainingEntry = scale.primaryEntry === entry ? scale.secondaryEntry : scale.primaryEntry;
   xrDirectManipulationScale = null;
   grab.entry = remainingEntry;
@@ -4628,35 +4786,124 @@ function handleXrControllerSelect(event) {
 }
 
 function buildBeatStrip() {
-  beatStrip.innerHTML = beats.map((beat, index) => `
-    <button
-      class="${modelAssetForBeat(beat) ? "has-model" : ""}"
-      type="button"
-      data-beat-index="${index}"
-      title="${escapeHtml(beat.title || beat.text || beat.id)}"
-    >${String(index + 1).padStart(2, "0")}</button>
-  `).join("");
+  beatStrip.hidden = false;
+  beatStrip.innerHTML = `
+    <details id="part-picker" class="part-picker">
+      <summary id="part-picker-summary" aria-controls="part-picker-list">
+        <span id="part-picker-progress">Part 1 of ${beats.length}</span>
+        <span id="part-picker-prompt" class="part-picker-summary-prompt">Choose part</span>
+      </summary>
+      <div id="part-picker-list" class="part-picker-list" aria-label="All story parts">
+        ${beats.map((beat, index) => `
+          <button
+            class="${modelAssetForBeat(beat) ? "has-model" : ""}"
+            type="button"
+            data-beat-index="${index}"
+            title="${escapeHtml(beat.title || beat.text || beat.id)}"
+            aria-label="Go to part ${index + 1}: ${escapeHtml(beat.title || beat.text || beat.id || "Untitled")}"
+          >${String(index + 1).padStart(2, "0")}</button>
+        `).join("")}
+      </div>
+    </details>
+  `;
+  const partPicker = beatStrip.querySelector("#part-picker");
   for (const button of beatStrip.querySelectorAll("button")) {
     button.addEventListener("click", () => {
       const destinationIndex = Number(button.dataset.beatIndex);
       if (requiresPhysicalLocomotionBetween(activeIndex, destinationIndex)) return;
+      if (partPicker) partPicker.open = false;
       setBeat(destinationIndex);
     });
   }
+  partPicker?.addEventListener("toggle", () => {
+    if (!partPicker.open) return;
+    requestAnimationFrame(() => {
+      beatStrip.querySelector('[aria-current="step"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+  });
+  updatePartPickerSummary();
+}
+
+function updatePartPickerSummary(completed = false) {
+  const progress = beatStrip.querySelector("#part-picker-progress");
+  const prompt = beatStrip.querySelector("#part-picker-prompt");
+  const summary = beatStrip.querySelector("#part-picker-summary");
+  if (progress) progress.textContent = `Part ${activeIndex + 1} of ${beats.length}`;
+  if (prompt) prompt.textContent = completed ? "Story complete" : "Choose part";
+  summary?.setAttribute(
+    "aria-label",
+    completed
+      ? `Story complete at part ${activeIndex + 1} of ${beats.length}. Open the part list to review.`
+      : `Current story part ${activeIndex + 1} of ${beats.length}. Open the part list to choose another part.`,
+  );
 }
 
 function configureTraversalControls() {
   const incoming = runtimeInteractionForBoundary(activeIndex - 1, activeIndex);
   const outgoing = runtimeInteractionForBoundary(activeIndex, activeIndex + 1);
-  prevButton.hidden = isPhysicalLocomotionBoundary(incoming);
-  nextButton.hidden = isPhysicalLocomotionBoundary(outgoing);
-  prevButton.textContent = isReaderLocomotionInteraction(incoming) ? "Previous station" : "Previous beat";
-  nextButton.textContent = isReaderLocomotionInteraction(outgoing) ? "Next station" : "Next beat";
-  beatStrip.setAttribute("aria-label", "Story beats and authored interaction boundaries");
+  const atEnd = activeIndex === beats.length - 1;
+  prevButton.hidden = false;
+  nextButton.hidden = false;
+  prevButton.disabled = activeIndex === 0 || isPhysicalLocomotionBoundary(incoming);
+  nextButton.disabled = !atEnd && isPhysicalLocomotionBoundary(outgoing);
+  prevButton.textContent = isReaderLocomotionInteraction(incoming) ? "Previous place" : "Previous";
+  nextButton.textContent = atEnd
+    ? "Finish"
+    : isReaderLocomotionInteraction(outgoing) ? "Next place" : "Next";
+  prevButton.setAttribute("aria-label", isReaderLocomotionInteraction(incoming)
+    ? "Return to the previous place"
+    : "Go to the previous story part");
+  nextButton.setAttribute("aria-label", atEnd
+    ? "Finish the story"
+    : isReaderLocomotionInteraction(outgoing) ? "Continue to the next place" : "Go to the next story part");
+  beatStrip.setAttribute("aria-label", "Choose a story part");
   for (const button of beatStrip.querySelectorAll("button")) {
     const destinationIndex = Number(button.dataset.beatIndex);
     button.disabled = requiresPhysicalLocomotionBetween(activeIndex, destinationIndex);
   }
+  updateReaderGuidance();
+}
+
+function updateReaderGuidance() {
+  if (!readerGuidanceText || !beats.length) return;
+  if (activeIndex === beats.length - 1) {
+    readerGuidanceText.textContent = activeReaderStoryGuidance.final;
+    return;
+  }
+  const outgoing = runtimeInteractionForBoundary(activeIndex, activeIndex + 1);
+  if (isDirectManipulationInteraction(outgoing)) {
+    const targets = runtimeInteractionConfiguration(outgoing)?.targets || [];
+    const canMove = targets.some((target) => target.oneHandGrabbable === true);
+    const canResize = targets.some((target) => target.twoHandScalable === true);
+    const action = canMove && canResize
+      ? "move or resize the highlighted object until it matches the glowing guide"
+      : canResize ? "resize the highlighted object until it matches the glowing guide"
+        : "move the highlighted object until it matches the glowing guide";
+    readerGuidanceText.textContent = activeReaderStoryGuidance.key === "shark"
+      ? `For the shark activity, hold Grip in a headset to ${action}. On desktop, select Next.`
+      : `${activeReaderStoryGuidance.context} In a headset, hold Grip to ${action}. On desktop, select Next.`;
+    return;
+  }
+  if (isPhysicalLocomotionBoundary(outgoing)) {
+    readerGuidanceText.textContent = `${activeReaderStoryGuidance.context} Walk to the glowing destination and pause there briefly to continue.`;
+    return;
+  }
+  const variantGroup = runtimeVariantGroupForBeat(beats[activeIndex]);
+  readerGuidanceText.textContent = variantGroup
+    ? activeReaderStoryGuidance.variant
+    : activeReaderStoryGuidance.next;
+}
+
+function completeStory() {
+  if (!beats.length || activeIndex !== beats.length - 1) return;
+  if (storyComplete) storyComplete.hidden = false;
+  nextButton.disabled = true;
+  beatProgress.textContent = `${beats.length} of ${beats.length} · Story complete`;
+  if (readerGuidanceText) readerGuidanceText.textContent = "Story complete. You can restart from the beginning or review any numbered part.";
+  status.textContent = "Story complete.";
+  updatePartPickerSummary(true);
+  storyComplete?.scrollIntoView({ block: "nearest" });
+  restartStoryButton?.focus();
 }
 
 function navigateInteraction(direction) {
@@ -4670,6 +4917,7 @@ function navigateInteraction(direction) {
 
 async function setBeat(index) {
   if (!beats.length) return;
+  if (storyComplete) storyComplete.hidden = true;
   const options = arguments[1] && typeof arguments[1] === "object" ? arguments[1] : {};
   const loadRevision = ++activeSceneLoadRevision;
   clearRuntimeDirectManipulation();
@@ -4741,19 +4989,28 @@ async function setBeat(index) {
       : null;
   const text = variantOption?.text || beat.text || graphBeat?.text || "";
   const variantProgress = variantGroup && variantOption
-    ? ` - option ${variantGroup.options.findIndex((option) => option.id === variantOption.id) + 1}/${variantGroup.options.length}`
+    ? ` · option ${variantGroup.options.findIndex((option) => option.id === variantOption.id) + 1} of ${variantGroup.options.length}`
     : "";
-  const beatVisualKind = usesBeatSpatialScene && spatialAssetEntries.length
-    ? "spatial scene"
-    : modelAsset ? "model beat" : "text beat";
-  beatProgress.textContent = `${activeIndex + 1} / ${beats.length} - ${beatVisualKind}${variantProgress}`;
-  beatTitle.textContent = variantGroup?.title || beat.title || graphBeat?.title || "Untitled beat";
+  beatProgress.textContent = `${activeIndex + 1} of ${beats.length}${variantProgress}`;
+  beatTitle.textContent = variantGroup?.title || beat.title || graphBeat?.title || "Untitled part";
   beatText.textContent = text;
   renderRuntimeVariantControls(variantGroup, variantOption, variantInteraction);
   prevButton.disabled = activeIndex === 0;
-  nextButton.disabled = activeIndex === beats.length - 1;
+  nextButton.disabled = false;
+  let currentBeatButton = null;
   for (const button of beatStrip.querySelectorAll("button")) {
-    button.classList.toggle("active", Number(button.dataset.beatIndex) === activeIndex);
+    const isCurrent = Number(button.dataset.beatIndex) === activeIndex;
+    button.classList.toggle("active", isCurrent);
+    if (isCurrent) {
+      button.setAttribute("aria-current", "step");
+      currentBeatButton = button;
+    } else {
+      button.removeAttribute("aria-current");
+    }
+  }
+  updatePartPickerSummary();
+  if (beatStrip.querySelector("#part-picker")?.open) {
+    currentBeatButton?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 
   updateHabitat();
@@ -4767,30 +5024,30 @@ async function setBeat(index) {
         route: progressionRoute,
       });
       if (loadRevision !== activeSceneLoadRevision) return;
-      const assetSummary = `${result.loaded} linked scene asset${result.loaded === 1 ? "" : "s"}`;
-      const failures = result.failed ? `; ${result.failed} failed to load` : "";
-      status.textContent = `${assetSummary} loaded from compiled Spatial Relations${variantOption ? ` for ${variantOption.label}` : ""}${failures}${sourceAnimationStatusText()}.`;
+      status.textContent = result.failed
+        ? `Scene ready, but ${result.failed} element${result.failed === 1 ? "" : "s"} could not load. You can continue.`
+        : "Scene ready.";
     } catch (error) {
       if (loadRevision !== activeSceneLoadRevision) return;
       clearModel();
-      status.textContent = `Could not load the compiled spatial scene: ${error.message}`;
+      status.textContent = "Part of this scene could not load. You can still continue through the story.";
     }
   } else if (usesBeatSpatialScene) {
     clearModel();
-    status.textContent = "This compiled beat scene has no linked spatial assets.";
+    status.textContent = "This part uses text only.";
   } else if (modelAsset) {
     try {
       await showModel(modelAsset, beat, transitionPlayback, { loadRevision });
       if (loadRevision !== activeSceneLoadRevision) return;
-      status.textContent = `${modelAsset.id} loaded from compiled runtime assets${variantOption ? ` for ${variantOption.label}` : ""}${sourceAnimationStatusText()}.`;
+      status.textContent = "Scene ready.";
     } catch (error) {
       if (loadRevision !== activeSceneLoadRevision) return;
       clearModel();
-      status.textContent = `Could not load ${modelAsset.path || modelAsset.id}: ${error.message}`;
+      status.textContent = "The scene image could not load. You can still continue through the story.";
     }
   } else {
     clearModel();
-    status.textContent = "Text-only beat from compiled runtime.";
+    status.textContent = "Text part ready.";
   }
   if (loadRevision !== activeSceneLoadRevision) return;
   try {
@@ -4801,16 +5058,13 @@ async function setBeat(index) {
       proceduralPlans,
     );
     if (loadRevision !== activeSceneLoadRevision) return;
-    if (proceduralResult.loaded) {
-      status.textContent += ` ${proceduralResult.loaded} motion target${proceduralResult.loaded === 1 ? "" : "s"} active.`;
-    }
     if (proceduralResult.failed) {
-      status.textContent += ` ${proceduralResult.failed} motion target${proceduralResult.failed === 1 ? "" : "s"} could not bind.`;
+      status.textContent += ` Some motion is unavailable, but you can continue.`;
     }
   } catch (error) {
     if (loadRevision !== activeSceneLoadRevision) return;
     clearProceduralDynamics();
-    status.textContent += ` Generated motion unavailable: ${error.message}`;
+    status.textContent += " Some motion is unavailable, but you can continue.";
   }
   activateRuntimeAttentionGuidance(activeAttentionGuidance);
   updateSpatialTextPanel(beat, text, modelAsset);
@@ -5077,7 +5331,7 @@ function renderRuntimeVariantControls(group, selectedOption, interactionControl)
   const hasUiButton = !previousDisabled || !nextDisabled;
   variantControls.hidden = false;
   variantControls.innerHTML = `
-    <p class="variant-interaction-label" data-variant-interaction="${hasUiButton ? "ui-button-press" : "assigned-edge-controls"}">${hasUiButton ? "UI button press" : "Variant interactions assigned"}</p>
+    <p class="variant-interaction-label" data-variant-interaction="${hasUiButton ? "ui-button-press" : "assigned-edge-controls"}">${hasUiButton ? "Choose with the buttons below" : "Use the scene interaction to change options"}</p>
     <div class="variant-control-head">
       <strong>${escapeHtml(selectedOption.label)}</strong>
       <span>${selectedIndex + 1} of ${group.options.length}</span>
@@ -6978,8 +7232,8 @@ function makeRuntimeTextPanelTexture(title, text, placement, variantState = null
   context.fillStyle = "rgba(246, 242, 231, 0.58)";
   context.font = "24px sans-serif";
   const footer = pagination.maxScrollLine > 0
-    ? `Hold Trigger and move vertically to scroll \u00b7 lines ${pagination.scrollLine + 1}\u2013${Math.min(pagination.lineCount, pagination.scrollLine + pagination.maxLines)} of ${pagination.lineCount} \u00b7 Grip to move`
-    : "Trigger for UI buttons \u00b7 Grip to grab";
+    ? `Hold Trigger and move vertically to scroll \u00b7 lines ${pagination.scrollLine + 1}\u2013${Math.min(pagination.lineCount, pagination.scrollLine + pagination.maxLines)} of ${pagination.lineCount} \u00b7 A next \u00b7 X back`
+    : "Trigger selects buttons \u00b7 Grip grabs objects \u00b7 A next \u00b7 X back";
   context.fillText(footer, 54, 526, 916);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;

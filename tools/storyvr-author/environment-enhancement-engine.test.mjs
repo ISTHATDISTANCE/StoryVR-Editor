@@ -56,17 +56,21 @@ test("Environment Enhancement reports its current visible blocking checkpoint", 
   const resolveDependency = new Function(
     "visibleFlowComponents",
     "checkpointState",
+    "checkpointHasLocalDraft",
+    "state",
     `${dependencySource}; return checkpointBlockingDependency;`,
   )(
     () => COMPONENTS,
     (componentId) => ({ current: componentId === "spatial-relations" ? false : true }),
+    () => false,
+    { graphDirty: false },
   );
   assert.equal(resolveDependency("environment-enhancement")?.label, "Spatial Relations");
 
   const canvasSource = authorClientFunctionSource("renderEnvironmentEnhancementCanvasWorkspace");
   const editorSource = authorClientFunctionSource("renderEnvironmentEnhancementEditorWorkspace");
-  assert.match(canvasSource, /checkpointBlockingDependency\(component\.id\)/);
-  assert.match(editorSource, /checkpointBlockingDependency\(component\.id\)/);
+  assert.match(canvasSource, /participantBlockingDependencyLabel\(component\.id\)/);
+  assert.match(editorSource, /participantBlockingDependencyLabel\(component\.id\)/);
   assert.doesNotMatch(`${canvasSource}\n${editorSource}`, /Save Asset Topology/);
 });
 

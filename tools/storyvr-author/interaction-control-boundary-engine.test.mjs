@@ -422,6 +422,9 @@ test("Interaction Control sanitizes policy-specific editor configurations", () =
     ${engineFunctionSource("interactionConfigurationTransform")}
     ${engineFunctionSource("interactionConfigurationEulerDegrees")}
     ${engineFunctionSource("interactionConfigurationRotationRangeReference")}
+    ${engineFunctionSource("directManipulationAvailableTriggerComponents")}
+    ${engineFunctionSource("directManipulationTriggerComponents")}
+    ${engineFunctionSource("directManipulationUsesTriggerComponent")}
     ${engineFunctionSource("directManipulationScaleDestinationIsReachable")}
     ${engineFunctionSource("directManipulationDestinationWithinConstraints")}
     ${engineFunctionSource("normalizeInteractionControllerControl")}
@@ -533,6 +536,22 @@ test("Interaction Control sanitizes policy-specific editor configurations", () =
       scale: [1, 1, 1],
     },
   })), false, "server validation rejects a destination outside movement constraints");
+  assert.equal(validateConfiguration("Direct manipulation", directWithDestination({
+    triggerComponents: ["scale"],
+    destinationTransform: {
+      position: [99, 99, 99],
+      quaternion: [0.70710678, 0, 0, 0.70710678],
+      scale: [1.5, 1.5, 1.5],
+    },
+  })), true, "a scale-only completion trigger ignores position and rotation");
+  assert.equal(validateConfiguration("Direct manipulation", directWithDestination({
+    triggerComponents: ["position", "scale"],
+    destinationTransform: {
+      position: [1.01, 0, 0],
+      quaternion: [0.70710678, 0, 0, 0.70710678],
+      scale: [1.5, 1.5, 1.5],
+    },
+  })), false, "a two-component trigger validates each selected component");
   assert.equal(validateConfiguration("Direct manipulation", directWithDestination({
     destinationTransform: {
       position: [0, 0, 0],
@@ -886,6 +905,7 @@ test("Direct manipulation keeps only exact-scene interactables and enforces capa
       {
         entityId: "grab-entity",
         assetId: "grab-glb",
+        triggerComponents: ["rotation"],
         destinationAuthored: true,
         destinationTransform: {
           position: [8, 9, 10],
@@ -896,6 +916,7 @@ test("Direct manipulation keeps only exact-scene interactables and enforces capa
       {
         entityId: "scale-entity",
         assetId: "scale-glb",
+        triggerComponents: ["scale"],
         destinationTransform: {
           position: [9, 9, 9],
           quaternion: [0, 1, 0, 0],
@@ -921,6 +942,7 @@ test("Direct manipulation keeps only exact-scene interactables and enforces capa
   }, "grab-only targets cannot acquire a scale destination");
   assert.equal(direct.targets[0].destinationAuthored, true);
   assert.equal(direct.targets[0].elasticDragging, true);
+  assert.deepEqual(direct.targets[0].triggerComponents, ["rotation"]);
   assert.deepEqual(direct.targets[0].constraints.position, { min: [-1, 0, 1], max: [1, 2, 3] });
   assert.deepEqual(direct.targets[1].destinationTransform, {
     position: [4, 5, 6],
@@ -931,6 +953,7 @@ test("Direct manipulation keeps only exact-scene interactables and enforces capa
     min: [0.5, 0.5, 0.5],
     max: [3, 3, 3],
   });
+  assert.deepEqual(direct.targets[1].triggerComponents, ["scale"]);
 
   const exactVariant = sanitizeInteractionControlConfiguration("Direct manipulation", {
     targets: [

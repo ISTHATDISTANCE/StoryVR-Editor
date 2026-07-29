@@ -97,7 +97,7 @@ test("every multi-card checkpoint story canvas mounts the same route-arrow layer
   }
 
   const transitionCanvas = functionSource("renderInterBeatStoryCanvas");
-  assert.match(transitionCanvas, /Beat and variant cards are read-only/);
+  assert.match(transitionCanvas, /Select a scene change to preview it/);
   assert.doesNotMatch(transitionCanvas, /transition-connection-list|one saved scene at a time/);
 });
 

@@ -31,8 +31,8 @@ test("Dynamics gets the single-workspace shell and a canvas-only landing page", 
   assert.match(canvas, /data-dynamic-workspace-mode="canvas"/);
   assert.match(canvas, /renderDynamicStoryCanvas\(proposal\)/);
   assert.match(canvas, /renderCheckpointActions\(component, state\.data\.decisions\[component\.id\], \{ canCommit: Boolean\(proposal\) \}\)/);
-  assert.match(canvas, /checkpointBlockingDependency\(component\.id\)/);
-  assert.match(canvas, /before reviewing or saving Dynamics/);
+  assert.match(canvas, /participantBlockingDependencyLabel\(component\.id\)/);
+  assert.match(canvas, /before checking object movement/);
   assert.doesNotMatch(canvas, /renderDynamicPreview|renderDynamicInspector|renderSourceMotionLinkingEditor/);
   assert.doesNotMatch(canvas, /data-dynamic-viewer|save-source-motion-links/);
   assert.match(styles, /\.dynamic-canvas-mode\s*\{[^}]*width:\s*100%/s);
@@ -60,9 +60,12 @@ test("the Dynamics canvas renders every authored beat and each parallel variant 
   assert.match(card, /linkedAssetIds\.map\(\(assetId\) => renderDynamicStoryAsset\(assetId, context, proposal, mappedTracks\)\)/);
   assert.doesNotMatch(card, /linkedAssetIds\.slice\(/,
     "Dynamics cards must render every scene asset so mapped models are not hidden by earlier image assets");
-  assert.match(card, /No dynamics/);
-  assert.match(card, /mapped motion/);
-  assert.match(card, /Static/);
+  assert.match(card, /No extra movement/);
+  assert.match(card, /Saved movement/);
+  assert.match(card, /Scene stays still/);
+  assert.match(card, /className: "no-dynamics"/);
+  assert.match(card, /className: "mapped"/);
+  assert.match(card, /className: "static"/);
 });
 
 test("mapped GLB thumbnails use lazy live spatial-preview renderers while static and reduced-motion cards keep snapshots", () => {
@@ -227,7 +230,7 @@ test("opening a Dynamics scene mounts the preview, motion mapping, and playback 
 
   assert.match(editor, /data-dynamic-workspace-mode="editor"/);
   assert.match(editor, /data-dynamic-close-save/);
-  assert.match(editor, /Close &amp; save/);
+  assert.match(editor, /Save scene and return/);
   assert.match(editor, /renderDynamicPreview\(proposal, sceneContext\)/);
   assert.doesNotMatch(editor, /renderDynamicInspector|Source classification/);
   assert.match(editor, /renderSourceMotionLinkingEditor\(component\.id\)/);
@@ -392,8 +395,10 @@ test("generated Dynamics authoring is local-preview-first and exactly beat or va
   assert.match(renderAuthoring, /data-procedural-dynamics-generate/);
   assert.match(renderAuthoring, /data-procedural-dynamics-apply/);
   assert.match(renderAuthoring, /data-procedural-dynamics-remove/);
-  assert.match(renderAuthoring, /Generation can only animate models already linked and placed in this scene/);
-  assert.match(renderAuthoring, /saved position\/rotation\/scale, and model instance counts are locked/);
+  assert.match(renderAuthoring, /Only objects already placed in this scene can move/);
+  assert.match(renderAuthoring, /storyDynamicsPlaceholder\(state\.data\)/);
+  assert.doesNotMatch(renderAuthoring, /saved position\/rotation\/scale, and model instance counts are locked/,
+    "the default panel omits the long internal lock description");
   assert.match(renderAuthoring, />Apply motion</);
   assert.match(bind, /state\.proceduralDynamicsUi\.promptsByScene\[sceneKey\] = prompt\.value/);
   assert.match(bind, /delete state\.proceduralDynamicsUi\.statusByScene\[sceneKey\]/);

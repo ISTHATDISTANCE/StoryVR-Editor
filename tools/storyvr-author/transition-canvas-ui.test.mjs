@@ -33,14 +33,14 @@ test("Transition gets the single-workspace shell and a canvas-only landing page"
   assert.match(canvas, /data-inter-beat-workspace-mode="canvas"/);
   assert.match(canvas, /renderInterBeatStoryCanvas\(/);
   assert.match(canvas, /renderCheckpointActions\(component, state\.data\.decisions\[component\.id\], \{ canCommit: Boolean\(proposal\) \}\)/);
-  assert.match(canvas, /checkpointBlockingDependency\(component\.id\)/);
-  assert.match(canvas, /before reviewing or saving Transition/);
+  assert.match(canvas, /participantBlockingDependencyLabel\(component\.id\)/);
+  assert.match(canvas, /before checking scene changes/);
   assert.doesNotMatch(canvas, /renderInterBeatPreview|renderInterBeatInspector|renderSourceMotionLinkingEditor/);
   assert.doesNotMatch(canvas, /renderInterBeatBeatRail|data-inter-beat-viewer|advanced-motion-mapping/);
 
   assert.match(editor, /data-inter-beat-workspace-mode="editor"/);
   assert.match(editor, /data-inter-beat-close-save/);
-  assert.match(editor, /Close &amp; save/);
+  assert.match(editor, /Save scene and return/);
   assert.match(editor, /renderInterBeatPreview\([^)]*sceneContext/);
   assert.match(editor, /renderInterBeatInspector\(/);
   assert.match(editor, /renderSourceMotionLinkingEditor\(component\.id\)/);
@@ -73,9 +73,8 @@ test("the Transition canvas keeps every original variant card and restores Sourc
   assert.match(sharedContexts, /contexts\.push\(spatialSceneContext\(beat\.id, group\.id, option\.id\)\)/);
 
   assert.match(canvas, /const beats = state\.data\?\.graph\?\.beats \|\| \[\]/);
-  assert.match(workspace, /Every saved variant stays visible as its original read-only card/);
-  assert.match(workspace, /Beat and variant arrows use the same mapped GLB thumbnails/);
-  assert.match(workspace, /select one to open the full spatial preview/);
+  assert.match(workspace, /storyStageInstruction\(state\.data, component\.id\)/);
+  assert.match(canvas, /Select a scene change to preview it/);
   assert.doesNotMatch(workspace, /one option at a time/);
   assert.doesNotMatch(workspace, /dynamic-canvas-summary|No scrubbed beat boundaries|held or initialized/,
     "Transition removes the aggregate state summary in favor of the binary arrow and thumbnail treatment");
@@ -121,7 +120,7 @@ test("the Transition canvas keeps every original variant card and restores Sourc
     "every unmatched authored boundary remains an openable route");
   assert.match(unmappedButton, /data-inter-beat-open-transition/);
   assert.match(unmappedButton, /data-inter-beat-edge-id="\$\{escapeHtml\(context\.transitionEdgeId\)\}"/);
-  assert.match(unmappedButton, /<span class="transition-boundary-status">No mapped transition<\/span>/,
+  assert.match(unmappedButton, /<span class="transition-boundary-status">No saved change<\/span>/,
     "the shared helper owns the single visible unmapped label");
   assert.doesNotMatch(connector, /transition-boundary-route|padStart/,
     "boundary arrows do not repeat the beat numbers already shown on their cards");
@@ -439,11 +438,11 @@ test("variant-scoped arrows use exact mapped GLB clips without borrowing a sibli
   assert.match(summary, /Boolean\(variantTransitionAnimationSpec\)/);
   assert.match(summary, /routeScopedProgression/);
   assert.match(summary, /interBeatMappedTracksForBoundary\(boundary\)/);
-  assert.match(status, /if \(manualVariantSwitch\)[\s\S]*canScrub[\s\S]*Mapped transition[\s\S]*No mapped transition/);
+  assert.match(status, /if \(manualVariantSwitch\)[\s\S]*canScrub[\s\S]*Saved change[\s\S]*No saved change/);
   assert.doesNotMatch(spec, /canScrub \|\| playback\.manualVariantSwitch/,
     "a mapped variant edge is no longer excluded from thumbnail capture");
-  assert.match(editor, /Variant transition from/);
-  assert.match(editor, /plays its matched GLB animation when one is mapped/);
+  assert.match(editor, /manualVariantSwitch[\s\S]*Change from/);
+  assert.match(editor, /Play the preview to check the change/);
   assert.match(initialize, /manualVariantSwitch:\s*playback\.manualVariantSwitch/);
   assert.match(initialize, /variantTransitionAnimationSpec:\s*playback\.variantTransitionAnimationSpec/);
   assert.match(attach, /!viewer\.manualVariantSwitch && !viewer\.routeScopedTransition && attachSourceTransitionPlayback/,
@@ -452,7 +451,7 @@ test("variant-scoped arrows use exact mapped GLB clips without borrowing a sibli
     "the full editor preserves Dynamics' embedded-animation fallback for older stories");
 });
 
-test("unmatched Transition boundaries show one openable No mapped transition route button", () => {
+test("unmatched Transition boundaries show one openable no-saved-change route button", () => {
   const canvas = sourceFunction("renderInterBeatStoryCanvas");
   const connector = sourceFunction("renderInterBeatBoundaryConnector");
   const unmappedButton = sourceFunction("renderInterBeatUnmappedTransitionButton");
@@ -466,8 +465,8 @@ test("unmatched Transition boundaries show one openable No mapped transition rou
   assert.doesNotMatch(connector, /<span class="transition-boundary-status">/,
     "the connector delegates the visible status instead of duplicating it");
   assert.match(unmappedButton, /data-inter-beat-open-transition/);
-  assert.match(unmappedButton, /aria-label="\$\{escapeHtml\(`Open transition from \$\{fromTitle\} to \$\{toTitle\}: No mapped transition`\)\}"/);
-  assert.match(unmappedButton, /<span class="transition-boundary-status">No mapped transition<\/span>/);
+  assert.match(unmappedButton, /aria-label="\$\{escapeHtml\(`Open scene change from \$\{fromTitle\} to \$\{toTitle\}: no saved change`\)\}"/);
+  assert.match(unmappedButton, /<span class="transition-boundary-status">No saved change<\/span>/);
   assert.doesNotMatch(connector, /Held state|Initial state|Opening state|Mapped transition|mapped motion/,
     "the canvas exposes no multi-state Transition taxonomy");
   assert.match(thumbnail, /if \(!thumbnailSpec\) return ""/,

@@ -14,8 +14,10 @@ assert.match(source, /printed LAN URL on a desktop browser or headset/,
   "the production reader command states that the same served build supports desktop and headset preview");
 assert.match(styles, /\.run-step-list\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(260px,\s*1fr\)\)/s,
   "the remaining production reader command expands across the available handoff width");
-assert.match(source, />Compile \+ optimize \+ build reader</,
-  "the compiler button states that it also builds the production reader");
+assert.match(source, />Build reader</,
+  "the participant-facing action uses a short, direct label");
+assert.match(source, /Build details for the facilitator/,
+  "technical build handoff remains available in a collapsed facilitator section");
 assert.match(source, /runtime\.readerBuild \|\| null/,
   "the compile result keeps the production reader build status");
 assert.match(source, /data-copy-run-command[\s\S]*data-copy-run-command-label>Copy</,

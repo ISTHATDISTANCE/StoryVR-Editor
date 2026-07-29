@@ -72,7 +72,7 @@ test("Final Review lands on a compact story canvas with nested, default-first va
   assert.match(sceneCard, /selected \? `aria-current="step"` : ""/);
 
   assert.match(spatialEditor, /data-final-review-spatial-editor/);
-  assert.match(spatialEditor, /<h3>Spatial editor<\/h3>/);
+  assert.match(spatialEditor, /<h3>Check this scene<\/h3>/);
   assert.match(spatialEditor, /spatialSceneContextLabel\(sceneContext\)/);
   assert.match(spatialEditor, /data-final-review-viewer="\$\{escapeHtml\(spatialSceneRequestKey\(sceneContext\)/);
   assert.doesNotMatch(spatialEditor, /data-final-review-step|Previous beat|Next beat/);
@@ -238,9 +238,9 @@ test("the Final Review viewer loads an exact variant scene and mounts its text p
   assert.match(appRender, /showCompiler \? `<section class="preview inline-preview">\$\{renderPreviewQa\(\)\}/);
   assert.match(appRender, /initializeFinalReviewStoryCanvas\(active\)/);
   assert.match(workspace, /const decision = state\.data\.decisions\[component\.id\]/);
-  assert.match(workspace, /Final tuning prompt/);
+  assert.match(workspace, /Optional cleanup/);
   assert.match(workspace, /renderCheckpointActions\(component, decision/);
-  assert.match(workspace, /label:\s*"Save final story"/);
+  assert.match(workspace, /label:\s*"Finish review"/);
 
   assert.match(initializer, /const sceneContext = finalReviewSelectedSceneContext\(beats, beatIndex\)/);
   assert.match(initializer, /const beat = finalReviewBeatForSceneContext\(sceneContext\) \|\| baseBeat/);
@@ -800,7 +800,7 @@ test("Final Review drag and wheel scroll text while title-drag and Grip repositi
   assert.match(source, /finalReviewTextPanelOffset: \{ x: 0, y: 0 \}/);
   assert.doesNotMatch(spatialEditor, /data-final-review-xr-slot|VR NOT SUPPORTED/);
   assert.match(spatialEditor, /Drag the panel text or use the mouse wheel to scroll/);
-  assert.match(spatialEditor, /hold Trigger and move either hand vertically to scroll/);
+  assert.match(spatialEditor, /In VR, Trigger scrolls text and Grip moves the panel/);
   assert.match(textPanel, /panel\.userData\.finalReviewTextPanelAction = "scroll"/);
   assert.match(textPanel, /desktopGrabHandle\.userData\.finalReviewTextPanelAction = "grab"/);
   assert.match(initializer, /Math\.hypot\(deltaX, deltaY\) < 4/,

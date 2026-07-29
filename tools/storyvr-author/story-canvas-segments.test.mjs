@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   normalizeStoryCanvasSegments,
   STORY_CANVAS_SEGMENTS_SCHEMA_VERSION,
+  storyCanvasSegmentGenerationSignature,
   storyCanvasSegmentGraphSignature,
   storyCanvasSegmentGraphStructure,
 } from "./story-canvas-segments.mjs";
@@ -41,6 +42,7 @@ test("story canvas segments normalize contiguous authored ranges without mutatin
   const result = normalizeStoryCanvasSegments(config, graph);
 
   assert.equal(result.status, "current");
+  assert.equal(result.generationStatus, "missing");
   assert.deepEqual(result.errors, []);
   assert.deepEqual(result.currentGraphStructure, storyCanvasSegmentGraphStructure(graph));
   assert.deepEqual(
@@ -58,6 +60,33 @@ test("story canvas segments normalize contiguous authored ranges without mutatin
   );
   assert.deepEqual(graph, graphBefore);
   assert.deepEqual(config, configBefore);
+});
+
+test("the generation signature tracks narrative content, variants, and explicit flow", () => {
+  const graph = {
+    ...fixtureGraph(),
+    variantGroups: [{
+      id: "variant-a",
+      beatId: "beat-b",
+      title: "Choice",
+      options: [{ id: "option-a", label: "First", text: "A path" }],
+    }],
+    edges: [{ fromBeatId: "beat-a", toBeatId: "beat-b" }],
+  };
+  const structuralSignature = storyCanvasSegmentGraphSignature(graph);
+  const generationSignature = storyCanvasSegmentGenerationSignature(graph);
+
+  graph.beats[1].title = "A changed narrative title";
+  assert.equal(storyCanvasSegmentGraphSignature(graph), structuralSignature);
+  assert.notEqual(storyCanvasSegmentGenerationSignature(graph), generationSignature);
+
+  const titleSignature = storyCanvasSegmentGenerationSignature(graph);
+  graph.variantGroups[0].options[0].text = "A changed path";
+  assert.notEqual(storyCanvasSegmentGenerationSignature(graph), titleSignature);
+
+  const variantSignature = storyCanvasSegmentGenerationSignature(graph);
+  graph.edges[0].toBeatId = "beat-c";
+  assert.notEqual(storyCanvasSegmentGenerationSignature(graph), variantSignature);
 });
 
 test("story canvas segments become review-only when the Source Graph signature changes", () => {
@@ -130,5 +159,6 @@ test("the author state exposes optional story canvas metadata beside the Source 
 
   assert.match(engine, /storyCanvasSegmentsPath:\s*path\.join\(analysisRoot, "story-canvas-segments\.json"\)/);
   assert.match(engine, /normalizeStoryCanvasSegments\(\s*await readJsonIfExists\(paths\.storyCanvasSegmentsPath\),\s*graph,\s*\)/s);
-  assert.match(engine, /proceduralDynamics,\s*storyCanvasSegments,\s*runtimeSummary:/s);
+  assert.match(engine, /proceduralDynamics,\s*storyCanvasSegments,\s*storyCanvasGrouping,\s*runtimeSummary:/s);
+  assert.match(engine, /requiresGeneration:/);
 });

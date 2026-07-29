@@ -149,7 +149,7 @@ test("exact part candidates stay independent and ambiguous selectors cannot beco
   assert.equal(selectorPredicate("classroom/{window_1,window_2}"), false);
   assert.equal(selectorPredicate("classroom/{classroom_target_*,walls,window_1,window_2}"), false);
   assert.match(source, /named-renderable-part/);
-  assert.match(functionSource("renderAttentionEmptyTargets"), /No attention target suggested/);
+  assert.match(functionSource("renderAttentionEmptyTargets"), /No focus marker needed/);
   assert.doesNotMatch(functionSource("renderAttentionEmptyTargets"), /runtime changes|beat semantics/i);
 });
 
@@ -222,7 +222,7 @@ test("attention spheres are explicit authoring-only overlays", () => {
 
   assert.match(sphere, /SphereGeometry/);
   assert.match(sphere, /attentionMarkerId/);
-  assert.match(workspace, /Authoring overlay only/);
+  assert.match(workspace, /Setup marker only/);
   assert.match(styles, /\.attention-authoring-only-badge/);
 });
 
@@ -279,17 +279,18 @@ test("empty target copy distinguishes no inference, live rejection, pending vali
   const workspace = functionSource("renderAttentionGuidanceWorkspace");
 
   assert.match(empty, /reconciliation\.status === "conflict"/);
-  assert.match(empty, /target set was accepted automatically/);
+  assert.match(empty, /No focus marker was added/);
+  assert.match(empty, /suggestions did not match a visible object/);
   assert.match(empty, /rejectedCandidateCount/);
-  assert.match(empty, /Suggested target is not visible/);
-  assert.match(empty, /Checking suggested target/);
-  assert.match(empty, /No attention target suggested/);
+  assert.match(empty, /Suggested focus is not visible/);
+  assert.match(empty, /Checking suggested focus/);
+  assert.match(empty, /No focus marker needed/);
   assert.doesNotMatch(empty, /Runtime changes|beat semantics|evidence channels|engine-provided/);
   assert.doesNotMatch(empty, /No default sphere|no clearly resolved visible GLB/i);
   assert.match(diagnostics, /code: "live-geometry-rejected"/);
   assert.match(diagnostics, /channel: "validation"/);
   assert.doesNotMatch(diagnostics, /code: "live-geometry-rejected",\s*channel: "runtime"/);
-  assert.match(workspace, /suggested targets were accepted automatically/);
-  assert.match(workspace, /suggested target could not be matched to visible geometry/);
+  assert.match(workspace, /suggestion does not match a visible object/);
+  assert.match(workspace, /suggestion could not be placed on a visible object/);
   assert.doesNotMatch(workspace, /Runtime and semantic|inference channels|engine inferred/);
 });

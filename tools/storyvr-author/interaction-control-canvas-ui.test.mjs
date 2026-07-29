@@ -37,7 +37,7 @@ test("Interaction Control gets the single-workspace shell and a canvas-first lan
   assert.doesNotMatch(canvas, /renderGenerateOptionsButton|Generate options|Regenerate/);
   assert.match(canvas, /renderInteractionStoryCanvas\(baseProposal, boundaryContext\)/);
   assert.match(canvas, /interactionBoundaryContextIsComplete\(boundaryContext\)/);
-  assert.match(canvas, /checkpointBlockingDependency\(component\.id\)/);
+  assert.match(canvas, /participantBlockingDependencyLabel\(component\.id\)/);
   assert.doesNotMatch(canvas, /renderInteractionPreview|renderInteractionInspector|data-interaction-viewer/);
 });
 
@@ -181,7 +181,7 @@ test("the Interaction canvas renders every beat and parallel variant while bound
   assert.match(connector, /<select[^>]*data-interaction-boundary-policy-select/);
   assert.match(connector, /data-interaction-boundary-id="\$\{escapeHtml\(boundary\??\.boundaryId \|\| ""\)\}"/);
   assert.match(connector, /const options = \["button-step", "direct", "embodied-control"\]/);
-  assert.match(connector, /interactionControlKindLabel\(kind\)/);
+  assert.match(connector, /displayLabel\(kind\)/);
   assert.match(connector, /<option(?=[^>]*value="branching-control")(?=[^>]*disabled)[^>]*>[^<]*Branching selection[^<]*<\/option>/);
   assert.match(connector, /<span class="interaction-boundary-arrow" aria-hidden="true">\s*<\/span>/);
   const hiddenArrow = connector.indexOf('<span class="interaction-boundary-arrow" aria-hidden="true">');
@@ -208,7 +208,8 @@ test("unassigned mapped transitions are highlighted and can be located from the 
   assert.match(needsAssignment, /boundary\?\.mappedTransition && !boundary\?\.effectivePolicy/);
   assert.match(workspace, /const unassignedBoundaries = boundaryContext\.boundaries\.filter\(interactionBoundaryNeedsAssignment\)/);
   assert.match(workspace, /data-interaction-show-problem="\$\{escapeHtml\(firstUnassignedBoundaryId\)\}"/);
-  assert.match(workspace, /highlighted in the Story Canvas/);
+  assert.match(workspace, /problems are|problem is/);
+  assert.match(workspace, /highlighted below/);
   assert.match(connector, /needsAssignment \? "needs-interaction-assignment"/);
   assert.match(connector, /data-interaction-needs-assignment data-interaction-problem-boundary-id/);
   assert.match(connector, /class="interaction-assignment-flag"/);
@@ -335,7 +336,7 @@ test("the boundary-arrow dropdown exposes exactly the three current authoring ch
   }
   assert.match(connector, /const options = \["button-step", "direct", "embodied-control"\]/);
   assert.match(connector, /options\.map/);
-  assert.match(connector, /interactionControlKindLabel\(kind\)/);
+  assert.match(connector, /displayLabel\(kind\)/);
   assert.doesNotMatch(connector, /UI button press/);
   assert.match(connector, /<option(?=[^>]*value="branching-control")(?=[^>]*disabled)[^>]*>[^<]*Branching selection[^<]*<\/option>/,
     "legacy Branching assignments remain legible but cannot be newly selected");
@@ -384,13 +385,13 @@ test("Direct manipulation is disabled on transition controls until the exact sou
   const disabledDirect = unavailable.html.match(/<option value="direct"[^>]*>[^<]*<\/option>/)?.[0] || "";
   assert.deepEqual(unavailable.thumbnailOptions, ["button-step", "embodied-control"]);
   assert.match(disabledDirect, /\sdisabled(?:\s|>)/);
-  assert.match(disabledDirect, /add an in-beat interactable/);
+  assert.match(disabledDirect, /choose a grabbable object first/);
 
   const available = renderForAvailability(true);
   const enabledDirect = available.html.match(/<option value="direct"[^>]*>[^<]*<\/option>/)?.[0] || "";
   assert.deepEqual(available.thumbnailOptions, ["button-step", "direct", "embodied-control"]);
   assert.doesNotMatch(enabledDirect, /\sdisabled(?:\s|>)/);
-  assert.match(enabledDirect, />Direct manipulation<\/option>/);
+  assert.match(enabledDirect, />Move an object<\/option>/);
 });
 
 test("Reader locomotion uses the approved generated travel artwork exactly", () => {
@@ -482,7 +483,7 @@ test("each transition shows only its selected icon thumbnail and opens one of fo
     "Interaction Control does not display reservation guidance text");
   assert.doesNotMatch(`${sourceFunction("interactionControlOptionSummary")}\n${sourceFunction("interactionControlKindHelp")}`, /controller primary action/i,
     "controller guidance cannot imply that WebXR Trigger advances the story");
-  assert.match(sourceFunction("interactionControlKindHelp"), /assigned face, Menu, or thumbstick control/);
+  assert.match(sourceFunction("interactionControlKindHelp"), /assigned controller button/);
   assert.match(uiPanel, /Final reader text panel/);
   assert.match(uiPanel, /option\?\.text \|\| beat\?\.text/);
   assert.match(uiPanel, /data-interaction-ui-button-preview/);

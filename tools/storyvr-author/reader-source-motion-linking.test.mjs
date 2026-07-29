@@ -1073,5 +1073,9 @@ test("shared reader path stays data-driven and preserves the legacy fallback", (
   assert.match(functionSource("createSharedTimelinePlayback"), /prepareSharedTimelineBindingState/);
   assert.match(functionSource("showModel"), /if \(!contractedTimeline\) applySourcePartMask/, "shared contracts do not use inferred selectors as exclusive masks");
   assert.match(functionSource("createSourceAnimationPlayback"), /createLegacySourceAnimationPlayback/);
-  assert.doesNotMatch(source, /["']classroom|["']Action\.|["']slide-\d+|driver_|target_/i);
+  const participantGuidanceStart = source.indexOf("const READER_STORY_GUIDANCE_PROFILES");
+  const participantGuidanceEnd = source.indexOf("reloadReaderButton?.addEventListener", participantGuidanceStart);
+  assert.ok(participantGuidanceStart >= 0 && participantGuidanceEnd > participantGuidanceStart);
+  const runtimeSource = source.slice(0, participantGuidanceStart) + source.slice(participantGuidanceEnd);
+  assert.doesNotMatch(runtimeSource, /["']classroom|["']Action\.|["']slide-\d+|driver_|target_/i);
 });

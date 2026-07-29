@@ -40,8 +40,17 @@ import {
 import {
   sourceGraphProgressSegmentIndexForPosition,
   sourceGraphProgressStatusForBeats,
+  sourceGraphProgressStructureMatches,
   sourceGraphProgressTargetScrollLeft,
 } from "./source-graph-progress.js";
+import {
+  participantComponentLabel,
+  participantStatusLabel,
+  storyDynamicsPlaceholder,
+  storyProfileId,
+  storyShortName,
+  storyStageInstruction,
+} from "./story-language.js";
 import {
   AuthorHistory,
   historyShortcutForEvent,
@@ -91,7 +100,7 @@ const FINAL_REVIEW_DIRECT_GHOST_DESTINATION_HOLD_SECONDS = 3;
 const FINAL_REVIEW_DIRECT_GHOST_INACTIVITY_REPLAY_SECONDS = 5;
 const ATTENTION_ARROW_DIRECTION_RESPONSE = 10;
 const ATTENTION_ARROW_MAX_ANGULAR_SPEED_RADIANS_PER_SECOND = Math.PI * 3;
-const SOURCE_GRAPH_ASSET_LINK_TOOLTIP = "Click to link to the selected beat or variant, or drag to any card";
+const SOURCE_GRAPH_ASSET_LINK_TOOLTIP = "Click to link to the selected card or choice, or drag to any card";
 const SOURCE_GRAPH_ASSET_TOOLTIP_DELAY_MS = 2000;
 const INTERACTION_CONFIGURATION_SCHEMA = "storyvr-interaction-configuration/v1";
 const IN_BEAT_INTERACTIONS_SCHEMA = "storyvr-in-beat-interactions/v1";
@@ -396,6 +405,13 @@ const state = {
   editNotes: "",
   graphDraft: "",
   graphDirty: false,
+  storyCanvasGroupingUi: {
+    busy: false,
+    error: "",
+    requestId: 0,
+    attemptedSignature: "",
+    flowDirty: false,
+  },
   historySessionId: null,
   historyCheckpointId: null,
   historyCheckpointSignature: "",
@@ -589,6 +605,7 @@ function captureAuthorHistoryUi() {
     graph: historyClone(state.data?.graph),
     graphDraft: state.graphDraft,
     graphDirty: Boolean(state.graphDirty),
+    storyCanvasGroupingFlowDirty: Boolean(state.storyCanvasGroupingUi.flowDirty),
     selectedOptionId: state.selectedOptionId,
     selectedTopologyViewpoint: state.selectedTopologyViewpoint,
     editNotes: state.editNotes,
@@ -638,6 +655,11 @@ function restoreAuthorHistoryUi(snapshot) {
   if (snapshot.graph && state.data) state.data.graph = historyClone(snapshot.graph);
   state.graphDraft = String(snapshot.graphDraft ?? JSON.stringify(state.data?.graph || {}, null, 2));
   state.graphDirty = Boolean(snapshot.graphDirty);
+  state.storyCanvasGroupingUi.requestId += 1;
+  state.storyCanvasGroupingUi.busy = false;
+  state.storyCanvasGroupingUi.error = "";
+  state.storyCanvasGroupingUi.attemptedSignature = "";
+  state.storyCanvasGroupingUi.flowDirty = Boolean(snapshot.storyCanvasGroupingFlowDirty);
   state.selectedOptionId = snapshot.selectedOptionId ?? null;
   state.selectedTopologyViewpoint = snapshot.selectedTopologyViewpoint ?? null;
   state.editNotes = String(snapshot.editNotes || "");
@@ -866,6 +888,7 @@ load();
 async function load() {
   await run(async () => {
     state.data = await api.get("/api/state");
+    resetStoryCanvasGroupingUiForSavedGraph();
     syncEnvironmentUiFromState({ resetDraft: true });
     await refreshCodexStatus();
     initializeSourceMotionLinkingDraft(true);
@@ -878,6 +901,14 @@ async function load() {
     state.output = null;
     await initializeAuthorHistorySession();
   });
+}
+
+function resetStoryCanvasGroupingUiForSavedGraph() {
+  state.storyCanvasGroupingUi.requestId += 1;
+  state.storyCanvasGroupingUi.busy = false;
+  state.storyCanvasGroupingUi.error = "";
+  state.storyCanvasGroupingUi.attemptedSignature = "";
+  state.storyCanvasGroupingUi.flowDirty = false;
 }
 
 function createStoryvrBrowserEntryId() {
@@ -1368,7 +1399,11 @@ function render() {
   disposeStoryVariantLinkLayout();
   disposeInteractionControllerModelViewers();
   if (!state.data) {
-    app.innerHTML = `<section class="boot"><p>Loading StoryVR authoring workspace...</p></section>`;
+    const loadError = String(state.output?.error || "").trim();
+    app.innerHTML = loadError
+      ? renderInitialLoadError(loadError)
+      : `<section class="boot"><p>Loading StoryVR authoring workspace...</p></section>`;
+    bindInitialLoadErrorEvents();
     return;
   }
 
@@ -1384,6 +1419,7 @@ function render() {
   disposeFinalReviewViewer();
   syncSelectedModelWithActiveContext();
   const active = componentById(state.activeId);
+  const activeBlocked = active.id !== "source-graph" && checkpointFlowStatus(active.id) === "blocked";
   const isSourceGraph = active.id === "source-graph";
   const isSpatialRelations = isSpatialRelationsComponentId(active.id);
   const isEnvironmentEnhancement = active.id === "environment-enhancement";
@@ -1392,16 +1428,17 @@ function render() {
   const isInterBeatDynamics = active.id === "inter-beat-dynamics";
   const isInteractionControl = active.id === "interaction-control";
   const isFinalReview = active.id === "transition-pacing";
-  const showCompiler = isFinalReview;
+  const showCompiler = isFinalReview && !activeBlocked;
   const showCodexAuth = !Boolean(state.codexStatus?.authenticated);
   const showSidebar = !isFinalReview && !isSpatialRelations && !isEnvironmentEnhancement && !isAttentionGuidance && !isDynamicGeometry && !isInterBeatDynamics && !isInteractionControl && showCodexAuth;
   const layoutClass = isFinalReview ? "final-review-layout" : showSidebar ? "authoring-layout" : "single-workspace-layout";
   const flowComponents = visibleFlowComponents();
   const storyTitle = state.data.project.story.title || state.data.project.story.slug;
+  const storyName = storyShortName(state.data);
   app.innerHTML = `
     <header class="app-header">
       <div class="product-bar">
-        <div class="product-brand" aria-label="StoryVR mixed-initiative authoring">
+        <div class="product-brand" aria-label="StoryVR authoring">
           <span class="storyvr-mark" aria-hidden="true">
             <svg viewBox="0 0 32 32" role="presentation">
               <path class="storyvr-mark-top" d="M16 5 26 10.5 16 16 6 10.5 16 5Z"></path>
@@ -1414,22 +1451,26 @@ function render() {
         ${renderHistoryControls()}
       </div>
       <div class="story-summary">
+        <p class="eyebrow">${escapeHtml(storyName)}</p>
         <h1 class="story-title" title="${escapeHtml(storyTitle)}">${escapeHtml(storyTitle)}</h1>
-        <div class="story-paths">
-          <span class="story-path-item">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 6.5h6l2 2h9v10h-17v-12Z"></path></svg>
-            <span class="story-path-label">Fetched folder</span>
-            <strong>${escapeHtml(state.data.paths.resourceFolder)}</strong>
-          </span>
-          <span class="story-path-item">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4v13H6v-17Z"></path><path d="M14 3.5v4h4"></path></svg>
-            <span class="story-path-label">Runtime</span>
-            <strong>${escapeHtml(state.data.paths.compiledRuntimePath)}</strong>
-          </span>
-        </div>
+        <details class="story-project-details">
+          <summary>Project files</summary>
+          <div class="story-paths">
+            <span class="story-path-item">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 6.5h6l2 2h9v10h-17v-12Z"></path></svg>
+              <span class="story-path-label">Story folder</span>
+              <strong>${escapeHtml(state.data.paths.resourceFolder)}</strong>
+            </span>
+            <span class="story-path-item">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4v13H6v-17Z"></path><path d="M14 3.5v4h4"></path></svg>
+              <span class="story-path-label">Reader file</span>
+              <strong>${escapeHtml(state.data.paths.compiledRuntimePath)}</strong>
+            </span>
+          </div>
+        </details>
       </div>
     </header>
-    <nav class="flow" aria-label="StoryVR checkpoint flow" style="--flow-step-count: ${Math.max(flowComponents.length, 1)}">
+    <nav class="flow" aria-label="Story steps" style="--flow-step-count: ${Math.max(flowComponents.length, 1)}">
       ${flowComponents.map((component) => renderFlowButton(component)).join("")}
     </nav>
     <section class="layout ${layoutClass} ${isSourceGraph && showSidebar ? "source-layout" : ""}">
@@ -1437,7 +1478,11 @@ function render() {
         ${renderCodexAuth()}
       </aside>` : ""}
       <section class="workspace">
-        ${isSourceGraph ? renderGraphEditor() : renderComponentWorkspace(active)}
+        ${activeBlocked
+          ? renderBlockedStageWorkspace(active)
+          : isSourceGraph
+            ? renderGraphEditor()
+            : renderComponentWorkspace(active)}
         ${showCompiler ? `<section class="preview inline-preview">${renderPreviewQa()}</section>` : ""}
       </section>
     </section>
@@ -1445,23 +1490,241 @@ function render() {
   `;
 
   bindEvents();
-  initializeStoryVariantLinkLayout();
-  initializeSourceGraphModelThumbnails(active);
-  initializeDynamicModelThumbnails(active);
-  initializeTopologyViewer(active);
-  initializeDynamicGeometryViewer(active);
-  initializeInterBeatDynamicsViewer(active);
-  initializeEnvironmentEnhancementViewer(active);
-  initializeEnvironmentStoryCanvasPreviews(active);
-  initializeReaderViewpointViewer(active);
-  initializeSpatialRelationsViewer(active);
-  initializeAttentionGuidanceViewer(active);
-  initializeInteractionControlViewer(active);
-  initializeInteractionControllerModels(active);
-  initializeFinalReviewStoryCanvas(active);
-  initializeFinalReviewViewer(active);
-  initializeSelectedModelViewer();
-  maybeRequestEnvironmentRecommendation(active);
+  maybeRequestStoryCanvasGrouping();
+  if (!activeBlocked) {
+    initializeStoryVariantLinkLayout();
+    initializeSourceGraphModelThumbnails(active);
+    initializeDynamicModelThumbnails(active);
+    initializeTopologyViewer(active);
+    initializeDynamicGeometryViewer(active);
+    initializeInterBeatDynamicsViewer(active);
+    initializeEnvironmentEnhancementViewer(active);
+    initializeEnvironmentStoryCanvasPreviews(active);
+    initializeReaderViewpointViewer(active);
+    initializeSpatialRelationsViewer(active);
+    initializeAttentionGuidanceViewer(active);
+    initializeInteractionControlViewer(active);
+    initializeInteractionControllerModels(active);
+    initializeFinalReviewStoryCanvas(active);
+    initializeFinalReviewViewer(active);
+    initializeSelectedModelViewer();
+    maybeRequestEnvironmentRecommendation(active);
+  }
+}
+
+function renderInitialLoadError(error) {
+  const guidance = initialLoadErrorGuidance(error);
+  const projectFile = relativeProjectFileFromError(error);
+  return `
+    <section class="boot boot-blocking-error" role="alert" aria-labelledby="initial-load-error-title">
+      <p class="eyebrow">Project could not open</p>
+      <h1 id="initial-load-error-title">StoryVR could not load this story.</h1>
+      <p>${escapeHtml(guidance)}</p>
+      ${projectFile ? `<p class="blocking-error-location"><strong>Where:</strong> Project file <code>${escapeHtml(projectFile)}</code></p>` : ""}
+      <div class="actions">
+        <button class="primary" type="button" data-retry-initial-load>Try again</button>
+      </div>
+      <p class="muted">If this still fails, ask the study facilitator to check this project copy before continuing.</p>
+    </section>
+  `;
+}
+
+function initialLoadErrorGuidance(error) {
+  const text = String(error || "").toLowerCase();
+  if (/failed to fetch|network|server|connection|econnrefused/.test(text)) {
+    return "The authoring server is not responding. Restart StoryVR, then try again.";
+  }
+  if (/json|unexpected token|parse|syntax/.test(text)) {
+    return "StoryVR could not read one of this project's saved files. Ask the study facilitator to check the project copy.";
+  }
+  if (/enoent|no such file|not found|resource folder|captures\/active/.test(text)) {
+    return "Check that the selected story folder exists and contains a captures/active folder, then restart StoryVR.";
+  }
+  return "Ask the study facilitator to check the selected story folder and its captures/active folder, then restart StoryVR.";
+}
+
+function sanitizeRelativeProjectPath(value) {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^["'`(]+|["'`),.;:]+$/g, "")
+    .replace(/^\.\//, "");
+  if (
+    !normalized
+    || normalized.startsWith("/")
+    || normalized.startsWith("~")
+    || /^[a-z]:\//i.test(normalized)
+    || normalized.split("/").includes("..")
+    || /[\r\n\0]/.test(normalized)
+  ) return "";
+  return normalized.slice(0, 240);
+}
+
+function relativeProjectFileFromError(error) {
+  const text = String(error || "").replace(/\\/g, "/");
+  const anchors = [
+    "captures/active/",
+    "webxr-adaptation/",
+    "dist-webxr-adaptation/",
+    "environment-assets/",
+    "models/",
+    "textures/",
+    "analysis/",
+    "discovery/",
+  ];
+  for (const anchor of anchors) {
+    const index = text.indexOf(anchor);
+    if (index < 0) continue;
+    const candidate = text.slice(index).match(/^[A-Za-z0-9._@%+~/-]+/)?.[0] || "";
+    const cleaned = sanitizeRelativeProjectPath(candidate);
+    if (cleaned) return cleaned;
+  }
+  const rootFile = text.match(/(?:^|[/\s("'`])((?:project|storyvr-runtime)\.json)(?=$|[\s:),"'`])/i)?.[1];
+  return sanitizeRelativeProjectPath(rootFile);
+}
+
+function firstStageErrorDiagnostic(output) {
+  const diagnostics = Array.isArray(output?.diagnostics) ? output.diagnostics : [];
+  return diagnostics.find((item) => String(item?.severity || "").toLowerCase() === "error")
+    || diagnostics[0]
+    || null;
+}
+
+function activeStageSceneContext(componentId) {
+  if (isSpatialRelationsComponentId(componentId)) return activeSpatialSceneContext();
+  if (componentId === "environment-enhancement") return activeEnvironmentSceneContext();
+  if (componentId === ATTENTION_GUIDANCE_COMPONENT_ID) return activeAttentionSceneContext();
+  if (componentId === "dynamic-geometry") return activeDynamicSceneContext();
+  if (componentId === "inter-beat-dynamics") return activeInterBeatSceneContext();
+  if (componentId === "interaction-control") return activeInteractionSceneContext();
+  if (componentId === "transition-pacing" && state.finalReviewSceneRouteActive) {
+    return finalReviewSelectedSceneContext();
+  }
+  return null;
+}
+
+function participantStageErrorMessage(error) {
+  const text = String(error || "")
+    .replace(/^(?:scene|attention scene|environment|dynamics|transition) (?:auto)?save failed(?: before browser navigation)?:\s*/i, "")
+    .trim();
+  if (/at least one transform component/i.test(text)) {
+    return "Choose position, rotation, size, or a combination before continuing.";
+  }
+  if (/one-hand grab, two-hand scale, or both/i.test(text)) {
+    return "Turn on one-hand grab, two-hand resize, or both. Otherwise remove this action.";
+  }
+  if (/in-beat interactable/i.test(text)) {
+    return "Choose a grabbable object in this scene first.";
+  }
+  if (
+    text
+    && text.length <= 180
+    && !/\/Users\/|\\Users\\|(?:^|\s)at\s+\S+\s*\(|\b(?:ENOENT|EACCES|JSON|schema|checkpoint|canonical|contract|checksum|stack)\b/i.test(text)
+  ) return text;
+  return "StoryVR could not complete this action.";
+}
+
+function stageErrorComponentId(componentId, diagnostic) {
+  const raw = String(diagnostic?.component || "").trim();
+  const normalized = raw === "asset-topology" || raw === LEGACY_TEXT_COMFORT_COMPONENT_ID
+    ? spatialRelationsComponentId()
+    : raw;
+  return visibleFlowComponents().some((component) => component.id === normalized)
+    ? normalized
+    : componentId || state.activeId;
+}
+
+function stageErrorLocation(componentId, output = state.output) {
+  const diagnostic = firstStageErrorDiagnostic(output);
+  const diagnosticComponentId = String(diagnostic?.component || "").trim();
+  const locatedComponentId = stageErrorComponentId(componentId, diagnostic);
+  const component = componentById(locatedComponentId);
+  const stageLabel = diagnosticComponentId === "compile"
+    ? "Build reader"
+    : participantComponentLabel(locatedComponentId, component?.label);
+  const parts = [
+    `Step: ${stageLabel}`,
+  ];
+
+  const diagnosticBeatId = String(diagnostic?.beatId || "").trim();
+  const activeContext = activeStageSceneContext(locatedComponentId);
+  const sceneContext = diagnosticBeatId
+    ? spatialSceneContext(
+      diagnosticBeatId,
+      diagnostic?.variantGroupId,
+      diagnostic?.variantOptionId,
+    )
+    : activeContext;
+  if (sceneContext?.beatId) {
+    const scene = spatialSceneBeat(sceneContext);
+    parts.push(`Scene: ${scene?.title || sceneContext.beatId}`);
+  } else if (locatedComponentId === "source-graph") {
+    const beat = selectedBeat();
+    if (beat) parts.push(`Card: ${beat.title || beat.id}`);
+  }
+
+  const field = String(
+    diagnostic?.field
+    || diagnostic?.property
+    || diagnostic?.pointer
+    || "",
+  ).trim();
+  if (field && !/[\r\n]/.test(field)) parts.push(`Field: ${field.slice(0, 120)}`);
+
+  const directFile = sanitizeRelativeProjectPath(
+    diagnostic?.path
+    || diagnostic?.file
+    || diagnostic?.filePath
+    || diagnostic?.artifactPath
+    || diagnostic?.distPath,
+  );
+  const projectFile = directFile || relativeProjectFileFromError(output?.error);
+  if (projectFile) parts.push(`File: ${projectFile}`);
+  return parts;
+}
+
+function stageErrorRecovery(componentId, output = state.output) {
+  const diagnostic = firstStageErrorDiagnostic(output);
+  if (diagnostic?.code === "READER_DIST_BUILD_FAILED") {
+    return "Ask the facilitator to fix the reader build, then select “Build reader” again.";
+  }
+  const locatedComponentId = stageErrorComponentId(componentId, diagnostic);
+  if (locatedComponentId === "source-graph") {
+    return selectedBeat()
+      ? "Correct the selected card, then select “Save story order” again."
+      : "Correct the highlighted card, then select “Save story order” again.";
+  }
+  if (locatedComponentId === "transition-pacing") {
+    return "Open the named step, correct it, then select “Build reader” again.";
+  }
+  if (locatedComponentId === "interaction-control" && activeStageSceneContext(locatedComponentId)) {
+    return "Correct the highlighted setting in this scene, then try the action again.";
+  }
+  if (activeStageSceneContext(locatedComponentId)) {
+    return "Correct this scene, then select “Save scene and return” again.";
+  }
+  return `Correct the highlighted item, then select “${checkpointSaveActionLabel(locatedComponentId)}” again.`;
+}
+
+function renderStageErrorNotice(componentId, output = state.output) {
+  if (!output?.error) return "";
+  return `
+    <section class="stage-blocking-error" role="alert" data-stage-error>
+      <p class="eyebrow">Needs attention</p>
+      <strong>${escapeHtml(participantStageErrorMessage(output.error))}</strong>
+      <p class="blocking-error-location"><strong>Where:</strong> ${stageErrorLocation(componentId, output).map(escapeHtml).join(" · ")}</p>
+      <p><strong>Next:</strong> ${escapeHtml(stageErrorRecovery(componentId, output))}</p>
+    </section>
+  `;
+}
+
+function bindInitialLoadErrorEvents() {
+  const retry = document.querySelector("[data-retry-initial-load]");
+  if (!retry) return;
+  retry.addEventListener("click", () => {
+    state.output = null;
+    load();
+  });
 }
 
 function renderPreservingScroll() {
@@ -1571,6 +1834,12 @@ function visibleFlowComponents() {
   return [...leading, ...visible.filter((component) => !leading.includes(component))];
 }
 
+function participantStepEyebrow(componentId) {
+  const flow = visibleFlowComponents();
+  const index = Math.max(0, flow.findIndex((component) => component.id === componentId));
+  return `Step ${index + 1} of ${Math.max(flow.length, 1)}`;
+}
+
 function renderCodexAuth() {
   const status = state.codexStatus || {};
   const signedIn = Boolean(status.authenticated);
@@ -1580,38 +1849,49 @@ function renderCodexAuth() {
     <section class="panel codex-auth">
       <div class="panel-head">
         <div>
-          <h2>Codex auth</h2>
-          <p class="eyebrow">${escapeHtml(status.authMethod || "codex-cli-device-auth")}</p>
+          <h2>${signedIn ? "Ready to continue" : "Sign in to continue"}</h2>
         </div>
-        <span class="pill ${signedIn ? "good" : "bad"}">${signedIn ? "Signed in" : "Signed out"}</span>
+        <span class="pill ${signedIn ? "good" : "bad"}">${signedIn ? "Ready" : "Sign-in needed"}</span>
       </div>
-      <p>${escapeHtml(status.authText || "Checking local Codex login status.")}</p>
-      <p class="muted">The browser never receives tokens. Login runs through the local Codex CLI and proposal generation uses authenticated <code>codex exec --json</code>.</p>
+      <p>${signedIn
+        ? "StoryVR can now make suggestions for this story."
+        : "Sign in before asking StoryVR to make or refresh suggestions."}</p>
       <button class="primary" data-action="start-codex-login" ${signedIn || login.running ? "disabled" : ""}>Sign in with Codex</button>
-      ${login.running && !login.loginUrl && !login.loginCode ? `<p class="muted">Waiting for Codex CLI to print the login URL and device code...</p>` : ""}
-      ${signedIn ? `<p class="muted">Codex is authenticated. No device code is needed.</p>` : ""}
-      ${!signedIn && login.startedAt && !login.running && !login.loginUrl && !login.loginCode ? `<p class="blocked-note">Codex login finished without a parsed URL/code. Check the terminal output below or run <code>codex login --device-auth</code> in your shell.</p>` : ""}
+      ${login.running && !login.loginUrl && !login.loginCode ? `<p class="muted">Waiting for the sign-in page…</p>` : ""}
+      ${signedIn ? `<p class="muted">You are signed in.</p>` : ""}
+      ${!signedIn && login.startedAt && !login.running && !login.loginUrl && !login.loginCode ? `<p class="blocked-note">Sign-in did not finish. Ask the study facilitator for help.</p>` : ""}
       ${login.loginUrl || login.loginCode ? `
         <div class="login-details">
-          ${login.loginUrl ? `<a class="login-link" href="${escapeHtml(login.loginUrl)}" target="_blank" rel="noreferrer">Open ChatGPT login</a>` : `<p>Waiting for login URL...</p>`}
-          ${login.loginCode ? `<p>Enter code <strong>${escapeHtml(login.loginCode)}</strong></p>` : `<p>Waiting for device code...</p>`}
+          ${login.loginUrl ? `<a class="login-link" href="${escapeHtml(login.loginUrl)}" target="_blank" rel="noreferrer">Open ChatGPT sign-in</a>` : `<p>Waiting for the sign-in page…</p>`}
+          ${login.loginCode ? `<p>Enter code <strong>${escapeHtml(login.loginCode)}</strong></p>` : `<p>Waiting for the sign-in code…</p>`}
         </div>
       ` : ""}
-      ${outputLines.length ? `<pre class="terminal">${escapeHtml(outputLines.map((line) => line.line).join("\n"))}</pre>` : ""}
+      <details class="facilitator-details">
+        <summary>Sign-in details for the facilitator</summary>
+        <p>${escapeHtml(status.authText || "Checking local Codex login status.")}</p>
+        <p class="muted">Authentication method: <code>${escapeHtml(status.authMethod || "codex-cli-device-auth")}</code>. The browser does not receive the token. StoryVR uses the signed-in local Codex command-line session.</p>
+        ${!signedIn && login.startedAt && !login.running && !login.loginUrl && !login.loginCode
+          ? `<p class="blocked-note">Run <code>codex login --device-auth</code> in the terminal if device sign-in did not start.</p>`
+          : ""}
+        ${outputLines.length ? `<pre class="terminal">${escapeHtml(outputLines.map((line) => line.line).join("\n"))}</pre>` : ""}
+      </details>
     </section>
   `;
 }
 
 function renderFlowButton(component) {
   const status = checkpointFlowStatus(component.id);
-  const available = component.id === "source-graph"
-    || status !== "blocked"
-    || Boolean(state.data.readiness[component.id]?.canGenerate);
+  const blocking = status === "blocked" ? checkpointBlockingGuidance(component.id) : null;
   const active = state.activeId === component.id;
+  const label = participantComponentLabel(component.id, component.label);
+  const statusLabel = blocking?.short || participantStatusLabel(status);
+  const accessibleLabel = blocking
+    ? `${label}. ${blocking.short}. Open for details.`
+    : `${label}. ${statusLabel}.`;
   return `
-    <button class="flow-step ${active ? "active" : ""} ${status}" data-select-component="${component.id}" ${active ? 'aria-current="step"' : ""} ${available ? "" : "disabled"}>
-      <span>${escapeHtml(component.label)}</span>
-      <small>${status}</small>
+    <button class="flow-step ${active ? "active" : ""} ${status}" data-select-component="${component.id}" ${active ? 'aria-current="step"' : ""} aria-label="${escapeHtml(accessibleLabel)}">
+      <span>${escapeHtml(label)}</span>
+      <small>${escapeHtml(statusLabel)}</small>
     </button>
   `;
 }
@@ -1653,10 +1933,65 @@ function checkpointBlockingDependency(componentId) {
   const flow = visibleFlowComponents();
   const componentIndex = flow.findIndex((component) => component.id === componentId);
   if (componentIndex <= 0) return null;
-  return flow
-    .slice(0, componentIndex)
-    .reverse()
-    .find((component) => component.id !== "source-graph" && !checkpointState(component.id).current) || null;
+  const earlier = flow.slice(0, componentIndex);
+  if (state.graphDirty) {
+    const sourceGraph = earlier.find((component) => component.id === "source-graph");
+    if (sourceGraph) return sourceGraph;
+  }
+  return earlier.find((component) => (
+    component.id !== "source-graph"
+    && (!checkpointState(component.id).current || checkpointHasLocalDraft(component.id))
+  )) || null;
+}
+
+function participantBlockingDependencyLabel(componentId) {
+  const dependency = checkpointBlockingDependency(componentId);
+  return dependency
+    ? participantComponentLabel(dependency.id, dependency.label)
+    : "the earlier step";
+}
+
+function checkpointSaveActionLabel(componentId) {
+  if (componentId === "source-graph") return "Save story order";
+  if (componentId === "transition-pacing") return "Finish review";
+  return "Finish this step";
+}
+
+function checkpointBlockingGuidance(componentId) {
+  const flow = visibleFlowComponents();
+  const componentIndex = flow.findIndex((component) => component.id === componentId);
+  const dependency = checkpointBlockingDependency(componentId)
+    || (componentIndex > 0 ? flow[componentIndex - 1] : null);
+  if (!dependency) {
+    return {
+      componentId: "source-graph",
+      label: participantComponentLabel("source-graph"),
+      short: `Finish ${participantComponentLabel("source-graph")} first`,
+      instruction: `Go to ${participantComponentLabel("source-graph")} and select "${checkpointSaveActionLabel("source-graph")}".`,
+    };
+  }
+  const action = checkpointSaveActionLabel(dependency.id);
+  return {
+    componentId: dependency.id,
+    label: participantComponentLabel(dependency.id, dependency.label),
+    short: `Finish ${participantComponentLabel(dependency.id, dependency.label)} first`,
+    instruction: `Go to ${participantComponentLabel(dependency.id, dependency.label)}, review what needs attention, then select "${action}".`,
+  };
+}
+
+function renderBlockedStageWorkspace(component) {
+  const blocking = checkpointBlockingGuidance(component.id);
+  return `
+    <section class="panel blocking-stage-panel" role="alert" aria-labelledby="blocked-stage-title" data-blocked-stage="${escapeHtml(component.id)}">
+      <p class="eyebrow">This step is waiting</p>
+      <h2 id="blocked-stage-title">${escapeHtml(blocking.short)}</h2>
+      <p>${escapeHtml(blocking.instruction)}</p>
+      <div class="actions">
+        <button class="primary" type="button" data-select-component="${escapeHtml(blocking.componentId)}">Open ${escapeHtml(blocking.label)}</button>
+      </div>
+      <p class="muted">${escapeHtml(participantComponentLabel(component.id, component.label))} will open after that earlier step is finished.</p>
+    </section>
+  `;
 }
 
 function checkpointFlowStatus(componentId) {
@@ -1734,7 +2069,11 @@ function updateCheckpointStatusDom(componentId = state.activeId) {
     flowButton.classList.remove("saved", "draft", "stale", "ready", "blocked");
     flowButton.classList.add(status);
     const statusLabel = flowButton.querySelector("small");
-    if (statusLabel) statusLabel.textContent = status;
+    if (statusLabel) {
+      statusLabel.textContent = status === "blocked"
+        ? checkpointBlockingGuidance(componentId).short
+        : participantStatusLabel(status);
+    }
   }
   for (const message of document.querySelectorAll(`[data-checkpoint-current-message="${componentId}"]`)) {
     message.hidden = status !== "saved";
@@ -1744,7 +2083,7 @@ function updateCheckpointStatusDom(componentId = state.activeId) {
     if (pill) {
       pill.classList.remove("saved", "draft", "stale", "ready", "blocked");
       pill.classList.add(status);
-      pill.textContent = status;
+      pill.textContent = participantStatusLabel(status);
     }
     const saveState = document.querySelector("[data-environment-save-state]");
     if (saveState && environmentSourceAwaitingUpload()) {
@@ -1770,14 +2109,22 @@ function renderGraphEditor() {
     <section class="panel graph-editor">
       <div class="panel-head">
         <div>
-          <p class="eyebrow">Stage 0</p>
-          <h2>Source Graph</h2>
+          <p class="eyebrow">${escapeHtml(participantStepEyebrow("source-graph"))}</p>
+          <h2>${escapeHtml(participantComponentLabel("source-graph"))}</h2>
         </div>
         <div class="actions">
-          <button class="primary" data-action="save-graph">Save graph edits</button>
+          <button class="primary" data-action="save-graph">Save story order</button>
         </div>
       </div>
-      <p class="muted">Review the connected story beats. Drag any card's six-dot grip into a gap to reorder beats or variants. Drag a primary beat card beyond the Story canvas edge and release to remove it. Hover a card edge and drag its dot to create an arrow. Drag a card body to combine text or group options. You can also drag models or images between cards; drag an asset out and release to unlink it.</p>
+      <p class="story-stage-instruction">${escapeHtml(storyStageInstruction(state.data, "source-graph"))}</p>
+      <details class="compact-help">
+        <summary>How to edit the story order</summary>
+        <ul>
+          <li>Drag the six-dot grip to reorder a card.</li>
+          <li>Drag a side dot to connect cards.</li>
+          <li>Drag a card body to combine or group it. Drag an asset to link it.</li>
+        </ul>
+      </details>
       ${renderSourceGraphStatus()}
       <span class="sr-only" id="source-graph-asset-link-help">${escapeHtml(SOURCE_GRAPH_ASSET_LINK_TOOLTIP)}</span>
       <span class="source-graph-asset-hover-tooltip" data-source-graph-asset-hover-tooltip role="tooltip" aria-hidden="true">${escapeHtml(SOURCE_GRAPH_ASSET_LINK_TOOLTIP)}</span>
@@ -1793,17 +2140,16 @@ function renderGraphEditor() {
 
 function renderSourceGraphStatus() {
   if (!state.output) return "";
-  if (state.output.error) return `<p class="blocked-note">${escapeHtml(state.output.error)}</p>`;
+  if (state.output.error) return renderStageErrorNotice("source-graph");
   if (state.output.history) return `<p class="source-graph-status">${escapeHtml(state.output.history)}</p>`;
   if (state.output.animationProbeApplied) return `<p class="source-graph-status">${escapeHtml(state.output.animationProbeApplied)}</p>`;
-  if (state.output.saved) return `<p class="source-graph-status">Saved ${escapeHtml(state.output.saved)}${state.output.inferenceRefreshed ? " · Dynamics and Transition recalculated from the updated Source Graph." : ""}</p>`;
+  if (state.output.saved) return `<p class="source-graph-status">Story order saved.${state.output.inferenceRefreshed ? " Object movement and scene changes were updated." : ""}</p>`;
   if (state.output.regenerated) return `<p class="source-graph-status">Regenerated ${escapeHtml(state.output.regenerated)}</p>`;
   return "";
 }
 
 function renderBeatTimeline() {
   const beats = state.data.graph.beats || [];
-  const atomicCount = (state.data.graph.atomicBeats || beats).length;
   const textOnlyCount = beats.filter(isTextOnlyBeat).length;
   const visualBeatCount = beats.length - textOnlyCount;
   const progressStrip = renderSourceGraphProgressStrip(beats);
@@ -1811,7 +2157,7 @@ function renderBeatTimeline() {
     return `
       <section class="visual-card source-graph-canvas-shell">
         <h3>Story canvas</h3>
-        <p class="muted">No beats were detected. Use Advanced JSON or regenerate the source graph.</p>
+        <p class="muted">No story parts were found. Ask the facilitator to check this project.</p>
       </section>
     `;
   }
@@ -1820,9 +2166,9 @@ function renderBeatTimeline() {
       <div class="visual-card-head">
         <div>
           <h3>Story canvas</h3>
-          <p class="muted">Drag the six-dot grip on any card to reorder beats or variant options. Drag a primary beat beyond this canvas and release to remove it. Card-body drags still combine or group content; side dots connect cards and empty canvas space pans.</p>
+          <p class="muted">Select a card to edit it. Drag its six-dot grip to reorder it.</p>
         </div>
-        <span>${beats.length} authored · ${atomicCount} fine-grained${textOnlyCount ? ` · ${visualBeatCount} visual · ${textOnlyCount} text-only` : ""}</span>
+        <span>${beats.length} card${beats.length === 1 ? "" : "s"}${textOnlyCount ? ` · ${visualBeatCount} with visuals · ${textOnlyCount} text card${textOnlyCount === 1 ? "" : "s"}` : ""}</span>
       </div>
       ${progressStrip}
       <div class="source-graph-canvas-toolbar source-graph-arrow-toolbar">
@@ -1835,15 +2181,14 @@ function renderBeatTimeline() {
       </div>
       <div class="source-graph-canvas-stage">
       <div class="source-graph-remove-drop-hint" data-source-graph-remove-drop-hint aria-hidden="true">
-        <strong class="source-graph-remove-drop-ready">Release to remove beat</strong>
-        <strong class="source-graph-remove-drop-blocked">Keep at least one beat</strong>
+        <strong class="source-graph-remove-drop-ready">Release to remove card</strong>
+        <strong class="source-graph-remove-drop-blocked">Keep at least one card</strong>
         <span>You can undo this change before saving.</span>
       </div>
-      <div class="source-graph-canvas-viewport" id="source-graph-canvas-viewport" data-source-graph-canvas-viewport tabindex="0" aria-label="Ordered Source Graph beat canvas">
+      <div class="source-graph-canvas-viewport" id="source-graph-canvas-viewport" data-source-graph-canvas-viewport tabindex="0" aria-label="Story order canvas">
         ${renderSourceGraphLinkLayer()}
         <ol class="source-graph-canvas-track">
         ${beats.map((beat, index) => {
-          const textOnly = isTextOnlyBeat(beat);
           const selected = state.selectedBeatId === beat.id;
           const combined = isCombinedBeat(beat);
           const variantGroup = variantGroupForBeat(beat);
@@ -1880,7 +2225,7 @@ function renderBeatTimeline() {
                   ? `data-source-graph-variant-card data-source-graph-variant-drop data-source-graph-variant-group="${escapeHtml(variantGroup.id)}" data-source-graph-variant-option="${escapeHtml(defaultVariantOption.id)}"`
                   : `data-source-graph-beat-drop="${escapeHtml(beat.id)}"`}
                 aria-current="${selected ? "true" : "false"}"
-                aria-label="Beat ${index + 1}: ${escapeHtml(defaultVariantOption ? `${beat.title || beat.id}, variant ${primaryTitle}` : (beat.title || beat.id))}"
+                aria-label="Card ${index + 1}: ${escapeHtml(defaultVariantOption ? `${beat.title || beat.id}, choice ${primaryTitle}` : (beat.title || beat.id))}"
               >
                 <span
                   class="source-graph-card-reorder-handle grip"
@@ -1888,8 +2233,8 @@ function renderBeatTimeline() {
                   data-source-graph-reorder-handle
                   data-source-graph-reorder-kind="beat"
                   data-source-graph-reorder-beat="${escapeHtml(beat.id)}"
-                  aria-label="Drag to reorder Beat ${index + 1}"
-                  title="Drag to reorder this beat"
+                  aria-label="Drag to reorder Card ${index + 1}"
+                  title="Drag to reorder this card"
                 ><span aria-hidden="true">⠿</span></span>
                 <button
                   class="source-graph-beat-summary"
@@ -1940,16 +2285,71 @@ function renderBeatTimeline() {
 
 function renderSourceGraphProgressStrip(beats) {
   const navigation = state.data?.storyCanvasSegments;
-  if (!navigation) return "";
-  if (sourceGraphProgressStatusForBeats(navigation, beats) !== "current") {
-    return `
-      <div class="source-graph-progress-review" role="status">
-        Story progress navigation needs review after the Source Graph structure changed.
-      </div>
-    `;
+  const grouping = state.data?.storyCanvasGrouping;
+  const groupingUi = state.storyCanvasGroupingUi;
+  const navigationStatus = sourceGraphProgressStatusForBeats(navigation, beats);
+  const segments = Array.isArray(navigation?.segments) ? navigation.segments : [];
+  const hasCurrentNavigation = navigationStatus === "current" && segments.length >= 2;
+  const currentNavigation = hasCurrentNavigation
+    ? renderSourceGraphProgressNavigation(beats, segments)
+    : "";
+  const requiresGeneration = grouping?.requiresGeneration ?? (
+    !navigation
+    || navigationStatus !== "current"
+    || navigation.generationStatus !== "current"
+  );
+
+  if (groupingUi.flowDirty) {
+    return renderStoryCanvasGroupingStack(currentNavigation, renderStoryCanvasGroupingNotice(
+      "Story progress will update after you save the changed story flow.",
+      "is-pending",
+    ));
   }
-  const segments = Array.isArray(navigation.segments) ? navigation.segments : [];
+  if (groupingUi.busy) {
+    return renderStoryCanvasGroupingStack(currentNavigation, renderStoryCanvasGroupingNotice(
+      navigation ? "Codex is updating the story sections…" : "Codex is organizing this story into sections…",
+      "is-generating",
+    ));
+  }
+  if (groupingUi.error) {
+    return renderStoryCanvasGroupingStack(currentNavigation, renderStoryCanvasGroupingNotice(
+      `Story progress could not update: ${groupingUi.error}`,
+      "is-error",
+      { retry: true },
+    ));
+  }
+  if (requiresGeneration && !storyCanvasGroupingCanUseExistingWithoutCodex()) {
+    if (!state.codexStatus?.codexAvailable) {
+      return renderStoryCanvasGroupingStack(currentNavigation, renderStoryCanvasGroupingNotice(
+        "Codex is unavailable, so StoryVR could not create story progress. The story canvas remains fully editable.",
+        "is-error",
+        { retry: true },
+      ));
+    }
+    if (!state.codexStatus?.authenticated) {
+      return renderStoryCanvasGroupingStack(currentNavigation, renderStoryCanvasGroupingNotice(
+        "Sign in to Codex to create story progress. The story canvas remains fully editable.",
+        "is-pending",
+      ));
+    }
+    return renderStoryCanvasGroupingStack(currentNavigation, renderStoryCanvasGroupingNotice(
+      navigation ? "Story progress is ready to update." : "Preparing story progress…",
+      "is-generating",
+    ));
+  }
+  if (!navigation) return "";
+  if (navigationStatus !== "current") {
+    return renderStoryCanvasGroupingNotice(
+      "Story progress needs review after the story flow changed.",
+      "is-pending",
+      { retry: true },
+    );
+  }
   if (segments.length < 2) return "";
+  return currentNavigation;
+}
+
+function renderSourceGraphProgressNavigation(beats, segments) {
   const totalBeats = beats.length;
   return `
     <nav class="source-graph-progress" data-source-graph-progress aria-label="Story sections">
@@ -1976,7 +2376,6 @@ function renderSourceGraphProgressStrip(beats) {
           <span data-source-graph-progress-legend-index="${index}" class="${index === 0 ? "is-current" : ""}">
             <i aria-hidden="true"></i>
             <strong>${escapeHtml(segment.label)}</strong>
-            <small>${Math.max(1, Number(segment.beatCount) || segment.beatIds?.length || 1)}</small>
           </span>
         `).join("")}
       </div>
@@ -1984,18 +2383,142 @@ function renderSourceGraphProgressStrip(beats) {
   `;
 }
 
+function renderStoryCanvasGroupingNotice(message, className, { retry = false } = {}) {
+  return `
+    <div class="source-graph-progress-review ${escapeHtml(className || "")}" role="status">
+      <span>${escapeHtml(message)}</span>
+      ${retry ? `
+        <button type="button" data-story-canvas-grouping-retry>
+          Retry
+        </button>
+      ` : ""}
+    </div>
+  `;
+}
+
+function renderStoryCanvasGroupingStack(navigation, notice) {
+  if (!navigation) return notice;
+  return `<div class="source-graph-progress-stack">${navigation}${notice}</div>`;
+}
+
+function storyCanvasGroupingGenerationSignature() {
+  return String(
+    state.data?.storyCanvasGrouping?.currentGenerationSignature
+    || state.data?.storyCanvasSegments?.currentGenerationSignature
+    || "",
+  ).trim();
+}
+
+function storyCanvasGroupingRequiresGeneration() {
+  const navigation = state.data?.storyCanvasSegments;
+  const beats = state.data?.graph?.beats || [];
+  return state.data?.storyCanvasGrouping?.requiresGeneration ?? (
+    !navigation
+    || sourceGraphProgressStatusForBeats(navigation, beats) !== "current"
+    || navigation.generationStatus !== "current"
+  );
+}
+
+function storyCanvasGroupingCanUseExistingWithoutCodex() {
+  const navigation = state.data?.storyCanvasSegments;
+  return Boolean(
+    navigation
+    && sourceGraphProgressStatusForBeats(navigation, state.data?.graph?.beats || []) === "current"
+    && navigation.generationStatus === "missing"
+    && navigation.provenance?.source === "author-approved",
+  );
+}
+
+function maybeRequestStoryCanvasGrouping() {
+  if (
+    !state.data
+    || state.graphDirty
+    || state.storyCanvasGroupingUi.flowDirty
+    || state.storyCanvasGroupingUi.busy
+    || !storyCanvasGroupingRequiresGeneration()
+  ) return;
+  const generationSignature = storyCanvasGroupingGenerationSignature();
+  if (
+    !generationSignature
+    || state.storyCanvasGroupingUi.attemptedSignature === generationSignature
+  ) return;
+  if (
+    !storyCanvasGroupingCanUseExistingWithoutCodex()
+    && (!state.codexStatus?.codexAvailable || !state.codexStatus?.authenticated)
+  ) return;
+  requestStoryCanvasGrouping();
+}
+
+async function requestStoryCanvasGrouping({ force = false } = {}) {
+  if (
+    !state.data
+    || state.graphDirty
+    || state.storyCanvasGroupingUi.flowDirty
+    || state.storyCanvasGroupingUi.busy
+  ) return;
+  const expectedGenerationSignature = storyCanvasGroupingGenerationSignature();
+  if (!expectedGenerationSignature) return;
+
+  const requestId = state.storyCanvasGroupingUi.requestId + 1;
+  state.storyCanvasGroupingUi.requestId = requestId;
+  state.storyCanvasGroupingUi.attemptedSignature = expectedGenerationSignature;
+  state.storyCanvasGroupingUi.busy = true;
+  state.storyCanvasGroupingUi.error = "";
+  renderPreservingScroll();
+
+  try {
+    const response = await api.post("/api/story-canvas-segments/generate", {
+      expectedGenerationSignature,
+      force,
+    });
+    if (requestId !== state.storyCanvasGroupingUi.requestId) return;
+    const navigation = response.storyCanvasSegments;
+    const currentGenerationSignature = storyCanvasGroupingGenerationSignature();
+    if (
+      state.graphDirty
+      || state.storyCanvasGroupingUi.flowDirty
+      || currentGenerationSignature !== expectedGenerationSignature
+      || navigation?.currentGenerationSignature !== expectedGenerationSignature
+      || navigation?.generationStatus !== "current"
+      || navigation?.status !== "current"
+      || !sourceGraphProgressStructureMatches(
+        navigation?.currentGraphStructure,
+        state.data?.graph?.beats || [],
+      )
+    ) {
+      state.storyCanvasGroupingUi.error = "The saved story flow changed, so the outdated result was not applied.";
+      return;
+    }
+    state.data.storyCanvasSegments = navigation;
+    state.data.storyCanvasGrouping = {
+      currentGenerationSignature: expectedGenerationSignature,
+      status: "current",
+      requiresGeneration: false,
+    };
+    state.storyCanvasGroupingUi.error = "";
+  } catch (error) {
+    if (requestId !== state.storyCanvasGroupingUi.requestId) return;
+    state.storyCanvasGroupingUi.error = error.message;
+  } finally {
+    if (requestId === state.storyCanvasGroupingUi.requestId) {
+      state.storyCanvasGroupingUi.busy = false;
+      renderPreservingScroll();
+    }
+  }
+}
+
 function sourceGraphProgressRangeLabel(segment, totalBeats) {
   const start = Math.max(0, Number(segment?.startIndex) || 0) + 1;
   const end = Math.max(start, Number(segment?.endIndex) + 1 || start);
   return start === end
-    ? `Beat ${start} of ${totalBeats}`
-    : `Beats ${start}–${end} of ${totalBeats}`;
+    ? `Card ${start} of ${totalBeats}`
+    : `Cards ${start}–${end} of ${totalBeats}`;
 }
 
 function sourceGraphProgressButtonLabel(segment) {
   const start = Math.max(0, Number(segment?.startIndex) || 0) + 1;
   const end = Math.max(start, Number(segment?.endIndex) + 1 || start);
-  const range = start === end ? `beat ${start}` : `beats ${start} through ${end}`;
+  const range = start === end ? `card ${start}` : `cards ${start} through ${end}`;
   return `Jump to ${segment?.label || "story section"}, ${range}`;
 }
 
@@ -2046,14 +2569,14 @@ function renderSourceGraphFullTextDetail() {
   const detail = sourceGraphFullTextDetail();
   if (!detail) return "";
   const context = detail.option
-    ? `Variant · Beat ${String(detail.beatNumber).padStart(2, "0")}`
-    : `Beat ${String(detail.beatNumber).padStart(2, "0")}`;
+    ? `Choice · Card ${String(detail.beatNumber).padStart(2, "0")}`
+    : `Card ${String(detail.beatNumber).padStart(2, "0")}`;
   return `
     <section
       class="source-graph-full-text-detail"
       id="source-graph-full-text-detail"
       data-source-graph-full-text-detail
-      aria-label="Full beat text"
+      aria-label="Full card text"
     >
       <div class="source-graph-full-text-head">
         <div>
@@ -2070,7 +2593,7 @@ function renderSourceGraphFullTextDetail() {
             />
           </label>
         </div>
-        <small>Save graph edits to persist · click empty canvas space to close.</small>
+        <small>Save story order to keep changes · select empty canvas space to close.</small>
       </div>
       <label class="source-graph-full-text-editor-label">
         <span class="sr-only">Full text for ${escapeHtml(detail.title)}</span>
@@ -2096,7 +2619,7 @@ function renderSourceGraphVariantAlternatives(beat, group, defaultOption) {
       class="source-graph-variant-alternatives ${group && defaultOption ? "has-options" : "is-drop-only"}"
       data-source-graph-variant-alternatives
       ${group?.id ? `data-source-graph-variant-group="${escapeHtml(group.id)}"` : ""}
-      aria-label="Parallel options for ${escapeHtml(groupTitle)}"
+      aria-label="Choices for ${escapeHtml(groupTitle)}"
     >
       ${renderSourceGraphVariantInsertSlot(beat, defaultOption?.id || null)}
       ${alternatives.map((option, optionIndex) => {
@@ -2120,7 +2643,7 @@ function renderSourceGraphVariantAlternatives(beat, group, defaultOption) {
               data-source-graph-variant-drop
               data-source-graph-variant-group="${escapeHtml(group.id)}"
               data-source-graph-variant-option="${escapeHtml(option.id)}"
-              aria-label="${escapeHtml(optionTitle)} option for Beat ${escapeHtml(beat.id)}"
+              aria-label="${escapeHtml(optionTitle)} choice for ${escapeHtml(beat.title || beat.id)}"
             >
               <span
                 class="source-graph-card-reorder-handle grip"
@@ -2131,7 +2654,7 @@ function renderSourceGraphVariantAlternatives(beat, group, defaultOption) {
                 data-source-graph-reorder-variant-group="${escapeHtml(group.id)}"
                 data-source-graph-reorder-variant-option="${escapeHtml(option.id)}"
                 aria-label="Drag to reorder ${escapeHtml(optionTitle)}"
-                title="Drag to reorder this variant"
+                title="Drag to reorder this choice"
               ><span aria-hidden="true">⠿</span></span>
               <button
                 class="source-graph-beat-summary"
@@ -2185,7 +2708,7 @@ function renderSourceGraphVariantInsertSlot(beat, afterOptionId = null) {
       data-source-graph-variant-insert-target-beat="${escapeHtml(beat.id)}"
       ${afterOptionId ? `data-source-graph-variant-insert-after="${escapeHtml(afterOptionId)}"` : ""}
     >
-      <span class="source-graph-variant-insert-marker" aria-hidden="true">Drop as variant</span>
+      <span class="source-graph-variant-insert-marker" aria-hidden="true">Drop as choice</span>
     </li>
   `;
 }
@@ -2212,7 +2735,7 @@ function renderSourceGraphCardCombineDropFields(endpoint) {
 
 function renderSourceGraphLinkHandles(endpoint) {
   if (!endpoint?.cardKind) return "";
-  const title = endpoint.cardKind === "variant" ? "variant" : "beat";
+  const title = endpoint.cardKind === "variant" ? "choice" : "card";
   return ["top", "right", "bottom", "left"].map((side) => `
     <button
       type="button"
@@ -2234,7 +2757,7 @@ function renderSourceGraphLinkLayer() {
     <svg
       class="source-graph-link-layer ${explicit ? "is-explicit" : "is-implicit"}"
       data-source-graph-link-layer
-      aria-label="Story transition and manual variant switch arrows"
+      aria-label="Story order and choice arrows"
     >
       <defs>
         <marker id="source-graph-transition-arrowhead" viewBox="0 0 12 12" markerWidth="12" markerHeight="12" refX="12" refY="6" orient="auto" markerUnits="userSpaceOnUse">
@@ -2270,8 +2793,8 @@ function renderSourceGraphLinkLayer() {
 
 function sourceGraphTransitionAriaLabel(edge) {
   const endpointLabel = (endpoint) => endpoint?.cardKind === "variant"
-    ? `variant ${endpoint.variantOptionId}`
-    : `beat ${endpoint?.beatId || "unknown"}`;
+    ? `choice ${endpoint.variantOptionId}`
+    : `card ${endpoint?.beatId || "unknown"}`;
   if (sourceGraphIsManualVariantSwitch(edge)) {
     return `Manual switch from ${endpointLabel(edge?.from)} to ${endpointLabel(edge?.to)}. Select to remove.`;
   }
@@ -2525,7 +3048,7 @@ function renderSourceGraphBeatAsset(assetId, beat, options = {}) {
     >
       ${asset ? renderSpatialStoryAssetPreview(asset) : `<span class="asset-icon">?</span>`}
       <span>${escapeHtml(asset?.id || assetId)}</span>
-      ${variant ? `<small>Variant</small>` : ""}
+      ${variant ? `<small>Choice</small>` : ""}
     </button>
   `;
 }
@@ -2559,8 +3082,8 @@ function renderModelPreviewPanel(asset) {
 function renderNoBeatSelected() {
   return `
     <section class="visual-card no-beat-selected">
-      <h3>No beat selected</h3>
-      <p class="muted">Click a beat in the timeline to inspect text, evidence, entities, and linked source assets.</p>
+      <h3>No card selected</h3>
+      <p class="muted">Select a story card to check its text and linked models or images.</p>
     </section>
   `;
 }
@@ -2571,8 +3094,8 @@ function renderEntityChips(beat) {
   return `
     <section class="visual-card entity-panel">
       <div class="visual-card-head">
-        <h3>Entity chips</h3>
-        <span>${entities.length} entities</span>
+        <h3>Story terms</h3>
+        <span>${entities.length} terms</span>
       </div>
       <div class="entity-cloud">
         ${entities.slice(0, 28).map((entity) => `
@@ -2581,9 +3104,9 @@ function renderEntityChips(beat) {
               <strong>${escapeHtml(entity.label)}</strong>
               <span>${Number(entity.count || 0)} mentions</span>
             </div>
-            <input data-entity-meaning="${escapeHtml(entity.id)}" placeholder="Meaning for VR..." value="${escapeHtml(entity.meaning || "")}" />
+            <input data-entity-meaning="${escapeHtml(entity.id)}" placeholder="Meaning in this story…" value="${escapeHtml(entity.meaning || "")}" />
           </article>
-        `).join("") || `<p class="muted">No entities extracted yet.</p>`}
+        `).join("") || `<p class="muted">No repeated story terms found.</p>`}
       </div>
     </section>
   `;
@@ -2596,22 +3119,22 @@ function renderEvidencePanel(beat) {
   return `
     <section class="visual-card evidence-panel">
       <div class="visual-card-head">
-        <h3>Evidence links</h3>
+        <h3>Linked content</h3>
         ${beat ? `<span>${escapeHtml(beat.title || beat.id)}</span>` : ""}
       </div>
       ${beat ? `
         <div class="evidence-meter ${textOnly ? "text-only" : (beatAssetIds(beat).length ? "strong" : "weak")}">
-          <strong>${textOnly ? "Text-only context" : (beatAssetIds(beat).length ? "Strong evidence" : "Weak evidence")}</strong>
-          <p>${textOnly ? "No source asset is expected for this narrative text." : (beatAssetIds(beat).length ? "This beat has source assets linked for transformation." : "This beat has no linked source assets yet.")}</p>
+          <strong>${textOnly ? "Text card" : (beatAssetIds(beat).length ? "Visuals linked" : "No visual linked")}</strong>
+          <p>${textOnly ? "This card does not need a model or image." : (beatAssetIds(beat).length ? "These models or images will appear with this card." : "Link a model or image if this card needs one.")}</p>
         </div>
         ${evidence ? `
           <dl>
-            <dt>${textOnly ? "Asset expectation" : "Confidence"}</dt><dd>${textOnly ? "none" : confidenceLabel(evidence.confidence)}</dd>
-            <dt>Asset links</dt><dd>${(evidence.assetLinks || []).length}</dd>
+            <dt>${textOnly ? "Visual needed" : "Match quality"}</dt><dd>${textOnly ? "No" : confidenceLabel(evidence.confidence)}</dd>
+            <dt>Linked items</dt><dd>${(evidence.assetLinks || []).length}</dd>
             <dt>Text cue</dt><dd>${escapeHtml(evidence.textCue || beat.title || beat.id)}</dd>
           </dl>
-        ` : `<p class="muted">No evidence record exists for this beat; saving linked assets will create one.</p>`}
-      ` : `<p class="muted">Select a beat to inspect evidence.</p>`}
+        ` : `<p class="muted">Save the story order to keep new links.</p>`}
+      ` : `<p class="muted">Select a card to check its links.</p>`}
       ${notes.length ? `
         <h3>Missing / weak asset notes</h3>
         <ul class="warning-list">${notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>
@@ -2631,21 +3154,21 @@ function renderAssetAtlas(beat) {
     || (filter === "images" && isImageAsset(asset))
   ));
   return `
-    <aside class="visual-card source-graph-asset-dock" data-source-graph-asset-dock aria-label="Source asset library">
+    <aside class="visual-card source-graph-asset-dock" data-source-graph-asset-dock aria-label="Story asset library">
       <div class="source-graph-asset-dock-head">
         <div>
           <h3>Asset Library</h3>
-          <p class="muted">Drag a model or image onto a beat or variant.</p>
+          <p class="muted">Drag a model or image onto a card or choice.</p>
         </div>
         <span>${selectableAssets.length}</span>
       </div>
-      <div class="source-graph-asset-filters" role="group" aria-label="Filter source assets">
+      <div class="source-graph-asset-filters" role="group" aria-label="Filter story assets">
         <button data-source-graph-asset-filter="all" aria-pressed="${filter === "all"}">All ${selectableAssets.length}</button>
         <button data-source-graph-asset-filter="models" aria-pressed="${filter === "models"}">Models ${modelCount}</button>
         <button data-source-graph-asset-filter="images" aria-pressed="${filter === "images"}">Images ${imageCount}</button>
       </div>
       <div class="source-graph-asset-grid">
-        ${visibleAssets.map((asset) => renderAssetCard(asset, beat)).join("") || `<p class="muted">No ${filter === "all" ? "models or images" : filter} found in the source capture.</p>`}
+        ${visibleAssets.map((asset) => renderAssetCard(asset, beat)).join("") || `<p class="muted">No ${filter === "all" ? "models or images" : filter} found for this story.</p>`}
       </div>
     </aside>
   `;
@@ -2658,7 +3181,7 @@ function renderAssetCard(asset, beat) {
     : beat
       ? beatAssetIds(beat).includes(asset.id)
       : false;
-  const selectedTargetLabel = selectedVariantOption ? "selected variant" : "selected beat";
+  const selectedTargetLabel = selectedVariantOption ? "selected choice" : "selected card";
   return `
     <article
       class="source-graph-asset-icon-card ${linked ? "linked" : ""}"
@@ -3571,9 +4094,9 @@ function assetCaptionText(value) {
 function renderAdvancedGraphEditor() {
   return `
     <section class="advanced-json">
-      <button data-toggle-advanced-json>${state.graphAdvancedOpen ? "Hide" : "Show"} Advanced JSON</button>
+      <button data-toggle-advanced-json>${state.graphAdvancedOpen ? "Hide facilitator tools" : "Facilitator tools"}</button>
       ${state.graphAdvancedOpen ? `
-        <p class="muted">Direct JSON edits are useful for debugging. Save graph edits to persist changes.</p>
+        <p class="muted">Edit the project data below, then save the story order.</p>
         <textarea class="json-editor" spellcheck="false" data-graph-editor>${escapeHtml(state.graphDraft)}</textarea>
       ` : ""}
     </section>
@@ -3599,10 +4122,10 @@ function beatGroupingActionState() {
 }
 
 function beatSelectionHelp(selection) {
-  if (!selection.count) return "Use checkboxes to combine, split, or remove beats.";
-  if (selection.allSelected) return "Keep at least one beat in the story.";
-  if (!selection.adjacent) return "Remove selected beats, or select adjacent beats to combine.";
-  return "Combine adjacent beats, split a grouped beat, or remove irrelevant beats.";
+  if (!selection.count) return "Use checkboxes to combine, split, or remove cards.";
+  if (selection.allSelected) return "Keep at least one card in the story.";
+  if (!selection.adjacent) return "Remove selected cards, or select neighboring cards to combine.";
+  return "Combine neighboring cards, split a grouped card, or remove cards you do not need.";
 }
 
 function selectedGroupingBeats() {
@@ -3652,7 +4175,7 @@ function sortBeatIdsByStoryOrder(ids) {
 function combineSelectedBeats() {
   const grouping = beatGroupingActionState();
   if (!grouping.canCombine) return;
-  const historyStarted = beginAuthorHistory("Combine Source Graph beats", "source-graph");
+  const historyStarted = beginAuthorHistory("Combine story cards", "source-graph");
   syncVisibleAtomicBeatsToAtomicStore();
   const beats = state.data.graph.beats || [];
   const selected = selectedGroupingBeats();
@@ -3675,14 +4198,14 @@ function combineSelectedBeats() {
   syncEvidenceLinksForAuthoredBeats();
   clearMissingSelectedBeat();
   resetGraphDependentPreviewState();
-  updateGraphDraftFromState();
+  updateGraphDraftFromState({ storyFlowChanged: true });
   if (historyStarted) commitAuthorHistory();
 }
 
 function splitSelectedBeat() {
   const grouping = beatGroupingActionState();
   if (!grouping.canSplit) return;
-  const historyStarted = beginAuthorHistory("Split Source Graph beat", "source-graph");
+  const historyStarted = beginAuthorHistory("Split story card", "source-graph");
   const beats = state.data.graph.beats || [];
   const selected = selectedGroupingBeats()[0];
   const index = beats.findIndex((beat) => beat.id === selected.id);
@@ -3729,11 +4252,11 @@ function splitSelectedBeat() {
   syncEvidenceLinksForAuthoredBeats();
   clearMissingSelectedBeat();
   resetGraphDependentPreviewState();
-  updateGraphDraftFromState();
+  updateGraphDraftFromState({ storyFlowChanged: true });
   if (historyStarted) commitAuthorHistory();
 }
 
-function removeSourceGraphBeats(selected, historyLabel = "Remove Source Graph beats") {
+function removeSourceGraphBeats(selected, historyLabel = "Remove story cards") {
   const beats = state.data.graph.beats || [];
   const selectedBeatIds = new Set((selected || []).map((beat) => beat?.id).filter(Boolean));
   const removable = beats.filter((beat) => selectedBeatIds.has(beat.id));
@@ -3760,7 +4283,7 @@ function removeSourceGraphBeats(selected, historyLabel = "Remove Source Graph be
   syncEvidenceLinksForAuthoredBeats();
   clearMissingSelectedBeat();
   resetGraphDependentPreviewState();
-  updateGraphDraftFromState();
+  updateGraphDraftFromState({ storyFlowChanged: true });
   if (historyStarted) commitAuthorHistory();
   return true;
 }
@@ -3773,7 +4296,7 @@ function removeSelectedBeats() {
 
 function removeSourceGraphBeat(beatId) {
   const beat = (state.data.graph.beats || []).find((candidate) => candidate.id === beatId);
-  return beat ? removeSourceGraphBeats([beat], "Remove Source Graph beat") : false;
+  return beat ? removeSourceGraphBeats([beat], "Remove story card") : false;
 }
 
 function removeVariantGroupsHostedByBeats(graph, beats) {
@@ -4135,14 +4658,54 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function updateGraphDraftFromState() {
+function updateGraphDraftFromState({ storyFlowChanged = false } = {}) {
   state.graphDraft = JSON.stringify(state.data.graph, null, 2);
-  markGraphDirty();
+  markGraphDirty({ storyFlowChanged });
 }
 
-function markGraphDirty() {
+function markGraphDirty({ storyFlowChanged = false } = {}) {
   state.graphDirty = true;
+  if (storyFlowChanged) markStoryCanvasGroupingDraftDirty();
   if (state.output?.kind === "compile") state.output = { ...state.output, stale: true };
+}
+
+function markStoryCanvasGroupingDraftDirty() {
+  state.storyCanvasGroupingUi.requestId += 1;
+  state.storyCanvasGroupingUi.busy = false;
+  state.storyCanvasGroupingUi.error = "";
+  state.storyCanvasGroupingUi.attemptedSignature = "";
+  state.storyCanvasGroupingUi.flowDirty = true;
+  updateStoryCanvasGroupingDraftDom();
+}
+
+function updateStoryCanvasGroupingDraftDom() {
+  if (state.activeId !== "source-graph") return;
+  const shell = document.querySelector(".source-graph-canvas-shell");
+  if (!shell) return;
+  let stack = shell.querySelector(":scope > .source-graph-progress-stack");
+  const navigation = stack?.querySelector(":scope > .source-graph-progress")
+    || shell.querySelector(":scope > .source-graph-progress");
+  if (navigation && !stack) {
+    stack = document.createElement("div");
+    stack.className = "source-graph-progress-stack";
+    shell.insertBefore(stack, navigation);
+    stack.append(navigation);
+  }
+  let notice = stack?.querySelector(":scope > .source-graph-progress-review")
+    || shell.querySelector(":scope > .source-graph-progress-review");
+  if (!notice) {
+    notice = document.createElement("div");
+    if (stack) stack.append(notice);
+    else shell.insertBefore(
+      notice,
+      shell.querySelector(":scope > .source-graph-canvas-toolbar"),
+    );
+  }
+  notice.className = "source-graph-progress-review is-pending";
+  notice.setAttribute("role", "status");
+  const message = document.createElement("span");
+  message.textContent = "Story progress will update after you save the changed story flow.";
+  notice.replaceChildren(message);
 }
 
 function updateSourceGraphFullText(value) {
@@ -4154,7 +4717,7 @@ function updateSourceGraphFullText(value) {
     detail.beat.text = value;
     if (!isCombinedBeat(detail.beat)) syncVisibleAtomicBeatsToAtomicStore();
   }
-  updateGraphDraftFromState();
+  updateGraphDraftFromState({ storyFlowChanged: true });
 }
 
 function updateSourceGraphFullTitle(value) {
@@ -4168,7 +4731,7 @@ function updateSourceGraphFullTitle(value) {
     if (!isCombinedBeat(detail.beat)) syncVisibleAtomicBeatsToAtomicStore();
     syncEvidenceForBeat(detail.beat.id, beatAssetIds(detail.beat));
   }
-  updateGraphDraftFromState();
+  updateGraphDraftFromState({ storyFlowChanged: true });
 }
 
 function updateSelectedBeatField(field, value) {
@@ -4177,7 +4740,7 @@ function updateSelectedBeatField(field, value) {
   beat[field] = value;
   if (!isCombinedBeat(beat)) syncVisibleAtomicBeatsToAtomicStore();
   if (field === "title") syncEvidenceForBeat(beat.id, beatAssetIds(beat));
-  updateGraphDraftFromState();
+  updateGraphDraftFromState({ storyFlowChanged: true });
 }
 
 function updateEntityMeaning(entityId, value) {
@@ -4295,7 +4858,7 @@ function canUseSourceGraphCardReorderDestination(source, destination) {
 }
 
 function commitSourceGraphConnection(source, target, sourceSide, targetSide) {
-  const historyStarted = beginAuthorHistory("Create Source Graph arrow", "source-graph");
+  const historyStarted = beginAuthorHistory("Create story arrow", "source-graph");
   const result = connectSourceGraphCards(state.data.graph, {
     source,
     target,
@@ -4310,13 +4873,13 @@ function commitSourceGraphConnection(source, target, sourceSide, targetSide) {
   state.sourceGraphSelectedTransitionId = result.edge?.id || null;
   resetGraphDependentPreviewState();
   state.sourceGraphDragAnnouncement = sourceGraphConnectionMessage(result);
-  updateGraphDraftFromState();
+  updateGraphDraftFromState({ storyFlowChanged: true });
   if (historyStarted) commitAuthorHistory();
   return result;
 }
 
 function commitSourceGraphTransitionRemoval(edgeId = state.sourceGraphSelectedTransitionId) {
-  const historyStarted = beginAuthorHistory("Remove Source Graph arrow", "source-graph");
+  const historyStarted = beginAuthorHistory("Remove story arrow", "source-graph");
   const result = removeSourceGraphTransition(state.data.graph, edgeId);
   if (!result.changed) {
     if (historyStarted) authorHistory.cancel();
@@ -4327,7 +4890,7 @@ function commitSourceGraphTransitionRemoval(edgeId = state.sourceGraphSelectedTr
   state.sourceGraphSelectedTransitionId = null;
   resetGraphDependentPreviewState();
   state.sourceGraphDragAnnouncement = "Removed the selected story arrow.";
-  updateGraphDraftFromState();
+  updateGraphDraftFromState({ storyFlowChanged: true });
   if (historyStarted) commitAuthorHistory();
   return result;
 }
@@ -4335,12 +4898,12 @@ function commitSourceGraphTransitionRemoval(edgeId = state.sourceGraphSelectedTr
 function sourceGraphConnectionMessage(result) {
   if (result.reason === "connected") {
     const preserved = result.materializedImplicitCount
-      ? ` Preserved ${result.materializedImplicitCount} existing source-order arrow${result.materializedImplicitCount === 1 ? "" : "s"} as editable connections.`
+      ? ` Kept ${result.materializedImplicitCount} existing story arrow${result.materializedImplicitCount === 1 ? "" : "s"} editable.`
       : "";
     return `Created a story arrow.${preserved}`;
   }
   if (result.reason === "rerouted") return "Moved the existing story arrow to the selected card sides.";
-  if (result.reason === "materialized") return "The source-order arrow is now editable.";
+  if (result.reason === "materialized") return "The existing story arrow can now be edited.";
   if (result.reason === "duplicate") return "That story arrow already exists.";
   if (result.reason === "same-card") return "An arrow must connect two different cards.";
   if (result.reason === "unknown-source-card" || result.reason === "unknown-target-card") {
@@ -4350,7 +4913,7 @@ function sourceGraphConnectionMessage(result) {
 }
 
 function commitSourceGraphCardCombination(source, target, placement) {
-  const historyStarted = beginAuthorHistory("Combine Source Graph cards", "source-graph");
+  const historyStarted = beginAuthorHistory("Combine story cards", "source-graph");
   const result = combineSourceGraphCards(state.data.graph, { source, target, placement });
   if (!result.changed) {
     if (historyStarted) authorHistory.cancel();
@@ -4372,7 +4935,7 @@ function commitSourceGraphCardCombination(source, target, placement) {
   clearMissingSelectedBeat();
   resetGraphDependentPreviewState();
   state.sourceGraphDragAnnouncement = sourceGraphCardCombinationMessage(result);
-  updateGraphDraftFromState();
+  updateGraphDraftFromState({ storyFlowChanged: true });
   if (historyStarted) commitAuthorHistory();
   return result;
 }
@@ -4380,17 +4943,18 @@ function commitSourceGraphCardCombination(source, target, placement) {
 function sourceGraphCardCombinationMessage(result) {
   if (result.reason === "combined") {
     const order = result.placement === "up" ? "before" : "after";
-    return `Combined the dragged ${result.cardKind} text ${order} ${result.destinationTitle || "the destination card"}. The destination title and location were retained.`;
+    const cardKind = result.cardKind === "variant" ? "choice" : "card";
+    return `Combined the dragged ${cardKind} text ${order} ${result.destinationTitle || "the destination card"}. The destination title and location stayed the same.`;
   }
   if (result.reason === "same-card") return "A card cannot be combined with itself.";
-  if (result.reason === "incompatible-cards") return "Combine beats with beats, or variants within the same variant group.";
+  if (result.reason === "incompatible-cards") return "Combine story cards with story cards, or choices in the same section.";
   if (result.reason === "unknown-source-beat" || result.reason === "unknown-source-variant") return "The dragged card is no longer available.";
   if (result.reason === "unknown-target-beat" || result.reason === "unknown-target-variant") return "The destination card is no longer available.";
-  return "No Source Graph cards were combined.";
+  return "No story cards were combined.";
 }
 
 function commitSourceGraphBeatVariantPlacement(source, targetBeatId, afterOptionId = null) {
-  const historyStarted = beginAuthorHistory("Group Source Graph beat as variant", "source-graph");
+  const historyStarted = beginAuthorHistory("Add story card as a choice", "source-graph");
   const result = placeSourceGraphBeatAsVariant(state.data.graph, {
     sourceBeatId: source?.cardKind === "beat" ? source.beatId : null,
     targetBeatId,
@@ -4416,34 +4980,34 @@ function commitSourceGraphBeatVariantPlacement(source, targetBeatId, afterOption
   clearMissingSelectedBeat();
   resetGraphDependentPreviewState();
   state.sourceGraphDragAnnouncement = sourceGraphBeatVariantPlacementMessage(result);
-  updateGraphDraftFromState();
+  updateGraphDraftFromState({ storyFlowChanged: true });
   if (historyStarted) commitAuthorHistory();
   return result;
 }
 
 function sourceGraphBeatVariantPlacementMessage(result) {
   if (result.reason === "created-variant-group") {
-    return "Created a variant group. The destination beat remains the default option and the dragged beat appears beneath it.";
+    return "Created a choice section. The destination card stays first, and the dragged card appears beneath it.";
   }
   if (result.reason === "joined-variant-group") {
-    return "Inserted the dragged beat into the variant group at the previewed position.";
+    return "Added the dragged card to the choice section at the previewed position.";
   }
-  if (result.reason === "same-beat") return "A beat cannot become a variant of itself.";
-  if (result.reason === "source-already-variant") return "Move a standalone beat into a variant group; an entire variant group cannot be nested.";
-  if (result.reason === "unknown-source-beat") return "The dragged beat is no longer available.";
+  if (result.reason === "same-beat") return "A card cannot become a choice under itself.";
+  if (result.reason === "source-already-variant") return "Move one standalone card into a choice section. Choice sections cannot be nested.";
+  if (result.reason === "unknown-source-beat") return "The dragged card is no longer available.";
   if (result.reason === "unknown-target-beat" || result.reason === "unknown-target-option") {
-    return "The variant destination is no longer available.";
+    return "That choice position is no longer available.";
   }
   if (result.reason === "target-option-required" || result.reason === "target-is-not-variant-group") {
-    return "Drop the beat into one of the visible variant positions.";
+    return "Drop the card into one of the visible choice positions.";
   }
-  return "No variant group was changed.";
+  return "No choice section was changed.";
 }
 
 function commitSourceGraphReorder(source, destination) {
   const historyLabel = source?.reorderKind === "variant"
-    ? "Reorder Source Graph variant"
-    : "Reorder Source Graph beat";
+    ? "Reorder story choice"
+    : "Reorder story card";
   const historyStarted = beginAuthorHistory(historyLabel, "source-graph");
   const result = source?.reorderKind === "variant"
     ? reorderSourceGraphVariant(state.data.graph, {
@@ -4478,27 +5042,27 @@ function commitSourceGraphReorder(source, destination) {
   clearMissingSelectedBeat();
   resetGraphDependentPreviewState();
   state.sourceGraphDragAnnouncement = sourceGraphReorderMessage(result);
-  updateGraphDraftFromState();
+  updateGraphDraftFromState({ storyFlowChanged: true });
   if (historyStarted) commitAuthorHistory();
   return result;
 }
 
 function sourceGraphReorderMessage(result) {
   if (result.reason === "reordered" && result.reorderKind === "variant") {
-    return `Moved ${result.sourceLabel || "the variant"} after ${result.afterLabel || "the preceding option"}.`;
+    return `Moved ${result.sourceLabel || "the choice"} after ${result.afterLabel || "the preceding choice"}.`;
   }
   if (result.reason === "reordered") {
-    return `Moved the beat to position ${(result.nextIndex ?? 0) + 1}.`;
+    return `Moved the card to position ${(result.nextIndex ?? 0) + 1}.`;
   }
   if (result.reason === "already-positioned") return "That card is already in this position.";
-  if (result.reason === "default-option-pinned") return "The default variant remains first; reorder the alternative variants beneath it.";
+  if (result.reason === "default-option-pinned") return "The first choice stays first. Reorder the other choices beneath it.";
   if (result.reason === "unknown-source-beat" || result.reason === "unknown-source-variant") {
     return "The dragged card is no longer available.";
   }
   if (result.reason === "unknown-target-beat" || result.reason === "unknown-target-variant") {
     return "That reorder position is no longer available.";
   }
-  return "No Source Graph cards were reordered.";
+  return "No story cards were reordered.";
 }
 
 function commitSourceGraphAssetTransfer({
@@ -4510,7 +5074,7 @@ function commitSourceGraphAssetTransfer({
   targetVariantGroupId = null,
   targetVariantOptionId = null,
 }) {
-  const historyStarted = beginAuthorHistory("Edit Source Graph asset links", "source-graph");
+  const historyStarted = beginAuthorHistory("Edit story asset links", "source-graph");
   const result = transferSourceGraphAsset(state.data.graph, {
     assetId,
     sourceBeatId,
@@ -4548,14 +5112,14 @@ function sourceGraphTransferMessage(result, assetId) {
   if (result.reason === "moved") return `Moved ${assetId} from ${source} to ${target}.`;
   if (result.reason === "unlinked") return `Unlinked ${assetId} from ${source}. The source file remains in the Asset Library.`;
   if (result.reason === "duplicate") return `${assetId} is already linked to ${target}.`;
-  if (result.reason === "same-beat") return `${assetId} is already on that beat.`;
+  if (result.reason === "same-beat") return `${assetId} is already on that card.`;
   if (result.reason === "same-variant") return `${assetId} is already on ${target}.`;
-  if (result.reason === "variant-target-requires-option") return "Choose a specific variant card for this asset.";
+  if (result.reason === "variant-target-requires-option") return "Choose a specific choice card for this asset.";
   if (result.reason === "unknown-asset") return `${assetId} is no longer available in the Asset Library.`;
   if (result.reason === "unknown-source-variant" || result.reason === "unknown-target-variant") {
-    return "That variant option is no longer available.";
+    return "That choice is no longer available.";
   }
-  return "No Source Graph asset link changed.";
+  return "No story asset link changed.";
 }
 
 function sourceGraphTransferEndpointLabel(result, endpoint) {
@@ -4563,7 +5127,7 @@ function sourceGraphTransferEndpointLabel(result, endpoint) {
   const groupId = result[`${endpoint}VariantGroupId`];
   const optionId = result[`${endpoint}VariantOptionId`];
   if (!beatId && !groupId) return "Asset Library";
-  const beatLabel = beatId ? sourceGraphBeatLabel(beatId) : "Variant";
+  const beatLabel = beatId ? sourceGraphBeatLabel(beatId) : "Choice";
   if (!groupId || !optionId) return beatLabel;
   const group = (state.data.graph.variantGroups || []).find((candidate) => candidate.id === groupId);
   const option = (group?.options || []).find((candidate) => candidate.id === optionId);
@@ -4574,7 +5138,7 @@ function sourceGraphBeatLabel(beatId) {
   const beats = state.data.graph.beats || [];
   const index = beats.findIndex((beat) => beat.id === beatId);
   const beat = index >= 0 ? beats[index] : null;
-  return beat ? `Beat ${String(index + 1).padStart(2, "0")} (${beat.title || beat.id})` : beatId;
+  return beat ? `Card ${String(index + 1).padStart(2, "0")} (${beat.title || beat.id})` : beatId;
 }
 
 function addLinkedAssetToVariantOption(groupId, optionId, assetId) {
@@ -4635,12 +5199,12 @@ function renderComponentWorkspace(component) {
     <section class="panel option-selector">
       <div class="panel-head">
         <div>
-          <p class="eyebrow">Dimension ${component.dimension} · Stage ${component.stage}</p>
-          <h2>${escapeHtml(component.label)}</h2>
+          <p class="eyebrow">${escapeHtml(participantStepEyebrow(component.id))}</p>
+          <h2>${escapeHtml(participantComponentLabel(component.id, component.label))}</h2>
         </div>
         <div class="actions">
           ${renderGenerateOptionsButton(component, ready)}
-          <button data-action="save-graph">Save graph edits</button>
+          <button data-action="save-graph">Save story order</button>
         </div>
       </div>
       ${ready ? "" : `<p class="blocked-note">Save earlier checkpoints before generating this component.</p>`}
@@ -4664,7 +5228,7 @@ function renderGenerateOptionsButton(component, ready) {
 }
 
 function renderCheckpointActions(component, decision, options = {}) {
-  const label = options.label || "Save checkpoint";
+  const label = options.label || "Finish this step";
   const checkpointReadiness = state.data?.readiness?.[component.id] || {};
   const ready = (checkpointReadiness.canSave ?? checkpointReadiness.canGenerate) !== false;
   return `
@@ -4682,8 +5246,8 @@ function renderAssetTopologyWorkspace(component) {
     <section class="panel asset-topology-panel">
       <div class="panel-head">
         <div>
-          <p class="eyebrow">Dimension ${component.dimension} · Stage ${component.stage}</p>
-          <h2>${escapeHtml(component.label)}</h2>
+          <p class="eyebrow">${escapeHtml(participantStepEyebrow(component.id))}</p>
+          <h2>${escapeHtml(participantComponentLabel(component.id, component.label))}</h2>
         </div>
         <div class="actions">
           ${renderGenerateOptionsButton(component, ready)}
@@ -5052,23 +5616,23 @@ function renderDynamicGeometryCanvasWorkspace(component, proposal, ready) {
     ))
   )).length;
   const staticSceneCount = Math.max(0, scenes.length - motionSceneCount);
-  const blockingDependencyLabel = checkpointBlockingDependency(component.id)?.label || "the preceding checkpoint";
+  const blockingDependencyLabel = participantBlockingDependencyLabel(component.id);
   return `
     <section class="panel asset-topology-panel dynamic-geometry-panel dynamic-canvas-mode" data-dynamic-workspace-mode="canvas">
       <div class="panel-head dynamic-canvas-panel-head">
         <div>
-          <p class="eyebrow">Dimension ${component.dimension} · Stage ${component.stage}</p>
-          <h2>${escapeHtml(component.label)}</h2>
-          <p class="muted">Open a beat or variant to review its mapped GLB animation inside the scene and environment the reader will see.</p>
+          <p class="eyebrow">${escapeHtml(participantStepEyebrow(component.id))}</p>
+          <h2>${escapeHtml(participantComponentLabel(component.id, component.label))}</h2>
+          <p class="story-stage-instruction">${escapeHtml(storyStageInstruction(state.data, component.id))}</p>
         </div>
-        <span class="dynamic-status-pill">${escapeHtml(checkpointFlowStatus(component.id))}</span>
+        <span class="dynamic-status-pill">${escapeHtml(participantStatusLabel(checkpointFlowStatus(component.id)))}</span>
       </div>
-      ${ready ? "" : `<p class="blocked-note">Save ${escapeHtml(blockingDependencyLabel)} before reviewing or saving Dynamics.</p>`}
+      ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before checking object movement.</p>`}
       ${renderDynamicGeometryStatus()}
       <div class="dynamic-canvas-summary" aria-label="Current mapped Dynamics scenes">
-        <span>Beat dynamics</span>
-        <strong>${motionSceneCount ? `${motionSceneCount} of ${scenes.length} scene${scenes.length === 1 ? "" : "s"} mapped` : "No mapped beat animations"}</strong>
-        <small>${staticSceneCount ? `${staticSceneCount} scene${staticSceneCount === 1 ? "" : "s"} remain${staticSceneCount === 1 ? "s" : ""} static` : "Every scene has mapped source motion"}</small>
+        <span>Object movement</span>
+        <strong>${motionSceneCount ? `${motionSceneCount} of ${scenes.length} scene${scenes.length === 1 ? "" : "s"} have movement` : "No extra movement"}</strong>
+        <small>${staticSceneCount ? `${staticSceneCount} scene${staticSceneCount === 1 ? "" : "s"} stay${staticSceneCount === 1 ? "s" : ""} still` : "Every scene has movement"}</small>
       </div>
       ${renderDynamicStoryCanvas(proposal)}
       <div class="actions checkpoint-actions">
@@ -5087,45 +5651,53 @@ function renderDynamicGeometryEditorWorkspace(component, proposal, ready, sceneC
   const proceduralBusy = Boolean(
     state.proceduralDynamicsUi.busyByScene[proceduralDynamicsSceneKey(sceneContext)],
   );
-  const blockingDependencyLabel = checkpointBlockingDependency(component.id)?.label || "the preceding checkpoint";
+  const blockingDependencyLabel = participantBlockingDependencyLabel(component.id);
+  const transmissionStory = storyProfileId(state.data) === "transmission";
   const motionStatus = proceduralPlan
     ? proceduralDynamicsPlanCountLabel(proceduralPlan)
     : noDynamics
-      ? "No dynamics"
+      ? "No extra movement"
       : sharedTimelineStates.length
-      ? "Shared timeline state"
+      ? "Saved movement"
       : mappedTracks.length
-        ? `${mappedTracks.length} mapped motion${mappedTracks.length === 1 ? "" : "s"}`
-        : "Static scene";
+        ? "Saved movement"
+        : "Scene stays still";
   return `
     <section class="panel asset-topology-panel dynamic-geometry-panel dynamic-editor-mode" data-dynamic-workspace-mode="editor">
       <div class="panel-head">
         <div>
-          <p class="eyebrow">Dynamics · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
+          <p class="eyebrow">${escapeHtml(participantComponentLabel(component.id, component.label))} · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
           <h2>${escapeHtml(beat?.title || sceneContext.beatId)}</h2>
         </div>
         <div class="actions">
           <span class="dynamic-scene-motion-pill ${proceduralPlan || sharedTimelineStates.length || mappedTracks.length ? "mapped" : "static"}">${escapeHtml(motionStatus)}</span>
-          <button class="primary" type="button" data-dynamic-close-save ${proceduralBusy ? "disabled" : ""}>Close &amp; save</button>
+          <button class="primary" type="button" data-dynamic-close-save ${proceduralBusy ? "disabled" : ""}>Save scene and return</button>
         </div>
       </div>
-      <p class="muted">Review the animation-probe classification for this scene. Playback uses this beat's saved Spatial Relations and Environment while manual mappings remain attached to authored beat IDs.</p>
-      ${ready ? "" : `<p class="blocked-note">Save ${escapeHtml(blockingDependencyLabel)} before reviewing or saving Dynamics.</p>`}
+      <p class="muted">${transmissionStory
+        ? "This story needs no extra object movement here. Check the cough and droplet timing in Scene changes."
+        : "Play the scene and check whether its movement helps tell the story."}</p>
+      ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before checking object movement.</p>`}
       ${renderDynamicGeometryStatus()}
       ${proposal ? `
         <div class="asset-topology-workbench dynamic-geometry-workbench source-dynamics-workbench dynamic-editor-workbench">
           ${renderDynamicPreview(proposal, sceneContext)}
         </div>
       ` : renderDynamicEmptyState(component)}
-      ${renderProceduralDynamicsAuthoring(sceneContext, ready)}
-      ${renderSourceMotionLinkingEditor(component.id)}
+      <details class="facilitator-details dynamic-optional-tools">
+        <summary>${transmissionStory ? "Optional movement tools — not needed for this story" : "Optional: add or link movement"}</summary>
+        <div class="facilitator-details-content">
+          ${renderProceduralDynamicsAuthoring(sceneContext, ready)}
+          ${renderSourceMotionLinkingEditor(component.id)}
+        </div>
+      </details>
     </section>
   `;
 }
 
 function renderDynamicGeometryStatus() {
   if (!state.output?.error && !state.output?.sourceMotionLinksSaved && !state.output?.dynamic) return "";
-  if (state.output?.error) return `<p class="blocked-note">${escapeHtml(state.output.error)}</p>`;
+  if (state.output?.error) return renderStageErrorNotice("dynamic-geometry");
   return `<p class="source-graph-status">${escapeHtml(state.output.sourceMotionLinksSaved || state.output.dynamic)}</p>`;
 }
 
@@ -5389,7 +5961,7 @@ function proceduralDynamicsPlanRuntimeCount(plan) {
 
 function proceduralDynamicsPlanCountLabel(plan) {
   const targetCount = proceduralDynamicsPlanActorCount(plan);
-  return `${targetCount} existing model instance${targetCount === 1 ? "" : "s"} with generated motion`;
+  return `${targetCount} object${targetCount === 1 ? "" : "s"} moving`;
 }
 
 function proceduralDynamicsPlanMotionLabels(plan) {
@@ -5466,9 +6038,9 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
     >
       <div class="procedural-dynamics-heading">
         <div>
-          <p class="eyebrow">Generate this scene's motion</p>
-          <h3>Describe how this scene should move</h3>
-          <p class="muted">Generation can only animate models already linked and placed in this scene. Linked assets, saved position/rotation/scale, and model instance counts are locked.</p>
+          <p class="eyebrow">Optional movement</p>
+          <h3>Describe what should move</h3>
+          <p class="muted">Only objects already placed in this scene can move.</p>
         </div>
         <span class="procedural-dynamics-scope">${escapeHtml(spatialSceneContextLabel(sceneContext))}</span>
       </div>
@@ -5479,7 +6051,7 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
           data-procedural-dynamics-prompt
           rows="3"
           maxlength="1000"
-          placeholder="For example: Have the placed sharks swim slowly in wide clockwise loops around the reader."
+          placeholder="${escapeHtml(storyDynamicsPlaceholder(state.data))}"
           ${busy || !ready ? "disabled" : ""}
         >${escapeHtml(prompt)}</textarea>
       </label>
@@ -5530,8 +6102,8 @@ function renderDynamicStoryCanvas(proposal) {
   return `
     <section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell dynamic-story-canvas-shell" data-dynamic-story-canvas>
       <div class="visual-card-head">
-        <div><h3>Story canvas</h3><p class="muted">Each variant has its own arrow to the next beat; reciprocal same-beat arrows remain manual reader switches. Click a beat or variant to open the Dynamics editor.</p></div>
-        <span>${beats.length} authored beat${beats.length === 1 ? "" : "s"}</span>
+        <div><h3>Story canvas</h3><p class="muted">Select a card to check its movement.</p></div>
+        <span>${beats.length} story part${beats.length === 1 ? "" : "s"}</span>
       </div>
       <div class="source-graph-canvas-stage spatial-story-canvas-stage dynamic-story-canvas-stage">
         <div class="source-graph-canvas-viewport spatial-story-canvas-viewport dynamic-story-canvas-viewport story-variant-links-canvas" data-dynamic-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Dynamics story canvas">
@@ -5574,12 +6146,12 @@ function renderDynamicStoryCard(beat, option, context, index, proposal, primary)
   const status = proceduralPlan
     ? { className: "mapped", label: proceduralDynamicsPlanCountLabel(proceduralPlan) }
     : inferDynamicGeometryKind(proposal) === "none"
-      ? { className: "no-dynamics", label: "No dynamics" }
+      ? { className: "no-dynamics", label: "No extra movement" }
       : sharedTimelineStates.length
-      ? { className: "mapped", label: "Shared timeline state" }
+      ? { className: "mapped", label: "Saved movement" }
       : mappedTracks.length
-        ? { className: "mapped", label: `${mappedTracks.length} mapped motion${mappedTracks.length === 1 ? "" : "s"}` }
-        : { className: "static", label: "Static" };
+        ? { className: "mapped", label: "Saved movement" }
+        : { className: "static", label: "Scene stays still" };
   return `
     <button
       type="button"
@@ -5641,7 +6213,7 @@ function renderDynamicEmptyState(component) {
       </div>
       <div>
         <h3>No ${escapeHtml(component.label)} classification available</h3>
-        <p class="muted">Run or apply the animation probe from Source Graph to preview source dynamics here.</p>
+        <p class="muted">No saved movement is available for this scene.</p>
       </div>
     </div>
   `;
@@ -5698,10 +6270,10 @@ function renderDynamicPreview(proposal, sceneContext = null) {
   const hasSourceAnimation = !noDynamics && dynamicPreviewHasEmbeddedGlbAnimation(proposal, beat);
   const hasPlayback = hasSourceAnimation || hasProceduralMotion;
   const previewModeLabel = hasProceduralMotion
-    ? (hasSourceAnimation ? "Generated + GLB motion" : "Generated motion")
+    ? (hasSourceAnimation ? "Saved + added movement" : "Added movement")
     : hasSourceAnimation
-      ? "GLB animation"
-      : "Static";
+      ? "Saved movement"
+      : "Still";
   const previewDescription = hasProceduralMotion
     ? hasSourceAnimation
       ? "Generated motion is layered on the existing placed models while mapped GLB clips continue to animate their meshes."
@@ -5714,18 +6286,18 @@ function renderDynamicPreview(proposal, sceneContext = null) {
   const cumulativeContext = sceneContext ? null : cumulativeSingleAnchorContext(beats, index);
   const previewHelp = cumulativeContext
     ? (noDynamics
-      ? "The source graph and topology stay active; no dynamic geometry layer is added."
-      : "The source graph and topology stay active; only mapped animation clips embedded in the active GLB can move.")
+      ? "This scene stays still."
+      : "Play the preview to check the saved movement.")
     : hasProceduralMotion
-      ? "The generated, comfort-clamped motion plan moves only the existing placed GLB models in this beat or variant."
+      ? "Play the preview to check the movement you added."
       : noDynamics
-        ? dynamicGeometryKindHelp(kind)
-        : "Only mapped animation clips embedded in the active GLB can move until generated motion is applied.";
+        ? "This scene stays still."
+        : "Play the preview to check the movement already saved with this scene.";
   return `
     <section class="topology-diagram-card topology-3d-card dynamic-preview-card">
       <div class="visual-card-head">
         <div>
-          <h3>Interactive dynamics preview</h3>
+          <h3>Movement preview</h3>
           <p class="muted">${escapeHtml(previewHelp)}</p>
         </div>
         <span class="topology-kind-pill ${kind}">${escapeHtml(previewModeLabel)}</span>
@@ -5734,12 +6306,12 @@ function renderDynamicPreview(proposal, sceneContext = null) {
         <div>
           <span>${escapeHtml(sceneContext ? spatialSceneContextLabel(sceneContext) : "Active beat")}</span>
           <strong>${escapeHtml(beat?.title || beat?.id || "No beat selected")}</strong>
-          <span>${linkedCount} scene asset${linkedCount === 1 ? "" : "s"} · ${mappedMotionCount} mapped motion${mappedMotionCount === 1 ? "" : "s"}${hasProceduralMotion ? ` · ${proceduralInstanceCount} existing instance${proceduralInstanceCount === 1 ? "" : "s"} with generated motion` : ""}</span>
+          <span>${linkedCount} object${linkedCount === 1 ? "" : "s"}${hasProceduralMotion ? ` · ${proceduralInstanceCount} with added movement` : mappedMotionCount ? ` · ${mappedMotionCount} with saved movement` : ""}</span>
         </div>
         <p>${escapeHtml(shortText(beat?.text || beat?.quote || "No beat text available.", 220))}</p>
       </div>
       ${noDynamics && !hasProceduralMotion ? `
-        <p class="topology-swap-note">Static preview: no motion, particle field, scale pulse, focus marker, or source animation is added.</p>
+        <p class="topology-swap-note">This scene has no extra movement.</p>
       ` : hasPlayback ? `
         <div class="dynamic-playback-controls">
           <button data-dynamic-play>${state.dynamicPreviewPlaying ? "Pause" : "Play"}</button>
@@ -5752,13 +6324,16 @@ function renderDynamicPreview(proposal, sceneContext = null) {
           </label>
         </div>
       ` : `
-        <p class="topology-swap-note">Static preview: this beat has no mapped animation clip embedded in its GLB.</p>
+        <p class="topology-swap-note">This scene has no saved movement.</p>
       `}
       <div class="topology-viewer-shell dynamic-viewer-shell" data-dynamic-viewer="${escapeHtml(proposal.optionId)}" tabindex="0" role="application" aria-label="Interactive 3D dynamics preview">
         <div class="topology-viewer-status">Loading dynamics preview...</div>
       </div>
-      <p class="topology-viewer-hint">${escapeHtml(hasProceduralMotion ? "Drag to orbit. Click scene, then use WASD to inspect the generated paths around the reader origin." : hasSourceAnimation ? "Drag to orbit. Click scene, then use WASD to move. Playback controls affect embedded GLB animation timing only." : "Drag to orbit. Click scene, then use WASD to move through the static source/topology preview.")}</p>
-      <p class="topology-description">${escapeHtml(previewDescription)}</p>
+      <p class="topology-viewer-hint">Drag to look around. Select the scene and use WASD to move the preview camera.</p>
+      <details class="facilitator-details preview-diagnostics">
+        <summary>Movement details for facilitator</summary>
+        <p class="topology-description">${escapeHtml(previewDescription)}</p>
+      </details>
     </section>
   `;
 }
@@ -5773,18 +6348,18 @@ function renderInterBeatDynamicsWorkspace(component) {
 }
 
 function renderInterBeatDynamicsCanvasWorkspace(component, proposal, ready) {
-  const blockingDependencyLabel = checkpointBlockingDependency(component.id)?.label || "the preceding checkpoint";
+  const blockingDependencyLabel = participantBlockingDependencyLabel(component.id);
   return `
     <section class="panel asset-topology-panel inter-beat-panel dynamic-canvas-mode inter-beat-canvas-mode transition-canvas-mode" data-inter-beat-workspace-mode="canvas">
       <div class="panel-head dynamic-canvas-panel-head">
         <div>
-          <p class="eyebrow">Dimension ${component.dimension} · Stage ${component.stage}</p>
-          <h2>${escapeHtml(component.label)}</h2>
-          <p class="muted">Every saved variant stays visible as its original read-only card. Beat and variant arrows use the same mapped GLB thumbnails; select one to open the full spatial preview and play that transition.</p>
+          <p class="eyebrow">${escapeHtml(participantStepEyebrow(component.id))}</p>
+          <h2>${escapeHtml(participantComponentLabel(component.id, component.label))}</h2>
+          <p class="story-stage-instruction">${escapeHtml(storyStageInstruction(state.data, component.id))}</p>
         </div>
-        <span class="dynamic-status-pill">${escapeHtml(checkpointFlowStatus(component.id))}</span>
+        <span class="dynamic-status-pill">${escapeHtml(participantStatusLabel(checkpointFlowStatus(component.id)))}</span>
       </div>
-      ${ready ? "" : `<p class="blocked-note">Save ${escapeHtml(blockingDependencyLabel)} before reviewing or saving Transition.</p>`}
+      ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before checking scene changes.</p>`}
       ${renderInterBeatDynamicsStatus()}
       ${renderInterBeatStoryCanvas(proposal)}
       <div class="actions checkpoint-actions">
@@ -5798,44 +6373,52 @@ function renderInterBeatDynamicsEditorWorkspace(component, proposal, ready, scen
   const boundary = interBeatBoundaryForSceneContext(proposal, sceneContext);
   const beat = boundary.beat;
   const status = interBeatBoundaryStatus(proposal, sceneContext);
-  const blockingDependencyLabel = checkpointBlockingDependency(component.id)?.label || "the preceding checkpoint";
+  const blockingDependencyLabel = participantBlockingDependencyLabel(component.id);
   const manualVariantSwitch = boundary.authoredTransition?.manualVariantSwitch === true;
   const incomingLabel = manualVariantSwitch
-    ? `Variant transition from ${interBeatTransitionEndpointTitle(boundary.authoredTransition.from, boundary.authoredTransition.fromContext)}`
+    ? `Change from ${interBeatTransitionEndpointTitle(boundary.authoredTransition.from, boundary.authoredTransition.fromContext)}`
     : boundary.authoredTransition
-      ? `Transition from ${interBeatTransitionEndpointTitle(boundary.authoredTransition.from, boundary.authoredTransition.fromContext)}`
+      ? `Change from ${interBeatTransitionEndpointTitle(boundary.authoredTransition.from, boundary.authoredTransition.fromContext)}`
     : boundary.transition
-    ? `Incoming from ${interBeatBeatDisplayTitle(boundary.transition.from, boundary.beats)}`
-    : boundary.beatIndex > 0 ? "Held source state" : "Opening source state";
+    ? `From ${interBeatBeatDisplayTitle(boundary.transition.from, boundary.beats)}`
+    : boundary.beatIndex > 0 ? "The previous scene stays visible" : "The story starts here";
   return `
     <section class="panel asset-topology-panel inter-beat-panel dynamic-editor-mode inter-beat-editor-mode transition-editor-mode" data-inter-beat-workspace-mode="editor">
       <div class="panel-head">
         <div>
-          <p class="eyebrow">Transition · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
+          <p class="eyebrow">${escapeHtml(participantComponentLabel(component.id, component.label))} · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
           <h2>${escapeHtml(beat?.title || sceneContext.beatId)}</h2>
         </div>
         <div class="actions">
           <span class="dynamic-scene-motion-pill ${status.className === "mapped" ? "mapped" : "static"} ${manualVariantSwitch ? "manual-variant-switch" : ""}">${escapeHtml(status.label)}</span>
-          <button class="primary" type="button" data-inter-beat-close-save>Close &amp; save</button>
+          <button class="primary" type="button" data-inter-beat-close-save>Save scene and return</button>
         </div>
       </div>
-      <p class="muted">${escapeHtml(incomingLabel)}. ${manualVariantSwitch ? "Playback switches to this destination variant and plays its matched GLB animation when one is mapped." : "Playback keeps the authored beat boundary and shared source timeline while the preview uses this destination beat or variant scene."}</p>
-      ${ready ? "" : `<p class="blocked-note">Save ${escapeHtml(blockingDependencyLabel)} before reviewing or saving Transition.</p>`}
+      <p class="muted">${escapeHtml(incomingLabel)}. Play the preview to check the change.</p>
+      ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before checking scene changes.</p>`}
       ${renderInterBeatDynamicsStatus()}
       ${proposal ? `
         <div class="asset-topology-workbench dynamic-geometry-workbench source-dynamics-workbench dynamic-editor-workbench transition-editor-workbench">
           ${renderInterBeatPreview(proposal, sceneContext)}
-          ${renderInterBeatInspector(proposal)}
+          <details class="facilitator-details transition-diagnostics">
+            <summary>Scene-change details for facilitator</summary>
+            ${renderInterBeatInspector(proposal)}
+          </details>
         </div>
       ` : renderInterBeatEmptyState(component)}
-      ${renderSourceMotionLinkingEditor(component.id)}
+      <details class="facilitator-details transition-linking-details">
+        <summary>Advanced: change source animation links</summary>
+        <div class="facilitator-details-content">
+          ${renderSourceMotionLinkingEditor(component.id)}
+        </div>
+      </details>
     </section>
   `;
 }
 
 function renderInterBeatDynamicsStatus() {
   if (!state.output?.error && !state.output?.sourceMotionLinksSaved && !state.output?.transition) return "";
-  if (state.output?.error) return `<p class="blocked-note">${escapeHtml(state.output.error)}</p>`;
+  if (state.output?.error) return renderStageErrorNotice("inter-beat-dynamics");
   return `<p class="source-graph-status">${escapeHtml(state.output.sourceMotionLinksSaved || state.output.transition)}</p>`;
 }
 
@@ -5848,8 +6431,8 @@ function renderInterBeatStoryCanvas(proposal) {
   return `
     <section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell dynamic-story-canvas-shell transition-story-canvas-shell" data-inter-beat-story-canvas>
       <div class="visual-card-head">
-        <div><h3>Story canvas</h3><p class="muted">Beat and variant cards are read-only. Every unmatched arrow says No mapped transition; every matched arrow shows an animated GLB thumbnail that opens the full preview.</p></div>
-        <span>${beats.length} authored beat${beats.length === 1 ? "" : "s"}</span>
+        <div><h3>Story canvas</h3><p class="muted">Select a scene change to preview it.</p></div>
+        <span>${beats.length} story part${beats.length === 1 ? "" : "s"}</span>
       </div>
       <div class="source-graph-canvas-stage spatial-story-canvas-stage dynamic-story-canvas-stage transition-story-canvas-stage">
         <div class="source-graph-canvas-viewport spatial-story-canvas-viewport dynamic-story-canvas-viewport transition-story-canvas-viewport story-variant-links-canvas" data-inter-beat-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Transition story canvas">
@@ -5900,7 +6483,7 @@ function renderInterBeatBoundaryConnector(proposal, transition) {
   const className = thumbnailSpec ? "mapped" : "no-dynamics";
   const fromTitle = interBeatTransitionEndpointTitle(fromBeat, transition.fromContext);
   const toTitle = interBeatTransitionEndpointTitle(toBeat, transition.toContext);
-  const accessibleStatus = thumbnailSpec ? "Mapped GLB animation" : "No mapped transition";
+  const accessibleStatus = thumbnailSpec ? "Saved scene change" : "No saved scene change";
   return `
     <div
       class="transition-boundary-connector ${className}"
@@ -5931,8 +6514,8 @@ function renderInterBeatUnmappedTransitionButton(context, fromTitle, toTitle) {
       ${context.transitionEdgeId ? `data-inter-beat-edge-id="${escapeHtml(context.transitionEdgeId)}"` : ""}
       ${context.variantGroupId ? `data-inter-beat-variant-group-id="${escapeHtml(context.variantGroupId)}"` : ""}
       ${context.variantOptionId ? `data-inter-beat-variant-option-id="${escapeHtml(context.variantOptionId)}"` : ""}
-      aria-label="${escapeHtml(`Open transition from ${fromTitle} to ${toTitle}: No mapped transition`)}"
-    ><span class="transition-boundary-status">No mapped transition</span></button>
+      aria-label="${escapeHtml(`Open scene change from ${fromTitle} to ${toTitle}: no saved change`)}"
+    ><span class="transition-boundary-status">No saved change</span></button>
   `;
 }
 
@@ -6082,7 +6665,7 @@ function renderInterBeatEmptyState(component) {
       </div>
       <div>
         <h3>No ${escapeHtml(component.label)} classification available</h3>
-        <p class="muted">Run or apply the animation probe from Source Graph to preview source transitions here.</p>
+        <p class="muted">No saved scene change is available here.</p>
       </div>
     </div>
   `;
@@ -6166,35 +6749,39 @@ function renderInterBeatPreview(proposal, sceneContext = activeInterBeatSceneCon
     <section class="topology-diagram-card topology-3d-card dynamic-preview-card inter-beat-preview-card">
       <div class="visual-card-head">
         <div>
-          <h3>Interactive transition preview</h3>
-          <p class="muted">${escapeHtml(cumulativeContext ? "The active beat models stay anchored by Asset Topology; this step previews only the selected beat boundary." : interBeatDynamicsKindHelp(kind))}</p>
+          <h3>Scene-change preview</h3>
+          <p class="muted">${escapeHtml(cumulativeContext ? "Play this change between two scenes." : "Play the preview and check whether the change is clear.")}</p>
         </div>
         <span class="topology-kind-pill ${kind}">${escapeHtml(interBeatDynamicsKindLabel(kind))}</span>
       </div>
       <div class="inter-beat-selected-beat">
         <div>
           <strong data-inter-beat-transition-title>${escapeHtml(beat ? interBeatBeatDisplayTitle(beat, context.beats) : "No beat selected")}</strong>
-          <span data-inter-beat-transition-meta>${context.beats.length ? `${index + 1} of ${context.beats.length}` : "0 beats"} · ${escapeHtml(beatStateMeta)}</span>
+          <span data-inter-beat-transition-meta>${context.beats.length ? `Scene ${index + 1} of ${context.beats.length}` : "No scenes"}</span>
           <p data-inter-beat-transition-copy>${escapeHtml(shortText(beat?.text || "No linked beat available.", 220))}</p>
         </div>
       </div>
-      <div class="inter-beat-active-state" aria-label="Active GLB state">
-        <span>${sourcePlaybackSummary.contractAvailable
-          ? `${sourcePlaybackSummary.coordinatedClipCount} coordinated source clip${sourcePlaybackSummary.coordinatedClipCount === 1 ? "" : "s"}`
-          : activeParts.length ? `${activeParts.length} active part selector${activeParts.length === 1 ? "" : "s"}` : "Full model fallback"}</span>
-        <span>${escapeHtml(sourcePlaybackSummary.timelineLabel)} · ${escapeHtml(sourcePlaybackSummary.windowLabel)}</span>
-        <span>${sourcePlaybackSummary.contributorCount} material contributor${sourcePlaybackSummary.contributorCount === 1 ? "" : "s"}</span>
-        <span>${sourcePlaybackSummary.contractAvailable
-          ? sourcePlaybackSummary.windowState.mode === "initialize"
-            ? "Initial source state · all coordinated clips seek together"
-            : sourcePlaybackSummary.windowState.mode === "hold"
-              ? "Held source state · no animation replay"
-              : sourcePlaybackSummary.windowState.mode === "scrub"
-                ? "Shared absolute mixer clock · contributor names are diagnostics only"
-                : "No source playback on this boundary"
-          : frozenState ? (frozenState.stateMode === "pre-animation" ? "Initial source-timeline state · held" : `Previous source-timeline state from ${escapeHtml(frozenState.inheritedFromBeatId || "earlier beat")} · held`) : (activeAnimations.length ? activeAnimations.map((name) => escapeHtml(name)).join(" · ") : "No active animation metadata")}</span>
-      </div>
-      ${renderSourceCameraEvidence(beat)}
+      <details class="facilitator-details preview-diagnostics">
+        <summary>Playback details for facilitator</summary>
+        <div class="inter-beat-active-state" aria-label="Source playback details">
+          <span>${sourcePlaybackSummary.contractAvailable
+            ? `${sourcePlaybackSummary.coordinatedClipCount} coordinated source clip${sourcePlaybackSummary.coordinatedClipCount === 1 ? "" : "s"}`
+            : activeParts.length ? `${activeParts.length} active part selector${activeParts.length === 1 ? "" : "s"}` : "Full model fallback"}</span>
+          <span>${escapeHtml(sourcePlaybackSummary.timelineLabel)} · ${escapeHtml(sourcePlaybackSummary.windowLabel)}</span>
+          <span>${sourcePlaybackSummary.contributorCount} material contributor${sourcePlaybackSummary.contributorCount === 1 ? "" : "s"}</span>
+          <span>${sourcePlaybackSummary.contractAvailable
+            ? sourcePlaybackSummary.windowState.mode === "initialize"
+              ? "Initial source state · all coordinated clips seek together"
+              : sourcePlaybackSummary.windowState.mode === "hold"
+                ? "Held source state · no animation replay"
+                : sourcePlaybackSummary.windowState.mode === "scrub"
+                  ? "Shared absolute mixer clock · contributor names are diagnostics only"
+                  : "No source playback on this boundary"
+            : frozenState ? (frozenState.stateMode === "pre-animation" ? "Initial source-timeline state · held" : `Previous source-timeline state from ${escapeHtml(frozenState.inheritedFromBeatId || "earlier beat")} · held`) : (activeAnimations.length ? activeAnimations.map((name) => escapeHtml(name)).join(" · ") : "No active animation metadata")}</span>
+        </div>
+        ${renderSourceCameraEvidence(beat)}
+        <p class="topology-description">${escapeHtml(proposal.description)}</p>
+      </details>
       <div class="dynamic-playback-controls">
         <button data-inter-beat-play ${sourcePlaybackCanScrub ? "" : "disabled"}>${sourcePlaybackCanScrub ? (state.interBeatPreviewPlaying ? "Pause" : "Play") : escapeHtml(boundaryStatus.label)}</button>
         <button data-inter-beat-restart ${sourcePlaybackCanScrub ? "" : "disabled"}>Restart</button>
@@ -6208,8 +6795,7 @@ function renderInterBeatPreview(proposal, sceneContext = activeInterBeatSceneCon
       <div class="topology-viewer-shell dynamic-viewer-shell inter-beat-viewer-shell" data-inter-beat-viewer="${escapeHtml(proposal.optionId)}" tabindex="0" role="application" aria-label="Interactive 3D transition preview">
         <div class="topology-viewer-status">Loading transition preview...</div>
       </div>
-      <p class="topology-viewer-hint">Drag to orbit. Click scene, then use WASD to move. Playback controls preview transition timing only.</p>
-      <p class="topology-description">${escapeHtml(proposal.description)}</p>
+      <p class="topology-viewer-hint">Drag to look around. Select the scene and use WASD to move the preview camera.</p>
     </section>
   `;
 }
@@ -7073,9 +7659,7 @@ function renderSourceMotionLinkingEditor(componentId) {
   const isTransition = componentId === "inter-beat-dynamics";
   const status = state.output?.sourceMotionLinksSaved
     ? `<p class="motion-link-status success">${escapeHtml(state.output.sourceMotionLinksSaved)}</p>`
-    : state.output?.error
-      ? `<p class="motion-link-status error">${escapeHtml(state.output.error)}</p>`
-      : "";
+    : "";
   if (!tracks.length) {
     return `
       <details class="motion-linking-card empty" data-motion-linking-component="${escapeHtml(componentId)}" data-motion-linking-fold="${escapeHtml(componentId)}" ${state.sourceMotionLinkingOpen[componentId] ? "open" : ""}>
@@ -7260,7 +7844,7 @@ function renderEnvironmentEnhancementWorkspace(component) {
 
 function renderEnvironmentEnhancementCanvasWorkspace(component) {
   const ready = Boolean(state.data.readiness[component.id]?.canGenerate);
-  const blockingDependencyLabel = checkpointBlockingDependency(component.id)?.label || "the preceding checkpoint";
+  const blockingDependencyLabel = participantBlockingDependencyLabel(component.id);
   const checkpointStatus = checkpointFlowStatus(component.id);
   const beats = spatialPreviewBeats();
   const environmentCount = beats.filter((beat) => environmentManifest(spatialSceneContext(beat.id)).asset).length;
@@ -7270,23 +7854,23 @@ function renderEnvironmentEnhancementCanvasWorkspace(component) {
     <section class="panel environment-enhancement-panel environment-canvas-mode" data-environment-workspace-mode="canvas">
       <div class="panel-head environment-canvas-panel-head">
         <div>
-          <p class="eyebrow">Dimension ${component.dimension} · Stage ${component.stage}</p>
-          <h2>${escapeHtml(component.label)}</h2>
-          <p class="muted">Open a beat or variant to inspect its Spatial Relations scene inside the environment the reader will see in VR.</p>
+          <p class="eyebrow">${escapeHtml(participantStepEyebrow(component.id))}</p>
+          <h2>${escapeHtml(participantComponentLabel(component.id, component.label))}</h2>
+          <p class="story-stage-instruction">${escapeHtml(storyStageInstruction(state.data, component.id))}</p>
         </div>
-        <span class="environment-status-pill ${checkpointStatus}">${escapeHtml(checkpointStatus)}</span>
+        <span class="environment-status-pill ${checkpointStatus}">${escapeHtml(participantStatusLabel(checkpointStatus))}</span>
       </div>
-      ${ready ? "" : `<p class="blocked-note">Save ${escapeHtml(blockingDependencyLabel)} before adding the environment.</p>`}
-      ${state.output?.error && state.activeId === component.id ? `<p class="blocked-note">${escapeHtml(state.output.error)}</p>` : ""}
+      ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before setting the scene.</p>`}
+      ${state.output?.error && state.activeId === component.id ? renderStageErrorNotice(component.id) : ""}
       ${state.output?.environment ? `<p class="source-graph-status">${escapeHtml(state.output.environment)}</p>` : ""}
       <div class="environment-canvas-summary" aria-label="Current reader environments by beat">
-        <span>Beat environments</span>
-        <strong>${environmentCount ? `${environmentCount} of ${beats.length} configured` : "No beat environments assigned"}</strong>
-        <small>${neutralCount ? `${neutralCount} beat${neutralCount === 1 ? "" : "s"} use${neutralCount === 1 ? "s" : ""} the neutral StoryVR scene` : "Every authored beat has an environment"}</small>
+        <span>Scene settings</span>
+        <strong>${environmentCount ? `${environmentCount} of ${beats.length} use a custom setting` : "Using the current setting"}</strong>
+        <small>${neutralCount ? `${neutralCount} scene${neutralCount === 1 ? "" : "s"} keep${neutralCount === 1 ? "s" : ""} the current setting` : "Every scene has a custom setting"}</small>
       </div>
       ${renderEnvironmentStoryCanvas()}
       <div class="actions checkpoint-actions environment-checkpoint-actions">
-        <button class="primary" data-environment-action="save" ${ready && assignmentsReady && !state.environmentUi.operationBusy ? "" : "disabled"}>Save checkpoint</button>
+        <button class="primary" data-environment-action="save" ${ready && assignmentsReady && !state.environmentUi.operationBusy ? "" : "disabled"}>Finish this step</button>
       </div>
     </section>
   `;
@@ -7300,8 +7884,8 @@ function renderEnvironmentStoryCanvas() {
   return `
     <section class="visual-card source-graph-canvas-shell environment-story-canvas-shell" data-environment-story-canvas>
       <div class="visual-card-head">
-        <div><h3>Story canvas</h3><p class="muted">Each variant has its own arrow to the next beat; reciprocal same-beat arrows remain manual reader switches. Click a beat or variant to edit its setting.</p></div>
-        <span>${beats.length} authored beat${beats.length === 1 ? "" : "s"}</span>
+        <div><h3>Story canvas</h3><p class="muted">Select a card to check its setting.</p></div>
+        <span>${beats.length} story part${beats.length === 1 ? "" : "s"}</span>
       </div>
       <div class="source-graph-canvas-stage environment-story-canvas-stage">
         <div class="source-graph-canvas-viewport environment-story-canvas-viewport story-variant-links-canvas" data-environment-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Environment Enhancement story canvas">
@@ -7375,8 +7959,10 @@ function renderEnvironmentStoryCard(beat, option, context, index, primary) {
 
 function renderEnvironmentEnhancementEditorWorkspace(component, sceneContext) {
   const manifest = environmentManifest(sceneContext);
+  const profileId = storyProfileId(state.data);
+  const neutralStory = profileId === "classroom" || profileId === "transmission";
   const ready = Boolean(state.data.readiness[component.id]?.canGenerate);
-  const blockingDependencyLabel = checkpointBlockingDependency(component.id)?.label || "the preceding checkpoint";
+  const blockingDependencyLabel = participantBlockingDependencyLabel(component.id);
   const selectedNone = Boolean(manifest.skipped);
   const storedAssignment = environmentAssignmentForContext(sceneContext);
   const retainedAsset = Boolean(storedAssignment?.selection?.asset || storedAssignment?.asset);
@@ -7414,32 +8000,39 @@ function renderEnvironmentEnhancementEditorWorkspace(component, sceneContext) {
       description: manifest.description || "This Codex-generated panorama is installed as the current Environment Enhancement draft.",
     }
     : null;
+  const optionalSettingSummary = neutralStory
+    ? "Optional: change the neutral setting"
+    : selectedNone
+      ? "Optional: add a setting"
+      : "Optional: replace this setting";
   return `
     <section class="panel asset-topology-panel environment-enhancement-panel environment-editor-mode" data-environment-workspace-mode="editor">
       <div class="panel-head">
         <div>
-          <p class="eyebrow">Environment Enhancement · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
+          <p class="eyebrow">${escapeHtml(participantComponentLabel(component.id, component.label))} · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
           <h2>${escapeHtml(beat?.title || sceneContext.beatId)}</h2>
         </div>
         <div class="actions environment-editor-head-actions">
-          <span class="environment-status-pill ${checkpointStatus}">${escapeHtml(checkpointStatus)}</span>
-          <button class="primary" type="button" data-environment-close-save>Close &amp; save</button>
+          <span class="environment-status-pill ${checkpointStatus}">${escapeHtml(participantStatusLabel(checkpointStatus))}</span>
+          <button class="primary" type="button" data-environment-close-save>Save scene and return</button>
         </div>
       </div>
-      <p class="muted">Inspect this beat's ${spatialSceneDescriptor} scene inside the 360° background assigned to this beat in the compiled reader.${spatialPreviewCurrent ? "" : " Save Spatial Relations before treating this scene as reader-authoritative."}</p>
-      ${ready ? "" : `<p class="blocked-note">Save ${escapeHtml(blockingDependencyLabel)} before adding the environment.</p>`}
-      ${selectedNone ? `<p class="source-graph-status">${checkpointStatus === "saved" ? "No added environment is saved and current. StoryVR's standard neutral scene will be used." : "No added environment is selected. Save the checkpoint to use StoryVR's standard neutral scene."}${retainedAsset ? " The uploaded environment remains available if you switch this selection back." : ""}</p>` : ""}
-      ${state.output?.error && state.activeId === component.id ? `<p class="blocked-note">${escapeHtml(state.output.error)}</p>` : ""}
+      <p class="muted">Check how this scene looks around the reader.</p>
+      ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before setting the scene.</p>`}
+      ${selectedNone ? `<p class="source-graph-status">${checkpointStatus === "saved" ? "The story uses its neutral setting." : "The neutral setting is selected. Save this scene to keep it."}${retainedAsset ? " A previous setting is still available under the optional controls." : ""}</p>` : ""}
+      ${state.output?.error && state.activeId === component.id ? renderStageErrorNotice(component.id) : ""}
       <section class="environment-skip-card ${selectedNone ? "selected" : ""}">
         <div>
-          <span class="environment-field-kicker">Optional checkpoint</span>
-          <strong>No added environment</strong>
-          <p>Keep the standard StoryVR scene. This selection does not remove source assets or any uploaded environment draft.</p>
+          <span class="environment-field-kicker">${neutralStory ? "Recommended for this story" : "Current choice"}</span>
+          <strong>Keep the current setting</strong>
+          <p>Use the story's existing scene without adding a new background.</p>
         </div>
-        <button type="button" data-environment-selection="${selectedNone ? "asset" : "none"}" ${!ready || state.environmentUi.operationBusy || (selectedNone && !retainedAsset) ? "disabled" : ""}>${selectedNone ? (retainedAsset ? "Use uploaded environment" : "Selected") : "Select no added environment"}</button>
+        <button type="button" data-environment-selection="${selectedNone ? "asset" : "none"}" ${!ready || state.environmentUi.operationBusy || (selectedNone && !retainedAsset) ? "disabled" : ""}>${selectedNone ? (retainedAsset ? "Use previous setting" : "Selected") : "Keep current setting"}</button>
       </section>
       <div class="environment-enhancement-workbench">
-        <section class="topology-option-rail environment-catalog" aria-label="Search or generate a 360-degree environment image">
+        <details class="facilitator-details environment-change-details">
+          <summary>${escapeHtml(optionalSettingSummary)}</summary>
+          <section class="topology-option-rail environment-catalog" aria-label="Optional setting controls">
           <div class="visual-card-head">
             <div>
               <p class="eyebrow">Find or create a setting</p>
@@ -7568,14 +8161,15 @@ function renderEnvironmentEnhancementEditorWorkspace(component, sceneContext) {
                 : `<strong>No generated environment yet</strong><p>The validated panorama and matching ground will appear together in the spatial editor without replacing source-story assets.</p>`}
             </div>
           </div>
-        </section>
+          </section>
+        </details>
 
         <section class="topology-diagram-card topology-3d-card environment-preview-card">
           <div class="visual-card-head environment-preview-head">
             <div>
               <p class="eyebrow">${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
-              <h3>Spatial editor</h3>
-              <p class="muted">${storyAssetCount} ${spatialAssetDescriptor} scene asset${storyAssetCount === 1 ? "" : "s"} ${storyAssetCount === 1 ? "stays" : "stay"} visible while you tune the reader's surrounding.</p>
+              <h3>Scene preview</h3>
+              <p class="muted">${storyAssetCount} story object${storyAssetCount === 1 ? "" : "s"} stay visible while you check the setting.</p>
             </div>
             <div class="actions environment-preview-actions">
               <span data-environment-xr-slot></span>
@@ -7589,14 +8183,14 @@ function renderEnvironmentEnhancementEditorWorkspace(component, sceneContext) {
             </div>
             <div class="topology-viewer-status overlay" data-environment-viewer-status>${selectedNone ? "Using StoryVR's standard neutral scene." : hasAsset ? "Loading environment preview…" : `Loading ${storyAssetCount} upstream story asset${storyAssetCount === 1 ? "" : "s"}…`}</div>
           </div>
-          <p class="topology-viewer-hint">Outside spatial editor camera: drag to orbit this beat's ${spatialAssetDescriptor} scene · Scroll to zoom · The HDR/EXR/PNG background, yaw, exposure, fog, and background mode match the reader.</p>
+          <p class="topology-viewer-hint">Drag to look around. Scroll to zoom.</p>
           <div class="environment-selection-bar">
             <div>
-              <span class="environment-field-kicker">Selected environment</span>
+              <span class="environment-field-kicker">Selected setting</span>
               <strong>${escapeHtml(selectedNone ? "No added environment" : environmentSelectionTitle(manifest))}</strong>
               <small>${escapeHtml(selectedNone ? "The standard StoryVR neutral scene will be used in author previews and the compiled reader." : environmentSelectionSubtitle(manifest))}</small>
             </div>
-            <span class="environment-save-state ${state.environmentUi.draftDirty || environmentSelectionIsDirty() ? "dirty" : checkpointStatus === "saved" ? "saved" : ""}" data-environment-save-state>${state.environmentUi.draftDirty || environmentSelectionIsDirty() ? "Unsaved changes" : checkpointStatus === "saved" ? "Checkpoint saved" : hasAsset || selectedNone ? "Draft ready" : "No draft"}</span>
+            <span class="environment-save-state ${state.environmentUi.draftDirty || environmentSelectionIsDirty() ? "dirty" : checkpointStatus === "saved" ? "saved" : ""}" data-environment-save-state>${state.environmentUi.draftDirty || environmentSelectionIsDirty() ? "Changes not saved" : checkpointStatus === "saved" ? "Saved" : hasAsset || selectedNone ? "Ready to save" : "Not set"}</span>
           </div>
           ${renderEnvironmentApplyTargets(sceneContext, manifest, controlsDisabled)}
           <form class="environment-tuning-form" data-environment-tuning-form>
@@ -7657,18 +8251,21 @@ function renderEnvironmentEnhancementEditorWorkspace(component, sceneContext) {
           </form>
         </section>
 
-        <aside class="topology-inspector environment-inspector">
-          <div class="visual-card-head">
-            <div>
-              <p class="eyebrow">Supporting evidence</p>
-              <h3>Provenance and performance</h3>
+        <details class="facilitator-details environment-diagnostics">
+          <summary>Setting details for facilitator</summary>
+          <aside class="topology-inspector environment-inspector">
+            <div class="visual-card-head">
+              <div>
+                <p class="eyebrow">Supporting evidence</p>
+                <h3>Source and performance</h3>
+              </div>
             </div>
-          </div>
-          ${renderEnvironmentInspector(manifest)}
-        </aside>
+            ${renderEnvironmentInspector(manifest)}
+          </aside>
+        </details>
       </div>
       <div class="actions checkpoint-actions environment-checkpoint-actions">
-        <button class="primary" data-environment-action="save" ${ready && environmentCheckpointAssignmentsReady() && !state.environmentUi.operationBusy ? "" : "disabled"}>Save checkpoint</button>
+        <button class="primary" data-environment-action="save" ${ready && environmentCheckpointAssignmentsReady() && !state.environmentUi.operationBusy ? "" : "disabled"}>Finish this step</button>
       </div>
     </section>
   `;
@@ -8425,24 +9022,26 @@ function renderSpatialRelationsWorkspace(component) {
     <section class="panel asset-topology-panel spatial-relations-panel spatial-editor-mode" data-spatial-workspace-mode="editor">
       <div class="panel-head">
         <div>
-          <p class="eyebrow">Spatial Relations · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
+          <p class="eyebrow">${escapeHtml(participantComponentLabel(component.id, component.label))} · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
           <h2>${escapeHtml(beat?.title || sceneContext.beatId)}</h2>
         </div>
         <div class="actions spatial-editor-head-actions">
-          ${renderSpatialViewpointControl(scene, draft)}
-          <button class="primary" data-spatial-close-save>Close &amp; save</button>
+          <details class="facilitator-details spatial-viewpoint-details">
+            <summary>More view options</summary>
+            ${renderSpatialViewpointControl(scene, draft)}
+          </details>
+          <button class="primary" data-spatial-close-save>Save scene and return</button>
         </div>
       </div>
       ${renderSpatialStatus()}
       <div class="spatial-inference-summary">
         <div>
-          <strong>${escapeHtml(spatialSceneTopologyLabel(scene))}</strong>
-          <p>Only this scene's ${scene?.linkedAssetIds?.length || 0} linked asset${scene?.linkedAssetIds?.length === 1 ? "" : "s"} can be arranged here.</p>
+          <strong>${scene?.linkedAssetIds?.length || 0} story object${scene?.linkedAssetIds?.length === 1 ? "" : "s"} in this scene</strong>
+          <p>Select an object, then move, rotate, or resize it.</p>
         </div>
-        <span class="text-comfort-badge good">${escapeHtml(topologyViewpointLabel(spatialSceneViewpoint(scene, draft)))}</span>
-        <span class="text-comfort-badge ${manualCount ? "warning" : "good"}">${manualCount} manual override${manualCount === 1 ? "" : "s"}</span>
+        <span class="text-comfort-badge ${manualCount ? "warning" : "good"}">${manualCount ? `${manualCount} changed` : "No changes"}</span>
       </div>
-      ${ready ? "" : `<p class="blocked-note">Save earlier checkpoints before saving Spatial Relations.</p>`}
+      ${ready ? "" : `<p class="blocked-note">Finish Story order before placing objects.</p>`}
       <div class="spatial-relations-workbench">
         ${renderSpatialHierarchy(visibleEntities, beat)}
         ${renderSpatialRelationsViewport(proposal, beat, entity, sceneContext, scene)}
@@ -8460,13 +9059,13 @@ function renderSpatialRelationsCanvasWorkspace(component, proposal, draft, decis
     <section class="panel spatial-relations-panel spatial-canvas-mode" data-spatial-workspace-mode="canvas">
       <div class="panel-head spatial-canvas-panel-head">
         <div>
-          <p class="eyebrow">Dimension ${component.dimension} · Stage ${component.stage}</p>
-          <h2>Spatial Relations</h2>
-          <p class="muted">Open a beat or variant to author its own scene setup.</p>
+          <p class="eyebrow">${escapeHtml(participantStepEyebrow(component.id))}</p>
+          <h2>${escapeHtml(participantComponentLabel(component.id, component.label))}</h2>
+          <p class="story-stage-instruction">${escapeHtml(storyStageInstruction(state.data, component.id))}</p>
         </div>
       </div>
       ${renderSpatialStatus()}
-      ${ready ? "" : `<p class="blocked-note">Spatial Relations is waiting for the saved Source Graph.</p>`}
+      ${ready ? "" : `<p class="blocked-note">Finish Story order before placing objects.</p>`}
       ${renderSpatialStoryCanvas(draft)}
       <div class="actions checkpoint-actions">
         ${renderCheckpointActions(component, decision, { canCommit: proposal || decision || draft })}
@@ -8477,7 +9076,7 @@ function renderSpatialRelationsCanvasWorkspace(component, proposal, draft, decis
 
 function renderSpatialStatus() {
   if (!state.output?.error && !state.output?.spatial) return "";
-  if (state.output?.error) return `<p class="blocked-note">${escapeHtml(state.output.error)}</p>`;
+  if (state.output?.error) return renderStageErrorNotice(spatialRelationsComponentId());
   return `<p class="source-graph-status">${escapeHtml(state.output.spatial)}</p>`;
 }
 
@@ -8501,8 +9100,8 @@ function renderSpatialStoryCanvas(draft) {
   return `
     <section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell" data-spatial-story-canvas>
       <div class="visual-card-head">
-        <div><h3>Story canvas</h3><p class="muted">Each variant has its own arrow to the next beat; reciprocal same-beat arrows remain manual reader switches. Click any scene to open it.</p></div>
-        <span>${beats.length} authored beat${beats.length === 1 ? "" : "s"}</span>
+        <div><h3>Story canvas</h3><p class="muted">Select a card to place its objects.</p></div>
+        <span>${beats.length} story part${beats.length === 1 ? "" : "s"}</span>
       </div>
       <div class="source-graph-canvas-stage spatial-story-canvas-stage">
         <div class="source-graph-canvas-viewport spatial-story-canvas-viewport story-variant-links-canvas" data-spatial-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Spatial Relations story canvas">
@@ -8595,7 +9194,7 @@ function renderSpatialHierarchy(visibleEntities, beat) {
           <button class="spatial-hierarchy-item ${entity.id === state.selectedSpatialEntityId ? "selected" : ""}" data-spatial-select-entity="${escapeHtml(entity.id)}" data-spatial-search-text="${escapeHtml(spatialRelationEntityLabel(entity).toLowerCase())}">
             <span class="spatial-entity-icon">${spatialEntityType(entity) === "reader" ? "RDR" : spatialEntityType(entity) === "glb" ? "3D" : spatialEntityType(entity) === "image-plane" ? "IMG" : "T"}</span>
             <span><strong>${escapeHtml(spatialRelationEntityLabel(entity))}</strong><small>${escapeHtml(spatialEntityScopeLabel(entity))}</small></span>
-            ${entity.manual ? `<em>edited</em>` : `<em class="inferred">inferred</em>`}
+            ${entity.manual ? `<em>changed</em>` : `<em class="inferred">suggested</em>`}
           </button>
         `).join("") || `<p class="muted spatial-empty-group">No matching ${label.toLowerCase()}.</p>`}
       </div>
@@ -8606,13 +9205,13 @@ function renderSpatialHierarchy(visibleEntities, beat) {
       <div class="visual-card-head"><h3>Scene objects</h3><span>${visibleEntities.length}</span></div>
       <label class="spatial-search-label">
         <span>Search objects</span>
-        <input type="search" value="${escapeHtml(state.spatialHierarchyQuery)}" placeholder="Reader, GLB, or image name" data-spatial-hierarchy-search>
+        <input type="search" value="${escapeHtml(state.spatialHierarchyQuery)}" placeholder="Reader or object name" data-spatial-hierarchy-search>
       </label>
       <p class="spatial-current-beat">${escapeHtml(beat?.title || "No readable beat")}</p>
       <div class="spatial-hierarchy-scroll">
         ${renderGroup("Reader", readerEntities)}
-        ${renderGroup("GLB objects", glbEntities)}
-        ${renderGroup("Image planes", imageEntities)}
+        ${renderGroup("3D objects", glbEntities)}
+        ${renderGroup("Images", imageEntities)}
       </div>
     </aside>
   `;
@@ -8715,8 +9314,8 @@ function renderSpatialRelationsViewport(proposal, beat, entity, sceneContext, sc
     <section class="topology-diagram-card topology-3d-card spatial-preview-card">
       <div class="visual-card-head">
         <div>
-          <h3>Spatial editor</h3>
-          <p class="muted">Select the Reader, a GLB root, or an image plane, then edit its pose for this scene only. Reader text stays attached to a hand at runtime.</p>
+          <h3>Place objects</h3>
+          <p class="muted">Select the reader or an object, then use the buttons below.</p>
         </div>
         <span class="topology-kind-pill object-attached">${escapeHtml(spatialRelationEntityLabel(entity) || "No selection")}</span>
       </div>
@@ -8728,30 +9327,37 @@ function renderSpatialRelationsViewport(proposal, beat, entity, sceneContext, sc
         <button class="${mode === "translate" ? "selected" : ""}" data-spatial-transform-mode="translate">Move <kbd>W</kbd></button>
         <button class="${mode === "rotate" ? "selected" : ""}" data-spatial-transform-mode="rotate">Rotate <kbd>E</kbd></button>
         <button class="${mode === "scale" ? "selected" : ""}" data-spatial-transform-mode="scale" ${readerSelected ? "disabled title=\"Reader scale is fixed\"" : ""}>Scale <kbd>R</kbd></button>
-        <button data-spatial-toggle-space>${state.spatialTransformSpace === "local" ? "Local" : "World"}</button>
         <button data-spatial-frame-overview>Overview</button>
         <button data-spatial-frame-selected>Frame selected</button>
         <button data-spatial-undo ${authorHistory.canUndo ? "" : "disabled"}>Undo</button>
         <button data-spatial-redo ${authorHistory.canRedo ? "" : "disabled"}>Redo</button>
-        <span class="spatial-toolbar-divider" aria-hidden="true"></span>
-        <button data-spatial-copy-model ${glbSelected ? "" : "disabled"} title="Copy selected GLB model (Command or Ctrl+C)">Copy model <kbd>⌘C</kbd></button>
-        <button data-spatial-paste-model ${pasteReady ? "" : "disabled"} title="Paste another instance (Command or Ctrl+V)">Paste instance <kbd>⌘V</kbd></button>
-        <span class="spatial-clipboard-status" data-spatial-clipboard-status aria-live="polite">${escapeHtml(state.spatialClipboardStatus)}</span>
-        <span class="spatial-toolbar-divider" aria-hidden="true"></span>
-        ${renderSpatialPropagationTargets(glbSelected ? entity : null, sceneContext)}
-        <span class="spatial-propagation-status" data-spatial-propagation-status aria-live="polite">${escapeHtml(state.spatialPropagationStatus)}</span>
+        <details class="facilitator-details spatial-advanced-tools">
+          <summary>More placement tools</summary>
+          <div class="spatial-advanced-tools-content">
+            <button data-spatial-toggle-space>${state.spatialTransformSpace === "local" ? "Local" : "World"}</button>
+            <button data-spatial-copy-model ${glbSelected ? "" : "disabled"} title="Copy selected 3D model (Command or Ctrl+C)">Copy model <kbd>⌘C</kbd></button>
+            <button data-spatial-paste-model ${pasteReady ? "" : "disabled"} title="Paste another model instance (Command or Ctrl+V)">Paste instance <kbd>⌘V</kbd></button>
+            <span class="spatial-clipboard-status" data-spatial-clipboard-status aria-live="polite">${escapeHtml(state.spatialClipboardStatus)}</span>
+            ${renderSpatialPropagationTargets(glbSelected ? entity : null, sceneContext)}
+            <span class="spatial-propagation-status" data-spatial-propagation-status aria-live="polite">${escapeHtml(state.spatialPropagationStatus)}</span>
+          </div>
+        </details>
       </div>
       <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell" data-spatial-viewer="${escapeHtml(proposal?.optionId || "inferred-layout")}" tabindex="0" role="application" aria-label="Interactive Spatial Relations editor">
         <div class="topology-viewer-status">Loading Spatial Relations editor...</div>
       </div>
-      <p class="topology-viewer-hint">Click a GLB model to select it; drag empty space to orbit. Copy and paste creates independent scene instances without changing the source model, its meshes, bones, or animation tracks. Reader position and facing are saved; its scale stays fixed.</p>
+      <p class="topology-viewer-hint">Select an object to edit it. Drag empty space to look around.</p>
+      <details class="facilitator-details preview-diagnostics">
+        <summary>Reader display detail</summary>
+        <p>Reader text stays attached to a hand at runtime.</p>
+      </details>
     </section>
   `;
 }
 
 function renderSpatialRelationsInspector(entity) {
   if (!entity) {
-    return `<aside class="topology-inspector spatial-inspector"><h3>Transform</h3><p class="muted">Select the Reader, a GLB object, or an image plane to edit it.</p></aside>`;
+    return `<aside class="topology-inspector spatial-inspector"><h3>Placement</h3><p class="muted">Select the reader, a 3D object, or an image to edit it.</p></aside>`;
   }
   const transform = normalizeSpatialTransform(entity.transform, entity.inferredTransform);
   const rotation = spatialEulerDegrees(transform.quaternion);
@@ -8771,7 +9377,7 @@ function renderSpatialRelationsInspector(entity) {
     <aside class="topology-inspector spatial-inspector">
       <div class="spatial-inspector-head">
         <div><p class="eyebrow" data-spatial-inspector-scope>${escapeHtml(spatialEntityScopeLabel(entity))}</p><h3 data-spatial-inspector-title>${escapeHtml(spatialRelationEntityLabel(entity))}</h3></div>
-        <span class="text-comfort-badge ${entity.manual ? "warning" : "good"}">${entity.manual ? "manual" : "inferred"}</span>
+        <span class="text-comfort-badge ${entity.manual ? "warning" : "good"}">${entity.manual ? "Changed" : "Suggested"}</span>
       </div>
       <section class="topology-inspector-section">
         <div class="spatial-inspector-section-head"><h3>Position</h3><span>meters</span></div>
@@ -8785,27 +9391,31 @@ function renderSpatialRelationsInspector(entity) {
         <div class="spatial-inspector-section-head"><h3>Scale</h3><label class="spatial-ratio-lock"><input type="checkbox" data-spatial-ratio-lock ${state.spatialScaleRatioLocked ? "checked" : ""} ${disabled}> lock ratio</label></div>
         <div class="spatial-vector-inputs">${vectorInputs("scale", transform.scale, "0.01")}</div>
       </section>
-      ${isText ? `
-        <section class="topology-inspector-section spatial-policy-controls" data-spatial-text-policies>
-          <label><span>Anchor</span><select data-spatial-anchor-type ${disabled}>
-            ${anchorTypes.map((type) => `<option value="${type}" ${anchor.type === type ? "selected" : ""}>${spatialAnchorLabel(type)}</option>`).join("")}
-          </select></label>
-          <label><span>Anchor object</span><select data-spatial-anchor-asset ${disabled} ${["asset", "source-focus"].includes(anchor.type) ? "" : "disabled"}>
-            <option value="">Automatic / active object</option>
-            ${modelAssets.map((asset) => `<option value="${escapeHtml(asset.id)}" ${anchor.assetId === asset.id ? "selected" : ""}>${escapeHtml(asset.filename || asset.id)}</option>`).join("")}
-          </select></label>
-          <label><span>Orientation</span><select data-spatial-orientation-policy ${disabled}>
-            ${["fixed", "reader-facing-yaw", "reader-facing"].map((policy) => `<option value="${policy}" ${entity.orientationPolicy === policy ? "selected" : ""}>${spatialOrientationLabel(policy)}</option>`).join("")}
-          </select></label>
+      <details class="facilitator-details spatial-diagnostics">
+        <summary>Placement details for facilitator</summary>
+        ${isText ? `
+          <section class="topology-inspector-section spatial-policy-controls" data-spatial-text-policies>
+            <label><span>Anchor</span><select data-spatial-anchor-type ${disabled}>
+              ${anchorTypes.map((type) => `<option value="${type}" ${anchor.type === type ? "selected" : ""}>${spatialAnchorLabel(type)}</option>`).join("")}
+            </select></label>
+            <label><span>Anchor object</span><select data-spatial-anchor-asset ${disabled} ${["asset", "source-focus"].includes(anchor.type) ? "" : "disabled"}>
+              <option value="">Automatic / active object</option>
+              ${modelAssets.map((asset) => `<option value="${escapeHtml(asset.id)}" ${anchor.assetId === asset.id ? "selected" : ""}>${escapeHtml(asset.filename || asset.id)}</option>`).join("")}
+            </select></label>
+            <label><span>Orientation</span><select data-spatial-orientation-policy ${disabled}>
+              ${["fixed", "reader-facing-yaw", "reader-facing"].map((policy) => `<option value="${policy}" ${entity.orientationPolicy === policy ? "selected" : ""}>${spatialOrientationLabel(policy)}</option>`).join("")}
+            </select></label>
+          </section>
+        ` : ""}
+        <section class="topology-inspector-section spatial-inference-detail">
+          <h3>Automatic placement source</h3>
+          <p data-spatial-inference-copy>${Number.isFinite(confidence) ? `${Math.round(confidence * 100)}% confidence. ` : ""}${escapeHtml((entity.inference?.reasons || entity.inference?.reason || [])[0] || (isText ? "Geometric readability and semantic anchor candidate." : "Inherited from Asset Topology."))}</p>
         </section>
-      ` : ""}
-      <section class="topology-inspector-section spatial-inference-detail">
-        <h3>Inference provenance</h3>
-        <p data-spatial-inference-copy>${Number.isFinite(confidence) ? `${Math.round(confidence * 100)}% confidence. ` : ""}${escapeHtml((entity.inference?.reasons || entity.inference?.reason || [])[0] || (isText ? "Geometric readability and semantic anchor candidate." : "Inherited from Asset Topology."))}</p>
-      </section>
+        <p class="muted">Draft revision ${state.spatialDraftRevision}</p>
+      </details>
       <div class="spatial-inspector-actions">
-        <button data-spatial-reset-selected ${disabled}>Reset selected to inferred</button>
-        <span data-spatial-autosave-status>${escapeHtml(state.spatialAutosaveStatus)} · revision ${state.spatialDraftRevision}</span>
+        <button data-spatial-reset-selected ${disabled}>Reset to suggested placement</button>
+        <span data-spatial-autosave-status>${escapeHtml(state.spatialAutosaveStatus)}</span>
       </div>
     </aside>
   `;
@@ -8826,33 +9436,33 @@ function renderAttentionGuidanceWorkspace(component) {
   const reconciliation = attentionSceneReconciliation(scene);
   const rejectedCount = Number(scene?.evaluation?.rejectedCandidateCount) || 0;
   const inferenceHeading = !evaluated
-    ? "Checking suggested targets"
+    ? "Checking the suggested focus"
     : markers.length
-      ? `${markers.length} visible attention target${markers.length === 1 ? "" : "s"}`
+      ? `${markers.length} visible focus marker${markers.length === 1 ? "" : "s"}`
       : reconciliation.status === "conflict"
-        ? "No visible attention target"
+        ? "No visible focus marker"
         : rejectedCount > 0
-          ? "Suggested target is not visible"
-          : "No attention target suggested";
+          ? "The suggested focus is not visible"
+          : "No focus marker is needed";
   const inferenceCopy = !evaluated
-    ? "The viewer is checking whether the suggested targets are visible in the current scene."
+    ? "Checking whether the suggestion matches a visible object."
     : markers.length
-      ? "Each sphere passed live visible-geometry validation. Move a sphere to refine attention; story objects stay fixed."
+      ? "Move a marker if readers should look somewhere else."
       : reconciliation.status === "conflict"
-        ? "The suggested targets were accepted automatically, but none matched visible geometry in this scene."
+        ? "The suggestion does not match a visible object in this scene."
         : rejectedCount > 0
-          ? "The suggested target could not be matched to visible geometry in the current scene."
-          : "This scene does not need a default attention sphere.";
+          ? "The suggestion could not be placed on a visible object."
+          : "Readers can explore this scene without a focus marker.";
   return `
     <section class="panel spatial-relations-panel spatial-editor-mode attention-guidance-panel attention-editor-mode" data-attention-workspace-mode="editor">
       <div class="panel-head">
         <div>
-          <p class="eyebrow">Attention Guidance · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
+          <p class="eyebrow">${escapeHtml(participantComponentLabel(component.id, component.label))} · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
           <h2>${escapeHtml(beat?.title || sceneContext.beatId)}</h2>
         </div>
         <div class="actions spatial-editor-head-actions">
-          <span class="attention-authoring-only-badge">Authoring overlay only</span>
-          <button class="primary" data-attention-close-save>Close &amp; save</button>
+          <span class="attention-authoring-only-badge">Setup marker only</span>
+          <button class="primary" data-attention-close-save>Save scene and return</button>
         </div>
       </div>
       ${renderAttentionGuidanceStatus()}
@@ -8861,10 +9471,10 @@ function renderAttentionGuidanceWorkspace(component) {
           <strong>${escapeHtml(inferenceHeading)}</strong>
           <p>${escapeHtml(inferenceCopy)}</p>
         </div>
-        <span class="text-comfort-badge ${evaluated ? "good" : "warning"}">${evaluated ? "evaluated" : "evaluating"}</span>
+        <span class="text-comfort-badge ${evaluated ? "good" : "warning"}">${evaluated ? "checked" : "checking"}</span>
         <span class="text-comfort-badge ${markers.some((item) => item.manual) ? "warning" : "good"}">${markers.filter((item) => item.manual).length} edited</span>
       </div>
-      ${ready ? "" : `<p class="blocked-note">Save Environment Enhancement before using Attention Guidance.</p>`}
+      ${ready ? "" : `<p class="blocked-note">Finish Set the scene before adding focus markers.</p>`}
       <div class="spatial-relations-workbench attention-guidance-workbench">
         ${renderAttentionMarkerHierarchy(markers, beat, scene)}
         ${renderAttentionGuidanceViewport(beat, marker, sceneContext, scene)}
@@ -8882,13 +9492,13 @@ function renderAttentionGuidanceCanvasWorkspace(component, decision, ready) {
     <section class="panel spatial-relations-panel spatial-canvas-mode attention-guidance-panel attention-canvas-mode" data-attention-workspace-mode="canvas">
       <div class="panel-head spatial-canvas-panel-head">
         <div>
-          <p class="eyebrow">Dimension ${component.dimension} · Stage ${component.stage}</p>
-          <h2>Attention Guidance</h2>
-          <p class="muted">Review and refine attention targets for the story.</p>
+          <p class="eyebrow">${escapeHtml(participantStepEyebrow(component.id))}</p>
+          <h2>${escapeHtml(participantComponentLabel(component.id, component.label))}</h2>
+          <p class="story-stage-instruction">${escapeHtml(storyStageInstruction(state.data, component.id))}</p>
         </div>
       </div>
       ${renderAttentionGuidanceStatus()}
-      ${ready ? "" : `<p class="blocked-note">Attention Guidance is waiting for saved Spatial Relations and Environment Enhancement.</p>`}
+      ${ready ? "" : `<p class="blocked-note">Finish Place objects and Set the scene first.</p>`}
       ${renderAttentionStoryCanvas()}
       <div class="actions checkpoint-actions">
         ${renderCheckpointActions(component, decision, { canCommit: ready })}
@@ -8899,7 +9509,7 @@ function renderAttentionGuidanceCanvasWorkspace(component, decision, ready) {
 
 function renderAttentionGuidanceStatus() {
   if (!state.output?.error && !state.output?.attention) return "";
-  if (state.output?.error) return `<p class="blocked-note">${escapeHtml(state.output.error)}</p>`;
+  if (state.output?.error) return renderStageErrorNotice(ATTENTION_GUIDANCE_COMPONENT_ID);
   return `<p class="source-graph-status">${escapeHtml(state.output.attention)}</p>`;
 }
 
@@ -8911,8 +9521,8 @@ function renderAttentionStoryCanvas() {
   return `
     <section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell attention-story-canvas-shell" data-attention-story-canvas>
       <div class="visual-card-head">
-        <div><h3>Story canvas</h3><p class="muted">Each variant has its own arrow to the next beat; reciprocal same-beat arrows remain manual reader switches. Click a scene to edit its attention guidance.</p></div>
-        <span>${beats.length} authored beat${beats.length === 1 ? "" : "s"}</span>
+        <div><h3>Story canvas</h3><p class="muted">Select a card to check its focus marker.</p></div>
+        <span>${beats.length} story part${beats.length === 1 ? "" : "s"}</span>
       </div>
       <div class="source-graph-canvas-stage spatial-story-canvas-stage">
         <div class="source-graph-canvas-viewport spatial-story-canvas-viewport story-variant-links-canvas" data-attention-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Attention Guidance story canvas">
@@ -8979,15 +9589,15 @@ function renderAttentionEmptyTargets(scene) {
   const candidates = attentionSceneCandidates(scene);
   const rejectedCount = Number(scene?.evaluation?.rejectedCandidateCount) || 0;
   if (reconciliation.status === "conflict") {
-    return `<div class="attention-empty-targets is-rejected"><span aria-hidden="true">×</span><strong>Suggested targets are not visible</strong><p>The target set was accepted automatically, but no attention sphere could be matched to visible geometry.</p></div>`;
+    return `<div class="attention-empty-targets is-rejected"><span aria-hidden="true">×</span><strong>No focus marker was added</strong><p>The suggestions did not match a visible object in this scene.</p></div>`;
   }
   if (scene?.evaluated === true && rejectedCount > 0) {
-    return `<div class="attention-empty-targets is-rejected"><span aria-hidden="true">×</span><strong>Suggested target is not visible</strong><p>No attention sphere was created for the unavailable target in this scene.</p></div>`;
+    return `<div class="attention-empty-targets is-rejected"><span aria-hidden="true">×</span><strong>Suggested focus is not visible</strong><p>No marker was added because the object is not visible in this scene.</p></div>`;
   }
   if (candidates.length && scene?.evaluated !== true) {
-    return `<div class="attention-empty-targets is-pending"><span aria-hidden="true">…</span><strong>Checking suggested target${candidates.length === 1 ? "" : "s"}</strong><p>The viewer has not finished checking target visibility.</p></div>`;
+    return `<div class="attention-empty-targets is-pending"><span aria-hidden="true">…</span><strong>Checking suggested focus</strong><p>Please wait while this scene is checked.</p></div>`;
   }
-  return `<div class="attention-empty-targets"><span aria-hidden="true">○</span><strong>No attention target suggested</strong><p>This scene does not need a default attention sphere.</p></div>`;
+  return `<div class="attention-empty-targets"><span aria-hidden="true">○</span><strong>No focus marker needed</strong><p>Readers can explore this scene without one.</p></div>`;
 }
 
 function renderAttentionMarkerHierarchy(markers, beat, scene) {
@@ -9063,11 +9673,11 @@ function renderAttentionGuidanceInspector(marker, scene) {
     const reconciliation = attentionSceneReconciliation(scene);
     const rejectedCount = Number(scene?.evaluation?.rejectedCandidateCount) || 0;
     const copy = reconciliation.status === "conflict"
-      ? "The suggested target set was accepted automatically, but none of its targets matched visible geometry."
+      ? "The suggestions did not match a visible object in this scene."
       : rejectedCount > 0
-        ? "The suggested target is not visible in the current scene, so no movable sphere was created."
-        : "No attention target is suggested for this beat.";
-    return `<aside class="topology-inspector spatial-inspector attention-inspector"><h3>Attention position</h3><p class="muted">${escapeHtml(copy)}</p></aside>`;
+        ? "The suggested focus is not visible, so no marker was added."
+        : "This scene does not need a focus marker.";
+    return `<aside class="topology-inspector spatial-inspector attention-inspector"><h3>Focus marker</h3><p class="muted">${escapeHtml(copy)}</p></aside>`;
   }
   const position = attentionPosition(marker.position) || attentionPosition(marker.inferredPosition);
   const disabled = "";
@@ -9331,28 +9941,28 @@ function renderInteractionControlCanvasWorkspace(component, baseProposal, decisi
     }),
   ].length;
   const variantCount = boundaryContext.variantControls.length;
-  const blockingDependencyLabel = checkpointBlockingDependency(component.id)?.label || "the preceding checkpoint";
+  const blockingDependencyLabel = participantBlockingDependencyLabel(component.id);
   return `
     <section class="panel asset-topology-panel interaction-control-panel interaction-canvas-mode" data-interaction-workspace-mode="canvas">
       <div class="panel-head dynamic-canvas-panel-head interaction-canvas-panel-head">
         <div>
-          <p class="eyebrow">Dimension ${component.dimension} · Stage ${component.stage}</p>
-          <h2>${escapeHtml(component.label)}</h2>
-          <p class="muted">Open a beat or variant to review its spatial scene. Assign every narrative and within-beat variant arrow directly; variant arrows start with UI button press.</p>
+          <p class="eyebrow">${escapeHtml(participantStepEyebrow(component.id))}</p>
+          <h2>${escapeHtml(participantComponentLabel(component.id, component.label))}</h2>
+          <p class="story-stage-instruction">${escapeHtml(storyStageInstruction(state.data, component.id))}</p>
         </div>
         <div class="actions interaction-canvas-head-actions">
-          <span class="dynamic-status-pill interaction-status-pill ${escapeHtml(checkpointFlowStatus(component.id))}">${escapeHtml(checkpointFlowStatus(component.id))}</span>
+          <span class="dynamic-status-pill interaction-status-pill ${escapeHtml(checkpointFlowStatus(component.id))}">${escapeHtml(participantStatusLabel(checkpointFlowStatus(component.id)))}</span>
         </div>
       </div>
-      ${ready ? "" : `<p class="blocked-note">Save ${escapeHtml(blockingDependencyLabel)} before assigning or saving Interaction Control.</p>`}
+      ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before choosing reader actions.</p>`}
       ${renderInteractionControlStatus()}
       ${renderInteractionTraversalConstraint(interactionSpatialTraversal(baseProposal))}
-      ${unassignedCount ? `<p class="blocked-note interaction-assignment-note" data-interaction-assignment-required><span>${unassignedCount} mapped transition${unassignedCount === 1 ? " needs" : "s need"} an interaction assignment before this checkpoint can be saved. The unresolved ${unassignedCount === 1 ? "transition is" : "transitions are"} highlighted in the Story Canvas.</span><button type="button" data-interaction-show-problem="${escapeHtml(firstUnassignedBoundaryId)}">Show ${unassignedCount === 1 ? "transition" : "first transition"}</button></p>` : ""}
-      ${incompleteConfigurationCount ? `<p class="blocked-note" data-interaction-configuration-required>${incompleteConfigurationCount} transition configuration${incompleteConfigurationCount === 1 ? " needs" : "s need"} another edit before saving. Direct manipulation requires an in-beat interactable plus an authored destination inside its transform range; controller stepping requires a next-beat mapping.</p>` : ""}
+      ${unassignedCount ? `<p class="blocked-note interaction-assignment-note" data-interaction-assignment-required><span>${unassignedCount} scene change${unassignedCount === 1 ? " needs" : "s need"} a reader action. The ${unassignedCount === 1 ? "problem is" : "problems are"} highlighted below.</span><button type="button" data-interaction-show-problem="${escapeHtml(firstUnassignedBoundaryId)}">Show ${unassignedCount === 1 ? "problem" : "first problem"}</button></p>` : ""}
+      ${incompleteConfigurationCount ? `<p class="blocked-note" data-interaction-configuration-required>${incompleteConfigurationCount} reader action${incompleteConfigurationCount === 1 ? " needs" : "s need"} more information before this step can be finished.</p>` : ""}
       <div class="dynamic-canvas-summary interaction-canvas-summary" aria-label="Current Interaction Control boundary assignments">
-        <span>Reader controls</span>
-        <strong>${boundaryContext.boundaries.length ? `${assignedCount} of ${boundaryContext.boundaries.length} boundaries assigned` : "Story entry only"}</strong>
-        <small>${assignmentCount} author assignment${assignmentCount === 1 ? "" : "s"} · ${controllerButtonCount} controller button press${controllerButtonCount === 1 ? "" : "es"} · ${variantCount} variant structure${variantCount === 1 ? "" : "s"}</small>
+        <span>Reader actions</span>
+        <strong>${boundaryContext.boundaries.length ? `${assignedCount} of ${boundaryContext.boundaries.length} scene changes ready` : "Opening scene only"}</strong>
+        <small>${controllerButtonCount} button step${controllerButtonCount === 1 ? "" : "s"} · ${variantCount} choice section${variantCount === 1 ? "" : "s"}</small>
       </div>
       ${renderInteractionStoryCanvas(baseProposal, boundaryContext)}
       <div class="actions checkpoint-actions">
@@ -9368,17 +9978,17 @@ function renderInteractionControlEditorWorkspace(component, baseProposal, ready,
   const selectedProposal = interactionProposalForBoundary(baseProposal, editorContext?.boundary || boundaryContext.boundary);
   const inBeatEditor = editorContext?.targetType === "in-beat";
   const boundaryStatus = inBeatEditor
-    ? { className: "in-beat", label: "In-beat interaction" }
+    ? { className: "in-beat", label: "Object action" }
     : editorContext?.kind
-    ? { className: editorContext.kind, label: interactionControlKindLabel(editorContext.kind) }
+    ? { className: editorContext.kind, label: interactionControlKindDisplayLabel(editorContext.kind) }
     : interactionBoundaryVisualStatus(editorContext?.boundary || boundaryContext.boundary);
-  const blockingDependencyLabel = checkpointBlockingDependency(component.id)?.label || "the preceding checkpoint";
+  const blockingDependencyLabel = participantBlockingDependencyLabel(component.id);
   return `
     <section class="panel asset-topology-panel interaction-control-panel interaction-editor-mode" data-interaction-workspace-mode="editor">
       <div class="panel-head">
         <div>
-          <p class="eyebrow">Interaction Control · ${escapeHtml(editorContext?.fromLabel || spatialSceneContextLabel(sceneContext))}</p>
-          <h2>${escapeHtml(inBeatEditor ? editorContext?.beat?.title || sceneContext.beatId : editorContext?.kind ? interactionControlKindLabel(editorContext.kind) : editorContext?.beat?.title || sceneContext.beatId)}</h2>
+          <p class="eyebrow">${escapeHtml(participantComponentLabel(component.id, component.label))} · ${escapeHtml(editorContext?.fromLabel || spatialSceneContextLabel(sceneContext))}</p>
+          <h2>${escapeHtml(inBeatEditor ? editorContext?.beat?.title || sceneContext.beatId : editorContext?.kind ? interactionControlKindDisplayLabel(editorContext.kind) : editorContext?.beat?.title || sceneContext.beatId)}</h2>
         </div>
         <div class="actions">
           <span class="dynamic-scene-motion-pill interaction-scene-control-pill ${escapeHtml(boundaryStatus.className)}">${escapeHtml(boundaryStatus.label)}</span>
@@ -9386,18 +9996,18 @@ function renderInteractionControlEditorWorkspace(component, baseProposal, ready,
         </div>
       </div>
       <p class="muted">${escapeHtml(inBeatEditor
-        ? `Choose which objects inside ${editorContext.fromLabel} the reader may grab or scale, then author optional movement, rotation, and scale ranges directly in the scene.`
+        ? `Choose which objects in ${editorContext.fromLabel} readers may grab or resize.`
         : editorContext?.kind
-        ? `Configure how the reader moves from ${editorContext.fromLabel} to ${editorContext.toLabel}. This configuration is stored on this transition only.`
-        : "Review the selected scene and its incoming reader control. Saved Spatial Relations, Environment, Dynamics, and Transition remain visible in the preview.")}</p>
-      ${ready ? "" : `<p class="blocked-note">Save ${escapeHtml(blockingDependencyLabel)} before reviewing or saving Interaction Control.</p>`}
+        ? `Choose how readers continue from ${editorContext.fromLabel} to ${editorContext.toLabel}.`
+        : "Check the reader action for this scene.")}</p>
+      ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before choosing reader actions.</p>`}
       ${renderInteractionControlStatus()}
       ${renderInteractionTraversalConstraint(interactionSpatialTraversal(baseProposal))}
       ${inBeatEditor
         ? renderInteractionInBeatEditor(editorContext)
         : editorContext?.kind
         ? renderInteractionOptionEditor(editorContext, selectedProposal)
-        : `<div class="interaction-control-workbench interaction-editor-workbench"><div class="interaction-story-preview">${renderInteractionPreview(selectedProposal, boundaryContext)}</div>${renderInteractionInspector(selectedProposal, boundaryContext.boundary)}</div>`}
+        : `<div class="interaction-control-workbench interaction-editor-workbench"><div class="interaction-story-preview">${renderInteractionPreview(selectedProposal, boundaryContext)}</div><details class="facilitator-details interaction-diagnostics"><summary>Reader-action details for facilitator</summary>${renderInteractionInspector(selectedProposal, boundaryContext.boundary)}</details></div>`}
     </section>
   `;
 }
@@ -9423,13 +10033,13 @@ function renderInteractionInBeatEditor(editorContext) {
   return `
     <div class="interaction-option-editor in-beat" data-interaction-option-editor="in-beat" data-interaction-inbeat-editor>
       <div class="interaction-editor-toolbar">
-        <div><strong>In-beat interaction</strong><span>${targets.length} interactable target${targets.length === 1 ? "" : "s"} in this exact scene</span></div>
+        <div><strong>Objects readers can move</strong><span>${targets.length} object${targets.length === 1 ? "" : "s"} selected in this scene</span></div>
         <span class="interaction-default-pill">Grip to grab · two grips to scale</span>
       </div>
       <div class="interaction-option-editor-grid interaction-inbeat-layout">
         <section class="interaction-config-card interaction-inbeat-stage">
-          <div class="interaction-destination-toolbar interaction-constraint-toolbar" role="group" aria-label="Constraint transform tools">
-            <span>Edit range</span>
+          <div class="interaction-destination-toolbar interaction-constraint-toolbar" role="group" aria-label="Movement limit tools">
+            <span>Edit limits</span>
             ${constraintModes.map(({ mode, label }) => `<button type="button" data-interaction-constraint-transform-mode="${mode}" class="${activeMode === mode ? "selected" : ""}" aria-pressed="${activeMode === mode}">${label}</button>`).join("")}
             ${constraintModes.length ? `
               <span class="interaction-constraint-divider" aria-hidden="true"></span>
@@ -9437,18 +10047,24 @@ function renderInteractionInBeatEditor(editorContext) {
               <span class="interaction-constraint-endpoint-status" data-interaction-constraint-endpoint-status aria-live="polite">${state.interactionConstraintEndpoint === "max" ? "Maximum ghost active" : "Minimum ghost active"}</span>
             ` : `<small>Enable a range below to place its handles.</small>`}
           </div>
-          <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell interaction-viewer-shell interaction-inbeat-viewer-shell" data-interaction-viewer="${escapeHtml(editorContext.targetId)}" tabindex="0" role="application" aria-label="In-beat interactable object and transform constraint editor" aria-describedby="interaction-inbeat-viewer-hint"><div class="topology-viewer-status">Loading exact beat scene...</div></div>
+          <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell interaction-viewer-shell interaction-inbeat-viewer-shell" data-interaction-viewer="${escapeHtml(editorContext.targetId)}" tabindex="0" role="application" aria-label="Object action editor" aria-describedby="interaction-inbeat-viewer-hint"><div class="topology-viewer-status">Loading this scene...</div></div>
           <p class="topology-viewer-hint" id="interaction-inbeat-viewer-hint">${constraintModes.length
-            ? "Click a GLB or safe named part in the scene, or choose it in the target list. Teal Minimum and orange Maximum ghosts stay visible together; click either ghost, then move, rotate, or scale it to set that end of the parent-local range. In Move mode, the shaded box is the allowed movement area."
-            : "Click a GLB or safe named part in the scene, or choose it in the target list. Then enable a transform range below to show its Minimum and Maximum ghosts."}</p>
+            ? "Select an object. Use the teal minimum and orange maximum shapes to set how far it may move, rotate, or resize."
+            : "Select an object from the scene or the list. Turn on a limit below if the object needs one."}</p>
+          ${constraintModes.length ? `
+            <details class="facilitator-details interaction-range-diagnostics">
+              <summary>Limit details for facilitator</summary>
+              <p>Teal Minimum and orange Maximum ghosts stay visible together. Each limit uses the selected object's parent-local transform.</p>
+            </details>
+          ` : ""}
         </section>
         <aside class="interaction-config-card interaction-inbeat-inspector">
-          <h3>Interactable objects</h3>
-          <p class="muted">A part target replaces an overlapping whole-object target so two grabs never compete for the same geometry.</p>
-          <div class="interaction-inbeat-candidate-list" data-interaction-inbeat-candidates><p class="muted">Loading GLB hierarchy…</p></div>
+          <h3>Choose objects</h3>
+          <p class="muted">Select the whole object or one named part.</p>
+          <div class="interaction-inbeat-candidate-list" data-interaction-inbeat-candidates><p class="muted">Loading objects…</p></div>
           <section class="interaction-inbeat-selected ${selectedTarget ? "" : "empty"}" data-interaction-inbeat-selected>
             <div class="interaction-inbeat-selected-head"><div><small>Selected target</small><strong>${escapeHtml(selectedLabel)}</strong></div>${selectedTarget ? `<button type="button" class="danger-subtle" data-interaction-inbeat-remove-target="${escapeHtml(selectedKey)}">Remove</button>` : ""}</div>
-            ${selectedTarget ? renderInteractionInBeatTargetControls(selectedTarget) : `<p class="muted">Add an object or part to configure how the reader can manipulate it.</p>`}
+            ${selectedTarget ? renderInteractionInBeatTargetControls(selectedTarget) : `<p class="muted">Choose an object or part that readers may move.</p>`}
           </section>
         </aside>
       </div>
@@ -9460,14 +10076,14 @@ function renderInteractionInBeatTargetControls(target) {
   const constraints = target.constraints || {};
   return `
     <fieldset class="interaction-inbeat-capabilities">
-      <legend>Reader affordances</legend>
-      <label><input type="checkbox" data-interaction-inbeat-capability="oneHandGrabbable" data-interaction-inbeat-target-key="${escapeHtml(key)}" ${target.oneHandGrabbable ? "checked" : ""}/> One-hand grabbable</label>
-      <label class="${target.oneHandGrabbable ? "" : "disabled"}"><input type="checkbox" data-interaction-inbeat-elastic-dragging data-interaction-inbeat-target-key="${escapeHtml(key)}" ${target.elasticDragging ? "checked" : ""} ${target.oneHandGrabbable ? "" : "disabled"}/> Elastic dragging</label>
-      <small>Fast pulls and pushes along the controller ray build smoothly eased translation that keeps coasting on that ray while Grip is held; release Grip to stop it.</small>
-      <label><input type="checkbox" data-interaction-inbeat-capability="twoHandScalable" data-interaction-inbeat-target-key="${escapeHtml(key)}" ${target.twoHandScalable ? "checked" : ""}/> Two-hand scalable</label>
+      <legend>Allowed actions</legend>
+      <label><input type="checkbox" data-interaction-inbeat-capability="oneHandGrabbable" data-interaction-inbeat-target-key="${escapeHtml(key)}" ${target.oneHandGrabbable ? "checked" : ""}/> Grab with one hand</label>
+      <label class="${target.oneHandGrabbable ? "" : "disabled"}"><input type="checkbox" data-interaction-inbeat-elastic-dragging data-interaction-inbeat-target-key="${escapeHtml(key)}" ${target.elasticDragging ? "checked" : ""} ${target.oneHandGrabbable ? "" : "disabled"}/> Keep moving while Grip is held</label>
+      <small>Release Grip to stop the object.</small>
+      <label><input type="checkbox" data-interaction-inbeat-capability="twoHandScalable" data-interaction-inbeat-target-key="${escapeHtml(key)}" ${target.twoHandScalable ? "checked" : ""}/> Resize with two hands</label>
     </fieldset>
     <fieldset class="interaction-inbeat-constraints">
-      <legend>Transform ranges</legend>
+      <legend>Movement limits</legend>
       <label class="${target.oneHandGrabbable ? "" : "disabled"}"><input type="checkbox" data-interaction-inbeat-constraint-toggle="position" data-interaction-inbeat-target-key="${escapeHtml(key)}" ${constraints.position ? "checked" : ""} ${target.oneHandGrabbable ? "" : "disabled"}/> Limit movement</label>
       <label class="${target.oneHandGrabbable ? "" : "disabled"}"><input type="checkbox" data-interaction-inbeat-constraint-toggle="rotation" data-interaction-inbeat-target-key="${escapeHtml(key)}" ${constraints.rotation ? "checked" : ""} ${target.oneHandGrabbable ? "" : "disabled"}/> Limit rotation</label>
       <label class="${target.twoHandScalable ? "" : "disabled"}"><input type="checkbox" data-interaction-inbeat-constraint-toggle="scale" data-interaction-inbeat-target-key="${escapeHtml(key)}" ${constraints.scale ? "checked" : ""} ${target.twoHandScalable ? "" : "disabled"}/> Limit scale</label>
@@ -9673,6 +10289,33 @@ function interactionRotationRangeReference(rotation) {
   ));
 }
 
+function interactionDirectAvailableTriggerComponents(target) {
+  if (!target || (target.oneHandGrabbable === undefined && target.twoHandScalable === undefined)) {
+    return ["position", "rotation", "scale"];
+  }
+  return [
+    target.oneHandGrabbable === true ? "position" : null,
+    target.oneHandGrabbable === true ? "rotation" : null,
+    target.twoHandScalable === true ? "scale" : null,
+  ].filter(Boolean);
+}
+
+function interactionDirectTriggerComponents(target) {
+  const available = interactionDirectAvailableTriggerComponents(target);
+  if (!Array.isArray(target?.triggerComponents)) return available;
+  const availableSet = new Set(available);
+  const requested = [...new Set(target.triggerComponents
+    .map((component) => String(component || "").trim().toLowerCase())
+    .filter((component) => availableSet.has(component)))];
+  return requested.length
+    ? ["position", "rotation", "scale"].filter((component) => requested.includes(component))
+    : available;
+}
+
+function interactionDirectUsesTriggerComponent(target, component) {
+  return interactionDirectTriggerComponents(target).includes(component);
+}
+
 function interactionTransformEulerDegrees(transform, referenceDegrees = null) {
   const normalized = normalizeSpatialTransform(transform);
   const euler = new THREE.Euler().setFromQuaternion(new THREE.Quaternion(...normalized.quaternion), "XYZ");
@@ -9684,13 +10327,13 @@ function interactionDirectDestinationRangeViolations(target) {
   if (!target?.destinationTransform || !target.constraints) return [];
   const transform = normalizeSpatialTransform(target.destinationTransform);
   const channels = [
-    target.oneHandGrabbable && target.constraints.position
+    interactionDirectUsesTriggerComponent(target, "position") && target.constraints.position
       ? ["movement", transform.position, target.constraints.position.min, target.constraints.position.max]
       : null,
-    target.oneHandGrabbable && target.constraints.rotation
+    interactionDirectUsesTriggerComponent(target, "rotation") && target.constraints.rotation
       ? ["rotation", interactionTransformEulerDegrees(transform, interactionRotationRangeReference(target.constraints.rotation)), target.constraints.rotation.minDegrees, target.constraints.rotation.maxDegrees]
       : null,
-    target.twoHandScalable && target.constraints.scale
+    interactionDirectUsesTriggerComponent(target, "scale") && target.constraints.scale
       ? ["scale", transform.scale, target.constraints.scale.min, target.constraints.scale.max]
       : null,
   ].filter(Boolean);
@@ -9708,7 +10351,7 @@ function interactionDirectDestinationRangeViolations(target) {
 }
 
 function interactionDirectScaleDestinationIsReachable(target) {
-  if (!target?.twoHandScalable || !target.destinationTransform) return true;
+  if (!interactionDirectUsesTriggerComponent(target, "scale") || !target?.destinationTransform) return true;
   const initial = normalizeSpatialTransform(target.initialTransform).scale;
   const destination = normalizeSpatialTransform(target.destinationTransform).scale;
   const range = target.constraints?.scale || null;
@@ -9779,9 +10422,9 @@ function renderInteractionSpatialScene(editorContext, heading, hint) {
   const allowedModes = editorContext.kind !== "direct"
     ? ["translate", "rotate", "scale"]
     : [
-        selectedTarget?.oneHandGrabbable ? "translate" : null,
-        selectedTarget?.oneHandGrabbable ? "rotate" : null,
-        selectedTarget?.twoHandScalable ? "scale" : null,
+        selectedTarget && interactionDirectUsesTriggerComponent(selectedTarget, "position") ? "translate" : null,
+        selectedTarget && interactionDirectUsesTriggerComponent(selectedTarget, "rotation") ? "rotate" : null,
+        selectedTarget && interactionDirectUsesTriggerComponent(selectedTarget, "scale") ? "scale" : null,
       ].filter(Boolean);
   if (!allowedModes.includes(state.interactionDestinationTransformMode)) {
     state.interactionDestinationTransformMode = allowedModes[0] || "translate";
@@ -9802,17 +10445,19 @@ function renderInteractionLocomotionEditor(editorContext) {
   const transform = configuration.destination.transform;
   return `
     <div class="interaction-option-editor locomotion" data-interaction-option-editor="reader-locomotion">
-      <div class="interaction-editor-toolbar"><div><strong>Locomotion destination</strong><span>Entering and dwelling in the destination zone triggers ${escapeHtml(editorContext.toLabel)}</span></div><span class="interaction-default-pill">${formatNumber(configuration.tolerance.distanceMeters)} m radius</span></div>
+      <div class="interaction-editor-toolbar"><div><strong>Reader destination</strong><span>The story continues to ${escapeHtml(editorContext.toLabel)} when the reader reaches this area.</span></div><span class="interaction-default-pill">${formatNumber(configuration.tolerance.distanceMeters)} m area</span></div>
       <div class="interaction-option-editor-grid">
         ${renderInteractionSpatialScene(editorContext, "Reader destination editor", "Move the teal destination marker; the reader model starts at the saved pose for the previous beat.")}
         <aside class="interaction-config-card">
-          <h3>Destination transform</h3>
+          <h3>Destination position</h3>
           <div class="interaction-transform-grid" data-interaction-locomotion-transform>${renderInteractionTransformInputs(transform, "locomotion")}</div>
-          <h3>Trigger tolerance</h3>
+          <details class="facilitator-details interaction-tolerance-details">
+            <summary>Arrival timing for facilitator</summary>
           <div class="interaction-transform-grid compact">
             <label>Radius (m)<input type="number" min="0.1" max="5" step="0.01" data-interaction-locomotion-tolerance="distanceMeters" value="${formatNumber(configuration.tolerance.distanceMeters)}" /></label>
             <label>Dwell (s)<input type="number" min="0" max="10" step="0.05" data-interaction-locomotion-tolerance="dwellSeconds" value="${formatNumber(configuration.tolerance.dwellSeconds)}" /></label>
           </div>
+          </details>
         </aside>
       </div>
     </div>`;
@@ -9829,14 +10474,15 @@ function renderInteractionDirectEditor(editorContext) {
   state.interactionSelectedDirectTargetKey = selectedKey || null;
   const selectedTarget = configuration.targets.find((target) => interactionDirectTargetKey(target) === selectedKey) || null;
   const suggestions = interactionMappedTransformSuggestions(editorContext).filter((suggestion) => !configuration.targets.some((target) => interactionDirectTargetKey(target) === interactionDirectTargetKey(suggestion)));
+  const activeTriggerComponents = new Set(configuration.targets.flatMap((target) => interactionDirectTriggerComponents(target)));
   return `
     <div class="interaction-option-editor direct" data-interaction-option-editor="direct-manipulation">
-      <div class="interaction-editor-toolbar"><div><strong>Direct-manipulation goal</strong><span>All selected objects must reach their destination transforms</span></div><span class="interaction-default-pill">${configuration.targets.length} target${configuration.targets.length === 1 ? "" : "s"} · all required</span></div>
+      <div class="interaction-editor-toolbar"><div><strong>Object goal</strong><span>The story continues when every selected object reaches its destination.</span></div><span class="interaction-default-pill">${configuration.targets.length} object${configuration.targets.length === 1 ? "" : "s"} required</span></div>
       ${suggestions.length ? `<div class="source-graph-status interaction-transform-suggestion"><span>${suggestions.length} transform-only destination${suggestions.length === 1 ? " is" : "s are"} available from the mapped transition.</span><button type="button" data-interaction-apply-transform-suggestions>Use suggestions</button></div>` : ""}
       <div class="interaction-option-editor-grid">
-        ${renderInteractionSpatialScene(editorContext, "Object destination editor", "Select an authored GLB, then adjust its translucent destination transform. Objects are evaluated independently and complete together.")}
+        ${renderInteractionSpatialScene(editorContext, "Object destination", "Select an object, then move its translucent destination shape.")}
         <aside class="interaction-config-card">
-          <h3>Interactable scene targets</h3>
+          <h3>Choose objects</h3>
           <div class="interaction-direct-target-list">
             ${choices.map((target) => {
               const targetKey = interactionDirectTargetKey(target);
@@ -9849,16 +10495,38 @@ function renderInteractionDirectEditor(editorContext) {
                 target.elasticDragging ? "elastic" : "",
                 target.twoHandScalable ? "scale" : "",
               ].filter(Boolean).join(" + ");
-              return `<label class="${targetKey === selectedKey ? "selected" : ""} ${outsideRange ? "outside-range" : ""}"><input type="checkbox" data-interaction-direct-target="${escapeHtml(targetKey)}" data-interaction-direct-entity-id="${escapeHtml(target.entityId)}" ${target.nodePath ? `data-interaction-direct-node-path="${escapeHtml(target.nodePath)}"` : ""} ${target.nodeIndex != null ? `data-interaction-direct-node-index="${target.nodeIndex}"` : ""} ${included ? "checked" : ""}/><button type="button" data-interaction-select-direct-target="${escapeHtml(targetKey)}"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(`${target.assetId} · ${capability}${outsideRange ? " · outside range" : ""}`)}</small></button></label>`;
+              const triggerSummary = configuredTarget
+                ? ` · checks ${interactionDirectTriggerComponents(configuredTarget).join(" + ")}`
+                : "";
+              return `<label class="${targetKey === selectedKey ? "selected" : ""} ${outsideRange ? "outside-range" : ""}"><input type="checkbox" data-interaction-direct-target="${escapeHtml(targetKey)}" data-interaction-direct-entity-id="${escapeHtml(target.entityId)}" ${target.nodePath ? `data-interaction-direct-node-path="${escapeHtml(target.nodePath)}"` : ""} ${target.nodeIndex != null ? `data-interaction-direct-node-index="${target.nodeIndex}"` : ""} ${included ? "checked" : ""}/><button type="button" data-interaction-select-direct-target="${escapeHtml(targetKey)}"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(`${target.assetId} · ${capability}${triggerSummary}${outsideRange ? " · outside range" : ""}`)}</small></button></label>`;
             }).join("") || `<p class="muted">This source scene has no in-beat interactables. Return to its beat card and add one before using Direct manipulation.</p>`}
           </div>
-          ${selectedTarget ? `<h3>Selected destination</h3>${selectedTarget.destinationAuthored === false ? `<p class="blocked-note compact">Move an enabled transform channel or apply a mapped suggestion to author this destination.</p>` : ""}${interactionDirectDestinationRangeMessage(selectedTarget) ? `<p class="blocked-note compact interaction-direct-range-warning" role="status">${escapeHtml(interactionDirectDestinationRangeMessage(selectedTarget))}</p>` : ""}<div class="interaction-transform-grid" data-interaction-direct-transform="${escapeHtml(selectedKey)}">${renderInteractionTransformInputs(selectedTarget.destinationTransform, "direct", { enabledParts: [selectedTarget.oneHandGrabbable ? "position" : null, selectedTarget.oneHandGrabbable ? "rotation" : null, selectedTarget.twoHandScalable ? "scale" : null].filter(Boolean), rotationReference: interactionRotationRangeReference(selectedTarget.constraints?.rotation) })}</div>` : `<p class="muted">Select an interactable target to edit its destination.</p>`}
-          <h3>Reasonable error</h3>
-          <div class="interaction-transform-grid compact">
-            <label>Position (m)<input type="number" min="0.01" max="2" step="0.01" data-interaction-direct-tolerance="positionMeters" value="${formatNumber(configuration.tolerance.positionMeters)}" /></label>
-            <label>Rotation (°)<input type="number" min="0.5" max="180" step="0.5" data-interaction-direct-tolerance="rotationDegrees" value="${formatNumber(configuration.tolerance.rotationDegrees)}" /></label>
-            <label>Scale ratio<input type="number" min="0.01" max="1" step="0.01" data-interaction-direct-tolerance="scaleRatio" value="${formatNumber(configuration.tolerance.scaleRatio)}" /></label>
-          </div>
+          ${selectedTarget ? `
+            <fieldset class="interaction-direct-trigger-components">
+              <legend>What must match</legend>
+              <p>Choose what readers must change to reach the destination.</p>
+              <div>
+                ${[
+                  ["position", "Position", selectedTarget.oneHandGrabbable],
+                  ["rotation", "Rotation", selectedTarget.oneHandGrabbable],
+                  ["scale", "Scale", selectedTarget.twoHandScalable],
+                ].map(([component, label, available]) => `<label class="${available ? "" : "disabled"}"><input type="checkbox" data-interaction-direct-trigger-component="${component}" ${interactionDirectUsesTriggerComponent(selectedTarget, component) ? "checked" : ""} ${available ? "" : "disabled"}/> ${label}</label>`).join("")}
+              </div>
+            </fieldset>
+            <h3>Destination</h3>
+            ${selectedTarget.destinationAuthored === false ? `<p class="blocked-note compact">Adjust an enabled trigger component or apply a mapped suggestion to author this destination.</p>` : ""}
+            ${interactionDirectDestinationRangeMessage(selectedTarget) ? `<p class="blocked-note compact interaction-direct-range-warning" role="status">${escapeHtml(interactionDirectDestinationRangeMessage(selectedTarget))}</p>` : ""}
+            <div class="interaction-transform-grid" data-interaction-direct-transform="${escapeHtml(selectedKey)}">${renderInteractionTransformInputs(selectedTarget.destinationTransform, "direct", { enabledParts: interactionDirectTriggerComponents(selectedTarget), rotationReference: interactionRotationRangeReference(selectedTarget.constraints?.rotation) })}</div>
+          ` : `<p class="muted">Select an interactable target to edit its destination.</p>`}
+          <details class="facilitator-details interaction-tolerance-details">
+            <summary>Match tolerance for facilitator</summary>
+            <p>The beat changes as soon as all selected objects enter the reasonable-error range. Select one or more transform components; unselected components do not need to match.</p>
+            <div class="interaction-transform-grid compact">
+              <label class="${activeTriggerComponents.has("position") ? "" : "disabled"}">Position (m)<input type="number" min="0.01" max="2" step="0.01" data-interaction-direct-tolerance="positionMeters" value="${formatNumber(configuration.tolerance.positionMeters)}" ${activeTriggerComponents.has("position") ? "" : "disabled"}/></label>
+              <label class="${activeTriggerComponents.has("rotation") ? "" : "disabled"}">Rotation (°)<input type="number" min="0.5" max="180" step="0.5" data-interaction-direct-tolerance="rotationDegrees" value="${formatNumber(configuration.tolerance.rotationDegrees)}" ${activeTriggerComponents.has("rotation") ? "" : "disabled"}/></label>
+              <label class="${activeTriggerComponents.has("scale") ? "" : "disabled"}">Scale ratio<input type="number" min="0.01" max="1" step="0.01" data-interaction-direct-tolerance="scaleRatio" value="${formatNumber(configuration.tolerance.scaleRatio)}" ${activeTriggerComponents.has("scale") ? "" : "disabled"}/></label>
+            </div>
+          </details>
         </aside>
       </div>
     </div>`;
@@ -9866,7 +10534,7 @@ function renderInteractionDirectEditor(editorContext) {
 
 function renderInteractionControlStatus() {
   if (!state.output?.error && !state.output?.interaction) return "";
-  if (state.output?.error) return `<p class="blocked-note">${escapeHtml(state.output.error)}</p>`;
+  if (state.output?.error) return renderStageErrorNotice("interaction-control");
   return `<p class="source-graph-status">${escapeHtml(state.output.interaction)}</p>`;
 }
 
@@ -9894,8 +10562,8 @@ function renderInteractionStoryCanvas(proposal, boundaryContext) {
   return `
     <section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell interaction-story-canvas-shell" data-interaction-story-canvas>
       <div class="visual-card-head">
-        <div><h3>Story canvas</h3><p class="muted">Every cross-beat arrow has its own boundary control. Within-beat variant switches remain separate and start with UI button press.</p></div>
-        <span>${beats.length} authored beat${beats.length === 1 ? "" : "s"}</span>
+        <div><h3>Story canvas</h3><p class="muted">Select an arrow to choose its reader action.</p></div>
+        <span>${beats.length} story part${beats.length === 1 ? "" : "s"}</span>
       </div>
       <div class="source-graph-canvas-stage spatial-story-canvas-stage interaction-story-canvas-stage">
         <div class="source-graph-canvas-viewport spatial-story-canvas-viewport interaction-story-canvas-viewport story-variant-links-canvas" data-interaction-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Interaction Control story canvas">
@@ -10016,10 +10684,17 @@ function renderInteractionOptionThumbnails({
   disabled = false,
   accessibleLabel,
 }) {
+  const displayLabel = (value) => {
+    if (value === "ui-button-press") return "Press a story button";
+    if (value === "direct") return "Move an object";
+    if (value === "embodied-control") return "Walk or teleport";
+    if (value === "branching-control") return "Choose a path";
+    return "Press a controller button";
+  };
   const availableKinds = Array.isArray(options) ? options : [];
   const kind = availableKinds.includes(effectiveKind) ? effectiveKind : "";
   if (!kind) return "";
-  const label = interactionControlKindLabel(kind);
+  const label = displayLabel(kind);
   const artwork = kind === "embodied-control"
     ? `<img class="interaction-option-artwork" src="${escapeHtml(INTERACTION_READER_LOCOMOTION_ARTWORK_PATH)}" alt="" />`
     : `<span class="interaction-option-icon">${interactionOptionIcon(kind)}</span><small>${escapeHtml(interactionOptionShortLabel(kind))}</small>`;
@@ -10046,6 +10721,13 @@ function renderInteractionOptionThumbnails({
 }
 
 function renderInteractionBoundaryConnector(boundary, fromBeat, toBeat) {
+  const displayLabel = (value) => {
+    if (value === "ui-button-press") return "Press a story button";
+    if (value === "direct") return "Move an object";
+    if (value === "embodied-control") return "Walk or teleport";
+    if (value === "branching-control") return "Choose a path";
+    return "Press a controller button";
+  };
   const status = interactionBoundaryVisualStatus(boundary);
   const fromTitle = interBeatTransitionEndpointTitle(fromBeat, boundary?.fromContext);
   const toTitle = interBeatTransitionEndpointTitle(toBeat, boundary?.toContext);
@@ -10091,7 +10773,7 @@ function renderInteractionBoundaryConnector(boundary, fromBeat, toBeat) {
             : (!effectiveKind || !boundary?.configurationAvailable)
             ? `<option value="" selected disabled>${escapeHtml(placeholder)}</option>`
             : ""}
-          ${options.map((kind) => `<option value="${kind}" ${kind === effectiveKind ? "selected" : ""} ${kind === "direct" && !directAvailable ? "disabled" : ""}>${escapeHtml(kind === "direct" && !directAvailable ? "Direct manipulation — add an in-beat interactable" : interactionControlKindLabel(kind))}</option>`).join("")}
+          ${options.map((kind) => `<option value="${kind}" ${kind === effectiveKind ? "selected" : ""} ${kind === "direct" && !directAvailable ? "disabled" : ""}>${escapeHtml(kind === "direct" && !directAvailable ? "Move an object — choose a grabbable object first" : displayLabel(kind))}</option>`).join("")}
         </select>
         ${needsAssignment ? `<span class="interaction-assignment-flag" aria-hidden="true">Required</span>` : ""}
       </span>
@@ -10116,12 +10798,12 @@ function renderInteractionPreview(proposal, context) {
     <section class="topology-diagram-card topology-3d-card interaction-preview-card">
       <div class="visual-card-head">
         <div>
-          <h3>Spatial interaction editor</h3>
+          <h3>Reader-action preview</h3>
           <p class="muted">${escapeHtml(boundary
             ? kind
               ? interactionControlKindHelp(kind, locomotionMode)
-              : "Assign the incoming interaction from its boundary arrow on the story canvas."
-            : "The opening beat has no incoming reader control. The saved reader pose and hand-attached text panel are shown below.")}</p>
+              : "Choose a reader action on the arrow between these scenes."
+            : "The story starts here, so no earlier action is needed.")}</p>
         </div>
         <span class="topology-kind-pill ${boundary ? kind || "unassigned" : "opening"}">${escapeHtml(boundary ? boundary.effectivePolicy || "Unassigned" : "Story entry")}</span>
       </div>
@@ -10130,8 +10812,12 @@ function renderInteractionPreview(proposal, context) {
       <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell interaction-viewer-shell" data-interaction-viewer="${escapeHtml(proposal?.optionId || boundary?.boundaryId || "story-entry")}" tabindex="0" role="application" aria-label="Spatial Interaction Control editor with the reader's text panel attached to the left hand">
         <div class="topology-viewer-status">Loading spatial interaction editor...</div>
       </div>
-      <p class="topology-viewer-hint">The saved reader model, both hands, and the left-hand text panel remain visible with the authored scene. Saved Dynamics and Transition playback remain visible. Return to the story canvas to inspect another boundary. Drag to orbit. Click scene, then use WASD to move the editor camera.</p>
-      <p class="topology-description">${escapeHtml(boundary?.reason || "The story opens directly on this beat; no preceding interaction is required.")}</p>
+      <p class="topology-viewer-hint">Drag to look around. Select the scene and use WASD to move the preview camera.</p>
+      <details class="facilitator-details preview-diagnostics">
+        <summary>Action reason for facilitator</summary>
+        <p>Saved Dynamics and Transition playback remain visible. Return to the story canvas to inspect another boundary.</p>
+        <p class="topology-description">${escapeHtml(boundary?.reason || "The story opens directly on this beat; no preceding interaction is required.")}</p>
+      </details>
     </section>
   `;
 }
@@ -10237,25 +10923,25 @@ function renderFinalReviewWorkspace(component) {
     <section class="panel asset-topology-panel final-review-panel">
       <div class="panel-head">
         <div>
-          <p class="eyebrow">Dimension ${component.dimension} · Stage ${component.stage}</p>
-          <h2>${escapeHtml(component.label)}</h2>
+          <p class="eyebrow">${escapeHtml(participantStepEyebrow(component.id))}</p>
+          <h2>${escapeHtml(participantComponentLabel(component.id, component.label))}</h2>
         </div>
       </div>
-      <p class="muted">Review the authored story in the spatial editor. It composes the current saved StoryVR checkpoints into the reader experience that will be compiled.</p>
-      ${ready ? "" : `<p class="blocked-note">Save Interaction Control before reviewing the final authored story.</p>`}
-      ${checkpointIsCurrent(component.id) ? `<p class="source-graph-status" data-checkpoint-current-message="${component.id}">Final story and tuning are saved and current. The spatial review is ready to compile.</p>` : ""}
+      <p class="story-stage-instruction">${escapeHtml(storyStageInstruction(state.data, component.id))}</p>
+      ${ready ? "" : `<p class="blocked-note">Finish Reader actions before reviewing the story.</p>`}
+      ${checkpointIsCurrent(component.id) ? `<p class="source-graph-status" data-checkpoint-current-message="${component.id}">The review is complete. The reader can now be built.</p>` : ""}
       <div class="final-review-workbench" data-final-review-landing>
         ${renderFinalReviewStoryCanvas(beats, index, sceneContext)}
         ${renderFinalReviewSpatialEditor(beat, index, beats, sceneContext)}
       </div>
       <div class="editor-strip">
-        <label for="author-edits">Final tuning prompt</label>
-        <textarea id="author-edits" data-edit-notes placeholder="Describe final reader-story adjustments before saving.">${escapeHtml(tuningPrompt)}</textarea>
+        <label for="author-edits">Optional cleanup</label>
+        <textarea id="author-edits" data-edit-notes placeholder="Supported examples: hide ground circles; hide decorative particles.">${escapeHtml(tuningPrompt)}</textarea>
       </div>
       <div class="actions checkpoint-actions">
         ${renderCheckpointActions(component, decision, {
           canCommit: ready,
-          label: "Save final story",
+          label: "Finish review",
         })}
       </div>
     </section>
@@ -10350,9 +11036,9 @@ function renderFinalReviewSpatialEditor(beat, index, beats, sceneContext) {
     <section class="topology-diagram-card topology-3d-card final-review-preview-card" data-final-review-spatial-editor>
       <div class="visual-card-head">
         <div>
-          <p class="eyebrow">Final authored story</p>
-          <h3>Spatial editor</h3>
-          <p class="muted">Canonical composed reader experience from the current saved checkpoints</p>
+          <p class="eyebrow">Reader preview</p>
+          <h3>Check this scene</h3>
+          <p class="muted">This is how the saved story will look to readers.</p>
         </div>
         <span class="topology-kind-pill final-review" data-final-review-region-label>${escapeHtml(region.label)}</span>
       </div>
@@ -10373,7 +11059,16 @@ function renderFinalReviewSpatialEditor(beat, index, beats, sceneContext) {
       <div class="topology-viewer-shell final-review-viewer-shell" data-final-review-viewer="${escapeHtml(spatialSceneRequestKey(sceneContext) || beat?.id || "none")}" tabindex="0" role="application" aria-label="Final StoryVR reader preview with the text panel attached to the reader's left hand">
         <div class="topology-viewer-status">Loading final spatial editor...</div>
       </div>
-      <p class="topology-viewer-hint">Drag the panel text or use the mouse wheel to scroll · Drag the panel title or Aa control to reposition it · In VR, hold Trigger and move either hand vertically to scroll; hold Grip to reposition · Drag the reader hand to reposition it · <span data-final-review-view-rotation-hint>${escapeHtml(finalReviewViewRotationHint(viewRotationMode))}</span> · Click the scene, then use WASD to move.</p>
+      <details class="compact-help final-review-preview-help">
+        <summary>Preview controls</summary>
+        <ul>
+          <li>Drag the panel text or use the mouse wheel to scroll.</li>
+          <li>Drag the panel title or Aa control to reposition it.</li>
+          <li>Drag the reader hand to reposition it.</li>
+          <li><span data-final-review-view-rotation-hint>${escapeHtml(finalReviewViewRotationHint(viewRotationMode))}</span></li>
+          <li>Use WASD to move. In VR, Trigger scrolls text and Grip moves the panel.</li>
+        </ul>
+      </details>
     </section>
   `;
 }
@@ -10425,20 +11120,67 @@ function renderEmptyOptions(component) {
 function renderPreviewQa() {
   const allCurrent = checkpointComponents().every((component) => checkpointIsCurrent(component.id) && !checkpointHasLocalDraft(component.id));
   const canCompile = allCurrent && !state.graphDirty;
+  const blocking = canCompile ? null : compileBlockingGuidance();
   return `
     <section class="panel">
       <div class="panel-head">
         <div>
-          <p class="eyebrow">Compiler</p>
-          <h2>Preview + QA</h2>
+          <p class="eyebrow">Reader output</p>
+          <h2>Build reader</h2>
         </div>
-        <button class="primary" data-action="compile" ${canCompile && !state.busy ? "" : "disabled"}>Compile + optimize + build reader</button>
+        <button class="primary" data-action="compile" ${canCompile && !state.busy ? "" : "disabled"}>Build reader</button>
       </div>
-      <p>Inspect comfort warnings, provenance, and unresolved assumptions, then compile the payload, prepare the reader source, apply a bounded performance profile, and rebuild the production reader in one click.</p>
-      ${state.graphDirty ? `<p class="blocked-note">Save Source Graph edits before compiling. The compiler reads the saved graph file.</p>` : ""}
-      ${renderDiagnostics()}
-      ${renderCompilerHandoff()}
+      <p>Build the reader after every story step is complete.</p>
+      ${blocking ? renderCompileBlockingNotice(blocking) : ""}
+      ${state.output?.error ? renderStageErrorNotice("transition-pacing") : ""}
+      <details class="technical-details">
+        <summary>Build details for the facilitator</summary>
+        ${renderDiagnostics()}
+        ${renderCompilerHandoff()}
+      </details>
     </section>
+  `;
+}
+
+function compileBlockingGuidance() {
+  if (state.graphDirty) {
+    return {
+      componentId: "source-graph",
+      label: participantComponentLabel("source-graph"),
+      short: `Finish ${participantComponentLabel("source-graph")} before building the reader`,
+      instruction: `Go to ${participantComponentLabel("source-graph")} and select "${checkpointSaveActionLabel("source-graph")}".`,
+    };
+  }
+  const component = checkpointComponents().find((candidate) => (
+    !checkpointIsCurrent(candidate.id) || checkpointHasLocalDraft(candidate.id)
+  ));
+  if (!component) {
+    return {
+      componentId: "transition-pacing",
+      label: participantComponentLabel("transition-pacing"),
+      short: `Finish ${participantComponentLabel("transition-pacing")} before building the reader`,
+      instruction: `Go to ${participantComponentLabel("transition-pacing")} and select "${checkpointSaveActionLabel("transition-pacing")}".`,
+    };
+  }
+  const action = checkpointSaveActionLabel(component.id);
+  const label = participantComponentLabel(component.id, component.label);
+  return {
+    componentId: component.id,
+    label,
+    short: `Finish ${label} before building the reader`,
+    instruction: `Go to ${label}, review what needs attention, then select "${action}".`,
+  };
+}
+
+function renderCompileBlockingNotice(blocking) {
+  return `
+    <div class="blocking-control-notice" role="alert" data-compile-blocked>
+      <div>
+        <strong>${escapeHtml(blocking.short)}</strong>
+        <p>${escapeHtml(blocking.instruction)}</p>
+      </div>
+      <button type="button" data-select-component="${escapeHtml(blocking.componentId)}">Open ${escapeHtml(blocking.label)}</button>
+    </div>
   `;
 }
 
@@ -11368,6 +12110,35 @@ function bindInteractionOptionEditorEvents() {
       });
     });
   }
+  for (const checkbox of root.querySelectorAll("[data-interaction-direct-trigger-component]")) {
+    checkbox.addEventListener("change", () => {
+      if (!root.querySelector("[data-interaction-direct-trigger-component]:checked")) {
+        checkbox.checked = true;
+        state.output = { error: "Choose at least one transform component for the completion trigger." };
+        renderPreservingScroll();
+        return;
+      }
+      const component = checkbox.dataset.interactionDirectTriggerComponent;
+      commitInteractionEditorMutation("Edit manipulation trigger components", (configuration) => {
+        const target = configuration.targets.find((candidate) => (
+          interactionDirectTargetKey(candidate) === state.interactionSelectedDirectTargetKey
+        ));
+        if (!target || !["position", "rotation", "scale"].includes(component)) return;
+        const components = new Set(interactionDirectTriggerComponents(target));
+        if (checkbox.checked) components.add(component);
+        else components.delete(component);
+        target.triggerComponents = ["position", "rotation", "scale"].filter((item) => components.has(item));
+        if (!checkbox.checked) {
+          const initial = normalizeSpatialTransform(target.initialTransform);
+          if (component === "position") target.destinationTransform.position = cloneJson(initial.position);
+          else if (component === "rotation") target.destinationTransform.quaternion = cloneJson(initial.quaternion);
+          else if (component === "scale") target.destinationTransform.scale = cloneJson(initial.scale);
+        }
+        target.suggested = false;
+        target.source = "author";
+      });
+    });
+  }
   for (const input of root.querySelectorAll("[data-interaction-direct-tolerance]")) {
     input.addEventListener("change", () => {
       commitInteractionEditorMutation("Edit direct-manipulation tolerance", (configuration) => {
@@ -11404,6 +12175,7 @@ function bindInteractionOptionEditorEvents() {
           oneHandGrabbable: sceneTarget.oneHandGrabbable,
           twoHandScalable: sceneTarget.twoHandScalable,
           ...(sceneTarget.elasticDragging ? { elasticDragging: true } : {}),
+          triggerComponents: interactionDirectAvailableTriggerComponents(sceneTarget),
           initialTransform: cloneJson(sceneTarget.sourceTransform),
           constraints: cloneJson(sceneTarget.constraints || {}),
           destinationTransform: cloneJson(sceneTarget.sourceTransform),
@@ -11427,12 +12199,22 @@ function bindInteractionOptionEditorEvents() {
     commitInteractionEditorMutation("Use mapped transition transforms", (configuration) => {
       const keys = new Set(suggestions.map((target) => interactionDirectTargetKey(target)));
       const entitiesWithPartSuggestions = new Set(suggestions.filter((target) => target.nodePath || target.nodeIndex != null).map((target) => target.entityId));
+      const existingTargets = new Map(configuration.targets.map((target) => [interactionDirectTargetKey(target), target]));
       configuration.targets = [
         ...configuration.targets.filter((target) => (
           !keys.has(interactionDirectTargetKey(target))
           && !(entitiesWithPartSuggestions.has(target.entityId) && !target.nodePath && target.nodeIndex == null)
         )),
-        ...suggestions.map((target) => ({ ...target, destinationAuthored: true })),
+        ...suggestions.map((target) => {
+          const existing = existingTargets.get(interactionDirectTargetKey(target));
+          return {
+            ...target,
+            triggerComponents: existing
+              ? interactionDirectTriggerComponents(existing)
+              : interactionDirectTriggerComponents(target),
+            destinationAuthored: true,
+          };
+        }),
       ];
       state.interactionSelectedDirectTargetKey = interactionDirectTargetKey(suggestions[0]) || state.interactionSelectedDirectTargetKey;
     });
@@ -12807,9 +13589,9 @@ function bindEvents() {
   const graphEditor = document.querySelector("[data-graph-editor]");
   if (graphEditor) graphEditor.addEventListener("input", () => {
     state.graphDraft = graphEditor.value;
-    markGraphDirty();
+    markGraphDirty({ storyFlowChanged: true });
   });
-  bindCoalescedAuthorTextHistory(graphEditor, "Edit Source Graph JSON", "source-graph");
+  bindCoalescedAuthorTextHistory(graphEditor, "Edit facilitator project data", "source-graph");
 
   const advancedToggle = document.querySelector("[data-toggle-advanced-json]");
   if (advancedToggle) {
@@ -12838,7 +13620,7 @@ function bindEvents() {
     fullTextEditor.addEventListener("input", () => {
       updateSourceGraphFullText(fullTextEditor.value);
     });
-    bindCoalescedAuthorTextHistory(fullTextEditor, "Edit Source Graph text", "source-graph");
+    bindCoalescedAuthorTextHistory(fullTextEditor, "Edit story card text", "source-graph");
   }
 
   const fullTitleEditor = document.querySelector("[data-source-graph-full-title-editor]");
@@ -12846,7 +13628,7 @@ function bindEvents() {
     fullTitleEditor.addEventListener("input", () => {
       updateSourceGraphFullTitle(fullTitleEditor.value);
     });
-    bindCoalescedAuthorTextHistory(fullTitleEditor, "Edit Source Graph title", "source-graph");
+    bindCoalescedAuthorTextHistory(fullTitleEditor, "Edit story card title", "source-graph");
   }
 
   for (const beatButton of document.querySelectorAll("[data-select-beat]")) {
@@ -13589,6 +14371,13 @@ function bindSourceGraphCanvasEvents() {
   const documentDragSignal = sourceGraphDocumentDragController.signal;
   bindSourceGraphLinkEvents(documentDragSignal);
   bindSourceGraphProgressNavigation(documentDragSignal);
+  for (const button of document.querySelectorAll("[data-story-canvas-grouping-retry]")) {
+    button.addEventListener("click", () => {
+      state.storyCanvasGroupingUi.attemptedSignature = "";
+      state.storyCanvasGroupingUi.error = "";
+      requestStoryCanvasGrouping();
+    });
+  }
 
   for (const button of document.querySelectorAll("[data-source-graph-asset-filter]")) {
     button.addEventListener("click", () => {
@@ -13876,7 +14665,7 @@ function bindSourceGraphCanvasEvents() {
     clearSourceGraphCardDragVisualState();
     if (!droppedOutsideCanvas) return;
     if (removeSourceGraphBeat(beatId)) {
-      state.sourceGraphDragAnnouncement = `Removed ${beat?.title || beatId}. Save graph edits to persist the change.`;
+      state.sourceGraphDragAnnouncement = `Removed ${beat?.title || beatId}. Save story order to keep the change.`;
     } else {
       state.sourceGraphDragAnnouncement = "Keep at least one beat in the story.";
     }
@@ -15730,7 +16519,7 @@ async function handleAction(action, options = {}) {
       else state.graphDirty = wasDirty;
       state.output = {
         animationProbeApplied: linking.promotedLinkCount
-          ? `${linking.promotedLinkCount} probe links applied. Save graph edits to persist them.`
+          ? `${linking.promotedLinkCount} motion links applied. Save story order to keep them.`
           : "No matching animation probe links were found.",
       };
       return;
@@ -15805,7 +16594,7 @@ async function handleAction(action, options = {}) {
       if (component.id === "interaction-control") {
         const context = interactionBoundaryContext(selectedInteractionControlBase());
         if (!interactionBoundaryContextIsComplete(context)) {
-          state.output = { error: "Assign an interaction to every mapped transition before saving Interaction Control." };
+          state.output = { error: "Choose a reader action for every highlighted scene change before finishing this step." };
           render();
           return;
         }
@@ -15819,7 +16608,7 @@ async function handleAction(action, options = {}) {
       }
       const selected = selectedOptionIdForComponent(component);
       if (!selected && component.id !== ATTENTION_GUIDANCE_COMPONENT_ID) {
-        state.output = { error: `${component.label} has no valid selected option. Generate options before saving.` };
+        state.output = { error: `Choose an option in ${participantComponentLabel(component.id, component.label)} before finishing this step.` };
         return;
       }
       if (selected) payload.optionId = selected;
@@ -15831,7 +16620,7 @@ async function handleAction(action, options = {}) {
     }
     if (action === "compile") {
       if (state.graphDirty) {
-        state.output = { error: "Save Source Graph edits before compiling. The compiler reads the saved graph file." };
+        state.output = { error: "Finish Story order before building the reader." };
         render();
         return;
       }
@@ -15844,9 +16633,9 @@ async function handleAction(action, options = {}) {
 function historySpecForAction(action, component) {
   const labelByAction = {
     "save-source-motion-links": `Save ${component.label} motion links`,
-    "save-graph": "Save Source Graph",
+    "save-graph": "Save story order",
     "apply-animation-probe": "Apply animation probe links",
-    "regenerate-graph": "Regenerate Source Graph",
+    "regenerate-graph": "Refresh story order",
     generate: `Generate ${component.label} options`,
     "save-checkpoint": `Save ${component.label}`,
   };
@@ -15866,6 +16655,7 @@ async function refresh(clearOutput = false) {
   const selectedBeatIds = state.selectedBeatIds;
   const beatSelectionAnchorId = state.beatSelectionAnchorId;
   state.data = await api.get("/api/state");
+  resetStoryCanvasGroupingUiForSavedGraph();
   syncEnvironmentUiFromState({ resetDraft: true });
   await refreshCodexStatus();
   initializeSourceMotionLinkingDraft(true);
@@ -15900,6 +16690,8 @@ function connectCodexLoginEvents() {
     state.loginState = JSON.parse(event.data);
     if (!state.loginState.running && state.loginState.startedAt) {
       await refreshCodexStatus();
+      state.storyCanvasGroupingUi.attemptedSignature = "";
+      state.storyCanvasGroupingUi.error = "";
       state.loginEvents?.close();
       state.loginEvents = null;
     }
@@ -15940,6 +16732,7 @@ async function readResponse(response) {
   const data = text ? JSON.parse(text) : {};
   if (!response.ok) {
     const error = new Error(data.error || `HTTP ${response.status}`);
+    error.statusCode = response.status;
     error.diagnostics = data.diagnostics || [];
     throw error;
   }
@@ -21515,11 +22308,21 @@ function finalReviewObjectWorldTransform(root) {
 function finalReviewDirectDestinationWorldTransform(root, target) {
   if (!root || !target?.destinationTransform) return null;
   const transform = normalizeSpatialTransform(target.destinationTransform);
-  const position = new THREE.Vector3().fromArray(transform.position);
-  const quaternion = new THREE.Quaternion().fromArray(transform.quaternion).normalize();
-  const scale = new THREE.Vector3().fromArray(transform.scale);
+  const local = target.coordinateSpace === "local";
+  const current = local
+    ? { position: root.position.clone(), quaternion: root.quaternion.clone(), scale: root.scale.clone() }
+    : finalReviewObjectWorldTransform(root);
+  const position = interactionDirectUsesTriggerComponent(target, "position")
+    ? new THREE.Vector3().fromArray(transform.position)
+    : current.position.clone();
+  const quaternion = interactionDirectUsesTriggerComponent(target, "rotation")
+    ? new THREE.Quaternion().fromArray(transform.quaternion).normalize()
+    : current.quaternion.clone();
+  const scale = interactionDirectUsesTriggerComponent(target, "scale")
+    ? new THREE.Vector3().fromArray(transform.scale)
+    : current.scale.clone();
   const matrix = new THREE.Matrix4().compose(position, quaternion, scale);
-  if (target.coordinateSpace === "local" && root.parent) {
+  if (local && root.parent) {
     root.parent.updateWorldMatrix(true, false);
     matrix.premultiply(root.parent.matrixWorld);
   }
@@ -31980,20 +32783,20 @@ function interBeatBoundaryStatus(proposal, context) {
   } = playback;
   if (manualVariantSwitch) {
     return canScrub
-      ? { className: "mapped", label: "Mapped transition" }
-      : { className: "no-dynamics", label: "No mapped transition" };
+      ? { className: "mapped", label: "Saved change" }
+      : { className: "no-dynamics", label: "No saved change" };
   }
-  if (!boundary.fromBeatId) return { className: "static", label: "Opening state" };
-  if (sourcePartPlaybackMode === "frozen") return { className: "static", label: "Held state" };
+  if (!boundary.fromBeatId) return { className: "static", label: "Story starts here" };
+  if (sourcePartPlaybackMode === "frozen") return { className: "static", label: "Previous scene stays visible" };
   if (!routeScopedProgression && sourcePlaybackSummary.contractAvailable) {
-    if (sourcePlaybackSummary.windowState.mode === "scrub") return { className: "mapped", label: "Mapped transition" };
-    if (sourcePlaybackSummary.windowState.mode === "initialize") return { className: "static", label: "Initial state" };
-    if (sourcePlaybackSummary.windowState.mode === "hold") return { className: "static", label: "Held state" };
-    return { className: "no-dynamics", label: "No mapped transition" };
+    if (sourcePlaybackSummary.windowState.mode === "scrub") return { className: "mapped", label: "Saved change" };
+    if (sourcePlaybackSummary.windowState.mode === "initialize") return { className: "static", label: "Story starts here" };
+    if (sourcePlaybackSummary.windowState.mode === "hold") return { className: "static", label: "Previous scene stays visible" };
+    return { className: "no-dynamics", label: "No saved change" };
   }
   return mappedTracks.length
-    ? { className: "mapped", label: `${mappedTracks.length} mapped motion${mappedTracks.length === 1 ? "" : "s"}` }
-    : { className: "no-dynamics", label: "No mapped transition" };
+    ? { className: "mapped", label: "Saved change" }
+    : { className: "no-dynamics", label: "No saved change" };
 }
 
 function interBeatSpatialSceneContextsByAssetId(boundary) {
@@ -32150,10 +32953,10 @@ function spatialSceneLinkedAssetIds(scene, beat, option = null, contextInput = n
 }
 
 function spatialSceneCardStatus(scene) {
-  if (!scene) return { className: "needs-review", label: "needs review" };
+  if (!scene) return { className: "needs-review", label: "Review" };
   const entities = spatialRelationEntities(scene).filter((entity) => spatialEntityType(entity) !== "text-panel");
-  if (entities.some((entity) => entity.manual)) return { className: "edited", label: "edited" };
-  return { className: "inferred", label: "inferred" };
+  if (entities.some((entity) => entity.manual)) return { className: "edited", label: "Changed" };
+  return { className: "inferred", label: "Suggested" };
 }
 
 function spatialSceneTopologyLabel(scene) {
@@ -34355,11 +35158,17 @@ function normalizeInteractionConfiguration(value, kind, context = {}) {
       if (!sceneTarget) return [];
       const sourceTransform = normalizeSpatialTransform(sceneTarget.sourceTransform);
       const destinationTransform = normalizeSpatialTransform(target.destinationTransform, sourceTransform);
-      if (!sceneTarget.oneHandGrabbable) {
+      const triggerComponents = interactionDirectTriggerComponents({
+        ...sceneTarget,
+        triggerComponents: target.triggerComponents,
+      });
+      if (!triggerComponents.includes("position")) {
         destinationTransform.position = cloneJson(sourceTransform.position);
+      }
+      if (!triggerComponents.includes("rotation")) {
         destinationTransform.quaternion = cloneJson(sourceTransform.quaternion);
       }
-      if (!sceneTarget.twoHandScalable) destinationTransform.scale = cloneJson(sourceTransform.scale);
+      if (!triggerComponents.includes("scale")) destinationTransform.scale = cloneJson(sourceTransform.scale);
       return {
         entityId: sceneTarget.entityId,
         assetId: sceneTarget.assetId,
@@ -34369,6 +35178,7 @@ function normalizeInteractionConfiguration(value, kind, context = {}) {
         oneHandGrabbable: sceneTarget.oneHandGrabbable,
         twoHandScalable: sceneTarget.twoHandScalable,
         ...(sceneTarget.elasticDragging ? { elasticDragging: true } : {}),
+        triggerComponents,
         initialTransform: sourceTransform,
         constraints: cloneJson(sceneTarget.constraints || {}),
         destinationTransform,
@@ -35219,6 +36029,7 @@ function interactionMappedTransformSuggestions(editorContext) {
         oneHandGrabbable: sourceTarget.oneHandGrabbable,
         twoHandScalable: sourceTarget.twoHandScalable,
         ...(sourceTarget.elasticDragging ? { elasticDragging: true } : {}),
+        triggerComponents: interactionDirectAvailableTriggerComponents(sourceTarget),
         initialTransform: cloneJson(sourceTarget.sourceTransform),
         constraints: cloneJson(sourceTarget.constraints || {}),
         destinationTransform,
@@ -35271,8 +36082,12 @@ function renderInteractionTraversalConstraint(traversal) {
   const count = stations.length;
   return `
     <div class="interaction-traversal-constraint" role="note">
-      <strong>Spatial route available</strong>
-      <span>The saved layout${count ? ` contains ${count} destination${count === 1 ? "" : "s"}` : ""}. You may assign Reader locomotion to any boundary; the hand-attached text panel follows the reader when you do.</span>
+      <strong>Reader travel is available</strong>
+      <span>${count ? `${count} reader destination${count === 1 ? "" : "s"} are saved. ` : ""}You may use Walk or teleport between scenes.</span>
+      <details class="facilitator-details interaction-route-diagnostics">
+        <summary>Route details for facilitator</summary>
+        <p>Spatial route available. You may assign Reader locomotion to any boundary.</p>
+      </details>
     </div>
   `;
 }
@@ -35752,7 +36567,7 @@ function inferInteractionControlKind(proposal) {
 }
 
 function interactionProposalDisplayLabel(proposal) {
-  return interactionControlKindLabel(inferInteractionControlKind(proposal));
+  return interactionControlKindDisplayLabel(inferInteractionControlKind(proposal));
 }
 
 function interactionControlKindLabel(kind) {
@@ -35763,22 +36578,30 @@ function interactionControlKindLabel(kind) {
   return "Controller button press";
 }
 
+function interactionControlKindDisplayLabel(kind) {
+  if (kind === "ui-button-press") return "Press a story button";
+  if (kind === "direct") return "Move an object";
+  if (kind === "embodied-control") return "Walk or teleport";
+  if (kind === "branching-control") return "Choose a path";
+  return "Press a controller button";
+}
+
 function interactionControlOptionSummary(kind) {
-  if (kind === "ui-button-press") return "Select a button on the story text panel.";
-  if (kind === "direct") return "Manipulate a real visual target.";
-  if (kind === "embodied-control") return "Travel to the next reading station.";
-  if (kind === "branching-control") return "Choose among authored successors.";
-  return "Press the assigned controller control to advance.";
+  if (kind === "ui-button-press") return "Select a button beside the story text.";
+  if (kind === "direct") return "Grab or resize a story object.";
+  if (kind === "embodied-control") return "Move to the next reading place.";
+  if (kind === "branching-control") return "Choose what to see next.";
+  return "Press the assigned button to continue.";
 }
 
 function interactionControlKindHelp(kind, locomotionMode = null) {
-  if (kind === "ui-button-press") return "The reader selects an authored button placed directly on the final story text panel.";
-  if (kind === "direct") return "The reader advances meaning by grabbing, moving, or inspecting the active object.";
+  if (kind === "ui-button-press") return "Readers select a button beside the story text.";
+  if (kind === "direct") return "Readers continue by grabbing, moving, or inspecting an object.";
   if (kind === "embodied-control") return normalizeInteractionLocomotionMode(locomotionMode || interactionLocomotionMode()) === "virtual-teleport"
-    ? "The reader teleports between the ordered reading stations defined by Spatial Relations."
-    : "The reader physically walks between the ordered reading zones defined by Spatial Relations.";
-  if (kind === "branching-control") return "The reader chooses between alternate paths while staying inside the same story state machine.";
-  return "The reader presses an assigned face, Menu, or thumbstick control to advance. The 3D scene itself remains unchanged.";
+    ? "Readers teleport to the next reading place."
+    : "Readers walk to the next reading place.";
+  if (kind === "branching-control") return "Readers choose which story path to follow.";
+  return "Readers press an assigned controller button to continue.";
 }
 
 function readerViewpointKindLabel(kind) {

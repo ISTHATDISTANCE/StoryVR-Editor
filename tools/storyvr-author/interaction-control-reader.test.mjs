@@ -59,6 +59,8 @@ const normalizerFunctions = [
   "normalizeRuntimeControllerControl",
   "normalizeRuntimeControllerAction",
   "normalizeRuntimeTransform",
+  "runtimeInteractionReachableChannels",
+  "runtimeDirectTriggerComponents",
   "normalizeRuntimeInteractionConfiguration",
   "runtimeProgressionContext",
   "runtimeProgressionContextForRecord",
@@ -335,6 +337,8 @@ test("reader normalizes policy-specific interaction configurations without dropp
     "normalizeRuntimeControllerControl",
     "normalizeRuntimeControllerAction",
     "normalizeRuntimeTransform",
+    "runtimeInteractionReachableChannels",
+    "runtimeDirectTriggerComponents",
     "normalizeRuntimeInteractionConfiguration",
   ], "normalizeRuntimeInteractionConfiguration", interactionDefaultsPrelude);
 
@@ -384,6 +388,9 @@ test("reader normalizes policy-specific interaction configurations without dropp
     targets: [{
       entityId: "glb:shark",
       assetId: "shark.glb",
+      oneHandGrabbable: true,
+      twoHandScalable: true,
+      triggerComponents: ["scale"],
       destinationTransform: { position: [1, 0, 0], quaternion: [0, 0, 0, 1], scale: [1.2, 1.2, 1.2] },
       suggested: true,
       source: "transform-only-animation",
@@ -393,6 +400,7 @@ test("reader normalizes policy-specific interaction configurations without dropp
   assert.equal(direct.targets[0].entityId, "glb:shark");
   assert.equal(direct.targets[0].suggested, true);
   assert.equal(direct.targets[0].source, "transform-only-animation");
+  assert.deepEqual(direct.targets[0].triggerComponents, ["scale"]);
   assert.equal(direct.completion, "all");
 
   const nonOverlapping = normalize({
@@ -1433,6 +1441,8 @@ test("reader clamps local position, XYZ rotation, and scale without disturbing a
 test("reader uses only capability-reachable channels for Direct completion", () => {
   const targetMatches = evaluateFunctionsWithThree([
     "runtimeInteractionReachableChannels",
+    "runtimeDirectTriggerComponents",
+    "runtimeDirectTriggerChannels",
     "runtimeDirectTransformError",
     "runtimeDirectTargetMatches",
   ], "runtimeDirectTargetMatches", interactionDefaultsPrelude);
@@ -1457,13 +1467,29 @@ test("reader uses only capability-reachable channels for Direct completion", () 
   }, {
     target: { oneHandGrabbable: true, twoHandScalable: false },
   }), true, "a grabbable-only target ignores unreachable scale");
+  root.position.set(8, 0, 0);
+  root.scale.set(2, 2, 2);
+  assert.equal(targetMatches(root, {
+    ...destination,
+    triggerComponents: ["scale"],
+  }, {
+    target: { oneHandGrabbable: true, twoHandScalable: true },
+  }), true, "an explicit scale-only trigger ignores reachable but unselected position and rotation channels");
+  assert.equal(targetMatches(root, {
+    ...destination,
+    triggerComponents: ["position", "scale"],
+  }, {
+    target: { oneHandGrabbable: true, twoHandScalable: true },
+  }), false, "a two-component trigger requires both selected components");
 });
 
-test("reader keeps beat manipulation independent of transition policy and updates two-hand scale every frame", () => {
+test("reader keeps beat manipulation independent of transition policy and checks completion every manipulation frame", () => {
   const configure = functionSource("configureRuntimeDirectManipulation");
   const hit = functionSource("xrDirectManipulationHit");
   const begin = functionSource("beginXrDirectManipulation");
   const beginScale = functionSource("beginXrDirectManipulationScale");
+  const update = functionSource("updateRuntimeDirectManipulation");
+  const endScale = functionSource("endXrDirectManipulationScale");
   const disconnect = functionSource("handleXrTextPanelControllerDisconnected");
   const deactivateController = functionSource("deactivateXrControllerHandEntry");
   const render = functionSource("render");
@@ -1479,6 +1505,12 @@ test("reader keeps beat manipulation independent of transition policy and update
     "a scalable-only first grip arms without moving the object");
   assert.match(beginScale, /hit\?\.root !== grab\.root/);
   assert.match(beginScale, /twoHandScalable !== true/);
+  assert.match(update, /applyRuntimeInteractionLogicalTransform[\s\S]*evaluateRuntimeDirectManipulationCompletion\(\)/,
+    "two-hand scaling checks the destination while both Grips remain held");
+  assert.match(update, /clampRuntimeInteractionTarget[\s\S]*evaluateRuntimeDirectManipulationCompletion\(\)/,
+    "one-hand movement checks the destination while Grip remains held");
+  assert.match(endScale, /directManipulationAdvancePending \|\| !xrDirectManipulationGrab/,
+    "a completion detected on the release event exits before transferring a cleared grab");
   assert.match(disconnect, /reconcileXrControllerHand\(handedness\)/);
   assert.match(deactivateController, /xrDirectManipulationEntryIsActive\(entry\)[\s\S]*cancelXrDirectManipulation\(\)/);
   assert.ok(render.indexOf("updateSourceAnimation(delta, frameTime)") < render.indexOf("updateRuntimeDirectManipulation()"),
@@ -1486,6 +1518,7 @@ test("reader keeps beat manipulation independent of transition policy and update
 
   const updateScale = new Function("THREE", `
     let applied = null;
+    let completionEvaluations = 0;
     const primary = { position: new THREE.Vector3(0, 0, 0) };
     const secondary = { position: new THREE.Vector3(2, 0, 0) };
     const targetEntry = { target: { constraints: {
@@ -1507,11 +1540,14 @@ test("reader keeps beat manipulation independent of transition policy and update
     ${functionSource("runtimeBimanualScaleRatio")}
     ${functionSource("clampRuntimeInteractionLogicalTransform")}
     function applyRuntimeInteractionLogicalTransform(entry, transform) { applied = transform; return true; }
+    function evaluateRuntimeDirectManipulationCompletion() { completionEvaluations += 1; return true; }
     ${functionSource("updateRuntimeDirectManipulation")}
     updateRuntimeDirectManipulation();
-    return applied.scale.toArray();
+    return { scale: applied.scale.toArray(), completionEvaluations };
   `)(THREE);
-  assert.deepEqual(updateScale, [2, 3, 2], "controller distance scales uniformly before authored range clamping");
+  assert.deepEqual(updateScale.scale, [2, 3, 2], "controller distance scales uniformly before authored range clamping");
+  assert.equal(updateScale.completionEvaluations, 1,
+    "the held manipulation evaluates the configured trigger range without waiting for Grip release");
 });
 
 test("elastic dragging preserves Grip-held inertia on the controller-ray axis", () => {
@@ -1708,6 +1744,8 @@ test("reader accepts configured locomotion tolerances and whole-GLB or safe name
 
   const targetMatches = evaluateFunctionsWithThree([
     "runtimeInteractionReachableChannels",
+    "runtimeDirectTriggerComponents",
+    "runtimeDirectTriggerChannels",
     "runtimeDirectTransformError",
     "runtimeDirectTargetMatches",
   ], "runtimeDirectTargetMatches", interactionDefaultsPrelude);
@@ -1758,6 +1796,8 @@ test("reader demonstrates Direct manipulation destinations with replaying ghost 
     "runtimeInteractionRootMatrixRelativeTo",
     "runtimeInteractionLogicalTransform",
     "runtimeInteractionReachableChannels",
+    "runtimeDirectTriggerComponents",
+    "runtimeDirectTriggerChannels",
     "runtimeObjectWorldTransform",
     "runtimeDirectDestinationWorldTransform",
   ], "runtimeDirectDestinationWorldTransform");
@@ -1871,7 +1911,8 @@ test("reader switches variant text and assets within the active beat", () => {
   assert.match(controls, /previousDisabled \? "" : `<button type="button" data-variant-direction="-1"/);
   assert.match(controls, /nextDisabled \? "" : `<button type="button" data-variant-direction="1"/);
   assert.match(controls, /ui-button-press/);
-  assert.match(controls, /UI button press/);
+  assert.match(controls, /Choose with the buttons below/);
+  assert.doesNotMatch(controls, />UI button press</);
   assert.match(controls, /interactionControl\?\.surface !== "text-panel"/);
   assert.match(select, /setBeat\(activeIndex\)/);
   assert.match(select, /runtimeVariantUiButtonAllowed/);

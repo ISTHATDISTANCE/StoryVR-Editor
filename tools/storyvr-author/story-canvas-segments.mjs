@@ -6,6 +6,10 @@ function clean(value) {
   return String(value ?? "").trim();
 }
 
+function cleanNarrativeText(value) {
+  return clean(value).replace(/\s+/g, " ");
+}
+
 function authoredBeatIds(beat) {
   const ids = (Array.isArray(beat?.atomicBeatIds) ? beat.atomicBeatIds : [])
     .map(clean)
@@ -28,6 +32,80 @@ export function storyCanvasSegmentGraphSignature(graph) {
     .digest("hex");
 }
 
+function storyCanvasGenerationEndpoint(value, fallbackBeatId = "") {
+  const endpoint = value && typeof value === "object" ? value : {};
+  const beatId = clean(endpoint.beatId || fallbackBeatId);
+  if (!beatId) return null;
+  const cardKind = clean(endpoint.cardKind) === "variant" ? "variant" : "beat";
+  return {
+    cardKind,
+    beatId,
+    ...(cardKind === "variant" ? {
+      variantGroupId: clean(endpoint.variantGroupId),
+      variantOptionId: clean(endpoint.variantOptionId),
+    } : {}),
+  };
+}
+
+function storyCanvasGenerationEdge(edge) {
+  const from = storyCanvasGenerationEndpoint(edge?.from, edge?.fromBeatId);
+  const to = storyCanvasGenerationEndpoint(edge?.to, edge?.toBeatId);
+  return from && to ? { from, to } : null;
+}
+
+export function storyCanvasSegmentGenerationStructure(graph) {
+  const beats = (Array.isArray(graph?.beats) ? graph.beats : [])
+    .filter((beat) => clean(beat?.id))
+    .map((beat) => ({
+      id: clean(beat.id),
+      atomicBeatIds: authoredBeatIds(beat),
+      kind: clean(beat.kind),
+      title: cleanNarrativeText(beat.title),
+      section: cleanNarrativeText(beat.section),
+      sectionHeading: cleanNarrativeText(beat.sectionHeading),
+      text: cleanNarrativeText(beat.text),
+    }));
+  const variantGroups = (Array.isArray(graph?.variantGroups) ? graph.variantGroups : [])
+    .filter((group) => clean(group?.id) && clean(group?.beatId))
+    .map((group) => ({
+      id: clean(group.id),
+      beatId: clean(group.beatId),
+      title: cleanNarrativeText(group.title),
+      defaultOptionId: clean(group.defaultOptionId),
+      options: (Array.isArray(group.options) ? group.options : [])
+        .filter((option) => clean(option?.id))
+        .map((option) => ({
+          id: clean(option.id),
+          label: cleanNarrativeText(option.label),
+          text: cleanNarrativeText(option.text),
+        })),
+    }));
+  const explicitEdges = Array.isArray(graph?.edges);
+  const edges = explicitEdges
+    ? graph.edges
+      .map(storyCanvasGenerationEdge)
+      .filter(Boolean)
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+    : [];
+  return {
+    story: {
+      slug: clean(graph?.story?.slug),
+      title: cleanNarrativeText(graph?.story?.title),
+    },
+    beats,
+    variantGroups,
+    flow: explicitEdges
+      ? { mode: "explicit", edges }
+      : { mode: "ordered-canvas" },
+  };
+}
+
+export function storyCanvasSegmentGenerationSignature(graph) {
+  return createHash("sha256")
+    .update(JSON.stringify(storyCanvasSegmentGenerationStructure(graph)))
+    .digest("hex");
+}
+
 export function normalizeStoryCanvasSegments(value, graph) {
   if (!value || typeof value !== "object") return null;
 
@@ -44,6 +122,10 @@ export function normalizeStoryCanvasSegments(value, graph) {
     errors.push(`schemaVersion must be ${STORY_CANVAS_SEGMENTS_SCHEMA_VERSION}.`);
   }
   if (!rawSegments.length) errors.push("At least one story canvas segment is required.");
+  if (beats.length > 1 && rawSegments.length < 2) {
+    errors.push("Stories with more than one beat require at least two story canvas segments.");
+  }
+  if (rawSegments.length > 7) errors.push("Story canvas progress supports at most seven semantic segments.");
 
   const segments = rawSegments.map((segment, segmentIndex) => {
     const id = clean(segment?.id);
@@ -56,9 +138,17 @@ export function normalizeStoryCanvasSegments(value, graph) {
       .filter((index) => Number.isInteger(index));
 
     if (!id) errors.push(`Segment ${segmentIndex + 1} is missing an id.`);
+    else if (id.length > 80) errors.push(`Segment ${segmentIndex + 1} id exceeds 80 characters.`);
+    else if (!/^[a-z0-9](?:[a-z0-9_-]{0,79})$/.test(id)) {
+      errors.push(`Segment ${segmentIndex + 1} id must be a lowercase stable identifier.`);
+    }
     else if (seenSegmentIds.has(id)) errors.push(`Segment id "${id}" is duplicated.`);
     else seenSegmentIds.add(id);
     if (!label) errors.push(`Segment ${id || segmentIndex + 1} is missing a label.`);
+    else if (label.length > 80) errors.push(`Segment ${id || segmentIndex + 1} label exceeds 80 characters.`);
+    else if (/[\u0000-\u001f\u007f]/.test(label)) {
+      errors.push(`Segment ${id || segmentIndex + 1} label contains unsupported control characters.`);
+    }
     if (!members.length) errors.push(`Segment ${id || segmentIndex + 1} has no beatIds.`);
 
     for (const beatId of members) {
@@ -108,6 +198,8 @@ export function normalizeStoryCanvasSegments(value, graph) {
   const configuredGraphSignature = clean(value.graphSignature);
   if (!configuredGraphSignature) errors.push("graphSignature is required.");
   const signatureMatches = configuredGraphSignature === currentGraphSignature;
+  const currentGenerationSignature = storyCanvasSegmentGenerationSignature(graph);
+  const configuredGenerationSignature = clean(value.generationSignature);
 
   return {
     schemaVersion: STORY_CANVAS_SEGMENTS_SCHEMA_VERSION,
@@ -115,6 +207,13 @@ export function normalizeStoryCanvasSegments(value, graph) {
     currentGraphSignature,
     currentGraphStructure,
     status: errors.length ? "invalid" : signatureMatches ? "current" : "needs-review",
+    generationSignature: configuredGenerationSignature,
+    currentGenerationSignature,
+    generationStatus: !configuredGenerationSignature
+      ? "missing"
+      : configuredGenerationSignature === currentGenerationSignature
+        ? "current"
+        : "needs-review",
     provenance: value.provenance && typeof value.provenance === "object"
       ? structuredClone(value.provenance)
       : {},

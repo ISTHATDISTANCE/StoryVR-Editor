@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>__STORY_TITLE__ - StoryVR Runtime</title>
+    <title>__STORY_TITLE__ - Interactive Story</title>
     <meta name="description" content="__STORY_DESCRIPTION__">
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="./src/styles.css">
@@ -19,9 +19,9 @@
   </head>
   <body data-story-slug="__STORY_SLUG__">
     <main class="runtime-shell">
-      <section id="stage" class="stage" aria-label="Compiled StoryVR scene"></section>
+      <section id="stage" class="stage" aria-label="Interactive StoryVR scene"></section>
 
-      <section class="reader-panel" aria-live="polite">
+      <section class="reader-panel" aria-labelledby="story-title">
         <button
           id="reader-panel-toggle"
           class="reader-panel-toggle"
@@ -30,23 +30,51 @@
           aria-label="Minimize text panel"
           title="Minimize text panel"
         >−</button>
-        <p class="kicker">Compiled StoryVR runtime</p>
-        <h1 id="story-title">Loading StoryVR</h1>
-        <div class="decision-row" id="decision-row"></div>
-        <p id="environment-info" class="environment-info" hidden></p>
-        <p class="beat-progress" id="beat-progress">Preparing scene</p>
-        <h2 id="beat-title">Loading</h2>
-        <p id="beat-text" class="beat-text"></p>
-        <div id="variant-controls" class="variant-controls" hidden></div>
+        <div class="reader-content">
+          <p class="kicker">Interactive story</p>
+          <h1 id="story-title">Loading story</h1>
+          <section
+            id="reader-startup-alert"
+            class="reader-startup-alert"
+            role="alert"
+            aria-labelledby="reader-startup-alert-title"
+            hidden
+          >
+            <strong id="reader-startup-alert-title">Story could not start</strong>
+            <p id="reader-startup-alert-message">The Reader could not finish starting.</p>
+            <p class="reader-startup-location">
+              <span>Available location</span>
+              <strong id="reader-startup-alert-location">Reader start</strong>
+              <code id="reader-startup-alert-file" hidden></code>
+            </p>
+            <p id="reader-startup-alert-recovery">Check the story files, then reload.</p>
+            <button id="reload-reader" type="button">Reload story</button>
+          </section>
+          <div class="decision-row" id="decision-row" hidden aria-hidden="true"></div>
+          <p id="environment-info" class="environment-info" hidden></p>
+          <p class="beat-progress" id="beat-progress" role="status" aria-live="polite">Preparing story</p>
+          <aside id="reader-guidance" class="reader-guidance" aria-labelledby="reader-guidance-title">
+            <strong id="reader-guidance-title">How to continue</strong>
+            <span id="reader-guidance-text">Use Previous and Next to move through the story.</span>
+          </aside>
+          <h2 id="beat-title" tabindex="-1">Loading</h2>
+          <p id="beat-text" class="beat-text"></p>
+          <div id="variant-controls" class="variant-controls" hidden></div>
+          <section id="story-complete" class="story-complete" aria-labelledby="story-complete-title" hidden>
+            <strong id="story-complete-title">Story complete</strong>
+            <span>You reached the end of this experience.</span>
+            <button id="restart-story" type="button">Restart story</button>
+          </section>
+        </div>
         <div class="reader-actions">
-          <button id="prev-beat" type="button">Previous</button>
+          <button id="prev-beat" type="button" aria-label="Go to the previous story part">Previous</button>
           <div id="xr-button-slot" class="xr-button-slot"></div>
-          <button id="next-beat" type="button">Next</button>
+          <button id="next-beat" type="button" aria-label="Go to the next story part">Next</button>
         </div>
       </section>
 
-      <nav id="beat-strip" class="beat-strip" aria-label="Story beats"></nav>
-      <div id="runtime-status" class="runtime-status">Loading compiled runtime...</div>
+      <nav id="beat-strip" class="beat-strip" aria-label="Choose a story part"></nav>
+      <div id="runtime-status" class="runtime-status" role="status" aria-live="polite">Loading story...</div>
     </main>
     <script type="module" src="./src/main.js"></script>
   </body>

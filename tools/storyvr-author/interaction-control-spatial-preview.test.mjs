@@ -800,7 +800,7 @@ test("Interaction Control uses a story canvas with incoming-boundary connectors 
   assert.match(connector, /data-interaction-boundary-policy/);
   assert.match(
     connector,
-    /const options = \["button-step", "direct", "embodied-control"\];[\s\S]*options\.map\(\(kind\)[\s\S]*interactionControlKindLabel\(kind\)/,
+    /const options = \["button-step", "direct", "embodied-control"\];[\s\S]*options\.map\(\(kind\)[\s\S]*displayLabel\(kind\)/,
     "the arrow dropdown exposes the requested three authorable choices",
   );
   assert.doesNotMatch(connector, /\["branching-control",/, "legacy Branching is not authorable from the new dropdown");
@@ -822,6 +822,9 @@ test("Direct destinations enumerate only authored in-beat targets and are incomp
   const rangeViolationsSource = functionSource("interactionDirectDestinationRangeViolations");
   const scaleReachabilitySource = functionSource("interactionDirectScaleDestinationIsReachable");
   const destinationReachabilitySource = functionSource("interactionDirectDestinationIsReachable");
+  const availableTriggerComponentsSource = functionSource("interactionDirectAvailableTriggerComponents");
+  const triggerComponentsSource = functionSource("interactionDirectTriggerComponents");
+  const usesTriggerComponentSource = functionSource("interactionDirectUsesTriggerComponent");
   const rangeMessage = functionSource("interactionDirectDestinationRangeMessage");
   const directDestination = functionSource("makeInteractionDirectDestination");
   const editorBinder = functionSource("bindInteractionOptionEditorEvents");
@@ -856,6 +859,9 @@ test("Direct destinations enumerate only authored in-beat targets and are incomp
     ${functionSource("normalizeSpatialTransform")}
     ${functionSource("interactionEulerDegreesNearReference")}
     ${functionSource("interactionRotationRangeReference")}
+    ${availableTriggerComponentsSource}
+    ${triggerComponentsSource}
+    ${usesTriggerComponentSource}
     ${functionSource("interactionTransformEulerDegrees")}
     ${rangeViolationsSource}
     ${scaleReachabilitySource}
@@ -878,6 +884,9 @@ test("Direct destinations enumerate only authored in-beat targets and are incomp
     ${functionSource("normalizeSpatialTransform")}
     ${functionSource("interactionEulerDegreesNearReference")}
     ${functionSource("interactionRotationRangeReference")}
+    ${availableTriggerComponentsSource}
+    ${triggerComponentsSource}
+    ${usesTriggerComponentSource}
     ${functionSource("interactionTransformEulerDegrees")}
     ${rangeViolationsSource}
     ${scaleReachabilitySource}
@@ -939,6 +948,12 @@ test("Direct destinations enumerate only authored in-beat targets and are incomp
   assert.match(directEditor, /!interactionDirectDestinationIsReachable\(configuredTarget\)/);
   assert.match(directEditor, /outside-range/);
   assert.match(directEditor, /interaction-direct-range-warning/);
+  assert.match(directEditor, /data-interaction-direct-trigger-component="\$\{component\}"/);
+  assert.match(directEditor, /Select one or more transform components/);
+  assert.match(directEditor, /The beat changes as soon as all selected objects enter the reasonable-error range/);
+  assert.match(directEditor, /enabledParts: interactionDirectTriggerComponents\(selectedTarget\)/);
+  assert.match(editorBinder, /Choose at least one transform component for the completion trigger/);
+  assert.match(editorBinder, /target\.triggerComponents = \["position", "rotation", "scale"\]\.filter/);
   assert.match(rangeMessage, /outside the authored/);
   assert.match(rangeMessage, /Minimum and Maximum ghosts/);
   assert.match(rangeMessage, /reader scales evenly in every direction/);
@@ -982,6 +997,24 @@ test("Direct destinations enumerate only authored in-beat targets and are incomp
     twoHandScalable: false,
     destinationTransform: { ...constrainedTarget.destinationTransform, scale: [99, 99, 99] },
   }), [], "scale is ignored when two-hand scaling is disabled");
+  assert.deepEqual(directRangeViolations({
+    ...constrainedTarget,
+    triggerComponents: ["scale"],
+    destinationTransform: {
+      position: [99, 99, 99],
+      quaternion: new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0, "XYZ")).toArray(),
+      scale: [1.5, 1.5, 1.5],
+    },
+  }), [], "unselected position and rotation components do not constrain a scale-only trigger");
+  assert.deepEqual(directRangeViolations({
+    ...constrainedTarget,
+    triggerComponents: ["position", "scale"],
+    destinationTransform: {
+      ...constrainedTarget.destinationTransform,
+      position: [5, 0, 0],
+      scale: [1.5, 1.5, 1.5],
+    },
+  }), [{ channel: "movement", axis: 0 }], "a two-component trigger validates each selected component");
 
   const y170Quaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(
     0,

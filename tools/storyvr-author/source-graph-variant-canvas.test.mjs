@@ -61,7 +61,7 @@ test("Asset Library tiles use a delayed pointer tooltip without covering thumbna
   const renderer = source.match(/function renderAssetCard\([\s\S]*?\nfunction renderSourceGraphAssetPreview/)?.[0] || "";
   const bindings = source.match(/function bindEvents\(\) \{[\s\S]*?\nfunction bindSourceGraphCanvasEvents/)?.[0] || "";
 
-  assert.match(source, /SOURCE_GRAPH_ASSET_LINK_TOOLTIP = "Click to link to the selected beat or variant, or drag to any card"/);
+  assert.match(source, /SOURCE_GRAPH_ASSET_LINK_TOOLTIP = "Click to link to the selected card or choice, or drag to any card"/);
   assert.match(source, /SOURCE_GRAPH_ASSET_TOOLTIP_DELAY_MS = 2000/);
   assert.match(source, /id="source-graph-asset-link-help">\$\{escapeHtml\(SOURCE_GRAPH_ASSET_LINK_TOOLTIP\)\}/);
   assert.match(source, /data-source-graph-asset-hover-tooltip role="tooltip" aria-hidden="true"/);
@@ -204,7 +204,7 @@ test("rendered connection arrows are selectable and removable without reverting 
   assert.match(source, /sourceGraphSelectedTransitionId/);
   assert.match(bindings, /querySelector\("\[data-source-graph-remove-edge\]"\)/);
   assert.match(removal, /removeSourceGraphTransition\(/);
-  assert.match(removal, /updateGraphDraftFromState\(\)/);
+  assert.match(removal, /updateGraphDraftFromState\(\{ storyFlowChanged: true \}\)/);
   assert.match(styles, /\.source-graph-link-layer\s*\{[^}]*position:\s*absolute;[^}]*max-width:\s*none;[^}]*pointer-events:\s*none;/s);
   assert.match(styles, /\.source-graph-transition-hit-path\s*\{[^}]*pointer-events:\s*stroke;/s);
   assert.match(styles, /\.source-graph-transition-halo\s*\{[^}]*stroke-width:\s*8px;/s);
@@ -514,7 +514,7 @@ test("Source Graph uses a full-width canvas and an editable bottom text drawer",
   assert.match(bindings, /updateSourceGraphFullText\(fullTextEditor\.value\)/);
   assert.match(bindings, /querySelector\("\[data-source-graph-full-title-editor\]"\)/);
   assert.match(bindings, /updateSourceGraphFullTitle\(fullTitleEditor\.value\)/);
-  assert.match(bindings, /bindCoalescedAuthorTextHistory\(fullTitleEditor, "Edit Source Graph title", "source-graph"\)/);
+  assert.match(bindings, /bindCoalescedAuthorTextHistory\(fullTitleEditor, "Edit story card title", "source-graph"\)/);
   assert.match(updater, /detail\.option\.text = value/);
   assert.match(updater, /detail\.beat\.text = value/);
   assert.match(updater, /detail\.option\.label = value/);
@@ -522,7 +522,7 @@ test("Source Graph uses a full-width canvas and an editable bottom text drawer",
   assert.match(updater, /detail\.beat\.sectionHeading = value/);
   assert.match(updater, /syncEvidenceForBeat\(detail\.beat\.id, beatAssetIds\(detail\.beat\)\)/);
   assert.match(updater, /syncVisibleAtomicBeatsToAtomicStore\(\)/);
-  assert.match(updater, /updateGraphDraftFromState\(\)/);
+  assert.match(updater, /updateGraphDraftFromState\(\{ storyFlowChanged: true \}\)/);
   assert.match(panning, /Math\.hypot[\s\S]*> 5/);
   assert.match(panning, /!pan\.moved && Boolean\(state\.sourceGraphTextDetail\)/);
   assert.match(panning, /state\.sourceGraphTextDetail = null/);
@@ -622,7 +622,7 @@ test("dragging a primary beat outside the Source Graph canvas removes it through
   const dragIsOutside = new Function(`${outsideHelper}; return sourceGraphDragIsOutsideCanvas;`)();
 
   assert.match(timeline, /data-source-graph-remove-drop-hint/);
-  assert.match(timeline, /Release to remove beat/);
+  assert.match(timeline, /Release to remove card/);
   assert.equal(dragIsOutside({ clientX: 99, clientY: 150 }, {
     getBoundingClientRect: () => ({ left: 100, right: 300, top: 100, bottom: 300 }),
   }), true);
@@ -634,7 +634,7 @@ test("dragging a primary beat outside the Source Graph canvas removes it through
   assert.match(bindings, /sourceGraphDragIsOutsideCanvas\(event\)/);
   assert.match(bindings, /removeSourceGraphBeat\(beatId\)/);
   assert.match(removal, /removable\.length >= beats\.length/);
-  assert.match(removal, /removeSourceGraphBeats\(\[beat\], "Remove Source Graph beat"\)/);
+  assert.match(removal, /removeSourceGraphBeats\(\[beat\], "Remove story card"\)/);
   assert.match(styles, /\.graph-editor\.is-removing-beat \.source-graph-remove-drop-hint/);
   assert.match(styles, /\.graph-editor\.is-remove-beat-blocked \.source-graph-remove-drop-hint/);
 });
