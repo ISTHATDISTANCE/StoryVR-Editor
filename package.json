@@ -1,18 +1,14 @@
 {
-  "name": "nytimes-asset-discovery",
+  "name": "storyvr-editor",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Console collector and public downloader for documenting assets from NYTimes visual stories.",
+  "description": "Standalone StoryVR authoring, adapter, probe, reader, and HTTPS tooling.",
   "engines": {
     "node": ">=24.0.0"
   },
   "scripts": {
-    "check": "node --check nyt-console-collector.js && node --check nyt-asset-downloader.mjs && node --check tools/codex-json.mjs && node --check tools/animation-logic-probe/runtime-animation-collector.js && node --check tools/animation-logic-probe/analyze-animation-probe.mjs && node --check tools/animation-logic-probe/pointcloud-effect.mjs && node --check tools/storyvr-adapter/storyvr-adapter.mjs && node --check tools/storyvr-adapter/migrate-stories.mjs && node --check tools/storyvr-adapter/process-story.mjs && node --check tools/storyvr-author/engine.mjs && node --check tools/storyvr-author/server.mjs && node --check tools/storyvr-author/build-reader-dist.mjs && node --check tools/storyvr-author/point-cloud-runtime.js && node --check tools/storyvr-author/reader-template/src/main.js && python3 -m py_compile https_server.py",
-    "self-test": "node nyt-asset-downloader.mjs --self-test",
-    "test:probe": "node --test tools/animation-logic-probe/*.test.mjs && node tools/animation-logic-probe/analyze-animation-probe.mjs --self-test",
-    "test:author": "node --test tools/codex-json.test.mjs tools/storyvr-author/*.test.mjs tools/storyvr-adapter/*.test.mjs",
-    "test:https": "python3 -m unittest discover -s tests",
+    "check": "node --check tools/codex-json.mjs && node --check tools/animation-logic-probe/runtime-animation-collector.js && node --check tools/animation-logic-probe/analyze-animation-probe.mjs && node --check tools/animation-logic-probe/pointcloud-effect.mjs && node --check tools/storyvr-adapter/storyvr-adapter.mjs && node --check tools/storyvr-adapter/migrate-stories.mjs && node --check tools/storyvr-adapter/process-story.mjs && node --check tools/storyvr-author/engine.mjs && node --check tools/storyvr-author/server.mjs && node --check tools/storyvr-author/build-reader-dist.mjs && node --check tools/storyvr-author/point-cloud-runtime.js && node --check tools/storyvr-author/reader-template/src/main.js && python3 -m py_compile https_server.py",
     "storyvr:story": "node tools/storyvr-adapter/process-story.mjs",
     "storyvr:author": "node tools/storyvr-author/server.mjs",
     "storyvr:author:classroom": "node tools/storyvr-author/server.mjs --story-folder ../classroom",
@@ -28,7 +24,6 @@
     "serve:https:lan": "python3 https_server.py --root .. --lan --story-path /classroom/dist-webxr-adaptation/ --story-path /shark/dist-webxr-adaptation/"
   },
   "dependencies": {
-    "robots-parser": "^3.0.1",
     "three": "^0.184.0",
     "vite": "^8.0.16"
   }

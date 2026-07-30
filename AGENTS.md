@@ -22,7 +22,8 @@ Keep generic StoryVR tooling inside `StoryVR/`:
 - `package-lock.json`
 - `node_modules/`
 - `https_server.py`
-- `nyt-asset-downloader.mjs`
-- `nyt-console-collector.js`
+
+Do not copy the root NYT source-asset collector/downloader or any test files
+from `web2vr_4` into this standalone repository.
 
 When adding or moving a WebXR story adaptation, update all path dependencies to match the story folder. Check npm scripts, `build-story-instance.mjs` source and output paths, generated `assetRoot`, README URLs, HTTPS printed URLs, and the Vite static `--base` path.

@@ -25,8 +25,9 @@ Keep generic root tooling at the workspace root:
 - `package-lock.json`
 - `node_modules/`
 - `https_server.py`
-- `nyt-asset-downloader.mjs`
-- `nyt-console-collector.js`
+
+The standalone repository intentionally excludes the root NYT source-asset
+collector/downloader and all test files from the source workspace.
 
 When adding or moving a WebXR story adaptation, update all path dependencies to match the story folder. Check npm scripts, `build-story-instance.mjs` source and output paths, generated `assetRoot`, README URLs, HTTPS printed URLs, and the Vite static `--base` path.
 

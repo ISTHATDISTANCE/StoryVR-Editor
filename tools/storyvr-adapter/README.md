@@ -1,6 +1,8 @@
 # StoryVR Adapter
 
-This folder implements the canonical StoryVR ingestion boundary. The primary workflow is one story at a time: fetch one story's web resources, then normalize that fetched resource folder into a StoryVR runtime payload.
+This folder implements the canonical StoryVR ingestion boundary. The primary
+workflow normalizes one prepared story resource folder at a time into a StoryVR
+runtime payload.
 
 ## Boundary
 
@@ -26,7 +28,6 @@ It returns a `StoryVRRuntimeInstance` payload with:
 
 ```sh
 npm run storyvr:story -- --resource-folder <story-slug>/captures/active
-npm run storyvr:story -- --discovery <nyt_asset_discovery.json> --story-folder <story-slug>
 npm run storyvr:scan
 npm run storyvr:migrate
 npm run storyvr:migrate:build
@@ -34,45 +35,7 @@ npm run storyvr:migrate:build
 
 ## Single Story Workflow
 
-### 1. Collect Discovery JSON
-
-Open the NYTimes story in a browser session where you are allowed to view it. Paste `nyt-console-collector.js` into DevTools Console and run:
-
-```js
-NYTAssetCollector.autoRun()
-```
-
-This downloads a file named like:
-
-```text
-nyt_asset_discovery_<story-slug>.json
-```
-
-### 2. Fetch And Normalize One Story
-
-Run the single-story command from the repo root:
-
-```sh
-npm run storyvr:story -- \
-  --discovery ~/Downloads/nyt_asset_discovery_<story-slug>.json \
-  --story-folder <story-slug>
-```
-
-This performs the fetch step through `nyt-asset-downloader.mjs`, writes the fetched resource folder to:
-
-```text
-<story-slug>/captures/active/
-```
-
-Then it writes the canonical StoryVR runtime payload to:
-
-```text
-<story-slug>/discovery/storyvr-runtime.json
-```
-
-If `<story-slug>/captures/active/` already has files, the command refuses to overwrite it. Pass `--replace-active` only when replacing that capture is intentional.
-
-### 3. Normalize An Already Fetched Folder
+### Normalize A Prepared Folder
 
 If the fetched resource folder already exists:
 

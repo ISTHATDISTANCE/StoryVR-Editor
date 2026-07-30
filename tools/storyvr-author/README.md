@@ -1,14 +1,15 @@
 # StoryVR authoring app
 
-This app runs the one-story StoryVR authoring workflow from a fetched resource folder.
+This app runs the one-story StoryVR authoring workflow from a prepared resource
+folder.
 
-If the source story has not been fetched yet, run the existing single-story processor first:
+Normalize an existing capture when needed:
 
 ```sh
-npm run storyvr:story -- --discovery <story-slug>/discovery/nyt_asset_discovery.json --story-folder <story-slug>
+npm run storyvr:story -- --resource-folder <story-slug>/captures/active
 ```
 
-Then launch the authoring UI from that fetched folder:
+Then launch the authoring UI from that prepared folder:
 
 ```sh
 npm run storyvr:author -- --resource-folder <story-slug>/captures/active
@@ -38,7 +39,7 @@ The app writes all authoring state into the story container:
 
 ## Workflow
 
-1. Fetch or prepare one source story folder, usually `<story-slug>/captures/active`, with `storyvr:story` when starting from discovery JSON.
+1. Prepare one source story folder, usually `<story-slug>/captures/active`, and normalize it with `storyvr:story` when needed.
 2. Start `storyvr:author` with that resource folder.
 3. Review and edit `Source Graph`.
 

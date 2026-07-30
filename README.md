@@ -2,10 +2,9 @@
 
 StoryVR Editor is the shared local authoring system for turning a prepared web
 story capture into an editable StoryVR experience and a compiled WebXR reader.
-This repository contains the editor, adapter, source-asset collector and
-downloader, animation probe, reader template, and local HTTPS server.
-Story-specific source files and authored output live in separate story folders
-beside this repository.
+This repository contains the editor, adapter, animation probe, reader template,
+and local HTTPS server. Story-specific source files and authored output live in
+separate story folders beside this repository.
 
 ## Prerequisites
 
@@ -177,20 +176,6 @@ The headset may require you to accept the local certificate warning once.
 
 ## Normalize or probe a prepared story
 
-To prepare an initial capture from a permitted source page, paste
-`nyt-console-collector.js` into that page's browser DevTools console and export
-the discovery JSON. Download its public story assets into a sibling story
-folder with:
-
-```sh
-node nyt-asset-downloader.mjs \
-  --input /path/to/nyt_asset_discovery.json \
-  --out "../$STORY_SLUG/captures/active"
-```
-
-Run `npm run self-test` to verify the downloader locally without network
-access.
-
 If `captures/active/` already exists, normalize it into a runtime payload with:
 
 ```sh
@@ -217,14 +202,6 @@ Detailed subsystem documentation is available in:
 - `tools/environment-enhancement-lab/README.md`
 
 ## Verify the installation
-
-The supported test suites for the files in this repository are:
-
-```sh
-npm run test:author
-npm run test:probe
-npm run test:https
-```
 
 Run `npm run check` for syntax validation across the standalone StoryVR tools.
 
