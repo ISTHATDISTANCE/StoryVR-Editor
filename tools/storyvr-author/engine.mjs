@@ -67,12 +67,17 @@ const LEGACY_TEXT_COMFORT_COMPONENT_ID = "text-comfort";
 const LEGACY_SPATIAL_RELATIONS_SCHEMA_VERSION = "storyvr-spatial-relations/v1";
 const SPATIAL_RELATIONS_SCHEMA_VERSION = "storyvr-spatial-relations/v2";
 const SPATIAL_RELATIONS_INFERENCE_VERSION = "per-scene-exact-assets-v3";
+const SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION = "storyvr-source-spatial-composition/v1";
+const SOURCE_LOCKED_PLACEMENT_POLICY = "source-locked";
+const SOURCE_SPATIAL_COMPOSITION_INFERENCE_VERSION = "active-members-only-v2";
 const TEXT_PANEL_CLEARANCE_STRATEGY = "visible-bounds-push-v2";
 const SPATIAL_RELATIONS_OPTION_ID = "spatial-relations-inferred-layout";
 const SPATIAL_TRAVERSAL_SCHEMA_VERSION = "storyvr-spatial-traversal/v1";
 const TEXT_PANEL_ATTACHMENT_POLICY = "reader-hand";
 const INTERACTION_CONTROL_BOUNDARY_SCHEMA_VERSION = "storyvr-interaction-control-boundaries/v3";
 const INTERACTION_CONTROL_CONFIGURATION_SCHEMA_VERSION = "storyvr-interaction-configuration/v1";
+const INTERACTION_CONTROLLER_CONFIGURATION_SCHEMA_V2_VERSION = "storyvr-interaction-configuration/v2";
+const INTERACTION_CONTROLLER_CONFIGURATION_SCHEMA_VERSION = "storyvr-interaction-configuration/v3";
 const IN_BEAT_INTERACTIONS_SCHEMA_VERSION = "storyvr-in-beat-interactions/v1";
 const INTERACTION_CONTROLLER_INPUT_RESERVATIONS_SCHEMA_VERSION = "storyvr-controller-input-reservations/v1";
 const VARIANT_TEXT_PANEL_SELECTION_POLICY = "Text panel selection";
@@ -99,7 +104,28 @@ const INTERACTION_CONTROLLER_CONTROLS = new Set([
   "thumbstick-right",
 ]);
 const INTERACTION_CONTROLLER_RESERVED_CONTROLS = new Set(["trigger", "squeeze"]);
-const INTERACTION_CONTROLLER_ACTIONS = new Set(["next-beat", "previous-beat", "unmapped"]);
+const INTERACTION_CONTROLLER_DIRECTIONAL_CONTROLS = new Set([
+  "thumbstick-up",
+  "thumbstick-down",
+  "thumbstick-left",
+  "thumbstick-right",
+]);
+const INTERACTION_CONTROLLER_LOCOMOTION_ACTIONS = new Set([
+  "move-forward",
+  "move-backward",
+  "strafe-left",
+  "strafe-right",
+  "turn-left",
+  "turn-right",
+  "teleport",
+  "turn-back",
+]);
+const INTERACTION_CONTROLLER_ACTIONS = new Set([
+  "next-beat",
+  "previous-beat",
+  "unmapped",
+  ...INTERACTION_CONTROLLER_LOCOMOTION_ACTIONS,
+]);
 const INTERACTION_LOCOMOTION_COORDINATE_SPACES = new Set(["reader-start", "world", "scene"]);
 const WORLD_READING_STATION_THRESHOLD_METERS = 1.25;
 const MANUAL_READER_POSE_EPSILON_METERS = 0.02;
@@ -115,17 +141,12 @@ const ATTENTION_GUIDANCE_OPTION_ID = "attention-guidance-reviewed-points";
 const ATTENTION_READER_GUIDANCE_SCHEMA_VERSION = "storyvr-attention-reader-guidance/v1";
 const ENVIRONMENT_ASSET_FORMATS = new Set(["glb", "gltf", "hdr", "exr", "png"]);
 const ENVIRONMENT_BACKGROUND_MODES = new Set(["asset", "fog-color", "transparent"]);
-const ASSET_TOPOLOGY_VIEWPOINTS = [
-  { id: "egocentric", label: "Egocentric viewpoint" },
-  { id: "exocentric", label: "Exocentric viewpoint" },
-];
 const ASSET_TOPOLOGY_COMPATIBILITY_COMPONENT = {
   id: "asset-topology",
   label: "Asset Topology",
   stage: 1,
   dimension: 1,
   optionLabels: ASSET_TOPOLOGY_OPTION_LABELS,
-  viewpointOptions: ASSET_TOPOLOGY_VIEWPOINTS,
   hidden: true,
   derived: true,
 };
@@ -290,6 +311,7 @@ export async function loadAuthorProject(options) {
   const preMigrationComponentOrder = Array.isArray(project.componentOrder) ? [...project.componentOrder] : [];
   await migrateEnvironmentEnhancementWorkflow(paths, project);
   await migrateSpatialRelationsWorkflow(paths, project, { preMigrationComponentOrder });
+  await migrateRetiredViewpointWorkflow(paths, project);
   await migrateAttentionGuidanceWorkflow(paths, project, { preMigrationComponentOrder });
   await migrateDecisionStatusWorkflow(paths);
   project.updatedAt = new Date().toISOString();
@@ -313,7 +335,6 @@ export async function loadAuthorProject(options) {
   if (sourceMotionChanged) await invalidateSourceMotionDependents(paths);
   let proposals = await readProposalIndex(paths);
   let decisions = await readDecisionIndex(paths);
-  decisions = await ensureCurrentAssetTopologyDecisionHasViewpoint(paths, decisions);
   if (previousComponentsCurrent(SPATIAL_RELATIONS_COMPONENT_ID, decisions)) {
     ({ proposals, decisions } = await ensureSpatialRelationsInferenceState(paths, proposals, decisions, graph, runtime));
   }
@@ -1560,7 +1581,6 @@ function dynamicsSpatialSceneVisibleSignature(scene) {
     sceneKey: scene.sceneKey,
     linkedAssetIds: [...(scene.linkedAssetIds || [])].sort(),
     topology: scene.topology || null,
-    viewpoint: scene.viewpoint || null,
     entities: (scene.entities || []).map((entity) => ({
       id: entity.id,
       kind: entity.kind,
@@ -1713,9 +1733,15 @@ export async function saveCheckpointDecision(options, componentId, payload = {})
     const inBeatInteractions = sanitizeInBeatInteractions(
       payload.inBeatInteractions ?? current?.inBeatInteractions ?? [],
     );
+    const controllerConfiguration = interactionControllerConfigurationForDecision(
+      current,
+      Object.prototype.hasOwnProperty.call(payload, "controllerConfiguration")
+        ? payload.controllerConfiguration
+        : undefined,
+    );
     const preservedOverrides = Object.keys(current?.boundaryOverrides || {}).length
       ? current.boundaryOverrides
-      : current?.interactionControlByBoundary || current?.interactionControlByRoute;
+      : interactionDecisionBoundaryRecords(current);
     const interactionControlByBoundary = applyInteractionControlBoundaryOverrides(
       interactionState.interactionControlByBoundary,
       payload.boundaryOverrides
@@ -1723,6 +1749,7 @@ export async function saveCheckpointDecision(options, componentId, payload = {})
         ?? payload.interactionControlByRoute
         ?? preservedOverrides,
       inBeatInteractions,
+      controllerConfiguration,
     );
     const preservedVariantEdgeOverrides = Object.keys(current?.variantOverrides || {}).length
       ? current.variantOverrides
@@ -1738,6 +1765,7 @@ export async function saveCheckpointDecision(options, componentId, payload = {})
       inBeatInteractions,
     );
     assertInteractionControlAssignmentsComplete(interactionControlByBoundary);
+    assertControllerButtonConfigurationsComplete(interactionControlByBoundary);
     assertVariantInteractionControlEdgeAssignmentsComplete(variantInteractionControlByEdge);
     assertDirectManipulationConfigurationsComplete(interactionControlByBoundary);
     assertDirectManipulationConfigurationsComplete(variantInteractionControlByEdge, { variantEdges: true });
@@ -1746,6 +1774,7 @@ export async function saveCheckpointDecision(options, componentId, payload = {})
       label: component.label,
       designDimension: component.dimension,
       option: controllerButtonFallbackOption(),
+      controllerConfiguration,
       authorEdits: payload.authorEdits ?? current?.authorEdits ?? "",
       proposalGeneratedAt: null,
       spatialTraversal: interactionState.spatialTraversal,
@@ -1775,7 +1804,7 @@ export async function saveCheckpointDecision(options, componentId, payload = {})
       throw Object.assign(new Error(`Unknown or missing optionId for ${component.id}: ${payload.optionId || "missing"}`), { statusCode: 400 });
     }
     const decisionOption = component.id === "asset-topology"
-      ? await sanitizeAssetTopologyDecisionOption(paths, submittedOption, payload.viewpoint)
+      ? await sanitizeAssetTopologyDecisionOption(paths, submittedOption)
       : submittedOption;
     assertValidDecisionOption(component, decisionOption);
     decision = {
@@ -1861,6 +1890,7 @@ function interactionControlDraftFor(graph, runtime, spatialTraversal) {
   const variantInteractionControlByEdge = inferVariantInteractionControlByEdge(graph, runtime);
   return {
     option: controllerButtonFallbackOption(),
+    controllerConfiguration: interactionControllerConfigurationForDecision(),
     spatialTraversal,
     interactionControlSchemaVersion: INTERACTION_CONTROL_BOUNDARY_SCHEMA_VERSION,
     inBeatInteractionsSchemaVersion: IN_BEAT_INTERACTIONS_SCHEMA_VERSION,
@@ -2123,6 +2153,14 @@ function defaultInteractionControllerBindings() {
   return [
     { hand: "right", input: "a", action: "next-beat" },
     { hand: "left", input: "x", action: "previous-beat" },
+    { hand: "left", input: "thumbstick-up", action: "move-forward" },
+    { hand: "left", input: "thumbstick-down", action: "move-backward" },
+    { hand: "left", input: "thumbstick-left", action: "strafe-left" },
+    { hand: "left", input: "thumbstick-right", action: "strafe-right" },
+    { hand: "right", input: "thumbstick-up", action: "teleport" },
+    { hand: "right", input: "thumbstick-down", action: "turn-back" },
+    { hand: "right", input: "thumbstick-left", action: "turn-left" },
+    { hand: "right", input: "thumbstick-right", action: "turn-right" },
   ];
 }
 
@@ -2139,6 +2177,14 @@ function normalizeInteractionControllerAction(value) {
   if (["next", "advance", "forward"].includes(action)) return "next-beat";
   if (["previous", "prev", "back", "backward"].includes(action)) return "previous-beat";
   if (["none", "disabled", "not-mapped"].includes(action)) return "unmapped";
+  if (["slide-forward", "walk-forward"].includes(action)) return "move-forward";
+  if (["slide-backward", "walk-backward"].includes(action)) return "move-backward";
+  if (["move-left", "slide-left"].includes(action)) return "strafe-left";
+  if (["move-right", "slide-right"].includes(action)) return "strafe-right";
+  if (["rotate-left", "snap-turn-left"].includes(action)) return "turn-left";
+  if (["rotate-right", "snap-turn-right"].includes(action)) return "turn-right";
+  if (["teleport-forward", "blink-forward"].includes(action)) return "teleport";
+  if (["turn-around", "turn-backward", "snap-turn-back"].includes(action)) return "turn-back";
   return action;
 }
 
@@ -2148,9 +2194,31 @@ function interactionControllerControlAvailable(handedness, control) {
   return true;
 }
 
-function sanitizeInteractionControllerBindings(value, fallback = defaultInteractionControllerBindings()) {
+function interactionControllerActionAvailable(control, action) {
+  return !INTERACTION_CONTROLLER_LOCOMOTION_ACTIONS.has(action)
+    || INTERACTION_CONTROLLER_DIRECTIONAL_CONTROLS.has(control);
+}
+
+function sanitizeInteractionControllerBindings(
+  value,
+  fallback = defaultInteractionControllerBindings(),
+  {
+    migrateLegacyDirectionalDefaults = false,
+    migrateV2RightStickDefaults = false,
+  } = {},
+) {
   if (!Array.isArray(value)) return cloneJson(fallback);
-  const bindings = new Map();
+  const migrationFallback = migrateLegacyDirectionalDefaults
+    ? fallback
+    : migrateV2RightStickDefaults
+      ? fallback.filter((binding) => (
+          binding.hand === "right"
+          && (binding.input === "thumbstick-up" || binding.input === "thumbstick-down")
+        ))
+      : [];
+  const bindings = new Map(
+    migrationFallback.map((binding) => [`${binding.hand}:${binding.input}`, cloneJson(binding)]),
+  );
   for (const raw of value.slice(0, 48)) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
     const hand = String(raw.hand || raw.handedness || "").trim().toLowerCase();
@@ -2159,7 +2227,15 @@ function sanitizeInteractionControllerBindings(value, fallback = defaultInteract
     if (!INTERACTION_CONTROLLER_HANDS.has(hand)
       || !INTERACTION_CONTROLLER_CONTROLS.has(input)
       || !INTERACTION_CONTROLLER_ACTIONS.has(action)
-      || !interactionControllerControlAvailable(hand, input)) continue;
+      || !interactionControllerControlAvailable(hand, input)
+      || !interactionControllerActionAvailable(input, action)) continue;
+    if (migrateLegacyDirectionalDefaults
+      && INTERACTION_CONTROLLER_DIRECTIONAL_CONTROLS.has(input)
+      && action === "unmapped") continue;
+    if (migrateV2RightStickDefaults
+      && hand === "right"
+      && (input === "thumbstick-up" || input === "thumbstick-down")
+      && action === "unmapped") continue;
     bindings.set(`${hand}:${input}`, { hand, input, action });
   }
   return [...bindings.values()];
@@ -2567,11 +2643,21 @@ export function sanitizeInteractionControlConfiguration(policyValue, value = nul
   const policy = normalizeVariantInteractionPolicy(normalizeInteractionControlLabel(policyValue));
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   if (policy === CONTROLLER_BUTTON_PRESS_LABEL) {
+    const migrateV2RightStickDefaults = source.schemaVersion === INTERACTION_CONTROLLER_CONFIGURATION_SCHEMA_V2_VERSION;
+    const migrateLegacyDirectionalDefaults = source.schemaVersion !== INTERACTION_CONTROLLER_CONFIGURATION_SCHEMA_VERSION
+      && !migrateV2RightStickDefaults;
     return {
-      schemaVersion: INTERACTION_CONTROL_CONFIGURATION_SCHEMA_VERSION,
+      schemaVersion: INTERACTION_CONTROLLER_CONFIGURATION_SCHEMA_VERSION,
       type: "controller-button-press",
       profile: interactionConfigurationString(source.profile, META_QUEST_CONTROLLER_PROFILE, 80),
-      bindings: sanitizeInteractionControllerBindings(source.bindings),
+      bindings: sanitizeInteractionControllerBindings(
+        source.bindings,
+        defaultInteractionControllerBindings(),
+        {
+          migrateLegacyDirectionalDefaults,
+          migrateV2RightStickDefaults,
+        },
+      ),
     };
   }
   if (policy === VARIANT_UI_BUTTON_PRESS_POLICY) {
@@ -2641,6 +2727,46 @@ export function sanitizeInteractionControlConfiguration(policyValue, value = nul
   return null;
 }
 
+function interactionDecisionBoundaryRecords(decision) {
+  if (!decision || typeof decision !== "object") return [];
+  const boundaryRecords = Array.isArray(decision.interactionControlByBoundary)
+    ? decision.interactionControlByBoundary
+    : [];
+  if (boundaryRecords.length) return boundaryRecords;
+  return Array.isArray(decision.interactionControlByRoute)
+    ? decision.interactionControlByRoute
+    : boundaryRecords;
+}
+
+function interactionControllerConfigurationCandidate(decision) {
+  if (!decision || typeof decision !== "object") return null;
+  if (decision.controllerConfiguration) return decision.controllerConfiguration;
+  const overrides = Object.values(decision.boundaryOverrides || {});
+  const authoredOverride = overrides.find((value) => (
+    normalizeInteractionControlLabel(value?.policy || value?.effectivePolicy) === CONTROLLER_BUTTON_PRESS_LABEL
+    && value?.configuration
+  ));
+  if (authoredOverride) return authoredOverride.configuration;
+  const records = interactionDecisionBoundaryRecords(decision);
+  const authoredRecord = records.find((record) => (
+    record?.overridden
+    && normalizeInteractionControlLabel(record.effectivePolicy) === CONTROLLER_BUTTON_PRESS_LABEL
+    && record.configuration
+  ));
+  if (authoredRecord) return authoredRecord.configuration;
+  return records.find((record) => (
+    normalizeInteractionControlLabel(record?.effectivePolicy || record?.defaultPolicy) === CONTROLLER_BUTTON_PRESS_LABEL
+    && record?.configuration
+  ))?.configuration || null;
+}
+
+function interactionControllerConfigurationForDecision(decision = null, supplied = undefined) {
+  const value = supplied === undefined
+    ? interactionControllerConfigurationCandidate(decision)
+    : supplied;
+  return sanitizeInteractionControlConfiguration(CONTROLLER_BUTTON_PRESS_LABEL, value);
+}
+
 function validInteractionControlConfiguration(policy, value, context = {}) {
   const directManipulation = String(policy || "").trim().toLowerCase() === "direct manipulation";
   if (value === null || value === undefined) return !directManipulation;
@@ -2658,6 +2784,21 @@ function validInteractionControlConfiguration(policy, value, context = {}) {
   }
   if (JSON.stringify(sanitized) === JSON.stringify(value)) return true;
   if (sanitized.type !== "controller-button-press") return false;
+  if ([
+    INTERACTION_CONTROL_CONFIGURATION_SCHEMA_VERSION,
+    INTERACTION_CONTROLLER_CONFIGURATION_SCHEMA_V2_VERSION,
+  ].includes(value?.schemaVersion)) {
+    const legacy = {
+      schemaVersion: value.schemaVersion,
+      type: "controller-button-press",
+      profile: interactionConfigurationString(value.profile, META_QUEST_CONTROLLER_PROFILE, 80),
+      bindings: sanitizeInteractionControllerBindings(value.bindings, []),
+    };
+    if (JSON.stringify(legacy) === JSON.stringify(value)) return true;
+    const legacyWithoutReservedBindings = interactionControlConfigurationWithoutLegacyReservedBindings(value);
+    if (legacyWithoutReservedBindings !== value
+      && JSON.stringify(legacy) === JSON.stringify(legacyWithoutReservedBindings)) return true;
+  }
   const withoutLegacyReservedBindings = interactionControlConfigurationWithoutLegacyReservedBindings(value);
   return withoutLegacyReservedBindings !== value
     && JSON.stringify(sanitized) === JSON.stringify(withoutLegacyReservedBindings);
@@ -3215,8 +3356,16 @@ function interactionVariantEdgeConfigurationContext(record, inBeatInteractions) 
   };
 }
 
-function applyInteractionControlBoundaryOverrides(inferredRecords, overridesInput, inBeatInteractions = undefined) {
+function applyInteractionControlBoundaryOverrides(
+  inferredRecords,
+  overridesInput,
+  inBeatInteractions = undefined,
+  controllerConfigurationInput = undefined,
+) {
   const overrides = normalizeInteractionControlBoundaryOverrides(overridesInput);
+  const controllerConfiguration = controllerConfigurationInput === undefined
+    ? null
+    : interactionControllerConfigurationForDecision(null, controllerConfigurationInput);
   const knownBoundaryIds = new Set((inferredRecords || []).map((record) => record.boundaryId));
   const knownLegacyBoundaryIds = new Set((inferredRecords || []).map((record) => (
     interactionBoundaryId(record.fromBeatId, record.toBeatId)
@@ -3235,11 +3384,13 @@ function applyInteractionControlBoundaryOverrides(inferredRecords, overridesInpu
       return {
         ...record,
         evidence: cloneJson(record.evidence),
-        configuration: sanitizeInteractionControlConfiguration(
-          policy,
-          record.configuration,
-          interactionBoundaryConfigurationContext(record, inBeatInteractions),
-        ),
+        configuration: policy === CONTROLLER_BUTTON_PRESS_LABEL && controllerConfiguration
+          ? cloneInteractionControlConfiguration(controllerConfiguration)
+          : sanitizeInteractionControlConfiguration(
+              policy,
+              record.configuration,
+              interactionBoundaryConfigurationContext(record, inBeatInteractions),
+            ),
       };
     }
     const policy = normalizeInteractionControlLabel(
@@ -3248,11 +3399,13 @@ function applyInteractionControlBoundaryOverrides(inferredRecords, overridesInpu
     if (!COMPONENT_BY_ID.get("interaction-control").optionLabels.includes(policy)) {
       throw Object.assign(new Error(`Unknown Interaction Control policy for ${record.boundaryId}: ${policy || "(missing)"}`), { statusCode: 400 });
     }
-    const configuration = sanitizeInteractionControlConfiguration(
-      policy,
-      override.configuration,
-      interactionBoundaryConfigurationContext(record, inBeatInteractions),
-    );
+    const configuration = policy === CONTROLLER_BUTTON_PRESS_LABEL && controllerConfiguration
+      ? cloneInteractionControlConfiguration(controllerConfiguration)
+      : sanitizeInteractionControlConfiguration(
+          policy,
+          override.configuration,
+          interactionBoundaryConfigurationContext(record, inBeatInteractions),
+        );
     return {
       ...record,
       effectivePolicy: policy,
@@ -3295,7 +3448,9 @@ function interactionControlBoundaryOverridesFromRecords(records) {
     {
       policy: record.effectivePolicy,
       ...(record.effectivePolicy === READER_LOCOMOTION_LABEL ? { locomotionMode: normalizeLocomotionMode(record.locomotionMode) } : {}),
-      ...(record.configuration ? { configuration: cloneJson(record.configuration) } : {}),
+      ...(record.configuration && record.effectivePolicy !== CONTROLLER_BUTTON_PRESS_LABEL
+        ? { configuration: cloneJson(record.configuration) }
+        : {}),
     },
   ]));
 }
@@ -3470,6 +3625,24 @@ function assertInteractionControlAssignmentsComplete(records) {
       component: "interaction-control",
       boundaryId: record.boundaryId,
       message: `Assign one of the four supported interactions to ${record.fromBeatId} -> ${record.toBeatId}.`,
+    })),
+  });
+}
+
+function assertControllerButtonConfigurationsComplete(records) {
+  const invalid = (records || []).filter((record) => (
+    normalizeInteractionControlLabel(record?.effectivePolicy) === CONTROLLER_BUTTON_PRESS_LABEL
+    && !record?.configuration?.bindings?.some((binding) => binding?.action === "next-beat")
+  ));
+  if (!invalid.length) return;
+  throw Object.assign(new Error(`Controller button press requires at least one Next beat mapping. Invalid: ${invalid.map((record) => record.boundaryId).join(", ")}.`), {
+    statusCode: 409,
+    diagnostics: invalid.map((record) => ({
+      severity: "error",
+      code: "INCOMPLETE_CONTROLLER_BUTTON_CONFIGURATION",
+      component: "interaction-control",
+      boundaryId: record?.boundaryId || null,
+      message: "Map at least one assignable controller input to Next beat before saving.",
     })),
   });
 }
@@ -3702,14 +3875,17 @@ export async function refreshCurrentSpatialRelationsInference(options) {
       [SPATIAL_RELATIONS_COMPONENT_ID]: spatialDecision,
     });
     const inBeatInteractions = sanitizeInBeatInteractions(interactionDecision.inBeatInteractions || []);
+    const controllerConfiguration = interactionControllerConfigurationForDecision(interactionDecision);
     const storedOverrides = Object.keys(interactionDecision.boundaryOverrides || {}).length
       ? interactionDecision.boundaryOverrides
-      : interactionDecision.interactionControlByBoundary || interactionDecision.interactionControlByRoute;
+      : interactionDecisionBoundaryRecords(interactionDecision);
     const interactionControlByBoundary = applyInteractionControlBoundaryOverrides(
       state.interactionControlByBoundary,
       storedOverrides,
       inBeatInteractions,
+      controllerConfiguration,
     );
+    assertControllerButtonConfigurationsComplete(interactionControlByBoundary);
     const storedVariantOverrides = Object.keys(interactionDecision.variantOverrides || {}).length
       ? interactionDecision.variantOverrides
       : Object.keys(interactionDecision.variantEdgeOverrides || {}).length
@@ -3723,6 +3899,7 @@ export async function refreshCurrentSpatialRelationsInference(options) {
     refreshedInteractionDecision = {
       ...interactionDecision,
       option: controllerButtonFallbackOption(interactionDecision.option),
+      controllerConfiguration,
       spatialTraversal: state.spatialTraversal,
       interactionControlSchemaVersion: INTERACTION_CONTROL_BOUNDARY_SCHEMA_VERSION,
       inBeatInteractionsSchemaVersion: IN_BEAT_INTERACTIONS_SCHEMA_VERSION,
@@ -3769,9 +3946,8 @@ function spatialRelationsEditSignature(contract) {
   ].map((scene) => ({
     sceneKey: scene?.sceneKey,
     topology: scene?.topology || null,
-    viewpoint: normalizeAssetTopologyViewpoint(scene?.viewpoint) || null,
   }));
-  return createHash("sha256").update(JSON.stringify({ viewpoint: contract?.viewpoint || null, scenes, entities })).digest("hex");
+  return createHash("sha256").update(JSON.stringify({ scenes, entities })).digest("hex");
 }
 
 async function validatedSpatialRelationsContract(paths, submitted) {
@@ -4055,27 +4231,6 @@ async function ensureSourceDynamicsPreviewDecisionsAvailable(paths, graph, optio
   return written;
 }
 
-async function ensureCurrentAssetTopologyDecisionHasViewpoint(paths, decisions) {
-  const component = COMPONENT_BY_ID.get("asset-topology");
-  const decision = decisions[component.id];
-  if (!isValidCurrentDecision(component, decision) || !component.optionLabels.includes(decision.option?.label)) return decisions;
-  if (normalizeAssetTopologyViewpoint(decision.option?.viewpoint || decision.viewpoint)) return decisions;
-
-  const option = withAssetTopologyViewpoint(decision.option, "egocentric");
-  const next = {
-    ...decision,
-    option,
-    viewpoint: option.viewpoint,
-    viewpointLabel: option.viewpointLabel,
-    savedAt: new Date().toISOString(),
-  };
-  await writeJson(path.join(paths.decisionsRoot, `${component.id}.json`), next);
-  return {
-    ...decisions,
-    [component.id]: next,
-  };
-}
-
 function derivedAssetTopologyDecision(spatialRelations, spatialDecision = null) {
   const scenes = [
     ...Object.values(spatialRelations?.resolvedByBeat || {}),
@@ -4086,8 +4241,6 @@ function derivedAssetTopologyDecision(spatialRelations, spatialDecision = null) 
     || null;
   const topologyKind = primaryScene?.topology?.kind || "single";
   const label = assetTopologyLabelFromKind(topologyKind);
-  const viewpoint = normalizeAssetTopologyViewpoint(spatialRelations?.viewpoint) || "egocentric";
-  const viewpointLabel = ASSET_TOPOLOGY_VIEWPOINTS.find((entry) => entry.id === viewpoint)?.label || "Egocentric viewpoint";
   const topologyByScene = Object.fromEntries(scenes.filter((scene) => scene?.sceneKey).map((scene) => [scene.sceneKey, {
     beatId: scene.beatId,
     variantOptionId: scene.variantOptionId,
@@ -4098,18 +4251,16 @@ function derivedAssetTopologyDecision(spatialRelations, spatialDecision = null) 
   const status = DECISION_STATUSES.has(spatialDecision?.status) ? spatialDecision.status : "draft";
   const option = {
     component: "asset-topology",
-    optionId: `asset-topology-${topologyKind}-${viewpoint}-derived`,
+    optionId: `asset-topology-${topologyKind}-derived`,
     label,
     designDimension: 1,
-    viewpoint,
-    viewpointLabel,
     derivedFrom: SPATIAL_RELATIONS_COMPONENT_ID,
     topologyByScene,
     description: "Compatibility projection of the per-beat layouts authored in Spatial Relations.",
     sourceEvidence: [],
     assetLinks: uniqueStrings(spatialRelations?.entities?.filter((entity) => ["glb", "image-plane"].includes(entity.kind)).map((entity) => entity.assetId) || [])
       .map((assetId) => ({ assetId, role: "beat-scoped spatial asset" })),
-    readerImpact: "Legacy consumers receive a topology/viewpoint pair while v2 consumers use each beat scene directly.",
+    readerImpact: "Legacy consumers receive the primary topology while current consumers use each beat scene directly.",
     risks: [],
     implementationHints: ["Prefer Spatial Relations resolvedByBeat over this compatibility projection."],
     confidence: 1,
@@ -4119,8 +4270,6 @@ function derivedAssetTopologyDecision(spatialRelations, spatialDecision = null) 
     label: "Asset Topology",
     designDimension: 1,
     option,
-    viewpoint,
-    viewpointLabel,
     authorEdits: spatialDecision?.authorEdits || "",
     proposalGeneratedAt: spatialDecision?.proposalGeneratedAt || null,
     autoDerived: true,
@@ -4224,7 +4373,6 @@ export async function compileAuthorRuntime(options) {
   const assetTopologyDecision = decisions["asset-topology"]?.autoDerived === true
     ? decisions["asset-topology"]
     : derivedAssetTopologyDecision(spatialRelations, spatialRelationsDecision);
-  const readerViewpointDecision = assetTopologyViewpointOptionFromDecision(assetTopologyDecision);
   const spatialTraversal = analyzeSpatialTraversal(graph, runtime, spatialRelations, decisions);
   const inferredInteractionControlByBoundary = inferInteractionControlByBoundary(graph, runtime, spatialTraversal);
   const variantInteractionControlByBeat = inferVariantInteractionControlByBeat(graph, runtime);
@@ -4238,9 +4386,12 @@ export async function compileAuthorRuntime(options) {
   const inBeatInteractions = sanitizeInBeatInteractions(
     decisions["interaction-control"].inBeatInteractions || [],
   );
-  const savedInteractionControlByBoundary = decisions["interaction-control"].interactionControlByBoundary
-    || decisions["interaction-control"].interactionControlByRoute
-    || [];
+  const savedInteractionControlByBoundary = interactionDecisionBoundaryRecords(
+    decisions["interaction-control"],
+  );
+  const controllerConfiguration = interactionControllerConfigurationForDecision(
+    decisions["interaction-control"],
+  );
   if (decisions["interaction-control"].interactionControlSchemaVersion === INTERACTION_CONTROL_BOUNDARY_SCHEMA_VERSION
     && decisions["interaction-control"].interactionControlSourceSignature
     && decisions["interaction-control"].interactionControlSourceSignature !== interactionControlSourceSignature
@@ -4253,6 +4404,7 @@ export async function compileAuthorRuntime(options) {
       ? decisions["interaction-control"].boundaryOverrides
       : savedInteractionControlByBoundary,
     inBeatInteractions,
+    controllerConfiguration,
   );
   const variantInteractionControlByEdge = applyVariantInteractionControlEdgeOverrides(
     inferredVariantInteractionControlByEdge,
@@ -4264,6 +4416,7 @@ export async function compileAuthorRuntime(options) {
     inBeatInteractions,
   );
   assertInteractionControlAssignmentsComplete(interactionControlByBoundary);
+  assertControllerButtonConfigurationsComplete(interactionControlByBoundary);
   assertVariantInteractionControlEdgeAssignmentsComplete(variantInteractionControlByEdge);
   assertDirectManipulationConfigurationsComplete(interactionControlByBoundary);
   assertDirectManipulationConfigurationsComplete(variantInteractionControlByEdge, { variantEdges: true });
@@ -4281,6 +4434,7 @@ export async function compileAuthorRuntime(options) {
     option: interactionControlByBoundary.length
       ? controllerButtonFallbackOption(decisions["interaction-control"].option)
       : { ...decisions["interaction-control"].option, label: interactionPolicy },
+    controllerConfiguration,
     interactionControlSchemaVersion: INTERACTION_CONTROL_BOUNDARY_SCHEMA_VERSION,
     inBeatInteractionsSchemaVersion: IN_BEAT_INTERACTIONS_SCHEMA_VERSION,
     inBeatInteractions,
@@ -4368,7 +4522,6 @@ export async function compileAuthorRuntime(options) {
       effectiveInteractionPolicyByUnit,
       effectiveInteractionPolicyByRoute,
       readerDesign: {
-        "reader-viewpoint": readerViewpointDecision,
         ...Object.fromEntries(
           DECISION_COMPONENTS
             .filter((component) => component.dimension === 2 && !isFinalReviewComponent(component))
@@ -5018,6 +5171,7 @@ function isKnownLegacyManagedReaderTemplate(target, currentContent, desiredConte
   const knownImports = new Set([
     'import * as THREE from "three";',
     'import { OrbitControls } from "three/addons/controls/OrbitControls.js";',
+    'import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";',
     'import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";',
     'import { EXRLoader } from "three/addons/loaders/EXRLoader.js";',
     'import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";',
@@ -5325,19 +5479,27 @@ function normalizeLegacyDecisionContent(component, decision) {
     return omitRetiredEnvironmentConsentMetadata(decision);
   }
   if (component.id === "asset-topology" && component.optionLabels.includes(decision.option?.label)) {
-    const viewpoint = normalizeAssetTopologyViewpoint(decision.option?.viewpoint || decision.viewpoint) || "egocentric";
-    const option = withAssetTopologyViewpoint(decision.option, viewpoint);
-    return {
-      ...decision,
-      option,
-      viewpoint: option.viewpoint,
-      viewpointLabel: option.viewpointLabel,
-    };
+    return omitRetiredViewpointMetadata(decision);
   }
   if (!isFinalReviewComponent(component)) return { ...decision };
   const legacyFinalReview = decision.option?.optionId === "transition-pacing-final-review-approved"
     || decision.option?.label === "Final review approved";
   return legacyFinalReview ? { ...decision, option: { ...FINAL_REVIEW_OPTION } } : { ...decision };
+}
+
+function omitRetiredViewpointMetadata(value) {
+  if (Array.isArray(value)) return value.map(omitRetiredViewpointMetadata);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => ![
+      "viewpoint",
+      "viewpointLabel",
+      "viewpointScaleGuidance",
+      "readerViewpoint",
+      "reader-viewpoint",
+      "preservedViewpoint",
+    ].includes(key))
+    .map(([key, entry]) => [key, omitRetiredViewpointMetadata(entry)]));
 }
 
 function decisionWithStatus(decision, status, savedAt = undefined) {
@@ -5394,6 +5556,7 @@ function decisionMaterialSignature(decision) {
     attentionGuidance: decision.attentionGuidance || null,
     inBeatInteractionsSchemaVersion: decision.inBeatInteractionsSchemaVersion || null,
     inBeatInteractions: decision.inBeatInteractions || null,
+    controllerConfiguration: decision.controllerConfiguration || null,
     interactionControlByBoundary: decision.interactionControlByBoundary || null,
     interactionControlByRoute: decision.interactionControlByRoute || null,
     variantInteractionControlByBeat: decision.variantInteractionControlByBeat || null,
@@ -5482,9 +5645,6 @@ async function migrateSpatialRelationsWorkflow(paths, project, options = {}) {
         migratedAt,
         legacyDecisionFound: Boolean(assetTopologyDecision),
         preservedLabel: assetTopologyDecision?.option?.label || null,
-        preservedViewpoint: normalizeAssetTopologyViewpoint(
-          assetTopologyDecision?.option?.viewpoint || assetTopologyDecision?.viewpoint,
-        ),
       },
     };
   }
@@ -5523,6 +5683,37 @@ async function migrateSpatialRelationsWorkflow(paths, project, options = {}) {
       legacyDecisionFound: Boolean(legacyDecision),
       legacyProposalFound: Boolean(legacyProposal),
       requiresReview: Boolean(legacyDecision),
+    },
+  };
+}
+
+async function migrateRetiredViewpointWorkflow(paths, project) {
+  const migrationId = "remove-scene-viewpoint-v2";
+  if (project.workflowMigrations?.[migrationId]) return;
+  const jsonPaths = [
+    paths.storyGraphPath,
+    paths.compiledRuntimePath,
+    path.join(paths.decisionsRoot, `${SPATIAL_RELATIONS_COMPONENT_ID}.json`),
+    path.join(paths.proposalsRoot, `${SPATIAL_RELATIONS_COMPONENT_ID}.json`),
+    path.join(paths.decisionsRoot, "asset-topology.json"),
+    path.join(paths.proposalsRoot, "asset-topology.json"),
+  ];
+  for (const jsonPath of jsonPaths) {
+    const stored = await readJsonIfExists(jsonPath);
+    if (!stored) continue;
+    const migrated = omitRetiredViewpointMetadata(stored);
+    if (JSON.stringify(stored) !== JSON.stringify(migrated)) await writeJson(jsonPath, migrated);
+  }
+  await Promise.all([
+    rm(path.join(paths.decisionsRoot, "reader-viewpoint.json"), { force: true }),
+    rm(path.join(paths.proposalsRoot, "reader-viewpoint.json"), { force: true }),
+  ]);
+  project.workflowMigrations = omitRetiredViewpointMetadata(project.workflowMigrations || {});
+  project.workflowMigrations = {
+    ...(project.workflowMigrations || {}),
+    [migrationId]: {
+      migratedAt: new Date().toISOString(),
+      preservedSceneTransforms: true,
     },
   };
 }
@@ -5631,6 +5822,9 @@ async function generateStoryGraph(paths, runtime, options = {}) {
     ...(Array.isArray(runtime.pointCloudEffects) && runtime.pointCloudEffects.length
       ? { pointCloudEffects: cloneJson(runtime.pointCloudEffects) }
       : {}),
+    ...(runtime.sourceSpatialCompositions?.schemaVersion === SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION
+      ? { sourceSpatialCompositions: omitRetiredViewpointMetadata(cloneJson(runtime.sourceSpatialCompositions)) }
+      : {}),
     entities: extractEntities(runtime.contentUnits),
     assetInventory: runtime.assets.map((asset) => ({
       id: asset.id,
@@ -5681,8 +5875,11 @@ async function enrichSourceGraphWithAnimationProbe(paths, graph, runtime) {
 }
 
 export function applyAnimationProbeLinksToGraph(graph, runtime, artifacts = [], overrides = null, sourceMotionPlayback = null) {
-  graph = synchronizePointCloudEffects(
-    refreshSourceGraphCanonicalVariantText(graph, runtime),
+  graph = synchronizeSourceSpatialCompositions(
+    synchronizePointCloudEffects(
+      refreshSourceGraphCanonicalVariantText(graph, runtime),
+      runtime,
+    ),
     runtime,
   );
   const selectedArtifact = selectAnimationProbeArtifact(artifacts, runtime);
@@ -5825,6 +6022,19 @@ function synchronizePointCloudEffects(graph, runtime) {
   if (effects.length) next.pointCloudEffects = cloneJson(effects);
   else delete next.pointCloudEffects;
   return next;
+}
+
+function synchronizeSourceSpatialCompositions(graph, runtime) {
+  const next = graph && typeof graph === "object" ? { ...graph } : {};
+  const compositions = runtime?.sourceSpatialCompositions;
+  if (compositions?.schemaVersion === SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION
+    && Array.isArray(compositions.compositions)
+    && compositions.compositions.length) {
+    next.sourceSpatialCompositions = omitRetiredViewpointMetadata(cloneJson(compositions));
+  } else {
+    delete next.sourceSpatialCompositions;
+  }
+  return omitRetiredViewpointMetadata(next);
 }
 
 async function findAnimationProbeArtifacts(paths, runtime) {
@@ -8784,9 +8994,597 @@ function sourceDynamicsPreviewPrerequisitesCurrent(decisions) {
   return previousComponentsCurrent("dynamic-geometry", decisions);
 }
 
+function sourceSpatialValue(source, ...keys) {
+  if (!source || typeof source !== "object") return undefined;
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) return source[key];
+  }
+  return undefined;
+}
+
+function sourceSpatialString(source, ...keys) {
+  if (!source || typeof source !== "object") return "";
+  for (const key of keys) {
+    const value = String(source[key] || "").trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function sourceSpatialArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function sourceSpatialVector(value) {
+  if (Array.isArray(value) && value.length >= 3) {
+    const result = value.slice(0, 3).map(Number);
+    return result.every(Number.isFinite) ? result : null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const result = [value.x, value.y, value.z].map(Number);
+  return result.every(Number.isFinite) ? result : null;
+}
+
+function normalizeSourceSpatialBounds(value) {
+  if (!value || typeof value !== "object") return null;
+  const minimum = sourceSpatialVector(sourceSpatialValue(
+    value,
+    "min",
+    "minimum",
+    "minimumPoint",
+    "minimum_point",
+  ));
+  const maximum = sourceSpatialVector(sourceSpatialValue(
+    value,
+    "max",
+    "maximum",
+    "maximumPoint",
+    "maximum_point",
+  ));
+  if (!minimum || !maximum || minimum.some((item, index) => item > maximum[index])) return null;
+  return {
+    min: minimum.map((item) => Number(item.toFixed(8))),
+    max: maximum.map((item) => Number(item.toFixed(8))),
+  };
+}
+
+function normalizeSourceSpatialMatrix(value) {
+  const source = Array.isArray(value)
+    ? value
+    : Array.isArray(value?.elements)
+      ? value.elements
+      : null;
+  if (!source || source.length !== 16) return null;
+  const matrix = source.map(Number);
+  if (!matrix.every(Number.isFinite)) return null;
+  if (
+    Math.abs(matrix[3]) > 1e-5
+    || Math.abs(matrix[7]) > 1e-5
+    || Math.abs(matrix[11]) > 1e-5
+    || Math.abs(matrix[15] - 1) > 1e-5
+  ) return null;
+  return matrix.map((item) => Number(item.toFixed(10)));
+}
+
+function sourceSpatialMatrixTransform(matrix) {
+  if (!matrix) return null;
+  const columnX = [matrix[0], matrix[1], matrix[2]];
+  const columnY = [matrix[4], matrix[5], matrix[6]];
+  const columnZ = [matrix[8], matrix[9], matrix[10]];
+  const length = (column) => Math.hypot(...column);
+  const scales = [length(columnX), length(columnY), length(columnZ)];
+  if (scales.some((item) => !Number.isFinite(item) || item < 1e-10)) return null;
+  const normalized = [columnX, columnY, columnZ].map((column, index) => (
+    column.map((item) => item / scales[index])
+  ));
+  const dot = (left, right) => left.reduce((sum, item, index) => sum + item * right[index], 0);
+  if (
+    Math.abs(dot(normalized[0], normalized[1])) > 1e-4
+    || Math.abs(dot(normalized[0], normalized[2])) > 1e-4
+    || Math.abs(dot(normalized[1], normalized[2])) > 1e-4
+  ) return null;
+  const determinant = (
+    normalized[0][0] * (normalized[1][1] * normalized[2][2] - normalized[2][1] * normalized[1][2])
+    - normalized[1][0] * (normalized[0][1] * normalized[2][2] - normalized[2][1] * normalized[0][2])
+    + normalized[2][0] * (normalized[0][1] * normalized[1][2] - normalized[1][1] * normalized[0][2])
+  );
+  if (!Number.isFinite(determinant) || determinant < 0.999 || determinant > 1.001) return null;
+
+  const r00 = normalized[0][0];
+  const r01 = normalized[1][0];
+  const r02 = normalized[2][0];
+  const r10 = normalized[0][1];
+  const r11 = normalized[1][1];
+  const r12 = normalized[2][1];
+  const r20 = normalized[0][2];
+  const r21 = normalized[1][2];
+  const r22 = normalized[2][2];
+  let x;
+  let y;
+  let z;
+  let w;
+  const trace = r00 + r11 + r22;
+  if (trace > 0) {
+    const root = Math.sqrt(trace + 1) * 2;
+    w = 0.25 * root;
+    x = (r21 - r12) / root;
+    y = (r02 - r20) / root;
+    z = (r10 - r01) / root;
+  } else if (r00 > r11 && r00 > r22) {
+    const root = Math.sqrt(1 + r00 - r11 - r22) * 2;
+    w = (r21 - r12) / root;
+    x = 0.25 * root;
+    y = (r01 + r10) / root;
+    z = (r02 + r20) / root;
+  } else if (r11 > r22) {
+    const root = Math.sqrt(1 + r11 - r00 - r22) * 2;
+    w = (r02 - r20) / root;
+    x = (r01 + r10) / root;
+    y = 0.25 * root;
+    z = (r12 + r21) / root;
+  } else {
+    const root = Math.sqrt(1 + r22 - r00 - r11) * 2;
+    w = (r10 - r01) / root;
+    x = (r02 + r20) / root;
+    y = (r12 + r21) / root;
+    z = 0.25 * root;
+  }
+  const quaternionLength = Math.hypot(x, y, z, w) || 1;
+  return {
+    position: [matrix[12], matrix[13], matrix[14]].map((item) => Number(item.toFixed(8))),
+    quaternion: [x, y, z, w].map((item) => Number((item / quaternionLength).toFixed(8))),
+    scale: scales.map((item) => Number(item.toFixed(8))),
+  };
+}
+
+function sourceSpatialTransformBounds(bounds, matrix) {
+  if (!bounds || !matrix) return null;
+  const result = {
+    min: [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY],
+    max: [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY],
+  };
+  for (const x of [bounds.min[0], bounds.max[0]]) {
+    for (const y of [bounds.min[1], bounds.max[1]]) {
+      for (const z of [bounds.min[2], bounds.max[2]]) {
+        const point = [
+          matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12],
+          matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13],
+          matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14],
+        ];
+        for (let index = 0; index < 3; index += 1) {
+          result.min[index] = Math.min(result.min[index], point[index]);
+          result.max[index] = Math.max(result.max[index], point[index]);
+        }
+      }
+    }
+  }
+  return {
+    min: result.min.map((item) => Number(item.toFixed(8))),
+    max: result.max.map((item) => Number(item.toFixed(8))),
+  };
+}
+
+function sourceSpatialAssetKeys(value) {
+  const supplied = String(value || "").trim();
+  if (!supplied) return [];
+  let pathname = supplied;
+  try {
+    pathname = new URL(supplied).pathname;
+  } catch {
+    pathname = supplied.split(/[?#]/, 1)[0];
+  }
+  const normalized = pathname.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+  const file = normalized.split("/").filter(Boolean).pop() || "";
+  return uniqueStrings([supplied.toLowerCase(), normalized, file]);
+}
+
+function sourceSpatialAssetResolver(graph, runtime) {
+  const byKey = new Map();
+  const assets = [
+    ...sourceSpatialArray(runtime?.assets),
+    ...sourceSpatialArray(graph?.assetInventory),
+  ];
+  for (const asset of assets) {
+    if (!asset?.id) continue;
+    for (const value of [
+      asset.id,
+      asset.path,
+      asset.url,
+      asset.originalUrl,
+      asset.original_url,
+      asset.assetUrl,
+      asset.asset_url,
+    ]) {
+      for (const key of sourceSpatialAssetKeys(value)) {
+        if (!byKey.has(key)) byKey.set(key, asset);
+      }
+    }
+  }
+  return (member) => {
+    for (const value of [
+      sourceSpatialValue(member, "assetId", "asset_id"),
+      sourceSpatialValue(member, "assetPath", "asset_path"),
+      sourceSpatialValue(member, "assetFile", "asset_file"),
+      sourceSpatialValue(member, "assetUrl", "asset_url"),
+      member?.url,
+    ]) {
+      for (const key of sourceSpatialAssetKeys(value)) {
+        const asset = byKey.get(key);
+        if (asset) return asset;
+      }
+    }
+    return null;
+  };
+}
+
+function sourceSpatialCompositionSources(graph, runtime) {
+  return [
+    graph?.sourceSpatialCompositions,
+    graph?.sourceSpatialComposition,
+    graph?.source_spatial_compositions,
+    graph?.source_spatial_composition,
+    graph?.authorMetadata?.sourceSpatialCompositions,
+    graph?.author_metadata?.source_spatial_compositions,
+    graph?.animationProbe?.sourceSpatialCompositions,
+    graph?.animation_probe?.sourceSpatialCompositions,
+    graph?.animationProbeJudgment?.sourceSpatialCompositions,
+    runtime?.sourceSpatialCompositions,
+    runtime?.sourceSpatialComposition,
+    runtime?.source_spatial_compositions,
+    runtime?.source_spatial_composition,
+    runtime?.authorMetadata?.sourceSpatialCompositions,
+    runtime?.author_metadata?.source_spatial_compositions,
+    runtime?.animationProbe?.sourceSpatialCompositions,
+    runtime?.animation_probe?.sourceSpatialCompositions,
+  ].filter((source) => source && typeof source === "object");
+}
+
+function sourceSpatialInstanceIds(value, knownInstanceIds) {
+  const source = Array.isArray(value)
+    ? value
+    : Array.isArray(value?.activeInstanceIds)
+      ? value.activeInstanceIds
+      : Array.isArray(value?.active_instance_ids)
+        ? value.active_instance_ids
+        : Array.isArray(value?.visibleInstanceIds)
+          ? value.visibleInstanceIds
+          : Array.isArray(value?.visible_instance_ids)
+            ? value.visible_instance_ids
+            : Array.isArray(value?.memberInstanceIds)
+              ? value.memberInstanceIds
+              : Array.isArray(value?.member_instance_ids)
+                ? value.member_instance_ids
+                : Array.isArray(value?.instances)
+                  ? value.instances
+                  : [];
+  return uniqueStrings(source.map((entry) => (
+    typeof entry === "string"
+      ? entry
+      : sourceSpatialString(entry, "instanceId", "instance_id", "id")
+  ))).filter((instanceId) => knownInstanceIds.has(instanceId));
+}
+
+function normalizeSourceSpatialActiveSets(value, knownInstanceIds) {
+  const activeSets = {};
+  const add = (key, entry) => {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey) return;
+    const instanceIds = sourceSpatialInstanceIds(entry, knownInstanceIds);
+    if (instanceIds.length || Array.isArray(entry)) activeSets[normalizedKey] = instanceIds;
+  };
+  const records = Array.isArray(value) ? value : [];
+  for (const record of records) {
+    const beatId = sourceSpatialString(record, "sceneKey", "scene_key", "beatId", "beat_id", "id");
+    add(beatId, record);
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    for (const [beatKey, entry] of Object.entries(value)) {
+      add(beatKey, entry);
+      const variants = sourceSpatialValue(
+        entry,
+        "variantsByOptionId",
+        "variants_by_option_id",
+        "variants",
+        "options",
+      );
+      if (!variants || typeof variants !== "object" || Array.isArray(variants)) continue;
+      for (const [optionId, variantEntry] of Object.entries(variants)) {
+        add(`beat:${beatKey}:variant:${optionId}`, variantEntry);
+        add(`${beatKey}:variant:${optionId}`, variantEntry);
+      }
+    }
+  }
+  return activeSets;
+}
+
+function normalizeSourceSpatialLoaderTransformPolicy(value) {
+  const supplied = typeof value === "string"
+    ? value
+    : sourceSpatialString(value, "operation", "policy", "kind", "type");
+  const normalized = String(supplied || "").trim().toLowerCase().replace(/_/g, "-");
+  return [
+    "reset-immediate-child-scale",
+    "reset-immediate-child-scales",
+  ].includes(normalized)
+    ? "reset-immediate-child-scale"
+    : null;
+}
+
+function normalizeSourceSpatialLoaderTransformTarget(value) {
+  let supplied = value;
+  if (supplied && typeof supplied === "object") {
+    supplied = sourceSpatialValue(
+      supplied,
+      "target",
+      "loaderTransformTarget",
+      "loader_transform_target",
+      "transformTarget",
+      "transform_target",
+      "detail",
+    );
+    if (supplied && typeof supplied === "object") {
+      supplied = sourceSpatialValue(
+        supplied,
+        "target",
+        "loaderTransformTarget",
+        "loader_transform_target",
+        "transformTarget",
+        "transform_target",
+        "value",
+      );
+    }
+  }
+  const normalized = String(supplied || "").trim().toLowerCase().replace(/_/g, "-");
+  if ([
+    "first-scene-child-children",
+    "first-child-children",
+  ].includes(normalized)) return "first-scene-child-children";
+  if ([
+    "immediate-children",
+    "root-children",
+    "scene-root-children",
+    "default",
+    "legacy",
+  ].includes(normalized)) return "immediate-children";
+  return null;
+}
+
+function normalizeSourceSpatialComposition(composition, resolveAsset, contractSignature = "") {
+  if (!composition || typeof composition !== "object") return null;
+  if (composition.accepted !== true) return null;
+  if (sourceSpatialString(composition, "placementPolicy", "placement_policy") !== SOURCE_LOCKED_PLACEMENT_POLICY) return null;
+  const compositionId = sourceSpatialString(composition, "compositionId", "composition_id", "id");
+  if (!compositionId) return null;
+  const seenInstanceIds = new Set();
+  const members = [];
+  for (const rawMember of sourceSpatialArray(sourceSpatialValue(composition, "members", "instances"))) {
+    const instanceId = sourceSpatialString(rawMember, "instanceId", "instance_id", "id");
+    const asset = resolveAsset(rawMember);
+    const resolvedLocalMatrix = normalizeSourceSpatialMatrix(sourceSpatialValue(
+      rawMember,
+      "resolvedLocalMatrix",
+      "resolved_local_matrix",
+      "localMatrix",
+      "local_matrix",
+      "matrix",
+    ) || sourceSpatialValue(rawMember?.transformRef, "matrix", "resolvedLocalMatrix", "resolved_local_matrix"));
+    const sourceMatrix = normalizeSourceSpatialMatrix(sourceSpatialValue(
+      rawMember,
+      "sourceMatrix",
+      "source_matrix",
+      "worldMatrix",
+      "world_matrix",
+    ));
+    const effectiveMatrix = resolvedLocalMatrix || sourceMatrix;
+    const transform = sourceSpatialMatrixTransform(effectiveMatrix);
+    if (!instanceId || seenInstanceIds.has(instanceId) || !asset?.id || !effectiveMatrix || !transform) return null;
+    seenInstanceIds.add(instanceId);
+    const intrinsicBounds = normalizeSourceSpatialBounds(sourceSpatialValue(
+      rawMember,
+      "intrinsicBounds",
+      "intrinsic_bounds",
+      "bounds",
+      "localBounds",
+      "local_bounds",
+    ));
+    const loaderTransformPolicySource = sourceSpatialValue(
+      rawMember,
+      "loaderTransformPolicy",
+      "loader_transform_policy",
+    );
+    const loaderTransformPolicy = normalizeSourceSpatialLoaderTransformPolicy(loaderTransformPolicySource);
+    const loaderTransformTarget = loaderTransformPolicy
+      ? normalizeSourceSpatialLoaderTransformTarget(
+        sourceSpatialValue(
+          rawMember,
+          "loaderTransformTarget",
+          "loader_transform_target",
+          "loaderTransformDetail",
+          "loader_transform_detail",
+          "loaderTransformPolicyDetail",
+          "loader_transform_policy_detail",
+        ) ?? loaderTransformPolicySource,
+      )
+      : null;
+    members.push({
+      instanceId,
+      assetId: asset.id,
+      assetPath: asset.path || sourceSpatialString(rawMember, "assetPath", "asset_path") || null,
+      assetUrl: sourceSpatialString(rawMember, "assetUrl", "asset_url", "url") || asset.originalUrl || asset.url || null,
+      resolvedLocalMatrix: effectiveMatrix,
+      ...(sourceMatrix ? { sourceMatrix } : {}),
+      transform,
+      ...(intrinsicBounds ? { intrinsicBounds } : {}),
+      role: sourceSpatialString(rawMember, "role", "semanticRole", "semantic_role") || "member",
+      ...(loaderTransformPolicy ? { loaderTransformPolicy } : {}),
+      ...(loaderTransformTarget ? { loaderTransformTarget } : {}),
+      persistent: sourceSpatialValue(rawMember, "persistent", "isPersistent", "is_persistent") === true,
+      beatIds: uniqueStrings(sourceSpatialArray(sourceSpatialValue(rawMember, "beatIds", "beat_ids", "beats"))
+        .map((beat) => typeof beat === "string" ? beat : sourceSpatialString(beat, "beatId", "beat_id", "id"))),
+      interactable: sourceSpatialValue(rawMember, "interactable", "interactive") !== false,
+    });
+  }
+  if (members.length < 2) return null;
+
+  const framingSource = sourceSpatialValue(composition, "framing", "frame", "normalization") || {};
+  const anchorSource = sourceSpatialValue(framingSource, "anchor", "framingAnchor", "framing_anchor") || {};
+  const anchorInstanceId = sourceSpatialString(
+    framingSource,
+    "anchorInstanceId",
+    "anchor_instance_id",
+    "anchorMemberId",
+    "anchor_member_id",
+  ) || sourceSpatialString(anchorSource, "instanceId", "instance_id", "id")
+    || sourceSpatialString(composition, "referenceInstanceId", "reference_instance_id");
+  const anchorMember = members.find((member) => member.instanceId === anchorInstanceId);
+  if (!anchorMember?.intrinsicBounds) return null;
+  const anchorBounds = sourceSpatialTransformBounds(
+    anchorMember.intrinsicBounds,
+    anchorMember.resolvedLocalMatrix,
+  );
+  if (!anchorBounds) return null;
+  const compositionBounds = normalizeSourceSpatialBounds(sourceSpatialValue(
+    framingSource,
+    "compositionBounds",
+    "composition_bounds",
+    "bounds",
+  ));
+  const framingCoordinateSpace = sourceSpatialString(
+    framingSource,
+    "coordinateSpace",
+    "coordinate_space",
+  ) === "source-config-local"
+    ? "source-config-local"
+    : "";
+  const knownInstanceIds = new Set(members.map((member) => member.instanceId));
+  const excludedInstanceIds = uniqueStrings(sourceSpatialArray(sourceSpatialValue(
+    framingSource,
+    "excludedInstanceIds",
+    "excluded_instance_ids",
+    "exclusions",
+  )).map((entry) => (
+    typeof entry === "string" ? entry : sourceSpatialString(entry, "instanceId", "instance_id", "id")
+  ))).filter((instanceId) => knownInstanceIds.has(instanceId));
+  const relations = sourceSpatialArray(sourceSpatialValue(composition, "relations", "relationships"))
+    .map((relation) => {
+      const subjectInstanceId = sourceSpatialString(
+        relation,
+        "subjectInstanceId",
+        "subject_instance_id",
+        "fromInstanceId",
+        "from_instance_id",
+      );
+      const referenceInstanceId = sourceSpatialString(
+        relation,
+        "referenceInstanceId",
+        "reference_instance_id",
+        "toInstanceId",
+        "to_instance_id",
+      );
+      if (!knownInstanceIds.has(subjectInstanceId) || !knownInstanceIds.has(referenceInstanceId)) return null;
+      return {
+        subjectInstanceId,
+        referenceInstanceId,
+        predicate: sourceSpatialString(relation, "predicate", "relation", "type") || "source-relative",
+        ...(Number.isFinite(Number(relation?.confidence))
+          ? { confidence: Number(Math.max(0, Math.min(1, Number(relation.confidence))).toFixed(4)) }
+          : {}),
+      };
+    })
+    .filter(Boolean);
+  const activeSetsByBeat = normalizeSourceSpatialActiveSets(sourceSpatialValue(
+    composition,
+    "activeSetsByBeat",
+    "active_sets_by_beat",
+    "activeSets",
+    "active_sets",
+  ), knownInstanceIds);
+  const confidenceValue = Number(sourceSpatialValue(composition, "confidence", "acceptanceConfidence", "acceptance_confidence"));
+  const normalized = {
+    compositionId,
+    accepted: true,
+    placementPolicy: SOURCE_LOCKED_PLACEMENT_POLICY,
+    members,
+    relations,
+    framing: {
+      anchorInstanceId,
+      anchorBounds,
+      ...(framingCoordinateSpace ? { coordinateSpace: framingCoordinateSpace } : {}),
+      ...(compositionBounds ? { compositionBounds } : {}),
+      excludedInstanceIds,
+      verticalAlignment: ["ground", "center"].includes(sourceSpatialString(
+        framingSource,
+        "verticalAlignment",
+        "vertical_alignment",
+      ).toLowerCase())
+        ? sourceSpatialString(framingSource, "verticalAlignment", "vertical_alignment").toLowerCase()
+        : "center",
+    },
+    activeSetsByBeat,
+    beatIds: uniqueStrings(sourceSpatialArray(sourceSpatialValue(composition, "beatIds", "beat_ids", "beats"))
+      .map((beat) => typeof beat === "string" ? beat : sourceSpatialString(beat, "beatId", "beat_id", "id"))),
+    signature: sourceSpatialString(composition, "signature", "compositionSignature", "composition_signature")
+      || contractSignature,
+    provenance: cloneJson(sourceSpatialValue(composition, "provenance", "evidence", "source") || {}),
+    runtimeValidation: cloneJson(sourceSpatialValue(
+      composition,
+      "runtimeValidation",
+      "runtime_validation",
+      "validation",
+    ) || null),
+    ...(Number.isFinite(confidenceValue)
+      ? { confidence: Number(Math.max(0, Math.min(1, confidenceValue)).toFixed(4)) }
+      : {}),
+  };
+  if (!normalized.signature) {
+    normalized.signature = createHash("sha256").update(JSON.stringify({
+      compositionId,
+      members: members.map((member) => ({
+        instanceId: member.instanceId,
+        assetId: member.assetId,
+        matrix: member.resolvedLocalMatrix,
+      })),
+      activeSetsByBeat,
+    })).digest("hex");
+  }
+  return normalized;
+}
+
+function sourceSpatialCompositionsForInference(graph, runtime) {
+  const resolveAsset = sourceSpatialAssetResolver(graph, runtime);
+  const byId = new Map();
+  let suppliedSignature = "";
+  for (const source of sourceSpatialCompositionSources(graph, runtime)) {
+    const schemaVersion = sourceSpatialString(source, "schemaVersion", "schema_version");
+    if (schemaVersion && schemaVersion !== SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION) continue;
+    const contractSignature = sourceSpatialString(source, "signature", "contractSignature", "contract_signature");
+    if (!suppliedSignature && contractSignature) suppliedSignature = contractSignature;
+    const rawCompositions = Array.isArray(source)
+      ? source
+      : sourceSpatialArray(sourceSpatialValue(source, "compositions", "sourceSpatialCompositions", "source_spatial_compositions"));
+    const candidates = rawCompositions.length
+      ? rawCompositions
+      : sourceSpatialString(source, "compositionId", "composition_id")
+        ? [source]
+        : [];
+    for (const candidate of candidates) {
+      const normalized = normalizeSourceSpatialComposition(candidate, resolveAsset, contractSignature);
+      if (normalized && !byId.has(normalized.compositionId)) byId.set(normalized.compositionId, normalized);
+    }
+  }
+  const compositions = [...byId.values()].sort((left, right) => left.compositionId.localeCompare(right.compositionId));
+  if (!compositions.length) return null;
+  return {
+    schemaVersion: SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION,
+    signature: suppliedSignature || createHash("sha256").update(JSON.stringify(compositions)).digest("hex"),
+    compositions,
+  };
+}
+
 function spatialRelationsInputSignature(graph, runtime, decisions) {
   const cues = graph?.sourceSpatialCues || sourceSpatialCuesForGraph(graph);
   const contentUnits = authoredContentUnitsFromGraph(graph || {}, runtime || {});
+  const sourceSpatialCompositions = sourceSpatialCompositionsForInference(graph, runtime);
   const input = {
     inference: {
       version: SPATIAL_RELATIONS_INFERENCE_VERSION,
@@ -8820,6 +9618,10 @@ function spatialRelationsInputSignature(graph, runtime, decisions) {
       playback: graph?.sourceMotionPlayback || emptySourceMotionPlayback(),
     },
     sourcePartStates: sourcePartStatesRuntimeContract(graph || {}),
+    ...(sourceSpatialCompositions ? {
+      sourceSpatialCompositionInferenceVersion: SOURCE_SPATIAL_COMPOSITION_INFERENCE_VERSION,
+      sourceSpatialCompositions,
+    } : {}),
   };
   return createHash("sha256").update(JSON.stringify(input)).digest("hex");
 }
@@ -8827,22 +9629,18 @@ function spatialRelationsInputSignature(graph, runtime, decisions) {
 export function inferSpatialRelationsContract(graph, runtime, decisions = {}) {
   const inputSignature = spatialRelationsInputSignature(graph, runtime, decisions);
   const cues = graph?.sourceSpatialCues || sourceSpatialCuesForGraph(graph);
+  const sourceSpatialCompositions = sourceSpatialCompositionsForInference(graph, runtime);
   const cueByBeat = new Map((cues?.cues || []).filter((cue) => cue?.beatId).map((cue) => [cue.beatId, cue]));
   const assetById = new Map((runtime?.assets || []).filter((asset) => asset?.id).map((asset) => [asset.id, asset]));
-  const viewpoint = normalizeAssetTopologyViewpoint(
-    decisions?.[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations?.viewpoint
-      || decisions?.["asset-topology"]?.option?.viewpoint
-      || decisions?.["asset-topology"]?.viewpoint,
-  ) || "egocentric";
   const legacyTopologyKind = assetTopologyKindFromLabel(decisions?.["asset-topology"]?.option?.label);
   const definitions = spatialSceneDefinitions(graph, runtime);
   const scenes = definitions.map((definition) => inferSpatialScene({
     definition,
     assetById,
     cue: cueByBeat.get(definition.beatId) || null,
-    viewpoint,
     inputSignature,
     requestedTopologyKind: legacyTopologyKind,
+    sourceSpatialCompositions,
   }));
   const resolvedByBeat = Object.fromEntries(scenes
     .filter((scene) => !scene.variantOptionId)
@@ -8855,11 +9653,11 @@ export function inferSpatialRelationsContract(graph, runtime, decisions = {}) {
     inferenceVersion: SPATIAL_RELATIONS_INFERENCE_VERSION,
     inputSignature,
     inferredAt: new Date().toISOString(),
-    viewpoint,
     entities: scenes.flatMap((scene) => scene.entities),
     resolvedByBeat,
     resolvedByVariant,
     timeline: scenes.map(spatialSceneTimelineEntry),
+    ...(sourceSpatialCompositions ? { sourceSpatialCompositions } : {}),
   };
 }
 
@@ -8936,7 +9734,247 @@ function spatialVisualAssetKind(asset) {
   return null;
 }
 
-function inferSpatialScene({ definition, assetById, cue, viewpoint, inputSignature, requestedTopologyKind }) {
+function sourceSpatialDefinitionActiveSetKeys(definition) {
+  if (definition.variantOptionId) {
+    return uniqueStrings([
+      definition.sceneKey,
+      `beat:${definition.beatId}:variant:${definition.variantOptionId}`,
+      `${definition.beatId}:variant:${definition.variantOptionId}`,
+      `${definition.beatId}::${definition.variantOptionId}`,
+    ]);
+  }
+  return uniqueStrings([definition.sceneKey, definition.beatId, `beat:${definition.beatId}`]);
+}
+
+function sourceSpatialActiveMembersForDefinition(composition, definition) {
+  const activeSets = composition?.activeSetsByBeat || {};
+  let explicitlyActive = null;
+  for (const key of sourceSpatialDefinitionActiveSetKeys(definition)) {
+    if (!Object.prototype.hasOwnProperty.call(activeSets, key)) continue;
+    explicitlyActive = new Set(activeSets[key] || []);
+    break;
+  }
+  if (definition.variantOptionId && explicitlyActive === null) return null;
+  const memberBeatMatches = new Set((composition?.members || [])
+    .filter((member) => (member.beatIds || []).includes(definition.beatId))
+    .map((member) => member.instanceId));
+  const compositionBeatMatches = (composition?.beatIds || []).includes(definition.beatId);
+  if (explicitlyActive === null && !memberBeatMatches.size && !compositionBeatMatches) return null;
+  const activeIds = explicitlyActive || (
+    memberBeatMatches.size
+      ? memberBeatMatches
+      : new Set((composition?.members || []).map((member) => member.instanceId))
+  );
+  const anchorInstanceId = composition?.framing?.anchorInstanceId;
+  if (anchorInstanceId) activeIds.add(anchorInstanceId);
+  for (const member of composition?.members || []) {
+    if (member.persistent) activeIds.add(member.instanceId);
+  }
+  const activeMembers = (composition?.members || []).filter((member) => activeIds.has(member.instanceId));
+  return activeMembers.length >= 2 ? activeMembers : null;
+}
+
+function sourceSpatialCompositionForDefinition(sourceSpatialCompositions, definition) {
+  const matches = (sourceSpatialCompositions?.compositions || []).flatMap((composition) => {
+    const activeMembers = sourceSpatialActiveMembersForDefinition(composition, definition);
+    return activeMembers ? [{ composition, activeMembers }] : [];
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function sourceSpatialEntityIdToken(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    || "member";
+}
+
+function sourceSpatialLeafEntityId(member, definition, assetMemberCount) {
+  const base = `glb:${member.assetId}:${spatialSceneEntitySuffix(definition)}`;
+  return assetMemberCount === 1
+    ? base
+    : `${base}:source-instance:${sourceSpatialEntityIdToken(member.instanceId)}`;
+}
+
+function inferSourceLockedSpatialScene({
+  scene,
+  definition,
+  composition,
+  activeMembers,
+  assetById,
+  inputSignature,
+}) {
+  const eligibleMembers = activeMembers.filter((member) => (
+    spatialVisualAssetKind(assetById.get(member.assetId)) === "glb"
+  ));
+  if (eligibleMembers.length < 2) return scene;
+  const membersPerAsset = new Map();
+  for (const member of eligibleMembers) {
+    membersPerAsset.set(member.assetId, (membersPerAsset.get(member.assetId) || 0) + 1);
+  }
+  const genericVisualByAssetId = new Map(scene.entities
+    .filter((entity) => entity.kind === "glb")
+    .map((entity) => [entity.assetId, entity]));
+  const memberEntities = eligibleMembers.map((member) => {
+    const base = membersPerAsset.get(member.assetId) === 1
+      ? genericVisualByAssetId.get(member.assetId)
+      : null;
+    const id = sourceSpatialLeafEntityId(member, definition, membersPerAsset.get(member.assetId));
+    const transform = cloneJson(member.transform);
+    return {
+      ...(base ? cloneJson(base) : {
+        id,
+        kind: "glb",
+        scope: "beat",
+        sceneKey: definition.sceneKey,
+        beatId: definition.beatId,
+        variantGroupId: definition.variantGroupId,
+        variantOptionId: definition.variantOptionId,
+        assetId: member.assetId,
+        anchor: { type: "scene", assetId: null, cueId: null },
+        orientationPolicy: "fixed",
+      }),
+      id,
+      placementPolicy: SOURCE_LOCKED_PLACEMENT_POLICY,
+      compositionId: composition.compositionId,
+      sourceInstanceId: member.instanceId,
+      compositionRootId: `source-composition:${sourceSpatialEntityIdToken(composition.compositionId)}:${spatialSceneEntitySuffix(definition)}`,
+      sourceMatrix: cloneJson(member.resolvedLocalMatrix),
+      ...(member.intrinsicBounds ? { intrinsicBounds: cloneJson(member.intrinsicBounds) } : {}),
+      sourceRole: member.role,
+      ...(member.loaderTransformPolicy ? { loaderTransformPolicy: member.loaderTransformPolicy } : {}),
+      ...(member.loaderTransformTarget ? { loaderTransformTarget: member.loaderTransformTarget } : {}),
+      persistent: member.persistent === true,
+      interactable: member.interactable !== false,
+      verticalAlignment: "center",
+      inferredTransform: cloneJson(transform),
+      transform: cloneJson(transform),
+      inference: {
+        confidence: Number.isFinite(Number(composition.confidence)) ? Number(composition.confidence) : 1,
+        reasons: ["This model starts from its captured source-local placement within the accepted source assembly."],
+        inputSignature,
+      },
+      manual: false,
+    };
+  });
+  const rootId = memberEntities[0]?.compositionRootId;
+  const rootTransform = spatialTransform();
+  const rootEntity = {
+    id: rootId,
+    kind: "composition-root",
+    scope: "beat",
+    sceneKey: definition.sceneKey,
+    beatId: definition.beatId,
+    variantGroupId: definition.variantGroupId,
+    variantOptionId: definition.variantOptionId,
+    anchor: { type: "scene", assetId: null, cueId: null },
+    placementPolicy: SOURCE_LOCKED_PLACEMENT_POLICY,
+    compositionId: composition.compositionId,
+    inferredTransform: cloneJson(rootTransform),
+    transform: cloneJson(rootTransform),
+    orientationPolicy: "fixed",
+    interactable: false,
+    authorTransformable: true,
+    inference: {
+      confidence: Number.isFinite(Number(composition.confidence)) ? Number(composition.confidence) : 1,
+      reasons: ["This root frames the accepted source assembly once while preserving every member's relative placement."],
+      inputSignature,
+    },
+    manual: false,
+  };
+  const memberEntityByInstanceId = new Map(memberEntities.map((entity) => [entity.sourceInstanceId, entity]));
+  const anchorEntity = memberEntityByInstanceId.get(composition.framing.anchorInstanceId);
+  if (!anchorEntity) return scene;
+  const retainedNonVisual = scene.entities
+    .filter((entity) => !["glb", "image-plane"].includes(entity.kind))
+    .map((entity) => cloneJson(entity));
+  const retainedImageEntities = scene.entities
+    .filter((entity) => entity.kind === "image-plane")
+    .map((entity) => cloneJson(entity));
+  const textEntity = retainedNonVisual.find((entity) => entity.kind === "text-panel");
+  if (textEntity) {
+    const explicitSourceFocus = textEntity.anchor?.type === "source-focus" && textEntity.anchor?.cueId
+      ? memberEntities.find((member) => member.assetId === textEntity.anchor.assetId)
+      : null;
+    const semanticFocus = memberEntities.find((member) => (
+      /\b(active|focus|foreground|landmark|marker|pin|placed|subject)\b/i.test(String(member.sourceRole || ""))
+    ));
+    const preferredAnchor = explicitSourceFocus || semanticFocus || anchorEntity;
+    if (preferredAnchor && textEntity.anchor?.assetId !== preferredAnchor.assetId) {
+      textEntity.assetId = preferredAnchor.assetId;
+      textEntity.anchor = {
+        type: "asset",
+        assetId: preferredAnchor.assetId,
+        cueId: null,
+      };
+      textEntity.clearance = inferredSpatialPanelClearance(textEntity.anchor);
+      textEntity.inference = {
+        ...(textEntity.inference || {}),
+        reasons: [
+          "The panel follows the declared active or framing member of the accepted source composition.",
+          ...(textEntity.inference?.reasons || []),
+        ],
+      };
+    }
+  }
+  const linkedAssetIds = uniqueStrings([
+    ...memberEntities.map((entity) => entity.assetId),
+    ...retainedImageEntities.map((entity) => entity.assetId),
+  ]);
+  const sourceComposition = {
+    schemaVersion: SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION,
+    compositionId: composition.compositionId,
+    placementPolicy: SOURCE_LOCKED_PLACEMENT_POLICY,
+    rootEntityId: rootId,
+    memberEntityIds: memberEntities.map((entity) => entity.id),
+    activeInstanceIds: memberEntities.map((entity) => entity.sourceInstanceId),
+    relations: cloneJson(composition.relations || []),
+    framing: {
+      ...cloneJson(composition.framing),
+      anchorEntityId: anchorEntity.id,
+    },
+    signature: composition.signature,
+    provenance: cloneJson(composition.provenance || {}),
+    runtimeValidation: cloneJson(composition.runtimeValidation || null),
+    ...(Number.isFinite(Number(composition.confidence))
+      ? { confidence: Number(composition.confidence) }
+      : {}),
+    fallbackLinkedAssetIds: [...definition.linkedAssetIds],
+    fallbackTopology: cloneJson(scene.topology),
+  };
+  const sceneSignature = createHash("sha256").update(JSON.stringify({
+    inputSignature,
+    sceneKey: definition.sceneKey,
+    compositionId: composition.compositionId,
+    compositionSignature: composition.signature,
+    activeInstanceIds: sourceComposition.activeInstanceIds,
+    linkedAssetIds,
+  })).digest("hex");
+  return {
+    ...scene,
+    linkedAssetIds,
+    topology: { kind: "single", label: assetTopologyLabelFromKind("single") },
+    placementPolicy: SOURCE_LOCKED_PLACEMENT_POLICY,
+    sourceComposition,
+    inputSignature: sceneSignature,
+    entities: [
+      ...retainedNonVisual,
+      rootEntity,
+      ...memberEntities,
+      ...retainedImageEntities,
+    ],
+  };
+}
+
+function inferSpatialScene({
+  definition,
+  assetById,
+  cue,
+  inputSignature,
+  requestedTopologyKind,
+  sourceSpatialCompositions = null,
+}) {
   const visualAssets = definition.linkedAssetIds.map((assetId) => assetById.get(assetId)).filter(isSpatialVisualAsset);
   const topologyKind = visualAssets.length <= 1 || !["single", "constellation", "map"].includes(requestedTopologyKind)
     ? "single"
@@ -8970,10 +10008,10 @@ function inferSpatialScene({ definition, assetById, cue, viewpoint, inputSignatu
     };
   });
   if (definition.text) {
-    entities.unshift(inferSpatialTextEntity({ definition, entities, cue, viewpoint, inputSignature }));
+    entities.unshift(inferSpatialTextEntity({ definition, entities, cue, inputSignature }));
   }
   if (!definition.variantOptionId) {
-    entities.unshift(inferSpatialReaderEntity({ definition, viewpoint, topologyKind, inputSignature }));
+    entities.unshift(inferSpatialReaderEntity({ definition, inputSignature }));
   }
   const sceneSignature = createHash("sha256").update(JSON.stringify({
     inputSignature,
@@ -8981,7 +10019,7 @@ function inferSpatialScene({ definition, assetById, cue, viewpoint, inputSignatu
     linkedAssetIds: definition.linkedAssetIds,
     text: definition.text,
   })).digest("hex");
-  return {
+  const scene = {
     sceneKey: definition.sceneKey,
     sceneId: definition.sceneId,
     beatId: definition.beatId,
@@ -8991,14 +10029,23 @@ function inferSpatialScene({ definition, assetById, cue, viewpoint, inputSignatu
     variantOrder: definition.variantOrder,
     linkedAssetIds: [...definition.linkedAssetIds],
     topology,
-    viewpoint,
     inputSignature: sceneSignature,
     entities,
   };
+  const sourceComposition = sourceSpatialCompositionForDefinition(sourceSpatialCompositions, definition);
+  return sourceComposition
+    ? inferSourceLockedSpatialScene({
+      scene,
+      definition,
+      assetById,
+      inputSignature,
+      ...sourceComposition,
+    })
+    : scene;
 }
 
-function inferSpatialReaderEntity({ definition, viewpoint, topologyKind, inputSignature }) {
-  const transform = inferredSpatialReaderTransform(viewpoint, topologyKind);
+function inferSpatialReaderEntity({ definition, inputSignature }) {
+  const transform = inferredSpatialReaderTransform();
   return {
     id: `reader:${spatialSceneEntitySuffix(definition)}`,
     kind: "reader",
@@ -9013,23 +10060,18 @@ function inferSpatialReaderEntity({ definition, viewpoint, topologyKind, inputSi
     orientationPolicy: "fixed",
     inference: {
       confidence: 1,
-      reasons: ["The reader pose is inferred from this scene's topology and viewpoint."],
+      reasons: ["The reader starts from the standard scene entry pose."],
       inputSignature,
     },
     manual: false,
   };
 }
 
-function inferredSpatialReaderTransform(viewpoint, topologyKind) {
-  const normalizedViewpoint = normalizeAssetTopologyViewpoint(viewpoint) || "exocentric";
-  const kind = String(topologyKind || "single").toLowerCase();
-  if (normalizedViewpoint === "egocentric") {
-    return spatialTransform(kind === "single" ? [0, 1.35, 0.24] : [0, 1.45, 0.18]);
-  }
+function inferredSpatialReaderTransform() {
   return spatialTransform([0, 1.55, 5.2]);
 }
 
-function inferSpatialTextEntity({ definition, entities, cue, viewpoint, inputSignature }) {
+function inferSpatialTextEntity({ definition, entities, cue, inputSignature }) {
   const modelIds = new Set(entities.filter((entity) => entity.kind === "glb").map((entity) => entity.assetId));
   const anchorAssetId = cue?.assetId && modelIds.has(cue.assetId)
     ? cue.assetId
@@ -9052,18 +10094,12 @@ function inferSpatialTextEntity({ definition, entities, cue, viewpoint, inputSig
     orientationPolicy = "reader-facing-yaw";
     confidence = 0.72;
     reasons = ["The saved Source Graph links this scene to an active GLB.", "The panel uses an object-adjacent sidecar placement with live collision clearance."];
-  } else if (viewpoint === "egocentric") {
-    anchor = { type: "reader", assetId: null, cueId: null };
-    position = [0.34, -0.18, -1.05];
-    orientationPolicy = "fixed";
-    confidence = 0.62;
-    reasons = ["This readable scene has no reliable object or camera-focus anchor.", "The egocentric fallback uses a reader-relative reading zone."];
   } else {
     anchor = { type: "world", assetId: null, cueId: null };
     position = [-1.05, 1.45, -1.18];
     orientationPolicy = "reader-facing-yaw";
     confidence = 0.58;
-    reasons = ["This readable scene has no reliable object or camera-focus anchor.", "The exocentric fallback uses a stable world-space reading zone."];
+    reasons = ["This readable scene has no reliable object or camera-focus anchor.", "The fallback uses a stable world-space reading zone."];
   }
   const transform = spatialTransform(position);
   return {
@@ -9291,38 +10327,13 @@ export function validateSpatialRelationsContract(value, inferred) {
   if (!legacySource && source.inputSignature && source.inputSignature !== inferred.inputSignature) {
     throw Object.assign(new Error("Spatial Relations is stale because its source graph or current upstream layout changed. Review the refreshed inference before saving."), { statusCode: 409 });
   }
-  const viewpoint = normalizeAssetTopologyViewpoint(source.viewpoint) || inferred.viewpoint;
   const submittedSceneForBase = (baseScene) => (
     baseScene?.variantOptionId
       ? source.resolvedByVariant?.[baseScene.sceneKey]
         || source.resolvedByBeat?.[baseScene.beatId]?.variantsByOptionId?.[baseScene.variantOptionId]
       : source.resolvedByBeat?.[baseScene?.beatId]
   );
-  const sceneViewpointByKey = new Map([
-    ...Object.values(inferred.resolvedByBeat || {}),
-    ...Object.values(inferred.resolvedByVariant || {}),
-  ].map((baseScene) => [
-    baseScene.sceneKey,
-    normalizeAssetTopologyViewpoint(submittedSceneForBase(baseScene)?.viewpoint)
-      || normalizeAssetTopologyViewpoint(baseScene.viewpoint)
-      || viewpoint,
-  ]));
-  const inferenceEntities = inferred.entities.map((entity) => {
-    if (spatialRelationEntityKind(entity) !== "reader") return entity;
-    const baseScene = inferred.resolvedByBeat?.[entity.beatId];
-    const sceneViewpoint = sceneViewpointByKey.get(entity.sceneKey || baseScene?.sceneKey) || viewpoint;
-    const topologyKind = baseScene?.topology?.kind || "single";
-    const inferredTransform = inferredSpatialReaderTransform(sceneViewpoint, topologyKind);
-    return {
-      ...entity,
-      inferredTransform: cloneJson(inferredTransform),
-      transform: cloneJson(inferredTransform),
-      inference: {
-        ...(entity.inference || {}),
-        reasons: ["The reader pose is inferred from this scene's topology and viewpoint."],
-      },
-    };
-  });
+  const inferenceEntities = inferred.entities;
   const inferredById = new Map(inferenceEntities.map((entity) => [entity.id, entity]));
   const submittedEntities = spatialRelationEntitiesFromContract(source, {
     rejectConflictingAuthored: true,
@@ -9365,24 +10376,28 @@ export function validateSpatialRelationsContract(value, inferred) {
     }));
   }
   const resolvedByBeat = Object.fromEntries(Object.entries(inferred.resolvedByBeat || {}).map(([beatId, baseScene]) => {
-    const submittedScene = source.resolvedByBeat?.[beatId];
-    return [beatId, sanitizeSpatialScene(submittedScene, baseScene, sanitizedById, viewpoint)];
+    const submittedScene = submittedSceneForBase(baseScene);
+    return [beatId, sanitizeSpatialScene(submittedScene, baseScene, sanitizedById)];
   }));
   const resolvedByVariant = Object.fromEntries(Object.entries(inferred.resolvedByVariant || {}).map(([sceneKey, baseScene]) => {
-    const submittedScene = source.resolvedByVariant?.[sceneKey]
-      || source.resolvedByBeat?.[baseScene.beatId]?.variantsByOptionId?.[baseScene.variantOptionId];
-    return [sceneKey, sanitizeSpatialScene(submittedScene, baseScene, sanitizedById, viewpoint)];
+    const submittedScene = submittedSceneForBase(baseScene);
+    return [sceneKey, sanitizeSpatialScene(submittedScene, baseScene, sanitizedById)];
   }));
   return {
     schemaVersion: SPATIAL_RELATIONS_SCHEMA_VERSION,
     inferenceVersion: SPATIAL_RELATIONS_INFERENCE_VERSION,
     inputSignature: inferred.inputSignature,
     inferredAt: source.inferredAt || inferred.inferredAt,
-    viewpoint,
     entities: [...sanitizedById.values()],
     resolvedByBeat,
     resolvedByVariant,
     timeline: inferred.timeline.map((entry) => ({ ...entry })),
+    ...(inferred.sourceSpatialCompositions
+      ? { sourceSpatialCompositions: cloneJson(inferred.sourceSpatialCompositions) }
+      : {}),
+    ...(Array.isArray(inferred.sourceSpatialCompositionReviews) && inferred.sourceSpatialCompositionReviews.length
+      ? { sourceSpatialCompositionReviews: cloneJson(inferred.sourceSpatialCompositionReviews) }
+      : {}),
   };
 }
 
@@ -9455,6 +10470,11 @@ function spatialRelationEntitiesFromContract(contract, options = {}) {
 
 function spatialRelationEntityKind(entity) {
   if (entity?.kind === "reader" || entity?.type === "reader" || String(entity?.id || "").startsWith("reader:")) return "reader";
+  if (
+    entity?.kind === "composition-root"
+    || entity?.type === "composition-root"
+    || String(entity?.id || "").startsWith("source-composition:")
+  ) return "composition-root";
   if (entity?.kind === "image-plane" || entity?.type === "image-plane" || String(entity?.id || "").startsWith("image:")) return "image-plane";
   if (entity?.kind === "glb" || entity?.type === "glb" || String(entity?.id || "").startsWith("glb:")) return "glb";
   return "text-panel";
@@ -9474,7 +10494,7 @@ function isLegacyGlobalSpatialVisualEntity(entity) {
   return !id.includes(":beat:") && Boolean(entity?.assetId || legacySpatialEntityAssetId(entity));
 }
 
-function sanitizeSpatialScene(value, base, sanitizedById, fallbackViewpoint) {
+function sanitizeSpatialScene(value, base, sanitizedById) {
   const source = value && typeof value === "object" ? value : {};
   const topologyKind = assetTopologyKindFromLabel(source.topology?.label)
     || (["single", "constellation", "map"].includes(source.topology?.kind) ? source.topology.kind : null)
@@ -9497,9 +10517,6 @@ function sanitizeSpatialScene(value, base, sanitizedById, fallbackViewpoint) {
     ...base,
     linkedAssetIds: [...base.linkedAssetIds],
     topology: { kind: safeTopologyKind, label: assetTopologyLabelFromKind(safeTopologyKind) },
-    viewpoint: normalizeAssetTopologyViewpoint(source.viewpoint)
-      || normalizeAssetTopologyViewpoint(base.viewpoint)
-      || fallbackViewpoint,
     inputSignature: base.inputSignature,
     entities,
   };
@@ -9507,7 +10524,13 @@ function sanitizeSpatialScene(value, base, sanitizedById, fallbackViewpoint) {
 
 function sanitizeSpatialRelationEntity(value, base, inputSignature, inferredById, options = {}) {
   const source = value && typeof value === "object" ? value : base;
-  const transform = sanitizeSpatialTransform(source.transform || source.effectiveTransform || base.transform, base.transform, base.id);
+  // A source matrix records the captured assembly baseline. It is never accepted
+  // from a draft, but the member's ordinary transform remains author-editable.
+  const transform = sanitizeSpatialTransform(
+    source.transform || source.effectiveTransform || base.transform,
+    base.transform,
+    base.id,
+  );
   if (base.kind === "reader") transform.scale = [1, 1, 1];
   const verticalAlignment = base.kind === "glb"
     ? sanitizeSpatialVerticalAlignment(
@@ -9518,7 +10541,7 @@ function sanitizeSpatialRelationEntity(value, base, inputSignature, inferredById
   let anchorSource = source.anchor && typeof source.anchor === "object" ? source.anchor : base.anchor;
   let anchorType = String(anchorSource?.type || base.anchor.type);
   const visualEntity = ["glb", "image-plane"].includes(base.kind);
-  const sceneEntity = visualEntity || base.kind === "reader";
+  const sceneEntity = visualEntity || ["reader", "composition-root"].includes(base.kind);
   const allowedAnchorTypes = sceneEntity
     ? new Set(["scene", "topology"])
     : new Set(["source-focus", "asset", "reader", "world"]);
@@ -9955,8 +10978,175 @@ function retainedSpatialAuthoredInstances(inferred, existing) {
   });
 }
 
+function existingSpatialSceneForBase(existing, baseScene) {
+  if (!existing || !baseScene) return null;
+  if (baseScene.variantOptionId) {
+    return existing.resolvedByVariant?.[baseScene.sceneKey]
+      || existing.resolvedByBeat?.[baseScene.beatId]?.variantsByOptionId?.[baseScene.variantOptionId]
+      || null;
+  }
+  return existing.resolvedByBeat?.[baseScene.beatId] || null;
+}
+
+function sourceLockedSceneExistingAuthoredMembers(baseScene, existing) {
+  if (baseScene?.placementPolicy !== SOURCE_LOCKED_PLACEMENT_POLICY) return [];
+  const memberIds = new Set(baseScene.sourceComposition?.memberEntityIds || []);
+  const baseMembersById = new Map((baseScene.entities || [])
+    .filter((entity) => memberIds.has(entity.id))
+    .map((entity) => [entity.id, entity]));
+  const memberAssetIds = new Set((baseScene.entities || [])
+    .filter((entity) => memberIds.has(entity.id))
+    .map((entity) => entity.assetId)
+    .filter(Boolean));
+  const exactScene = existingSpatialSceneForBase(existing, baseScene);
+  const candidates = exactScene
+    ? spatialRelationEntitiesFromContract({ entities: exactScene.entities }, { rejectConflictingAuthored: true })
+    : spatialRelationEntitiesFromContract(existing, { rejectConflictingAuthored: true }).filter((entity) => (
+      String(entity?.sceneKey || "") === String(baseScene.sceneKey || "")
+      || (
+        String(entity?.beatId || "") === String(baseScene.beatId || "")
+        && String(entity?.variantOptionId || "") === String(baseScene.variantOptionId || "")
+      )
+    ));
+  const isSavedMemberOfThisComposition = (entity) => {
+    const baseMember = baseMembersById.get(entity.id);
+    return Boolean(
+      baseMember
+      && entity.placementPolicy === SOURCE_LOCKED_PLACEMENT_POLICY
+      && entity.compositionId === baseScene.sourceComposition?.compositionId
+      && entity.sourceInstanceId === baseMember.sourceInstanceId
+    );
+  };
+  return candidates.filter((entity) => (
+    spatialRelationEntityKind(entity) === "glb"
+    && (memberIds.has(entity.id) || memberAssetIds.has(entity.assetId))
+    && spatialRelationEntityHasAuthoredState(entity)
+    // A saved edit to a member of this same accepted composition belongs to the
+    // assembly and is restored below. Manual ordinary GLBs and added instances
+    // still require the existing review path before a composition is promoted.
+    && !isSavedMemberOfThisComposition(entity)
+  ));
+}
+
+function omitSourceLockedSpatialMemberFields(entity) {
+  const {
+    placementPolicy: _placementPolicy,
+    compositionId: _compositionId,
+    sourceInstanceId: _sourceInstanceId,
+    compositionRootId: _compositionRootId,
+    sourceMatrix: _sourceMatrix,
+    intrinsicBounds: _intrinsicBounds,
+    sourceRole: _sourceRole,
+    loaderTransformPolicy: _loaderTransformPolicy,
+    loaderTransformTarget: _loaderTransformTarget,
+    persistent: _persistent,
+    interactable: _interactable,
+    authorTransformable: _authorTransformable,
+    ...rest
+  } = entity || {};
+  return rest;
+}
+
+function fallbackSceneForSourceSpatialReview(scene, authoredMembers) {
+  const sourceComposition = scene.sourceComposition || {};
+  const linkedAssetIds = uniqueStrings(
+    sourceComposition.fallbackLinkedAssetIds?.length
+      ? sourceComposition.fallbackLinkedAssetIds
+      : scene.linkedAssetIds,
+  );
+  const fallbackTopology = sourceComposition.fallbackTopology || { kind: "single", label: assetTopologyLabelFromKind("single") };
+  const sourceVisuals = (scene.entities || []).filter((entity) => (
+    ["glb", "image-plane"].includes(spatialRelationEntityKind(entity))
+  ));
+  const visualByAssetId = new Map();
+  for (const entity of sourceVisuals) {
+    if (!linkedAssetIds.includes(entity.assetId) || visualByAssetId.has(entity.assetId)) continue;
+    visualByAssetId.set(entity.assetId, entity);
+  }
+  const visualEntities = linkedAssetIds.flatMap((assetId, index) => {
+    const source = visualByAssetId.get(assetId);
+    if (!source) return [];
+    const kind = spatialRelationEntityKind(source);
+    const transform = spatialLayoutTransform(
+      fallbackTopology.kind || "single",
+      index,
+      linkedAssetIds.length,
+      kind,
+    );
+    const id = `${kind === "glb" ? "glb" : "image"}:${assetId}:${spatialSceneEntitySuffix(scene)}`;
+    return [{
+      ...omitSourceLockedSpatialMemberFields(source),
+      id,
+      verticalAlignment: kind === "glb" ? "ground" : source.verticalAlignment,
+      inferredTransform: cloneJson(transform),
+      transform: cloneJson(transform),
+      inference: {
+        confidence: 1,
+        reasons: ["This scene remains on the ordinary per-model path until its existing authored placement is reviewed."],
+        inputSignature: source.inference?.inputSignature || scene.inputSignature,
+      },
+      manual: false,
+    }];
+  });
+  const nonVisualEntities = (scene.entities || []).filter((entity) => (
+    !["glb", "image-plane", "composition-root"].includes(spatialRelationEntityKind(entity))
+  ));
+  const {
+    placementPolicy: _placementPolicy,
+    sourceComposition: _sourceComposition,
+    ...baseScene
+  } = scene;
+  return {
+    ...baseScene,
+    linkedAssetIds,
+    topology: cloneJson(fallbackTopology),
+    entities: [...nonVisualEntities, ...visualEntities],
+    requiresSourceSpatialCompositionReview: true,
+    sourceSpatialCompositionReview: {
+      status: "required",
+      compositionId: sourceComposition.compositionId || null,
+      reason: "Existing manual or authored-instance model placement takes precedence over automatic source-composition promotion.",
+      entityIds: authoredMembers.map((entity) => entity.id),
+    },
+  };
+}
+
+function inferredWithSourceSpatialReviewFallbacks(inferred, existing) {
+  if (!inferred?.sourceSpatialCompositions) return inferred;
+  const reviews = [];
+  const rewrite = (scene) => {
+    const authoredMembers = sourceLockedSceneExistingAuthoredMembers(scene, existing);
+    if (!authoredMembers.length) return scene;
+    const fallback = fallbackSceneForSourceSpatialReview(scene, authoredMembers);
+    reviews.push({
+      sceneKey: fallback.sceneKey,
+      beatId: fallback.beatId,
+      variantOptionId: fallback.variantOptionId || null,
+      ...fallback.sourceSpatialCompositionReview,
+    });
+    return fallback;
+  };
+  const resolvedByBeat = Object.fromEntries(Object.entries(inferred.resolvedByBeat || {})
+    .map(([beatId, scene]) => [beatId, rewrite(scene)]));
+  const resolvedByVariant = Object.fromEntries(Object.entries(inferred.resolvedByVariant || {})
+    .map(([sceneKey, scene]) => [sceneKey, rewrite(scene)]));
+  if (!reviews.length) return inferred;
+  const scenes = [
+    ...Object.values(resolvedByBeat),
+    ...Object.values(resolvedByVariant),
+  ];
+  return {
+    ...inferred,
+    entities: scenes.flatMap((scene) => scene.entities || []),
+    resolvedByBeat,
+    resolvedByVariant,
+    sourceSpatialCompositionReviews: reviews,
+  };
+}
+
 export function mergeSpatialRelationsWithExisting(inferred, existing) {
   if (!existing || typeof existing !== "object") return inferred;
+  inferred = inferredWithSourceSpatialReviewFallbacks(inferred, existing);
   if (existing.schemaVersion === LEGACY_SPATIAL_RELATIONS_SCHEMA_VERSION) {
     return validateSpatialRelationsContract(existing, inferred);
   }
@@ -9984,13 +11174,11 @@ export function mergeSpatialRelationsWithExisting(inferred, existing) {
   const resolvedByBeat = Object.fromEntries(Object.entries(inferred.resolvedByBeat).map(([beatId, base]) => [beatId, {
     ...base,
     ...(existing.resolvedByBeat?.[beatId]?.topology ? { topology: existing.resolvedByBeat[beatId].topology } : {}),
-    ...(existing.resolvedByBeat?.[beatId]?.viewpoint ? { viewpoint: existing.resolvedByBeat[beatId].viewpoint } : {}),
     entities: [],
   }]));
   const resolvedByVariant = Object.fromEntries(Object.entries(inferred.resolvedByVariant).map(([sceneKey, base]) => [sceneKey, {
     ...base,
     ...(existing.resolvedByVariant?.[sceneKey]?.topology ? { topology: existing.resolvedByVariant[sceneKey].topology } : {}),
-    ...(existing.resolvedByVariant?.[sceneKey]?.viewpoint ? { viewpoint: existing.resolvedByVariant[sceneKey].viewpoint } : {}),
     entities: [],
   }]));
   for (const instance of retainedInstances) {
@@ -10003,7 +11191,6 @@ export function mergeSpatialRelationsWithExisting(inferred, existing) {
     schemaVersion: SPATIAL_RELATIONS_SCHEMA_VERSION,
     inputSignature: inferred.inputSignature,
     inferredAt: existing.inferredAt || inferred.inferredAt,
-    viewpoint: existing.viewpoint,
     entities: safeEntities,
     resolvedByBeat,
     resolvedByVariant,
@@ -10255,7 +11442,6 @@ function spatialRelationsForUnit(contract, unit) {
     return {
       schemaVersion: contract.schemaVersion,
       inputSignature: contract.inputSignature,
-      viewpoint: contract.viewpoint,
       ...scene,
       ...(Object.keys(variantsByOptionId).length ? { variantsByOptionId } : {}),
     };
@@ -10641,7 +11827,7 @@ function normalizeSourceGraph(graph) {
   const sourceDynamics = sourceDynamicsSummaryForGraph(next);
   if (sourceDynamics.assets.length) next.sourceDynamics = sourceDynamics;
   else delete next.sourceDynamics;
-  return next;
+  return omitRetiredViewpointMetadata(next);
 }
 
 function authoredBeatHostsVariantGroup(beat, group) {
@@ -12545,7 +13731,7 @@ function proposalOptionLabelsForContext(component, context = {}) {
   return component.optionLabels || [];
 }
 
-async function sanitizeAssetTopologyDecisionOption(paths, option, requestedViewpoint) {
+async function sanitizeAssetTopologyDecisionOption(paths, option) {
   const runtime = await importFetchedStoryResources(paths.resourceFolder, "dev", {
     repoRoot: REPO_ROOT,
     storyFolder: paths.storyFolder,
@@ -12562,57 +13748,7 @@ async function sanitizeAssetTopologyDecisionOption(paths, option, requestedViewp
       }],
     });
   }
-  return withAssetTopologyViewpoint(option, requestedViewpoint);
-}
-
-function withAssetTopologyViewpoint(option, requestedViewpoint) {
-  const viewpoint = normalizeAssetTopologyViewpoint(requestedViewpoint ?? option?.viewpoint);
-  return {
-    ...option,
-    viewpoint,
-    viewpointLabel: assetTopologyViewpointLabel(viewpoint),
-    viewpointScaleGuidance: assetTopologyViewpointScaleGuidance(option?.label, viewpoint),
-  };
-}
-
-function assetTopologyViewpointOptionFromDecision(decisionOrOption) {
-  const option = decisionOrOption?.option || decisionOrOption;
-  const viewpoint = normalizeAssetTopologyViewpoint(option?.viewpoint || decisionOrOption?.viewpoint);
-  if (!viewpoint) return null;
-  return {
-    component: "reader-viewpoint",
-    optionId: `asset-topology-${viewpoint}-viewpoint`,
-    label: assetTopologyViewpointLabel(viewpoint),
-    designDimension: 1,
-    viewpoint,
-    sourceComponent: "asset-topology",
-    scaleGuidance: assetTopologyViewpointScaleGuidance(option?.label, viewpoint),
-  };
-}
-
-function normalizeAssetTopologyViewpoint(value) {
-  const text = String(value || "").toLowerCase();
-  if (text.includes("ego")) return "egocentric";
-  if (text.includes("exo")) return "exocentric";
-  return null;
-}
-
-function assetTopologyViewpointLabel(viewpoint) {
-  return ASSET_TOPOLOGY_VIEWPOINTS.find((item) => item.id === viewpoint)?.label || "";
-}
-
-function assetTopologyViewpointScaleGuidance(label, viewpoint) {
-  const topologyKind = assetTopologyKindFromLabel(label);
-  if (viewpoint === "egocentric" && topologyKind === "single") {
-    return "Scale the active GLB large enough for the reader to be within the object, using object-specific interpretation of what 'inside' means for that source model.";
-  }
-  if (viewpoint === "egocentric") {
-    return "Scale the GLBs large enough to surround the reader as spatial anchors, with object-specific sizing based on the source model's form and story role.";
-  }
-  if (viewpoint === "exocentric") {
-    return "Keep each complete GLB in front of the reader's view, fully visible without clipping or requiring the reader to stand inside it.";
-  }
-  return "";
+  return omitRetiredViewpointMetadata(option);
 }
 
 function assetTopologyKindFromLabel(label) {
@@ -12630,7 +13766,6 @@ function assetTopologyConstraintsForRuntime(runtime) {
     schemaVersion: "storyvr-asset-topology-constraints/v1",
     modelAssetCount,
     singleModelOnly,
-    viewpointOptions: ASSET_TOPOLOGY_VIEWPOINTS,
     disabledOptionLabels: singleModelOnly ? ["Collection / constellation", "Map, terrain, or network"] : [],
     disabledReason: singleModelOnly
       ? "Only one GLB/model asset is available, so constellation and map/network topology options would create unsupported multi-asset structure."
@@ -12799,7 +13934,7 @@ function proposalCountInstruction(component, context = {}) {
     const labels = proposalOptionLabelsForContext(component, context);
     const suffix = context.assetTopologyConstraints?.singleModelOnly
       ? " Because this story has only one GLB/model asset, do not generate or evaluate constellation or map/network topology options."
-      : " The UI will combine these topology columns with egocentric and exocentric viewpoint rows.";
+      : "";
     return `Generate exactly ${labels.length} StoryVR topology option${labels.length === 1 ? "" : "s"} for ${component.label}.${suffix}`;
   }
   if (component.id === "inter-beat-dynamics") {
@@ -12833,22 +13968,15 @@ function componentSpecificInstruction(component, context = {}) {
       : "";
     return [
       "Asset Topology semantics: Single anchor means temporal active-asset replacement at one stable plinth; Collection / constellation means simultaneous spatial clusters; Map, terrain, or network means assets become zones in a spatial map/network.",
-      "Reader viewpoint is no longer a separate component. The UI presents a 2 by 3 matrix: egocentric vs exocentric rows crossed with the enabled topology columns. Generate topology proposals only; do not generate Reader Viewpoint proposals.",
-      "Viewpoint scale semantics: Egocentric + Single anchor means the reader should be within the active GLB/object, so infer from the source object what scale and interior stance make sense. Egocentric + Collection/constellation or Map/network means the reader should be surrounded by large enough GLB objects or zones. Exocentric means each complete GLB remains fully in front of the reader's view, close to an inspection-stage preview, with no clipping.",
-      "For Asset Topology proposals, include implementation hints that explain how object-dependent scaling should be handled for the egocentric row and how full-object visibility should be preserved for the exocentric row.",
       "Only describe swapping when source evidence or the author prompt supports multiple source-order active assets.",
       disabled,
     ].filter(Boolean).join(" ");
   }
   if (component.id === "text-comfort") {
-    const viewpoint = assetTopologyViewpointOptionFromDecision(context.currentDecisions?.["asset-topology"]);
     const cameraRule = context.graph?.sourceSpatialCues?.inferredPath
       ? "The source camera interpretation infers a meaningful path. Treat Path / object-attached text as source-camera-focus placement and make it the source-derived default. Do not describe a nested camera sub-option."
       : "Do not infer Path / object-attached text from a camera unless the source spatial cue contract marks inferredPath true.";
-    const viewpointRule = viewpoint
-      ? `Text Comfort must compose with the Asset Topology viewpoint row: ${viewpoint.label}. Egocentric viewpoint favors reader-relative or near-body readability; exocentric viewpoint favors stable world-space or reader-facing panels.`
-      : "";
-    return [viewpointRule, cameraRule].filter(Boolean).join(" ");
+    return cameraRule;
   }
   if (component.id === "dynamic-geometry") {
     return "Dynamics semantics: No dynamics means preserve the current source graph and Asset Topology exactly as static assets, adding no synthetic motion, particles, scale pulses, focus markers, source-animation playback, ground circles, stage discs, halos, or other decorative geometry. Only add synthetic preview geometry when the author explicitly requests it or selects a dynamics option that requires it.";
@@ -12970,14 +14098,7 @@ function previousSelectionConfidenceDelta(componentId, previousLabel, proposalLa
     if (prevHas("part", "highlight", "focus")) return currentHas("flash", "pop", "hard switch") ? 0.07 : 0;
   }
 
-  if (componentId === "reader-viewpoint") {
-    if (prevHas("object only")) return currentHas("situated", "exocentric") ? 0.07 : -0.01;
-    if (prevHas("object in environment")) return currentHas("situated", "guided") ? 0.07 : 0;
-    if (prevHas("nested", "multi-scale")) return currentHas("guided", "embodied", "exocentric") ? 0.07 : -0.01;
-  }
-
   if (componentId === "text-comfort") {
-    if (prevHas("exocentric")) return currentHas("fixed", "reader-facing") ? 0.07 : -0.01;
     if (prevHas("situated")) return currentHas("reader-facing", "object-attached") ? 0.07 : 0;
     if (prevHas("guided")) return currentHas("path", "object-attached", "reader-facing") ? 0.07 : -0.01;
     if (prevHas("embodied")) return currentHas("hand", "near-body", "path", "object-attached") ? 0.08 : -0.02;
@@ -13636,15 +14757,15 @@ function assertValidDecisionOption(component, option) {
     return;
   }
   if (component.id === "asset-topology") {
-    const valid = component.optionLabels.includes(option?.label) && Boolean(normalizeAssetTopologyViewpoint(option?.viewpoint));
+    const valid = component.optionLabels.includes(option?.label);
     if (!valid) {
-      throw Object.assign(new Error("Asset Topology now requires a topology option plus an egocentric/exocentric viewpoint selection."), {
+      throw Object.assign(new Error("Asset Topology requires a current topology option."), {
         statusCode: 409,
         diagnostics: [{
           severity: "error",
           code: "STALE_ASSET_TOPOLOGY_OPTION",
           component: component.id,
-          message: "Regenerate or reselect Asset Topology from the 2 by 3 viewpoint matrix before saving.",
+          message: "Regenerate or reselect Asset Topology before saving.",
         }],
       });
     }
@@ -13744,7 +14865,7 @@ function isValidDecisionContent(component, decision) {
       && isAttentionGuidanceContractShape(decision.attentionGuidance);
   }
   if (component.id === "asset-topology") {
-    return component.optionLabels.includes(decision.option?.label) && Boolean(normalizeAssetTopologyViewpoint(decision.option?.viewpoint));
+    return component.optionLabels.includes(decision.option?.label);
   }
   if (component.id === "dynamic-geometry") {
     return component.optionLabels.includes(decision.option?.label) || isValidSourceDynamicsPreviewOption(component, decision.option);
@@ -13783,8 +14904,7 @@ function isAttentionGuidanceComponent(component) {
 function isSpatialRelationsContractShape(value) {
   if (value?.schemaVersion !== SPATIAL_RELATIONS_SCHEMA_VERSION || !value.inputSignature || !Array.isArray(value.entities)) return false;
   if (!value.resolvedByBeat || typeof value.resolvedByBeat !== "object") return false;
-  if (!normalizeAssetTopologyViewpoint(value.viewpoint)) return false;
-  return value.entities.every((entity) => entity?.id && ["reader", "text-panel", "glb", "image-plane"].includes(entity.kind)
+  return value.entities.every((entity) => entity?.id && ["reader", "text-panel", "glb", "image-plane", "composition-root"].includes(entity.kind)
     && Array.isArray(entity.transform?.position) && entity.transform.position.length === 3
     && Array.isArray(entity.transform?.quaternion) && entity.transform.quaternion.length === 4
     && Array.isArray(entity.transform?.scale) && entity.transform.scale.length === 3);
@@ -14021,6 +15141,9 @@ function summarizeGraph(graph) {
     assetInventory: (graph.assetInventory || []).slice(0, 60),
     ...(Array.isArray(graph.pointCloudEffects) && graph.pointCloudEffects.length
       ? { pointCloudEffects: cloneJson(graph.pointCloudEffects) }
+      : {}),
+    ...(graph.sourceSpatialCompositions?.schemaVersion === SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION
+      ? { sourceSpatialCompositions: cloneJson(graph.sourceSpatialCompositions) }
       : {}),
     ...(Array.isArray(graph.variantGroups) && graph.variantGroups.length ? { variantGroups: graph.variantGroups } : {}),
     animationProbeLinking: graph.animationProbeLinking || null,

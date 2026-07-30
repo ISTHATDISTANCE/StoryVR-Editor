@@ -21,6 +21,7 @@ NYTAnimationProbe.snapshot()
 NYTAnimationProbe.export()
 NYTAnimationProbe.stop()
 NYTAnimationProbe.runtime3D()
+NYTAnimationProbe.runtime3DCatalog()
 NYTAnimationProbe.registerRuntime3D({ renderer, scene, camera, mixer, models })
 NYTAnimationProbe.refreshRuntimeHooks()
 ```
@@ -37,8 +38,59 @@ The collector now installs best-effort Three.js runtime instrumentation. When th
 - Mixer time and `update`/`setTime` driver observations, active camera state, and exact snapshot IDs.
 - A bounded `recentAdvances` sequence for each mixer, so the analyzer can audit the observed method/value/scroll relationship instead of relying only on a one-line driver label.
 - Stable part paths plus world-transform signatures, so rotation, translation, scale, visibility, and opacity changes can be compared within a beat even without an embedded GLB clip.
+- Additive `storyvr-runtime-3d-observation/v2` spatial state: stable instance/container/parent/root-path identity; numeric local/world matrices and decomposed TRS; transformed model/part bounds; and hidden-loaded part states. Existing v1 model, visible-part, action, and camera fields remain present.
+- A one-time `runtime_3d_catalog` with cached geometry-local AABBs, centers, bounding spheres, fingerprints, and model/part/source/frame references. Snapshots carry catalog IDs and changing poses rather than repeating static vertex-derived metadata.
+- Bounded `spatialRelationshipClues` only when composition is corroborated by explicit bridge/source/config/frame/container identity, or by a shared direct non-scene parent plus direct asset identity. Co-loading, scene membership, and beat co-occurrence never create a clue.
 
 For module- or closure-owned Three.js objects that are not reachable from `window`, the source runtime can register its live handles explicitly with `NYTAnimationProbe.registerRuntime3D(...)`. Registration is additive: it does not replace the collector's existing global discovery, and stories that do not opt in keep the previous collection path unchanged. The same bridge can be exposed as `window.__STORYVR_ANIMATION_RUNTIME__`, `Symbol.for("storyvr.animationProbe.runtime")`, or a runtime handle attached to the renderer canvas. A source module can also listen for `storyvr-animation-probe:request-runtime` and call the event's supplied `register` function.
+
+The bridge may optionally provide explicit composition evidence without changing the scene:
+
+```js
+NYTAnimationProbe.registerRuntime3D({
+  renderer,
+  scene,
+  camera,
+  models: [
+    {
+      root: mars,
+      assetUrl: "/mars.glb",
+      instanceId: "mars",
+      container,
+      containerId: "mars-composition",
+      compositionId: "mars-story",
+      frameId: "mars-fixed-frame",
+      frameRoot: mars,
+      sourceId: "WEBGL_DATA",
+      sourceConfigId: "mars-model-config",
+      activeStateId: "mission-active",
+      sourceConfig: { position: [0, -200, 0], scale: [20000, 20000, 20000] },
+      anchorKind: "geometry-bounds-center"
+    },
+    {
+      root: landerPin,
+      assetUrl: "/lander.glb",
+      instanceId: "lander-pin",
+      container,
+      containerId: "mars-composition",
+      compositionId: "mars-story",
+      frameId: "mars-fixed-frame",
+      sourceId: "WEBGL_DATA",
+      sourceConfigId: "mars-model-config",
+      activeStateId: "mission-active"
+    }
+  ],
+  compositions: [{ id: "mars-story", container, frameId: "mars-fixed-frame", members: [mars, landerPin] }],
+  frames: [{ id: "mars-fixed-frame", root: mars }],
+  spatialRelationships: [{
+    subject: landerPin,
+    reference: mars,
+    relationshipType: "surface-placement-hint"
+  }]
+})
+```
+
+These values are hints and evidence boundaries, not collector-inferred semantics. `sourceConfig` is serialized through a small transform/config allowlist. Relationship rows preserve the explicit type but remain `candidateOnly`; the offline analyzer decides whether geometry and repeated relative transforms support a spatial relationship.
 
 `renderEligible` means the sampled scene/material state allowed the primitive to render in a recent on-canvas screen pass. It does not prove that the object was inside the camera frustum, unoccluded, unaffected by shader clipping, or responsible for visible pixels. `renderContributionCandidate` is weaker: it means an active offscreen pass may feed the visible canvas, not that the final compositor displayed it. Non-renderable animation driver nodes remain action targets; they are never labeled as visible model parts.
 
@@ -94,6 +146,25 @@ The analyzer writes:
 
 Model URL discovery is provenance-aware and staged. Absolute browser/runtime resources and captured loader scripts are downloaded first. A quoted source-config value such as `models/scene.glb` remains unresolved until the analyzer inspects those loader scripts for statically observable URL construction through template prefixes, string concatenation, `new URL(...)` bases, or directory literals. Derived candidates are tried in evidence order and accepted only when the response contains valid GLB or glTF bytes; article-relative resolution is retained only as a last-resort, auditable fallback. `animation-evidence.json.assetDiscovery` records the raw reference, chosen base, resolution kind, validated URL, and any unresolved references. This avoids story- or CDN-specific URL hardcoding.
 
+Static GLBs remain independent by default. The analyzer emits a `storyvr-source-spatial-composition/v1` composition only when numeric placement is bounded by an explicit bridge/source configuration, frame, composition, or non-generic container. A complete bounded source configuration may establish its own virtual coordinate frame when every declared member has a direct unambiguous asset identity, an invertible source matrix, explicit active-state membership, parsed intrinsic GLB bounds, and a known loader-transform policy. The entire configuration is then normalized once from combined persistent-member bounds while every member retains its full source-frame matrix, including relative position, rotation, and scale. Same beat, preload membership, broad scene membership, proximity, filenames, and Codex prose never establish composition.
+
+The analyzer parses scene roots, node matrix/TRS values, and every primitive's `POSITION` accessor bounds. It computes scene-transformed bounds rather than treating raw accessor bounds as loaded geometry. A raw bound is eligible only when mesh-node transforms are proven identity. When fetched loader code proves the exact operation `reset-immediate-child-scale` on `first-scene-child-children` (`gltf.scene.children[0].children`), it also computes bounds with scale reset at that exact depth and records both the operation and target. This preserves source placement while avoiding an unsafe assumption for unrelated loaders.
+
+Source-only acceptance is allowed without repeated runtime samples when one bounded `models` plus `highlights` configuration supplies direct identities, exact transforms, active-state membership, and safe parsed GLB bounds for every declared member. Specific surface-marker and state-counterpart geometry remains useful semantic evidence, but is not required merely to preserve a complete source configuration's coordinate frame. Runtime-only acceptance still requires direct asset identity, an explicit meaningful frame/bridge basis, stable repeated relative matrices, and corroborating geometry. Ambiguous runtime reference candidates remain candidate-only. Plausible surface anchors must be bounded, roughly isotropic, centered after their source transform, and topologically small enough to exclude broad multi-part overlays.
+
+`animation-evidence.json` includes `runtime3DCatalog`, canonical `spatialCompositionCandidates`, accepted `sourceSpatialCompositions`, and `spatialCompositionSignature`. Each accepted member has an immutable numeric `resolvedLocalMatrix`, a `transformRef`, intrinsic bounds, source active-state IDs, role, and any exact loader-transform policy. Source-configuration compositions declare `framing.coordinateSpace: "source-config-local"` and `framing.compositionBounds`; other accepted compositions retain reference-local matrices. Accepted compositions also include `framing.anchorInstanceId`, framing exclusions, typed relations with `predicate`, provenance, confidence, and runtime-validation state. `codex-animation-judgment.json.spatialCompositionJudgments` contains one row per candidate, but Codex may add only semantic labels, roles, confidence, and reasoning; normalization restores deterministic acceptance and transform fields.
+
+When author input contains accepted compositions, `story_structure_candidates.json` adds:
+
+```text
+source_spatial_compositions:
+  schemaVersion: storyvr-source-spatial-composition/v1
+  signature: <semantic placement signature>
+  compositions: [...]
+```
+
+This envelope is omitted entirely when nothing is accepted. Every accepted composition uses `placementPolicy: "source-locked"`, includes all declared persistent base/context models, and maps final author slides to `activeSetsByBeat`. Canonical beat keys use an explicit slide `id`/`beatId` when present and otherwise `slide-1`, `slide-2`, and so on; raw probe beat IDs are retained only as aliases. Each active set contains the matched state-specific model plus the declared persistent framing anchor and context.
+
 Point-cloud composite effects are an optional specialization, not a new requirement for normal stories. The analyzer activates this path only when captured source configuration explicitly pairs a GLB model with a PCD asset through a key such as `models[].ptcloud`. It then matches that declared PCD against the collector's raw `resource_entries`, even when the collector classified the request as `other`, and uses a separate allowance of at most four PCD downloads with a 64 MiB per-file limit. This allowance never reduces the existing model/script/data download budget. A page that merely requests a `.pcd` without an explicit source link does not activate the specialization.
 
 For the transmission-cough setup, the optional specialization validates and summarizes the PCD, preserves undeclared extra data columns, identifies a complete zero-based point-group column, and decodes the embedded GLB binary samplers for the `cough_driver_N` translation channels. The resulting threshold-crossing schedule is stored under `pointCloudEffects` in analysis/judgment output and rendered under `## Explicit Point-Cloud Composite Effects`. When author input is written, the PCD is copied to `captures/active/pointclouds/` and the optional `point_cloud_effects` contract links it to the existing model. It is not promoted into a normal GLB beat, and stories without an explicit point-cloud link do not gain an empty field, folder, warning, or missing-data requirement.
@@ -110,6 +181,8 @@ node tools/animation-logic-probe/analyze-animation-probe.mjs \
   --story-folder <story-slug> \
   --from-output <story-slug>/analysis/animation-logic-probe/<timestamp>
 ```
+
+`--from-output` first performs a deterministic offline refresh from the raw probe plus the existing output's local model/script downloads. It reparses current GLB scene/bounds metadata, re-detects exact loader-transform policy, rebuilds the spatial catalog/candidates/compositions and semantic fingerprint, then rewrites judgment normalization and author input. It never fetches or invokes Codex. This lets an older retained analysis gain spatial evidence without changing the original capture or relying on network availability.
 
 After analyzing a probe into a story folder, open it in the authoring UI:
 
@@ -198,10 +271,10 @@ Codex remains the implementation-adaptation layer: on an unseen NYT setup it fol
 
 ```text
 <story-slug>/analysis/animation-logic-probe/.codex-judgment-cache/
-  storyvr-animation-codex-v6/<evidence-fingerprint>.json
+  storyvr-animation-codex-v7/<evidence-fingerprint>.json
 ```
 
-The fingerprint includes downloaded resource byte hashes, source-evidence windows, GLB clip/target structure, deterministic image inputs, scroll-target perceptual hashes, and beat-level visible model/part/action/driver semantics. It excludes raw screenshot bytes, generated timestamps, local/timestamped output paths, snapshot IDs, exact action times/scroll positions, and other capture-timing jitter. Therefore:
+The fingerprint includes downloaded resource byte hashes, source-evidence windows, GLB clip/target structure, deterministic source spatial placement and geometry, deterministic image inputs, scroll-target perceptual hashes, and beat-level visible model/part/action/driver semantics. It excludes raw screenshot bytes, generated timestamps, local/timestamped output paths, snapshot IDs, exact action times/scroll positions, spatial sample-count jitter, and other capture-timing jitter. Therefore:
 
 - A new story, changed resource, changed visible GLB/part/clip, or changed playback mode causes a fresh Codex investigation.
 - Semantically identical evidence reuses the first successful Codex judgment.
@@ -211,14 +284,3 @@ The fingerprint includes downloaded resource byte hashes, source-evidence window
 Use `--refresh-codex` to deliberately run Codex again and atomically replace the matching cache entry. Use `--no-codex-cache` to invoke Codex without reading or writing the cache. Failed Codex runs and `--no-codex` local-heuristic results are never cached.
 
 Codex judging now runs without a script-imposed wall-clock timeout. The legacy `--codex-timeout-ms` flag is accepted for old command snippets, but it is ignored.
-
-## Checks
-
-```sh
-node --check tools/animation-logic-probe/runtime-animation-collector.js
-node --check tools/animation-logic-probe/analyze-animation-probe.mjs
-node --check tools/animation-logic-probe/pointcloud-effect.mjs
-node --test tools/animation-logic-probe/runtime-animation-collector.test.mjs
-node --test tools/animation-logic-probe/pointcloud-effect.test.mjs
-node tools/animation-logic-probe/analyze-animation-probe.mjs --self-test
-```

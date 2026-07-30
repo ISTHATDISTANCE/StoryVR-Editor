@@ -196,6 +196,7 @@ export async function importFetchedStoryResources(resourceFolder, mode = "dev", 
   const storyTitle = firstNonEmpty(storyStructure.title, sourceDiscovery.title, slug);
   const assets = assetsFromManifest(manifest);
   const pointCloudEffects = normalizeStoryVrPointCloudEffects(storyStructure.point_cloud_effects, assets);
+  const sourceSpatialCompositions = normalizeFetchedSourceSpatialCompositions(storyStructure, assets);
   const rawContentUnits = contentUnitsFromFetchedStructure(storyStructure, { storyTitle });
   const variantGroups = variantGroupsFromFetchedStructure(storyStructure, assets);
   const unresolvedVariantGroupCount = arrayOr(storyStructure.unresolved_variant_groups).length;
@@ -245,6 +246,7 @@ export async function importFetchedStoryResources(resourceFolder, mode = "dev", 
     contentUnits,
     ...(variantGroups.length ? { variantGroups } : {}),
     ...(pointCloudEffects.length ? { pointCloudEffects } : {}),
+    ...(sourceSpatialCompositions ? { sourceSpatialCompositions } : {}),
     sceneTopology: {
       kind: "fetched-resource-sequence",
       routeStops: [],
@@ -290,6 +292,9 @@ export async function importFetchedStoryResources(resourceFolder, mode = "dev", 
       variantGroupCount: variantGroups.length,
       unresolvedVariantGroupCount,
       ...(pointCloudEffects.length ? { pointCloudEffectCount: pointCloudEffects.length } : {}),
+      ...(sourceSpatialCompositions ? {
+        sourceSpatialCompositionCount: sourceSpatialCompositions.compositions.length
+      } : {}),
     },
   };
 
@@ -1123,6 +1128,83 @@ function assetsFromManifest(manifest) {
       linkedBeatIds: arrayOr(entry.linked_beat_ids),
     };
   });
+}
+
+function normalizeFetchedSourceSpatialCompositions(storyStructure, assets) {
+  const source = storyStructure?.source_spatial_compositions
+    || storyStructure?.sourceSpatialCompositions
+    || storyStructure?.animation_probe?.sourceSpatialCompositions
+    || null;
+  if (!source || typeof source !== "object") return null;
+  if (source.schemaVersion !== "storyvr-source-spatial-composition/v1") return null;
+
+  const assetIndex = new Map();
+  const addAssetKey = (value, asset) => {
+    const key = String(value || "").trim().toLowerCase();
+    if (!key || assetIndex.has(key)) return;
+    assetIndex.set(key, asset);
+    const file = assetFileName(key);
+    if (file && !assetIndex.has(file)) assetIndex.set(file, asset);
+  };
+  for (const asset of assets || []) {
+    addAssetKey(asset.id, asset);
+    addAssetKey(asset.path, asset);
+    addAssetKey(asset.url, asset);
+    addAssetKey(asset.originalUrl, asset);
+  }
+  const resolveAsset = (member) => {
+    for (const value of [
+      member?.assetId,
+      member?.assetPath,
+      member?.assetFile,
+      member?.assetUrl,
+      member?.url,
+    ]) {
+      const key = String(value || "").trim().toLowerCase();
+      if (!key) continue;
+      const match = assetIndex.get(key) || assetIndex.get(assetFileName(key));
+      if (match) return match;
+    }
+    return null;
+  };
+
+  const compositions = arrayOr(source.compositions)
+    .filter((composition) => (
+      composition
+      && composition.accepted === true
+      && composition.placementPolicy === "source-locked"
+    ))
+    .map((composition) => {
+      const members = arrayOr(composition.members).map((member) => {
+        const asset = resolveAsset(member);
+        if (!asset) return null;
+        return {
+          ...member,
+          assetId: asset.id,
+          assetPath: asset.path,
+          assetUrl: member.assetUrl || member.url || asset.originalUrl || asset.url || null,
+        };
+      }).filter(Boolean);
+      if (members.length < 2) return null;
+      const instanceIds = new Set(members.map((member) => member.instanceId).filter(Boolean));
+      const relations = arrayOr(composition.relations).filter((relation) => (
+        relation
+        && instanceIds.has(relation.subjectInstanceId)
+        && instanceIds.has(relation.referenceInstanceId)
+      ));
+      return {
+        ...composition,
+        members,
+        relations,
+      };
+    })
+    .filter(Boolean);
+  if (!compositions.length) return null;
+  return {
+    schemaVersion: source.schemaVersion,
+    signature: String(source.signature || ""),
+    compositions,
+  };
 }
 
 function linkImageAssetsToFetchedContentUnits(contentUnits, assets, storyStructure) {

@@ -20,6 +20,7 @@ It returns a `StoryVRRuntimeInstance` payload with:
 - `sceneTopology`: normalized route stops, regions, countries, markers, model groups, sections and camera presets.
 - `assets`: normalized model, texture, data, media and remote asset references.
 - `pointCloudEffects` (optional): explicit model-plus-PCD composite effects reconstructed from analyzer evidence.
+- `sourceSpatialCompositions` (optional): accepted source-local GLB assemblies with immutable member matrices and beat-specific active sets.
 - `assetRoot`: centralized original/dev/hosted/build/filesystem path conventions.
 - `interactions`: controls, lifecycle, trigger and hotspot metadata.
 - `diagnostics`: non-fatal compatibility findings.
@@ -88,5 +89,7 @@ Skipped stories are listed in the migration report with an explicit reason and n
 - Interaction divergence: reader actions, transitions, hotspots, controller and keyboard metadata are carried into `interactions`.
 
 PCD files remain ordinary captured assets unless `story_structure_candidates.json` also declares a valid `storyvr-pointcloud-composite-effect/v1` record with `scope.activation: "explicit-source-ptcloud-link-only"`. The adapter never infers a point-cloud effect from a `.pcd` file or from missing story data. Unsupported, incomplete, or unrelated records leave `pointCloudEffects` absent, preserving the existing runtime shape for other stories.
+
+GLBs also remain independent unless author input contains a valid accepted `storyvr-source-spatial-composition/v1` record. The adapter carries that optional record forward without inventing groups from co-loading, shared beats, proximity, or filenames; when it is missing or invalid, `sourceSpatialCompositions` is omitted so existing stories keep their previous runtime shape.
 
 Existing per-story runtimes remain untouched. This adapter creates the normalized StoryVR payload that a shared `createScene(...)` renderer can consume next.

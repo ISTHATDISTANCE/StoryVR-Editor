@@ -30,7 +30,7 @@
     // A previous collector may be partially installed. The new probe can still continue.
   }
 
-  const VERSION = "0.16.0";
+  const VERSION = "0.17.0";
   const CONTEXT_RADIUS = 260;
   const MAX_INLINE_TEXT = 160_000;
   const MAX_KEYWORD_WINDOWS = 260;
@@ -42,7 +42,11 @@
   const MAX_RUNTIME_PARTS_PER_MODEL = 120;
   const MAX_RUNTIME_ACTIONS_PER_MODEL = 80;
   const MAX_RUNTIME_PARTS_PER_SNAPSHOT = 240;
+  const MAX_RUNTIME_SPATIAL_PARTS_PER_SNAPSHOT = 320;
   const MAX_RUNTIME_ACTIONS_PER_SNAPSHOT = 320;
+  const MAX_RUNTIME_SPATIAL_RELATION_CLUES = 96;
+  const MAX_RUNTIME_BRIDGE_RELATION_HINTS = 120;
+  const MAX_RUNTIME_GEOMETRY_FINGERPRINT_SAMPLES = 96;
   const MAX_RUNTIME_DISCOVERY_OBJECTS = 900;
   const MAX_RUNTIME_DISCOVERY_DEPTH = 3;
   const MAX_RUNTIME_BRIDGE_OBJECTS = 480;
@@ -233,10 +237,26 @@
     modelSerial: 0,
     sceneSerial: 0,
     mixerSerial: 0,
+    objectSerial: 0,
+    geometrySerial: 0,
+    partCatalogSerial: 0,
+    containerSerial: 0,
+    catalogRevision: 0,
     renderers: new Set(),
     scenes: new Map(),
     models: new Map(),
     mixers: new Map(),
+    objectIds: new WeakMap(),
+    geometryRecords: new Map(),
+    geometryCache: new WeakMap(),
+    partCatalogRecords: new Map(),
+    containerRecords: new Map(),
+    compositionRecords: new Map(),
+    frameRecords: new Map(),
+    sourceRecords: new Map(),
+    explicitSpatialRelationships: [],
+    explicitSpatialRelationshipKeys: new Set(),
+    relationshipHistory: new Map(),
     patchedNamespaces: new Set(),
     patchedRendererPrototypes: new Set(),
     patchedLoaderPrototypes: new Set(),
@@ -259,7 +279,9 @@
       "Methods bound before installation are captured only when their owning renderer or mixer is reachable or explicitly registered through the runtime bridge.",
       "A runtime kept entirely inside a module closure still requires pre-load instrumentation or an explicit runtime bridge registration.",
       "Model renderEligible requires structural eligibility plus a recent screen render on a CSS/viewport-visible renderer canvas; it still does not prove frustum inclusion, lack of occlusion, or pixel contribution. Offscreen passes are retained separately as renderContributionCandidate.",
-      "A running AnimationAction does not by itself make its model or target part visible."
+      "A running AnimationAction does not by itself make its model or target part visible.",
+      "Spatial relationship clues are bounded geometric candidates only. They require an explicit bridge/source/frame/container hint or a shared non-scene parent corroborated by direct asset identity; co-loading and beat co-occurrence never establish composition.",
+      "Geometry bounds derived from static position attributes are approximate for skinned, morphed, displaced, instanced, or otherwise deformed renderables."
     ])
   };
 
@@ -1741,7 +1763,14 @@
 
   function runtimeObjectId(object, fallback = "object") {
     if (!object || (typeof object !== "object" && typeof object !== "function")) return fallback;
-    return cleanText(object.uuid || object.id || object.name || fallback, 180) || fallback;
+    const explicitId = cleanText(object.uuid || object.id || "", 180);
+    if (explicitId) return explicitId;
+    const existing = runtime3dState.objectIds.get(object);
+    if (existing) return existing;
+    runtime3dState.objectSerial += 1;
+    const generated = `runtime-object-${runtime3dState.objectSerial}-${hashString(cleanText(object.name || object.type || fallback, 80)).slice(0, 6)}`;
+    runtime3dState.objectIds.set(object, generated);
+    return generated;
   }
 
   function isRuntimeObject3D(value) {
@@ -1870,6 +1899,131 @@
     return { assetUrl: "", identitySource: "unknown", identityConfidence: 0.2 };
   }
 
+  function touchRuntime3DCatalog() {
+    runtime3dState.catalogRevision += 1;
+  }
+
+  function runtimeHintId(value) {
+    if (value == null) return "";
+    if (typeof value === "string" || typeof value === "number") return cleanText(value, 180);
+    return cleanText(value.id || value.name || value.key || "", 180);
+  }
+
+  function boundedRuntimeBridgeConfig(value, depth = 0, seen = new WeakSet()) {
+    if (value == null) return null;
+    if (typeof value === "string") return cleanText(value, 400);
+    if (typeof value === "number") return finiteRuntimeNumber(value);
+    if (typeof value === "boolean") return value;
+    if (isRuntimeObject3D(value)) return { objectId: runtimeObjectId(value, "bridge-object") };
+    if (typeof value !== "object" || depth >= 3 || seen.has(value)) return null;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      return value.slice(0, 20).map((item) => boundedRuntimeBridgeConfig(item, depth + 1, seen));
+    }
+    const allowedKeys = [
+      "id",
+      "name",
+      "role",
+      "kind",
+      "type",
+      "position",
+      "rotation",
+      "quaternion",
+      "scale",
+      "matrix",
+      "transform",
+      "anchor",
+      "containerId",
+      "compositionId",
+      "frameId",
+      "sourceId",
+      "sourceConfigId",
+      "activeStateId"
+    ];
+    const result = {};
+    for (const key of allowedKeys) {
+      const child = safeRuntimeValue(value, key) ?? value[key];
+      if (child == null || typeof child === "function") continue;
+      const serialized = boundedRuntimeBridgeConfig(child, depth + 1, seen);
+      if (serialized != null) result[key] = serialized;
+    }
+    return Object.keys(result).length ? result : null;
+  }
+
+  function runtimeBoundaryMetadata(registrationSource, options = {}) {
+    const explicitSource = cleanText(options.instanceBoundarySource, 180);
+    const source = explicitSource || (
+      registrationSource === "gltf-loader-hook"
+        ? "gltf-loader-scene"
+        : registrationSource === "gltf-loader-moved-child"
+          ? "gltf-loader-moved-child"
+          : /runtime-bridge/.test(registrationSource)
+            ? "runtime-bridge-explicit"
+            : registrationSource === "scene-child-discovery"
+              ? "scene-child-aggregate"
+              : registrationSource === "animation-mixer-root"
+                ? "animation-mixer-root"
+                : "runtime-discovery"
+    );
+    const defaultConfidence = source === "runtime-bridge-explicit" || source.startsWith("gltf-loader")
+      ? 1
+      : source === "scene-child-aggregate"
+        ? 0.55
+        : 0.7;
+    return {
+      instanceBoundarySource: source,
+      instanceBoundaryConfidence: Number.isFinite(Number(options.instanceBoundaryConfidence))
+        ? Math.max(0, Math.min(1, Number(options.instanceBoundaryConfidence)))
+        : defaultConfidence,
+      instanceBoundaryExplicit: options.instanceBoundaryExplicit === true
+        || source === "runtime-bridge-explicit"
+        || source.startsWith("gltf-loader")
+    };
+  }
+
+  function applyRuntimeModelHints(record, options = {}) {
+    let changed = false;
+    const assignText = (key, value) => {
+      const next = runtimeHintId(value);
+      if (!next || record[key] === next) return;
+      record[key] = next;
+      changed = true;
+    };
+    assignText("instanceId", options.instanceId);
+    assignText("containerIdHint", options.containerId);
+    assignText("compositionId", options.compositionId || options.composition);
+    assignText("frameId", options.frameId || options.referenceFrameId || options.frame);
+    assignText("sourceId", options.sourceId || options.sourceIdentity);
+    assignText("sourceConfigId", options.sourceConfigId || options.configId);
+    assignText("activeStateId", options.activeStateId || options.stateId);
+    assignText("compositionRole", options.compositionRole || options.role);
+    assignText("anchorKind", options.anchorKind);
+    if (isRuntimeObject3D(options.container) && record.explicitContainer !== options.container) {
+      record.explicitContainer = options.container;
+      changed = true;
+    }
+    if (isRuntimeObject3D(options.frameRoot) && record.frameRoot !== options.frameRoot) {
+      record.frameRoot = options.frameRoot;
+      changed = true;
+    }
+    const anchorObject = isRuntimeObject3D(options.anchor)
+      ? options.anchor
+      : isRuntimeObject3D(options.anchorObject)
+        ? options.anchorObject
+        : null;
+    if (anchorObject && record.anchorObject !== anchorObject) {
+      record.anchorObject = anchorObject;
+      changed = true;
+    }
+    const sourceConfig = boundedRuntimeBridgeConfig(options.sourceConfig || options.config);
+    if (sourceConfig && JSON.stringify(record.sourceConfig || null) !== JSON.stringify(sourceConfig)) {
+      record.sourceConfig = sourceConfig;
+      changed = true;
+    }
+    if (changed) touchRuntime3DCatalog();
+    return changed;
+  }
+
   function registerRuntimeModel(root, options = {}) {
     if (!isRuntimeObject3D(root)) return null;
     const existing = runtime3dState.models.get(root);
@@ -1886,14 +2040,23 @@
         && (!existing.assetUrl || Number(identity.identityConfidence || 0) > Number(existing.identityConfidence || 0))
       ) {
         Object.assign(existing, identity);
+        touchRuntime3DCatalog();
       }
       if (Array.isArray(options.animations) && options.animations.length) existing.animations = options.animations;
+      const boundary = runtimeBoundaryMetadata(options.registrationSource || existing.registrationSource, options);
+      if (boundary.instanceBoundaryConfidence > Number(existing.instanceBoundaryConfidence || 0)) {
+        Object.assign(existing, boundary);
+        touchRuntime3DCatalog();
+      }
+      applyRuntimeModelHints(existing, options);
       return existing;
     }
     if (runtime3dState.models.size >= MAX_RUNTIME_MODELS) return null;
     runtime3dState.modelSerial += 1;
     const record = {
       id: `runtime-model-${runtime3dState.modelSerial}`,
+      catalogModelId: `runtime-model-catalog-${runtime3dState.modelSerial}`,
+      instanceId: cleanText(options.instanceId, 180) || `runtime-instance-${runtime3dState.modelSerial}`,
       root,
       rootObjectId: runtimeObjectId(root, `model-root-${runtime3dState.modelSerial}`),
       rootName: cleanText(root.name || "", 240),
@@ -1902,9 +2065,26 @@
       identityConfidence: identity.identityConfidence,
       animations: Array.isArray(options.animations) ? options.animations : [],
       registeredAt: Math.round(performance.now()),
-      registrationSource: options.registrationSource || identity.identitySource
+      registrationSource: options.registrationSource || identity.identitySource,
+      explicitContainer: null,
+      containerIdHint: "",
+      compositionId: "",
+      frameId: "",
+      frameRoot: null,
+      sourceId: "",
+      sourceConfigId: "",
+      activeStateId: "",
+      sourceConfig: null,
+      compositionRole: "",
+      anchorObject: null,
+      anchorKind: "",
+      partCatalogByObject: new Map(),
+      initialLocalBounds: null,
+      ...runtimeBoundaryMetadata(options.registrationSource || identity.identitySource, options)
     };
     runtime3dState.models.set(root, record);
+    applyRuntimeModelHints(record, options);
+    touchRuntime3DCatalog();
     if (options.registrationSource === "gltf-loader-hook") runtime3dState.modelLoadCount += 1;
     return record;
   }
@@ -2099,6 +2279,10 @@
       const assetUrl = normalizeUrl(String(url || "")) || String(url || "");
       const wrappedOnLoad = typeof onLoad === "function"
         ? function runtimeAnimationProbeGltfLoaded(gltf, ...args) {
+            const loadedScene = isRuntimeObject3D(gltf?.scene) ? gltf.scene : null;
+            const initialSceneChildren = loadedScene && Array.isArray(loadedScene.children)
+              ? loadedScene.children.filter(isRuntimeObject3D)
+              : [];
             if (gltf?.scene) {
               registerRuntimeModel(gltf.scene, {
                 assetUrl,
@@ -2108,7 +2292,28 @@
                 registrationSource: "gltf-loader-hook"
               });
             }
-            return onLoad.call(this, gltf, ...args);
+            const result = onLoad.call(this, gltf, ...args);
+            if (loadedScene && initialSceneChildren.length === 1) {
+              const movedRoot = initialSceneChildren[0];
+              let renderableCount = 0;
+              boundedRuntimeTraverse(movedRoot, (object) => {
+                if (isRuntimeRenderablePart(object)) renderableCount += 1;
+              }, 320);
+              if (renderableCount && movedRoot.parent !== loadedScene) {
+                runtime3dState.models.delete(loadedScene);
+                registerRuntimeModel(movedRoot, {
+                  assetUrl,
+                  identitySource: "gltf-loader-hook",
+                  identityConfidence: 1,
+                  animations: Array.isArray(gltf.animations) ? gltf.animations : [],
+                  registrationSource: "gltf-loader-moved-child",
+                  instanceBoundarySource: "gltf-loader-moved-child",
+                  instanceBoundaryConfidence: 1,
+                  instanceBoundaryExplicit: true
+                });
+              }
+            }
+            return result;
           }
         : onLoad;
       return original.call(this, url, wrappedOnLoad, onProgress, onError);
@@ -2188,13 +2393,167 @@
       ? entry
       : [entry.root, entry.scene, entry.model, entry.object3D].find(isRuntimeObject3D);
     if (!root) return null;
-    return registerRuntimeModel(root, {
+    const record = registerRuntimeModel(root, {
       assetUrl: cleanText(entry.assetUrl || entry.modelUrl || entry.gltfUrl || entry.glbUrl),
       identitySource: cleanText(entry.identitySource) || "runtime-bridge",
       identityConfidence: Number.isFinite(Number(entry.identityConfidence)) ? Number(entry.identityConfidence) : 1,
       animations: Array.isArray(entry.animations) ? entry.animations : [],
-      registrationSource: sourcePath || "runtime-bridge"
+      registrationSource: sourcePath || "runtime-bridge",
+      instanceId: entry.instanceId,
+      container: entry.container,
+      containerId: entry.containerId,
+      compositionId: entry.compositionId || entry.composition,
+      frameId: entry.frameId || entry.referenceFrameId || entry.frame,
+      frameRoot: entry.frameRoot,
+      sourceId: entry.sourceId || entry.sourceIdentity,
+      sourceConfigId: entry.sourceConfigId || entry.configId,
+      activeStateId: entry.activeStateId || entry.stateId,
+      sourceConfig: entry.sourceConfig || entry.config,
+      compositionRole: entry.compositionRole || entry.role,
+      anchor: entry.anchor || entry.anchorObject,
+      anchorKind: entry.anchorKind,
+      instanceBoundarySource: "runtime-bridge-explicit",
+      instanceBoundaryConfidence: 1,
+      instanceBoundaryExplicit: true
     });
+    for (const relationship of runtimeBridgeValues(entry.spatialRelationships || entry.relationships)) {
+      registerRuntimeBridgeRelationship({
+        ...relationship,
+        subject: relationship?.subject || relationship?.from || root
+      }, sourcePath);
+    }
+    return record;
+  }
+
+  function runtimeBridgeRelationshipEndpoint(value) {
+    if (isRuntimeObject3D(value)) {
+      return { root: value, instanceId: "", objectId: runtimeObjectId(value, "relationship-endpoint") };
+    }
+    if (value && typeof value === "object") {
+      const root = [value.root, value.scene, value.model, value.object3D].find(isRuntimeObject3D) || null;
+      return {
+        root,
+        instanceId: runtimeHintId(value.instanceId || value.id),
+        objectId: root ? runtimeObjectId(root, "relationship-endpoint") : ""
+      };
+    }
+    return { root: null, instanceId: runtimeHintId(value), objectId: "" };
+  }
+
+  function registerRuntimeBridgeRelationship(entry, sourcePath) {
+    if (!entry || typeof entry !== "object") return null;
+    const subject = runtimeBridgeRelationshipEndpoint(entry.subject || entry.from || entry.child);
+    const reference = runtimeBridgeRelationshipEndpoint(entry.reference || entry.to || entry.parent || entry.frameRoot);
+    if ((!subject.root && !subject.instanceId) || (!reference.root && !reference.instanceId)) return null;
+    if (subject.root) {
+      registerRuntimeModel(subject.root, {
+        registrationSource: sourcePath || "runtime-bridge",
+        instanceBoundarySource: "runtime-bridge-explicit",
+        instanceBoundaryConfidence: 1,
+        instanceBoundaryExplicit: true
+      });
+    }
+    if (reference.root) {
+      registerRuntimeModel(reference.root, {
+        registrationSource: sourcePath || "runtime-bridge",
+        instanceBoundarySource: "runtime-bridge-explicit",
+        instanceBoundaryConfidence: 1,
+        instanceBoundaryExplicit: true
+      });
+    }
+    const relationshipType = cleanText(entry.relationshipType || entry.type || entry.kind || "", 120);
+    const key = [
+      subject.objectId || subject.instanceId,
+      reference.objectId || reference.instanceId,
+      relationshipType,
+      runtimeHintId(entry.compositionId),
+      runtimeHintId(entry.frameId),
+      runtimeHintId(entry.sourceId)
+    ].join("|");
+    if (
+      runtime3dState.explicitSpatialRelationshipKeys.has(key)
+      || runtime3dState.explicitSpatialRelationships.length >= MAX_RUNTIME_BRIDGE_RELATION_HINTS
+    ) {
+      return runtime3dState.explicitSpatialRelationships.find((item) => item.key === key) || null;
+    }
+    const relationship = {
+      key,
+      relationshipHintId: `runtime-bridge-relationship-${runtime3dState.explicitSpatialRelationships.length + 1}`,
+      subjectRoot: subject.root,
+      subjectInstanceId: subject.instanceId,
+      referenceRoot: reference.root,
+      referenceInstanceId: reference.instanceId,
+      relationshipType,
+      compositionId: runtimeHintId(entry.compositionId),
+      frameId: runtimeHintId(entry.frameId),
+      sourceId: runtimeHintId(entry.sourceId),
+      confidence: Number.isFinite(Number(entry.confidence))
+        ? Math.max(0, Math.min(1, Number(entry.confidence)))
+        : 1,
+      source: cleanText(sourcePath || "runtime-bridge", 240)
+    };
+    runtime3dState.explicitSpatialRelationships.push(relationship);
+    runtime3dState.explicitSpatialRelationshipKeys.add(key);
+    touchRuntime3DCatalog();
+    return relationship;
+  }
+
+  function registerRuntimeBridgeComposition(entry, sourcePath) {
+    if (!entry || typeof entry !== "object") return null;
+    const compositionId = runtimeHintId(entry.compositionId || entry.id || entry.name);
+    if (!compositionId) return null;
+    const container = [entry.container, entry.root].find(isRuntimeObject3D) || null;
+    const frameRoot = isRuntimeObject3D(entry.frameRoot) ? entry.frameRoot : null;
+    const memberRecords = [];
+    for (const member of runtimeBridgeValues(entry.members || entry.models)) {
+      const record = registerRuntimeBridgeModelEntry(member, sourcePath);
+      if (!record) continue;
+      applyRuntimeModelHints(record, {
+        compositionId,
+        container,
+        containerId: entry.containerId,
+        frameId: entry.frameId || entry.referenceFrameId,
+        frameRoot,
+        sourceId: entry.sourceId,
+        sourceConfigId: entry.sourceConfigId || entry.configId,
+        activeStateId: entry.activeStateId || entry.stateId
+      });
+      memberRecords.push(record);
+    }
+    const next = {
+      compositionId,
+      container,
+      containerIdHint: runtimeHintId(entry.containerId),
+      frameId: runtimeHintId(entry.frameId || entry.referenceFrameId),
+      frameRoot,
+      sourceId: runtimeHintId(entry.sourceId),
+      sourceConfigId: runtimeHintId(entry.sourceConfigId || entry.configId),
+      activeStateId: runtimeHintId(entry.activeStateId || entry.stateId),
+      memberInstanceIds: memberRecords.map((record) => record.instanceId),
+      source: cleanText(sourcePath || "runtime-bridge", 240)
+    };
+    const previous = runtime3dState.compositionRecords.get(compositionId);
+    runtime3dState.compositionRecords.set(compositionId, next);
+    if (JSON.stringify(previous?.memberInstanceIds || []) !== JSON.stringify(next.memberInstanceIds)) touchRuntime3DCatalog();
+    return next;
+  }
+
+  function registerRuntimeBridgeFrame(entry, sourcePath) {
+    if (!entry || typeof entry !== "object") return null;
+    const frameId = runtimeHintId(entry.frameId || entry.id || entry.name);
+    if (!frameId) return null;
+    const root = [entry.frameRoot, entry.root, entry.object3D].find(isRuntimeObject3D) || null;
+    const next = {
+      frameId,
+      root,
+      compositionId: runtimeHintId(entry.compositionId),
+      sourceId: runtimeHintId(entry.sourceId),
+      sourceConfigId: runtimeHintId(entry.sourceConfigId || entry.configId),
+      source: cleanText(sourcePath || "runtime-bridge", 240)
+    };
+    if (!runtime3dState.frameRecords.has(frameId)) touchRuntime3DCatalog();
+    runtime3dState.frameRecords.set(frameId, next);
+    return next;
   }
 
   function registerRuntime3DBridge(runtime, options = {}) {
@@ -2259,6 +2618,17 @@
       if (/models?(?:\[|\.|$)|gltf|root/i.test(current.path) && registerRuntimeBridgeModelEntry(value, source)) {
         recognized += 1;
       }
+      for (const entry of runtimeBridgeValues(safeRuntimeValue(value, "compositions"))) {
+        if (registerRuntimeBridgeComposition(entry, source)) recognized += 1;
+      }
+      for (const entry of runtimeBridgeValues(safeRuntimeValue(value, "frames"))) {
+        if (registerRuntimeBridgeFrame(entry, source)) recognized += 1;
+      }
+      const relationshipEntries = runtimeBridgeValues(safeRuntimeValue(value, "spatialRelationships"))
+        .concat(runtimeBridgeValues(safeRuntimeValue(value, "relationships")));
+      for (const entry of relationshipEntries) {
+        if (registerRuntimeBridgeRelationship(entry, source)) recognized += 1;
+      }
 
       if (current.depth >= MAX_RUNTIME_BRIDGE_DEPTH || isRuntimeObject3D(value)) continue;
       let keys = [];
@@ -2271,7 +2641,17 @@
         ? keys.filter((key) => /^\d+$/.test(key)).slice(0, 160)
         : keys.filter((key) => (
             RUNTIME_HANDLE_KEY_PATTERN.test(key)
-            || ["root", "object3D", "animations", "clips", "webGL"].includes(key)
+            || [
+              "root",
+              "object3D",
+              "animations",
+              "clips",
+              "webGL",
+              "compositions",
+              "frames",
+              "relationships",
+              "spatialRelationships"
+            ].includes(key)
           )).slice(0, 120);
       for (const key of selectedKeys) {
         const child = safeRuntimeValue(value, key);
@@ -2556,6 +2936,504 @@
     }).join(","));
   }
 
+  function runtimeMatrixArray(matrixLike) {
+    const elements = matrixLike?.elements || matrixLike;
+    if (!elements || elements.length < 16) return null;
+    const matrix = Array.from(elements).slice(0, 16).map((value) => finiteRuntimeNumber(value, 8));
+    return matrix.every((value) => value != null) ? matrix : null;
+  }
+
+  function runtimeIdentityMatrix() {
+    return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  }
+
+  function runtimeVector3(value, fallback) {
+    const vector = Array.isArray(value)
+      ? value.slice(0, 3)
+      : [value?.x, value?.y, value?.z];
+    const normalized = vector.map((item, index) => {
+      const number = finiteRuntimeNumber(item, 8);
+      return number == null ? fallback[index] : number;
+    });
+    return normalized;
+  }
+
+  function runtimeQuaternion(value) {
+    const quaternion = Array.isArray(value)
+      ? value.slice(0, 4)
+      : [value?.x, value?.y, value?.z, value?.w];
+    const normalized = quaternion.map((item, index) => {
+      const number = finiteRuntimeNumber(item, 8);
+      return number == null ? [0, 0, 0, 1][index] : number;
+    });
+    const length = Math.hypot(...normalized);
+    return length > 1e-12 ? normalized.map((item) => finiteRuntimeNumber(item / length, 8)) : [0, 0, 0, 1];
+  }
+
+  function runtimeComposeMatrix(position, quaternion, scale) {
+    const [x, y, z, w] = quaternion;
+    const [sx, sy, sz] = scale;
+    const x2 = x + x;
+    const y2 = y + y;
+    const z2 = z + z;
+    const xx = x * x2;
+    const xy = x * y2;
+    const xz = x * z2;
+    const yy = y * y2;
+    const yz = y * z2;
+    const zz = z * z2;
+    const wx = w * x2;
+    const wy = w * y2;
+    const wz = w * z2;
+    return [
+      (1 - (yy + zz)) * sx,
+      (xy + wz) * sx,
+      (xz - wy) * sx,
+      0,
+      (xy - wz) * sy,
+      (1 - (xx + zz)) * sy,
+      (yz + wx) * sy,
+      0,
+      (xz + wy) * sz,
+      (yz - wx) * sz,
+      (1 - (xx + yy)) * sz,
+      0,
+      position[0],
+      position[1],
+      position[2],
+      1
+    ].map((value) => finiteRuntimeNumber(value, 8));
+  }
+
+  function runtimeLocalMatrix(object) {
+    const matrix = runtimeMatrixArray(object?.matrix);
+    if (matrix) return matrix;
+    if (object?.position || object?.quaternion || object?.scale) {
+      return runtimeComposeMatrix(
+        runtimeVector3(object.position, [0, 0, 0]),
+        runtimeQuaternion(object.quaternion),
+        runtimeVector3(object.scale, [1, 1, 1])
+      );
+    }
+    return runtimeIdentityMatrix();
+  }
+
+  function runtimeWorldMatrix(object) {
+    return runtimeMatrixArray(object?.matrixWorld) || runtimeLocalMatrix(object);
+  }
+
+  function runtimeMultiplyMatrices(left, right) {
+    if (!left || !right) return null;
+    const output = new Array(16).fill(0);
+    for (let column = 0; column < 4; column += 1) {
+      for (let row = 0; row < 4; row += 1) {
+        let value = 0;
+        for (let index = 0; index < 4; index += 1) {
+          value += left[index * 4 + row] * right[column * 4 + index];
+        }
+        output[column * 4 + row] = finiteRuntimeNumber(value, 8);
+      }
+    }
+    return output;
+  }
+
+  function runtimeInvertMatrix(matrix) {
+    if (!matrix) return null;
+    const rows = Array.from({ length: 4 }, (_, row) => (
+      Array.from({ length: 8 }, (_, column) => (
+        column < 4 ? Number(matrix[column * 4 + row]) : Number(column - 4 === row)
+      ))
+    ));
+    for (let pivotColumn = 0; pivotColumn < 4; pivotColumn += 1) {
+      let pivotRow = pivotColumn;
+      for (let row = pivotColumn + 1; row < 4; row += 1) {
+        if (Math.abs(rows[row][pivotColumn]) > Math.abs(rows[pivotRow][pivotColumn])) pivotRow = row;
+      }
+      if (Math.abs(rows[pivotRow][pivotColumn]) < 1e-12) return null;
+      [rows[pivotColumn], rows[pivotRow]] = [rows[pivotRow], rows[pivotColumn]];
+      const pivot = rows[pivotColumn][pivotColumn];
+      rows[pivotColumn] = rows[pivotColumn].map((value) => value / pivot);
+      for (let row = 0; row < 4; row += 1) {
+        if (row === pivotColumn) continue;
+        const factor = rows[row][pivotColumn];
+        rows[row] = rows[row].map((value, column) => value - factor * rows[pivotColumn][column]);
+      }
+    }
+    const inverse = new Array(16);
+    for (let row = 0; row < 4; row += 1) {
+      for (let column = 0; column < 4; column += 1) {
+        inverse[column * 4 + row] = finiteRuntimeNumber(rows[row][column + 4], 8);
+      }
+    }
+    return inverse;
+  }
+
+  function runtimeTransformPoint(matrix, point) {
+    if (!matrix || !point) return null;
+    const [x, y, z] = point;
+    const denominator = matrix[3] * x + matrix[7] * y + matrix[11] * z + matrix[15];
+    const divisor = Math.abs(denominator) > 1e-12 ? denominator : 1;
+    return [
+      (matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12]) / divisor,
+      (matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13]) / divisor,
+      (matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14]) / divisor
+    ].map((value) => finiteRuntimeNumber(value, 8));
+  }
+
+  function runtimeQuaternionFromMatrix(matrix, scale) {
+    if (!matrix || !scale || scale.some((value) => Math.abs(value) < 1e-12)) return [0, 0, 0, 1];
+    const m11 = matrix[0] / scale[0];
+    const m12 = matrix[4] / scale[1];
+    const m13 = matrix[8] / scale[2];
+    const m21 = matrix[1] / scale[0];
+    const m22 = matrix[5] / scale[1];
+    const m23 = matrix[9] / scale[2];
+    const m31 = matrix[2] / scale[0];
+    const m32 = matrix[6] / scale[1];
+    const m33 = matrix[10] / scale[2];
+    const trace = m11 + m22 + m33;
+    let x;
+    let y;
+    let z;
+    let w;
+    if (trace > 0) {
+      const s = 0.5 / Math.sqrt(trace + 1);
+      w = 0.25 / s;
+      x = (m32 - m23) * s;
+      y = (m13 - m31) * s;
+      z = (m21 - m12) * s;
+    } else if (m11 > m22 && m11 > m33) {
+      const s = 2 * Math.sqrt(Math.max(0, 1 + m11 - m22 - m33));
+      w = (m32 - m23) / s;
+      x = 0.25 * s;
+      y = (m12 + m21) / s;
+      z = (m13 + m31) / s;
+    } else if (m22 > m33) {
+      const s = 2 * Math.sqrt(Math.max(0, 1 + m22 - m11 - m33));
+      w = (m13 - m31) / s;
+      x = (m12 + m21) / s;
+      y = 0.25 * s;
+      z = (m23 + m32) / s;
+    } else {
+      const s = 2 * Math.sqrt(Math.max(0, 1 + m33 - m11 - m22));
+      w = (m21 - m12) / s;
+      x = (m13 + m31) / s;
+      y = (m23 + m32) / s;
+      z = 0.25 * s;
+    }
+    return runtimeQuaternion([x, y, z, w]);
+  }
+
+  function runtimeMatrixTrs(matrix) {
+    if (!matrix) return null;
+    let scale = [
+      Math.hypot(matrix[0], matrix[1], matrix[2]),
+      Math.hypot(matrix[4], matrix[5], matrix[6]),
+      Math.hypot(matrix[8], matrix[9], matrix[10])
+    ];
+    const determinant = (
+      matrix[0] * (matrix[5] * matrix[10] - matrix[9] * matrix[6])
+      - matrix[4] * (matrix[1] * matrix[10] - matrix[9] * matrix[2])
+      + matrix[8] * (matrix[1] * matrix[6] - matrix[5] * matrix[2])
+    );
+    if (determinant < 0) scale[0] *= -1;
+    scale = scale.map((value) => finiteRuntimeNumber(value, 8));
+    return {
+      position: [matrix[12], matrix[13], matrix[14]].map((value) => finiteRuntimeNumber(value, 8)),
+      quaternion: runtimeQuaternionFromMatrix(matrix, scale),
+      scale
+    };
+  }
+
+  function runtimeTransformState(object) {
+    const localMatrix = runtimeLocalMatrix(object);
+    const worldMatrix = runtimeWorldMatrix(object);
+    return {
+      localTransform: {
+        matrix: localMatrix,
+        trs: {
+          position: runtimeVector3(object?.position, [localMatrix[12], localMatrix[13], localMatrix[14]]),
+          quaternion: object?.quaternion ? runtimeQuaternion(object.quaternion) : runtimeMatrixTrs(localMatrix)?.quaternion || [0, 0, 0, 1],
+          scale: object?.scale ? runtimeVector3(object.scale, [1, 1, 1]) : runtimeMatrixTrs(localMatrix)?.scale || [1, 1, 1]
+        }
+      },
+      worldTransform: {
+        matrix: worldMatrix,
+        trs: runtimeMatrixTrs(worldMatrix)
+      }
+    };
+  }
+
+  function runtimeAabb(min, max) {
+    if (!min || !max || min.length < 3 || max.length < 3) return null;
+    const normalizedMin = min.slice(0, 3).map((value) => finiteRuntimeNumber(value, 8));
+    const normalizedMax = max.slice(0, 3).map((value) => finiteRuntimeNumber(value, 8));
+    if (normalizedMin.some((value) => value == null) || normalizedMax.some((value) => value == null)) return null;
+    return { min: normalizedMin, max: normalizedMax };
+  }
+
+  function runtimeBoundsFromAabb(aabb, options = {}) {
+    if (!aabb) return null;
+    const center = aabb.min.map((value, index) => finiteRuntimeNumber((value + aabb.max[index]) / 2, 8));
+    const radius = Math.hypot(
+      aabb.max[0] - center[0],
+      aabb.max[1] - center[1],
+      aabb.max[2] - center[2]
+    );
+    return {
+      aabb,
+      center,
+      boundingSphere: {
+        center: [...center],
+        radius: finiteRuntimeNumber(radius, 8)
+      },
+      approximate: Boolean(options.approximate),
+      source: cleanText(options.source || "", 100)
+    };
+  }
+
+  function runtimeMergeAabbs(left, right) {
+    if (!left) return right ? runtimeAabb(right.min, right.max) : null;
+    if (!right) return runtimeAabb(left.min, left.max);
+    return runtimeAabb(
+      left.min.map((value, index) => Math.min(value, right.min[index])),
+      left.max.map((value, index) => Math.max(value, right.max[index]))
+    );
+  }
+
+  function runtimeAggregateBoundingSphere(center, spheres) {
+    if (!center || !spheres.length) return null;
+    let radius = 0;
+    for (const sphere of spheres) {
+      if (!sphere?.center || !Number.isFinite(Number(sphere.radius))) continue;
+      radius = Math.max(
+        radius,
+        Math.hypot(
+          sphere.center[0] - center[0],
+          sphere.center[1] - center[1],
+          sphere.center[2] - center[2]
+        ) + Number(sphere.radius)
+      );
+    }
+    return {
+      center: [...center],
+      radius: finiteRuntimeNumber(radius, 8)
+    };
+  }
+
+  function runtimeTransformAabb(aabb, matrix, options = {}) {
+    if (!aabb || !matrix) return null;
+    let transformed = null;
+    for (const x of [aabb.min[0], aabb.max[0]]) {
+      for (const y of [aabb.min[1], aabb.max[1]]) {
+        for (const z of [aabb.min[2], aabb.max[2]]) {
+          const point = runtimeTransformPoint(matrix, [x, y, z]);
+          const pointAabb = runtimeAabb(point, point);
+          transformed = runtimeMergeAabbs(transformed, pointAabb);
+        }
+      }
+    }
+    return runtimeBoundsFromAabb(transformed, options);
+  }
+
+  function runtimeTransformGeometryBounds(geometryRecord, matrix, options = {}) {
+    if (!geometryRecord?.localAabb || !matrix) return null;
+    const bounds = runtimeTransformAabb(geometryRecord.localAabb, matrix, options);
+    if (!bounds || !geometryRecord.localBoundingSphere) return bounds;
+    const scale = [
+      Math.hypot(matrix[0], matrix[1], matrix[2]),
+      Math.hypot(matrix[4], matrix[5], matrix[6]),
+      Math.hypot(matrix[8], matrix[9], matrix[10])
+    ];
+    bounds.boundingSphere = {
+      center: runtimeTransformPoint(matrix, geometryRecord.localBoundingSphere.center),
+      radius: finiteRuntimeNumber(
+        geometryRecord.localBoundingSphere.radius * Math.max(...scale),
+        8
+      )
+    };
+    return bounds;
+  }
+
+  function runtimeGeometryPositionAttribute(geometry) {
+    try {
+      return geometry?.attributes?.position
+        || (typeof geometry?.getAttribute === "function" ? geometry.getAttribute("position") : null)
+        || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function runtimeAttributeCount(attribute) {
+    const explicit = Number(attribute?.count);
+    if (Number.isFinite(explicit) && explicit >= 0) return Math.floor(explicit);
+    const itemSize = Math.max(1, Number(attribute?.itemSize) || 3);
+    return Math.floor(Number(attribute?.array?.length || 0) / itemSize);
+  }
+
+  function runtimeAttributePoint(attribute, index) {
+    try {
+      if (typeof attribute?.getX === "function") {
+        return [
+          attribute.getX(index),
+          typeof attribute.getY === "function" ? attribute.getY(index) : 0,
+          typeof attribute.getZ === "function" ? attribute.getZ(index) : 0
+        ].map((value) => finiteRuntimeNumber(value, 8));
+      }
+      const itemSize = Math.max(1, Number(attribute?.itemSize) || 3);
+      const offset = index * itemSize;
+      return [
+        attribute?.array?.[offset],
+        attribute?.array?.[offset + 1] ?? 0,
+        attribute?.array?.[offset + 2] ?? 0
+      ].map((value) => finiteRuntimeNumber(value, 8));
+    } catch {
+      return null;
+    }
+  }
+
+  function runtimeGeometryCacheKey(geometry, position, vertexCount, indexCount) {
+    return [
+      geometry?.version ?? "",
+      position?.version ?? "",
+      vertexCount,
+      Number(position?.itemSize) || 3,
+      Number(position?.array?.length) || 0,
+      indexCount
+    ].join(":");
+  }
+
+  function ensureRuntimeGeometryRecord(geometry, object = null) {
+    if (!geometry || (typeof geometry !== "object" && typeof geometry !== "function")) return null;
+    const position = runtimeGeometryPositionAttribute(geometry);
+    const vertexCount = runtimeAttributeCount(position);
+    const indexAttribute = geometry.index || null;
+    const indexCount = Number.isFinite(Number(indexAttribute?.count))
+      ? Math.max(0, Math.floor(Number(indexAttribute.count)))
+      : Math.max(0, Number(indexAttribute?.array?.length || 0));
+    const cacheKey = runtimeGeometryCacheKey(geometry, position, vertexCount, indexCount);
+    const cached = runtime3dState.geometryCache.get(geometry);
+    if (cached?.cacheKey === cacheKey) return cached.record;
+
+    let aabb = null;
+    let measuredBoundingSphere = null;
+    const fingerprintValues = [
+      cleanText(geometry.type || object?.type || "geometry", 80),
+      vertexCount,
+      indexCount,
+      Number(position?.itemSize) || 3,
+      position?.normalized === true ? 1 : 0
+    ];
+    if (position && vertexCount > 0) {
+      const min = [Infinity, Infinity, Infinity];
+      const max = [-Infinity, -Infinity, -Infinity];
+      for (let index = 0; index < vertexCount; index += 1) {
+        const point = runtimeAttributePoint(position, index);
+        if (!point || point.some((value) => value == null)) continue;
+        for (let axis = 0; axis < 3; axis += 1) {
+          min[axis] = Math.min(min[axis], point[axis]);
+          max[axis] = Math.max(max[axis], point[axis]);
+        }
+      }
+      if (min.every(Number.isFinite) && max.every(Number.isFinite)) aabb = runtimeAabb(min, max);
+      if (aabb) {
+        const center = aabb.min.map((value, axis) => (value + aabb.max[axis]) / 2);
+        let radius = 0;
+        for (let index = 0; index < vertexCount; index += 1) {
+          const point = runtimeAttributePoint(position, index);
+          if (!point || point.some((value) => value == null)) continue;
+          radius = Math.max(
+            radius,
+            Math.hypot(
+              point[0] - center[0],
+              point[1] - center[1],
+              point[2] - center[2]
+            )
+          );
+        }
+        measuredBoundingSphere = {
+          center: center.map((value) => finiteRuntimeNumber(value, 8)),
+          radius: finiteRuntimeNumber(radius, 8)
+        };
+      }
+      const sampleCount = Math.min(vertexCount, MAX_RUNTIME_GEOMETRY_FINGERPRINT_SAMPLES);
+      for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+        const vertexIndex = sampleCount <= 1
+          ? 0
+          : Math.round((sampleIndex * (vertexCount - 1)) / (sampleCount - 1));
+        const point = runtimeAttributePoint(position, vertexIndex);
+        if (point) fingerprintValues.push(...point.map((value) => value == null ? "null" : value.toFixed(5)));
+      }
+    }
+    if (indexCount > 0) {
+      const sampleCount = Math.min(indexCount, MAX_RUNTIME_GEOMETRY_FINGERPRINT_SAMPLES);
+      for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+        const index = sampleCount <= 1
+          ? 0
+          : Math.round((sampleIndex * (indexCount - 1)) / (sampleCount - 1));
+        let value = null;
+        try {
+          value = typeof indexAttribute?.getX === "function"
+            ? indexAttribute.getX(index)
+            : indexAttribute?.array?.[index];
+        } catch {
+          value = null;
+        }
+        fingerprintValues.push(Number.isFinite(Number(value)) ? Number(value) : "null");
+      }
+    }
+    if (!aabb) {
+      const box = geometry.boundingBox;
+      const min = runtimeVector3(box?.min, [NaN, NaN, NaN]);
+      const max = runtimeVector3(box?.max, [NaN, NaN, NaN]);
+      if (min.every(Number.isFinite) && max.every(Number.isFinite)) aabb = runtimeAabb(min, max);
+    }
+    if (!aabb && geometry.boundingSphere) {
+      const center = runtimeVector3(geometry.boundingSphere.center, [NaN, NaN, NaN]);
+      const radius = finiteRuntimeNumber(geometry.boundingSphere.radius, 8);
+      if (center.every(Number.isFinite) && radius != null) {
+        measuredBoundingSphere = { center, radius };
+        aabb = runtimeAabb(
+          center.map((value) => value - radius),
+          center.map((value) => value + radius)
+        );
+      }
+    }
+    if (aabb) fingerprintValues.push(...aabb.min, ...aabb.max);
+    const fingerprint = `geometry-fp-${hashString(fingerprintValues.join("|"))}`;
+    let record = cached?.record;
+    if (!record) {
+      runtime3dState.geometrySerial += 1;
+      record = {
+        geometryCatalogId: `runtime-geometry-${runtime3dState.geometrySerial}`,
+        geometryObjectId: runtimeObjectId(geometry, `geometry-${runtime3dState.geometrySerial}`)
+      };
+      runtime3dState.geometryRecords.set(record.geometryCatalogId, record);
+    }
+    const bounds = runtimeBoundsFromAabb(aabb, {
+      approximate: Boolean(object?.isSkinnedMesh || object?.isInstancedMesh || object?.morphTargetInfluences?.length),
+      source: position && vertexCount > 0 ? "position-attribute" : aabb ? "geometry-bounds" : "unavailable"
+    });
+    if (bounds && measuredBoundingSphere) bounds.boundingSphere = measuredBoundingSphere;
+    Object.assign(record, {
+      fingerprint,
+      geometryType: cleanText(geometry.type || "", 100),
+      vertexCount,
+      indexCount,
+      positionItemSize: Number(position?.itemSize) || (position ? 3 : null),
+      positionNormalized: Boolean(position?.normalized),
+      localAabb: bounds?.aabb || null,
+      localCenter: bounds?.center || null,
+      localBoundingSphere: bounds?.boundingSphere || null,
+      approximate: bounds?.approximate || false,
+      boundsSource: bounds?.source || "unavailable"
+    });
+    runtime3dState.geometryCache.set(geometry, { cacheKey, record });
+    touchRuntime3DCatalog();
+    return record;
+  }
+
   function isRuntimeRenderablePart(object) {
     return Boolean(object && (
       object.isMesh === true
@@ -2566,14 +3444,71 @@
     ));
   }
 
-  function sampleRuntimePart(object, root, camera) {
+  function ensureRuntimePartCatalog(modelRecord, object, geometryRecord) {
+    let record = modelRecord.partCatalogByObject.get(object);
+    if (!record) {
+      runtime3dState.partCatalogSerial += 1;
+      record = {
+        catalogPartId: `runtime-part-${runtime3dState.partCatalogSerial}`,
+        catalogModelId: modelRecord.catalogModelId,
+        instanceId: modelRecord.instanceId,
+        nodeId: runtimeObjectId(object, runtimeObjectPath(object, modelRecord.root)),
+        parentObjectId: runtimeObjectId(object.parent, "model-root"),
+        nodeIndex: Number.isInteger(object.userData?.gltfNodeIndex) ? object.userData.gltfNodeIndex : null,
+        nodePath: runtimeObjectPath(object, modelRecord.root),
+        name: cleanText(object.name || "", 240),
+        objectType: cleanText(object.type || "", 100),
+        isMesh: Boolean(object.isMesh || (object.geometry && object.material)),
+        isSkinnedMesh: Boolean(object.isSkinnedMesh),
+        isInstancedMesh: Boolean(object.isInstancedMesh),
+        morphTargetCount: Array.isArray(object.morphTargetInfluences) ? object.morphTargetInfluences.length : 0,
+        geometryCatalogId: geometryRecord?.geometryCatalogId || "",
+        geometryFingerprint: geometryRecord?.fingerprint || ""
+      };
+      modelRecord.partCatalogByObject.set(object, record);
+      runtime3dState.partCatalogRecords.set(record.catalogPartId, record);
+      touchRuntime3DCatalog();
+    } else if (geometryRecord && record.geometryFingerprint !== geometryRecord.fingerprint) {
+      record.geometryCatalogId = geometryRecord.geometryCatalogId;
+      record.geometryFingerprint = geometryRecord.fingerprint;
+      touchRuntime3DCatalog();
+    }
+    return record;
+  }
+
+  function sampleRuntimePart(object, modelRecord, camera, rootInverseWorld = null) {
+    const root = modelRecord.root;
     const selfVisible = object.visible !== false;
     const ancestorVisible = runtimeAncestorVisible(object, root);
     const effectiveVisible = selfVisible && ancestorVisible && root.visible !== false;
     const material = runtimeMaterialState(object.material);
     const layersMatch = runtimeLayersMatch(object, camera);
     const renderEligible = effectiveVisible && material.materialVisible && Number(material.materialOpacity ?? 1) > 0.0001 && layersMatch;
-    return {
+    const geometryRecord = ensureRuntimeGeometryRecord(object.geometry, object);
+    const catalogPart = ensureRuntimePartCatalog(modelRecord, object, geometryRecord);
+    const transform = runtimeTransformState(object);
+    const approximateBounds = Boolean(
+      geometryRecord?.approximate
+      || object.isSkinnedMesh
+      || object.isInstancedMesh
+      || object.morphTargetInfluences?.length
+    );
+    const worldBounds = geometryRecord?.localAabb
+      ? runtimeTransformGeometryBounds(geometryRecord, transform.worldTransform.matrix, {
+          approximate: approximateBounds,
+          source: "cached-local-geometry-transformed"
+        })
+      : null;
+    const relativeMatrix = rootInverseWorld
+      ? runtimeMultiplyMatrices(rootInverseWorld, transform.worldTransform.matrix)
+      : null;
+    const rootLocalBounds = geometryRecord?.localAabb && relativeMatrix
+      ? runtimeTransformGeometryBounds(geometryRecord, relativeMatrix, {
+          approximate: approximateBounds,
+          source: "cached-local-geometry-in-model-root-frame"
+        })
+      : null;
+    const legacy = {
       nodeId: runtimeObjectId(object, runtimeObjectPath(object, root)),
       nodeIndex: Number.isInteger(object.userData?.gltfNodeIndex) ? object.userData.gltfNodeIndex : null,
       nodePath: runtimeObjectPath(object, root),
@@ -2588,8 +3523,33 @@
       materialCount: material.materialCount,
       layersMatch,
       renderEligible,
+      catalogPartId: catalogPart.catalogPartId,
+      geometryCatalogId: geometryRecord?.geometryCatalogId || "",
+      geometryFingerprint: geometryRecord?.fingerprint || "",
       worldPosition: runtimeWorldPosition(object),
       worldTransformSignature: runtimeWorldTransformSignature(object)
+    };
+    return {
+      legacy,
+      spatialState: {
+        catalogPartId: catalogPart.catalogPartId,
+        nodeId: legacy.nodeId,
+        loadedStatus: renderEligible ? "loaded-visible" : "loaded-hidden",
+        hiddenLoaded: !renderEligible,
+        selfVisible,
+        ancestorVisible,
+        effectiveVisible,
+        materialVisible: material.materialVisible,
+        materialOpacity: material.materialOpacity,
+        layersMatch,
+        localTransform: transform.localTransform,
+        worldTransform: transform.worldTransform,
+        rootRelativeMatrix: relativeMatrix,
+        rootLocalBounds,
+        worldBounds
+      },
+      rootLocalBounds,
+      worldBounds
     };
   }
 
@@ -2817,6 +3777,60 @@
     };
   }
 
+  function runtimeContainerForModel(record, sceneRecord) {
+    const rootParent = isRuntimeObject3D(record.root?.parent) ? record.root.parent : null;
+    const object = record.explicitContainer || rootParent || sceneRecord?.scene || null;
+    const hintedId = cleanText(record.containerIdHint || "", 180);
+    const containerId = hintedId || runtimeObjectId(object, sceneRecord?.sceneObjectId || "unparented-runtime-container");
+    const evidenceSource = record.explicitContainer || hintedId
+      ? "explicit-bridge-container"
+      : rootParent && !isRuntimeScene(rootParent)
+        ? "direct-nonscene-parent"
+        : rootParent
+          ? "scene-root"
+          : "unparented";
+    const mapKey = hintedId ? `hint:${hintedId}` : object || `hint:${containerId}`;
+    let containerRecord = runtime3dState.containerRecords.get(mapKey);
+    if (!containerRecord) {
+      runtime3dState.containerSerial += 1;
+      containerRecord = {
+        containerCatalogId: `runtime-container-${runtime3dState.containerSerial}`,
+        containerId,
+        object,
+        objectId: runtimeObjectId(object, containerId),
+        name: cleanText(object?.name || "", 180),
+        objectType: cleanText(object?.type || "", 100),
+        parentObjectId: runtimeObjectId(object?.parent, ""),
+        sceneId: sceneRecord?.id || "",
+        path: object && sceneRecord?.scene ? runtimeObjectPath(object, sceneRecord.scene) : "",
+        evidenceSource,
+        explicit: evidenceSource === "explicit-bridge-container",
+        isScene: isRuntimeScene(object)
+      };
+      runtime3dState.containerRecords.set(mapKey, containerRecord);
+      touchRuntime3DCatalog();
+    }
+    return containerRecord;
+  }
+
+  function runtimeModelRootPath(record, sceneRecord) {
+    if (sceneRecord?.scene && isDescendantRuntimeObject(record.root, sceneRecord.scene)) {
+      return runtimeObjectPath(record.root, sceneRecord.scene);
+    }
+    return runtimeObjectPath(record.root, record.root);
+  }
+
+  function directRuntimeAssetIdentity(record) {
+    return Boolean(
+      record?.assetUrl
+      && Number(record.identityConfidence || 0) >= 0.9
+      && (
+        ["gltf-loader-hook", "object-user-data", "runtime-bridge"].includes(record.identitySource)
+        || record.instanceBoundarySource === "runtime-bridge-explicit"
+      )
+    );
+  }
+
   function discoverSceneModelRoots() {
     for (const sceneRecord of runtime3dState.scenes.values()) {
       const scene = sceneRecord.scene;
@@ -2838,16 +3852,63 @@
     const sceneRecord = runtimeSceneForRoot(root);
     const camera = sceneRecord?.camera || null;
     const parts = [];
+    const spatialPartStates = [];
     let renderablePartCount = 0;
     let visiblePartCount = 0;
     const partLimit = Math.max(0, Math.min(MAX_RUNTIME_PARTS_PER_MODEL, Number.isFinite(options.partLimit) ? options.partLimit : MAX_RUNTIME_PARTS_PER_MODEL));
+    const spatialPartLimit = Math.max(
+      0,
+      Math.min(
+        MAX_RUNTIME_PARTS_PER_MODEL,
+        Number.isFinite(options.spatialPartLimit) ? options.spatialPartLimit : MAX_RUNTIME_PARTS_PER_MODEL
+      )
+    );
+    const rootTransform = runtimeTransformState(root);
+    const rootInverseWorld = runtimeInvertMatrix(rootTransform.worldTransform.matrix);
+    let rootLocalAabb = null;
+    let worldAabb = null;
+    const rootLocalSpheres = [];
+    const worldSpheres = [];
+    let boundsApproximate = false;
     boundedRuntimeTraverse(root, (object) => {
       if (!isRuntimeRenderablePart(object)) return;
       renderablePartCount += 1;
-      const part = sampleRuntimePart(object, root, camera);
-      if (part.renderEligible) visiblePartCount += 1;
-      if (part.renderEligible && parts.length < partLimit) parts.push(part);
+      const part = sampleRuntimePart(object, record, camera, rootInverseWorld);
+      if (part.legacy.renderEligible) visiblePartCount += 1;
+      if (part.legacy.renderEligible && parts.length < partLimit) parts.push(part.legacy);
+      if (spatialPartStates.length < spatialPartLimit) spatialPartStates.push(part.spatialState);
+      rootLocalAabb = runtimeMergeAabbs(rootLocalAabb, part.rootLocalBounds?.aabb);
+      worldAabb = runtimeMergeAabbs(worldAabb, part.worldBounds?.aabb);
+      if (part.rootLocalBounds?.boundingSphere) rootLocalSpheres.push(part.rootLocalBounds.boundingSphere);
+      if (part.worldBounds?.boundingSphere) worldSpheres.push(part.worldBounds.boundingSphere);
+      boundsApproximate = boundsApproximate
+        || Boolean(part.rootLocalBounds?.approximate)
+        || Boolean(part.worldBounds?.approximate);
     }, 1600);
+    const rootLocalBounds = runtimeBoundsFromAabb(rootLocalAabb, {
+      approximate: boundsApproximate,
+      source: "aggregate-cached-part-geometry-in-model-root-frame"
+    });
+    const worldBounds = runtimeBoundsFromAabb(worldAabb, {
+      approximate: boundsApproximate,
+      source: "aggregate-cached-part-geometry-in-world-frame"
+    });
+    if (rootLocalBounds) {
+      rootLocalBounds.boundingSphere = runtimeAggregateBoundingSphere(
+        rootLocalBounds.center,
+        rootLocalSpheres
+      ) || rootLocalBounds.boundingSphere;
+    }
+    if (worldBounds) {
+      worldBounds.boundingSphere = runtimeAggregateBoundingSphere(
+        worldBounds.center,
+        worldSpheres
+      ) || worldBounds.boundingSphere;
+    }
+    if (!record.initialLocalBounds && rootLocalBounds) {
+      record.initialLocalBounds = rootLocalBounds;
+      touchRuntime3DCatalog();
+    }
 
     const mixers = Array.from(runtime3dState.mixers.values())
       .filter((mixerRecord) => {
@@ -2881,10 +3942,44 @@
           : structuralRenderEligible
             ? "structural-only"
             : "hidden-or-nonrenderable";
+    const container = runtimeContainerForModel(record, sceneRecord);
+    const rootPath = runtimeModelRootPath(record, sceneRecord);
+    const parentObjectId = runtimeObjectId(root.parent, sceneRecord?.sceneObjectId || "");
+    if (!record.initialSpatialIdentity) {
+      record.initialSpatialIdentity = {
+        parentObjectId,
+        containerId: container.containerId,
+        containerCatalogId: container.containerCatalogId,
+        rootPath
+      };
+      touchRuntime3DCatalog();
+    }
+    const explicitAnchorWorld = record.anchorObject
+      ? runtimeWorldPosition(record.anchorObject)
+      : null;
+    const anchorWorld = explicitAnchorWorld || worldBounds?.center || runtimeWorldPosition(root);
+    const anchorInRootFrame = anchorWorld && rootInverseWorld
+      ? runtimeTransformPoint(rootInverseWorld, anchorWorld)
+      : null;
+    const loadedStatus = visibleOnCanvas
+      ? "loaded-visible"
+      : effectiveVisible
+        ? "loaded-offscreen-or-unobserved"
+        : "loaded-hidden";
+    const hiddenLoaded = !effectiveVisible;
     return {
       runtimeModelId: record.id,
+      catalogModelId: record.catalogModelId,
+      instanceId: record.instanceId,
       rootObjectId: record.rootObjectId,
       rootName: record.rootName,
+      parentObjectId,
+      containerId: container.containerId,
+      containerCatalogId: container.containerCatalogId,
+      rootPath,
+      instanceBoundarySource: record.instanceBoundarySource,
+      instanceBoundaryConfidence: record.instanceBoundaryConfidence,
+      instanceBoundaryExplicit: record.instanceBoundaryExplicit,
       assetUrl: record.assetUrl,
       identitySource: record.identitySource,
       identityConfidence: record.identityConfidence,
@@ -2907,16 +4002,478 @@
       renderContributionCandidate,
       renderEligibility,
       renderEligible: visibleOnCanvas,
+      loadedStatus,
+      hiddenLoaded,
       renderablePartCount,
       visiblePartCount,
       visiblePartTruncated: visiblePartCount > partLimit,
       visibleParts: parts,
+      spatialState: {
+        catalogModelId: record.catalogModelId,
+        instanceId: record.instanceId,
+        loadedStatus,
+        hiddenLoaded,
+        parentObjectId,
+        containerId: container.containerId,
+        containerCatalogId: container.containerCatalogId,
+        rootPath,
+        instanceBoundarySource: record.instanceBoundarySource,
+        instanceBoundaryConfidence: record.instanceBoundaryConfidence,
+        compositionId: record.compositionId,
+        frameId: record.frameId,
+        sourceId: record.sourceId,
+        sourceConfigId: record.sourceConfigId,
+        activeStateId: record.activeStateId,
+        localTransform: rootTransform.localTransform,
+        worldTransform: rootTransform.worldTransform,
+        rootLocalBounds,
+        worldBounds,
+        anchorKind: record.anchorKind || (worldBounds ? "geometry-bounds-center" : "root-pivot"),
+        anchorWorld,
+        anchorInRootFrame,
+        partStateCount: spatialPartStates.length,
+        partStatesTruncated: renderablePartCount > spatialPartLimit,
+        partStates: spatialPartStates
+      },
       mixerCount: mixers.length,
       mixers,
       activeAnimationCount: playingAnimations.length,
       activeAnimations: playingAnimations,
       playbackMode: modes.length > 1 ? "mixed" : modes[0] || "unknown",
       provenance: "direct-runtime"
+    };
+  }
+
+  function runtimeModelRecordForRelationshipEndpoint(root, instanceId) {
+    if (root && runtime3dState.models.has(root)) return runtime3dState.models.get(root);
+    const normalizedId = cleanText(instanceId || "", 180);
+    if (!normalizedId) return null;
+    return Array.from(runtime3dState.models.values()).find((record) => (
+      record.instanceId === normalizedId
+      || record.id === normalizedId
+      || record.rootObjectId === normalizedId
+    )) || null;
+  }
+
+  function runtimeExplicitRelationshipForPair(firstRecord, secondRecord) {
+    for (const relationship of runtime3dState.explicitSpatialRelationships) {
+      const subject = runtimeModelRecordForRelationshipEndpoint(
+        relationship.subjectRoot,
+        relationship.subjectInstanceId
+      );
+      const reference = runtimeModelRecordForRelationshipEndpoint(
+        relationship.referenceRoot,
+        relationship.referenceInstanceId
+      );
+      if (
+        (subject === firstRecord && reference === secondRecord)
+        || (subject === secondRecord && reference === firstRecord)
+      ) {
+        return { relationship, subject, reference };
+      }
+    }
+    return null;
+  }
+
+  function runtimePairEvidence(firstRecord, secondRecord) {
+    const evidenceBasis = [];
+    const explicitRelationship = runtimeExplicitRelationshipForPair(firstRecord, secondRecord);
+    if (explicitRelationship) evidenceBasis.push("explicit-bridge-relationship");
+    if (firstRecord.compositionId && firstRecord.compositionId === secondRecord.compositionId) {
+      evidenceBasis.push("shared-explicit-composition");
+    }
+    if (firstRecord.frameId && firstRecord.frameId === secondRecord.frameId) {
+      evidenceBasis.push("shared-explicit-frame");
+    }
+    if (firstRecord.sourceId && firstRecord.sourceId === secondRecord.sourceId) {
+      evidenceBasis.push("shared-explicit-source");
+    }
+    if (firstRecord.sourceConfigId && firstRecord.sourceConfigId === secondRecord.sourceConfigId) {
+      evidenceBasis.push("shared-explicit-source-config");
+    }
+    const sharedExplicitContainer = (
+      firstRecord.explicitContainer
+      && firstRecord.explicitContainer === secondRecord.explicitContainer
+    ) || (
+      firstRecord.containerIdHint
+      && firstRecord.containerIdHint === secondRecord.containerIdHint
+    );
+    if (sharedExplicitContainer) evidenceBasis.push("shared-explicit-container");
+    const sharedRuntimeContainer = (
+      firstRecord.root?.parent
+      && firstRecord.root.parent === secondRecord.root?.parent
+      && !isRuntimeScene(firstRecord.root.parent)
+      && directRuntimeAssetIdentity(firstRecord)
+      && directRuntimeAssetIdentity(secondRecord)
+    );
+    if (sharedRuntimeContainer) evidenceBasis.push("shared-runtime-container-with-direct-asset-identity");
+    const qualifies = evidenceBasis.length > 0;
+    if (
+      qualifies
+      && firstRecord.activeStateId
+      && firstRecord.activeStateId === secondRecord.activeStateId
+    ) {
+      evidenceBasis.push("shared-explicit-active-state");
+    }
+    return { evidenceBasis, explicitRelationship, qualifies };
+  }
+
+  function runtimeVectorOffset(subject, reference) {
+    if (!subject || !reference) return null;
+    return subject.slice(0, 3).map((value, index) => finiteRuntimeNumber(value - reference[index], 8));
+  }
+
+  function runtimeNormalizedDirection(offset) {
+    if (!offset) return null;
+    const length = Math.hypot(...offset);
+    if (length < 1e-12) return [0, 0, 0];
+    return offset.map((value) => finiteRuntimeNumber(value / length, 8));
+  }
+
+  function runtimeRelationshipStability(key, values) {
+    const normalizedValues = values.map((value) => Number(value));
+    let history = runtime3dState.relationshipHistory.get(key);
+    if (!history) {
+      history = {
+        sampleCount: 0,
+        stableSampleCount: 0,
+        maxObservedDelta: 0,
+        previousValues: null
+      };
+      runtime3dState.relationshipHistory.set(key, history);
+    }
+    let delta = null;
+    if (history.previousValues && history.previousValues.length === normalizedValues.length) {
+      delta = normalizedValues.reduce((maximum, value, index) => (
+        Math.max(maximum, Math.abs(value - history.previousValues[index]))
+      ), 0);
+      if (delta <= 0.0001) history.stableSampleCount += 1;
+      history.maxObservedDelta = Math.max(history.maxObservedDelta, delta);
+    }
+    history.sampleCount += 1;
+    history.previousValues = normalizedValues;
+    const stableAcrossSamples = history.sampleCount >= 2
+      && history.stableSampleCount === history.sampleCount - 1;
+    return {
+      sampleCount: history.sampleCount,
+      stableSampleCount: history.stableSampleCount,
+      status: history.sampleCount < 2 ? "unobserved" : stableAcrossSamples ? "stable" : "changed",
+      stableAcrossSamples,
+      lastDelta: delta == null ? null : finiteRuntimeNumber(delta, 8),
+      maxObservedDelta: finiteRuntimeNumber(history.maxObservedDelta, 8)
+    };
+  }
+
+  function runtimeSpatialRelationshipClue(subjectRecord, referenceRecord, subjectModel, referenceModel, pairEvidence) {
+    const subjectState = subjectModel.spatialState;
+    const referenceState = referenceModel.spatialState;
+    const subjectWorldMatrix = subjectState?.worldTransform?.matrix;
+    const referenceWorldMatrix = referenceState?.worldTransform?.matrix;
+    const referenceInverseWorld = runtimeInvertMatrix(referenceWorldMatrix);
+    if (!subjectWorldMatrix || !referenceWorldMatrix || !referenceInverseWorld) return null;
+    const subjectAnchorWorld = subjectState.anchorWorld
+      || subjectState.worldBounds?.center
+      || subjectState.worldTransform?.trs?.position;
+    const referenceAnchorWorld = referenceState.anchorWorld
+      || referenceState.worldBounds?.center
+      || referenceState.worldTransform?.trs?.position;
+    if (!subjectAnchorWorld || !referenceAnchorWorld) return null;
+    const subjectAnchorInReferenceFrame = runtimeTransformPoint(referenceInverseWorld, subjectAnchorWorld);
+    const referenceAnchorInReferenceFrame = runtimeTransformPoint(referenceInverseWorld, referenceAnchorWorld);
+    const referenceLocalOffset = runtimeVectorOffset(
+      subjectAnchorInReferenceFrame,
+      referenceAnchorInReferenceFrame
+    );
+    const radialDistance = referenceLocalOffset ? Math.hypot(...referenceLocalOffset) : null;
+    const referenceRadius = referenceState.rootLocalBounds?.boundingSphere?.radius ?? null;
+    const radialDistanceRatio = Number.isFinite(radialDistance) && Number(referenceRadius) > 1e-12
+      ? radialDistance / Number(referenceRadius)
+      : null;
+    const signedSurfaceOffset = Number.isFinite(radialDistance) && Number.isFinite(Number(referenceRadius))
+      ? radialDistance - Number(referenceRadius)
+      : null;
+    const relativeMatrix = runtimeMultiplyMatrices(referenceInverseWorld, subjectWorldMatrix);
+    const relationship = pairEvidence.explicitRelationship?.relationship || null;
+    const relationshipKey = [
+      subjectRecord.instanceId,
+      referenceRecord.instanceId,
+      pairEvidence.evidenceBasis.join(","),
+      relationship?.relationshipType || ""
+    ].join("|");
+    const stabilityValues = [
+      ...(relativeMatrix || []),
+      ...(referenceLocalOffset || []),
+      Number.isFinite(radialDistanceRatio) ? radialDistanceRatio : 0
+    ];
+    const stability = runtimeRelationshipStability(relationshipKey, stabilityValues);
+    const transformEvidence = subjectState.worldBounds && referenceState.worldBounds
+      ? "numeric-runtime-matrix-and-geometry-bounds"
+      : "numeric-runtime-matrix";
+    return {
+      clueId: `runtime-spatial-clue-${hashString(relationshipKey)}`,
+      evidenceType: "runtime-spatial-placement-candidate",
+      candidateOnly: true,
+      semanticInference: "none",
+      subjectInstanceId: subjectRecord.instanceId,
+      subjectCatalogModelId: subjectRecord.catalogModelId,
+      subjectAssetUrl: subjectRecord.assetUrl,
+      subjectIdentitySource: subjectRecord.identitySource,
+      referenceInstanceId: referenceRecord.instanceId,
+      referenceCatalogModelId: referenceRecord.catalogModelId,
+      referenceAssetUrl: referenceRecord.assetUrl,
+      referenceIdentitySource: referenceRecord.identitySource,
+      evidenceBasis: pairEvidence.evidenceBasis,
+      transformEvidence,
+      explicitRelationshipHintId: relationship?.relationshipHintId || "",
+      explicitRelationshipType: relationship?.relationshipType || "",
+      relativeMatrix,
+      subjectAnchorWorld,
+      referenceAnchorWorld,
+      subjectAnchorInReferenceFrame,
+      referenceAnchorInReferenceFrame,
+      referenceLocalOffset,
+      referenceLocalDirection: runtimeNormalizedDirection(referenceLocalOffset),
+      radialDistance: Number.isFinite(radialDistance) ? finiteRuntimeNumber(radialDistance, 8) : null,
+      referenceRadius: referenceRadius != null && Number.isFinite(Number(referenceRadius))
+        ? finiteRuntimeNumber(referenceRadius, 8)
+        : null,
+      radialDistanceRatio: Number.isFinite(radialDistanceRatio) ? finiteRuntimeNumber(radialDistanceRatio, 8) : null,
+      signedSurfaceOffset: Number.isFinite(signedSurfaceOffset) ? finiteRuntimeNumber(signedSurfaceOffset, 8) : null,
+      stability,
+      provenance: "direct-runtime-geometry-candidate"
+    };
+  }
+
+  function collectRuntimeSpatialRelationshipClues(models) {
+    const recordById = new Map(Array.from(runtime3dState.models.values()).map((record) => [record.id, record]));
+    const candidates = [];
+    for (let firstIndex = 0; firstIndex < models.length; firstIndex += 1) {
+      for (let secondIndex = firstIndex + 1; secondIndex < models.length; secondIndex += 1) {
+        const firstModel = models[firstIndex];
+        const secondModel = models[secondIndex];
+        const firstRecord = recordById.get(firstModel.runtimeModelId);
+        const secondRecord = recordById.get(secondModel.runtimeModelId);
+        if (!firstRecord || !secondRecord) continue;
+        const pairEvidence = runtimePairEvidence(firstRecord, secondRecord);
+        if (!pairEvidence.qualifies) continue;
+        let subjectRecord = firstRecord;
+        let referenceRecord = secondRecord;
+        let subjectModel = firstModel;
+        let referenceModel = secondModel;
+        if (pairEvidence.explicitRelationship) {
+          subjectRecord = pairEvidence.explicitRelationship.subject;
+          referenceRecord = pairEvidence.explicitRelationship.reference;
+          subjectModel = subjectRecord === firstRecord ? firstModel : secondModel;
+          referenceModel = referenceRecord === firstRecord ? firstModel : secondModel;
+        } else {
+          const firstRadius = Number(firstModel.spatialState?.rootLocalBounds?.boundingSphere?.radius);
+          const secondRadius = Number(secondModel.spatialState?.rootLocalBounds?.boundingSphere?.radius);
+          const firstIsReference = (
+            Number.isFinite(firstRadius)
+            && (!Number.isFinite(secondRadius) || firstRadius > secondRadius)
+          ) || (
+            firstRadius === secondRadius
+            && firstRecord.instanceId.localeCompare(secondRecord.instanceId) < 0
+          );
+          if (firstIsReference) {
+            subjectRecord = secondRecord;
+            referenceRecord = firstRecord;
+            subjectModel = secondModel;
+            referenceModel = firstModel;
+          }
+        }
+        const clue = runtimeSpatialRelationshipClue(
+          subjectRecord,
+          referenceRecord,
+          subjectModel,
+          referenceModel,
+          pairEvidence
+        );
+        if (!clue) continue;
+        const basisScore = pairEvidence.evidenceBasis.reduce((score, basis) => score + ({
+          "explicit-bridge-relationship": 100,
+          "shared-explicit-composition": 80,
+          "shared-explicit-source-config": 76,
+          "shared-explicit-source": 72,
+          "shared-explicit-frame": 68,
+          "shared-explicit-container": 64,
+          "shared-runtime-container-with-direct-asset-identity": 50,
+          "shared-explicit-active-state": 4
+        }[basis] || 0), 0);
+        const subjectRadius = Number(subjectModel.spatialState?.rootLocalBounds?.boundingSphere?.radius);
+        const referenceRadius = Number(referenceModel.spatialState?.rootLocalBounds?.boundingSphere?.radius);
+        const scaleContrast = Number.isFinite(subjectRadius) && subjectRadius > 1e-12 && Number.isFinite(referenceRadius)
+          ? Math.min(20, referenceRadius / subjectRadius)
+          : 0;
+        candidates.push({ clue, score: basisScore + scaleContrast });
+      }
+    }
+    candidates.sort((left, right) => (
+      right.score - left.score
+      || left.clue.clueId.localeCompare(right.clue.clueId)
+    ));
+    return {
+      clues: candidates.slice(0, MAX_RUNTIME_SPATIAL_RELATION_CLUES).map((item) => item.clue),
+      candidateCount: candidates.length,
+      truncated: candidates.length > MAX_RUNTIME_SPATIAL_RELATION_CLUES
+    };
+  }
+
+  function runtime3dStaticCatalog() {
+    const modelRecords = Array.from(runtime3dState.models.values());
+    const models = modelRecords.map((record) => {
+      const sceneRecord = runtimeSceneForRoot(record.root);
+      const container = runtimeContainerForModel(record, sceneRecord);
+      const rootPath = runtimeModelRootPath(record, sceneRecord);
+      return {
+        catalogModelId: record.catalogModelId,
+        runtimeModelId: record.id,
+        instanceId: record.instanceId,
+        rootObjectId: record.rootObjectId,
+        rootName: record.rootName,
+        parentObjectId: runtimeObjectId(record.root?.parent, sceneRecord?.sceneObjectId || ""),
+        containerId: container.containerId,
+        containerCatalogId: container.containerCatalogId,
+        rootPath,
+        initialParentObjectId: record.initialSpatialIdentity?.parentObjectId || "",
+        initialContainerId: record.initialSpatialIdentity?.containerId || "",
+        initialRootPath: record.initialSpatialIdentity?.rootPath || "",
+        instanceBoundarySource: record.instanceBoundarySource,
+        instanceBoundaryConfidence: record.instanceBoundaryConfidence,
+        instanceBoundaryExplicit: record.instanceBoundaryExplicit,
+        assetUrl: record.assetUrl,
+        identitySource: record.identitySource,
+        identityConfidence: record.identityConfidence,
+        registrationSource: record.registrationSource,
+        compositionId: record.compositionId,
+        compositionRole: record.compositionRole,
+        frameId: record.frameId,
+        frameRootObjectId: runtimeObjectId(record.frameRoot, ""),
+        sourceId: record.sourceId,
+        sourceConfigId: record.sourceConfigId,
+        sourceConfig: record.sourceConfig,
+        activeStateId: record.activeStateId,
+        anchorObjectId: runtimeObjectId(record.anchorObject, ""),
+        anchorKind: record.anchorKind,
+        initialLocalAabb: record.initialLocalBounds?.aabb || null,
+        initialLocalCenter: record.initialLocalBounds?.center || null,
+        initialLocalBoundingSphere: record.initialLocalBounds?.boundingSphere || null,
+        partCatalogIds: Array.from(record.partCatalogByObject.values()).map((part) => part.catalogPartId)
+      };
+    });
+    const sourceMap = new Map();
+    for (const model of models) {
+      const key = [
+        model.sourceId,
+        model.sourceConfigId,
+        model.assetUrl,
+        model.identitySource
+      ].join("|");
+      let source = sourceMap.get(key);
+      if (!source) {
+        source = {
+          sourceCatalogId: `runtime-source-${hashString(key)}`,
+          sourceId: model.sourceId,
+          sourceConfigId: model.sourceConfigId,
+          assetUrl: model.assetUrl,
+          identitySource: model.identitySource,
+          identityConfidence: model.identityConfidence,
+          sourceConfig: model.sourceConfig,
+          instanceIds: []
+        };
+        sourceMap.set(key, source);
+      }
+      source.instanceIds.push(model.instanceId);
+    }
+    const compositions = new Map();
+    for (const record of runtime3dState.compositionRecords.values()) {
+      compositions.set(record.compositionId, {
+        compositionId: record.compositionId,
+        containerId: record.containerIdHint || runtimeObjectId(record.container, ""),
+        containerObjectId: runtimeObjectId(record.container, ""),
+        frameId: record.frameId,
+        frameRootObjectId: runtimeObjectId(record.frameRoot, ""),
+        sourceId: record.sourceId,
+        sourceConfigId: record.sourceConfigId,
+        activeStateId: record.activeStateId || "",
+        memberInstanceIds: [...record.memberInstanceIds],
+        source: record.source
+      });
+    }
+    for (const model of models) {
+      if (!model.compositionId) continue;
+      let composition = compositions.get(model.compositionId);
+      if (!composition) {
+        composition = {
+          compositionId: model.compositionId,
+          containerId: model.containerId,
+          containerObjectId: "",
+          frameId: model.frameId,
+          frameRootObjectId: model.frameRootObjectId,
+          sourceId: model.sourceId,
+          sourceConfigId: model.sourceConfigId,
+          activeStateId: model.activeStateId,
+          memberInstanceIds: [],
+          source: "runtime-bridge-model-hint"
+        };
+        compositions.set(model.compositionId, composition);
+      }
+      if (!composition.memberInstanceIds.includes(model.instanceId)) {
+        composition.memberInstanceIds.push(model.instanceId);
+      }
+    }
+    const frames = Array.from(runtime3dState.frameRecords.values()).map((record) => ({
+      frameId: record.frameId,
+      rootObjectId: runtimeObjectId(record.root, ""),
+      compositionId: record.compositionId,
+      sourceId: record.sourceId,
+      sourceConfigId: record.sourceConfigId,
+      source: record.source
+    }));
+    const explicitRelationships = runtime3dState.explicitSpatialRelationships.map((relationship) => {
+      const subject = runtimeModelRecordForRelationshipEndpoint(
+        relationship.subjectRoot,
+        relationship.subjectInstanceId
+      );
+      const reference = runtimeModelRecordForRelationshipEndpoint(
+        relationship.referenceRoot,
+        relationship.referenceInstanceId
+      );
+      return {
+        relationshipHintId: relationship.relationshipHintId,
+        subjectInstanceId: subject?.instanceId || relationship.subjectInstanceId,
+        referenceInstanceId: reference?.instanceId || relationship.referenceInstanceId,
+        relationshipType: relationship.relationshipType,
+        compositionId: relationship.compositionId,
+        frameId: relationship.frameId,
+        sourceId: relationship.sourceId,
+        confidence: relationship.confidence,
+        source: relationship.source
+      };
+    });
+    return {
+      schemaVersion: "storyvr-runtime-3d-catalog/v1",
+      revision: runtime3dState.catalogRevision,
+      models,
+      parts: Array.from(runtime3dState.partCatalogRecords.values()).map((record) => ({ ...record })),
+      geometries: Array.from(runtime3dState.geometryRecords.values()).map((record) => ({ ...record })),
+      containers: Array.from(runtime3dState.containerRecords.values()).map((record) => ({
+        containerCatalogId: record.containerCatalogId,
+        containerId: record.containerId,
+        objectId: record.objectId,
+        name: record.name,
+        objectType: record.objectType,
+        parentObjectId: record.parentObjectId,
+        sceneId: record.sceneId,
+        path: record.path,
+        evidenceSource: record.evidenceSource,
+        explicit: record.explicit,
+        isScene: record.isScene
+      })),
+      compositions: Array.from(compositions.values()),
+      frames,
+      sources: Array.from(sourceMap.values()),
+      explicitRelationships
     };
   }
 
@@ -2955,7 +4512,10 @@
       reason = "Some Three.js objects are reachable, but rendered scene/model coverage is incomplete.";
     }
     return {
-      schemaVersion: "storyvr-runtime-3d-observation/v1",
+      schemaVersion: "storyvr-runtime-3d-observation/v2",
+      backwardCompatibleWith: ["storyvr-runtime-3d-observation/v1"],
+      catalogSchemaVersion: "storyvr-runtime-3d-catalog/v1",
+      catalogRevision: runtime3dState.catalogRevision,
       captureStatus,
       reason,
       installedAt: runtime3dState.installedAt,
@@ -2971,7 +4531,11 @@
         discoveredObjects: runtime3dState.discoveredObjectCount,
         runtimeBridges: runtime3dState.bridgeRegistrationCount,
         runtimeBridgeRequests: runtime3dState.bridgeRequestCount,
-        domRuntimeHandles: runtime3dState.domRuntimeHandleCount
+        domRuntimeHandles: runtime3dState.domRuntimeHandleCount,
+        catalogModels: runtime3dState.models.size,
+        catalogParts: runtime3dState.partCatalogRecords.size,
+        catalogGeometries: runtime3dState.geometryRecords.size,
+        explicitSpatialRelationships: runtime3dState.explicitSpatialRelationships.length
       },
       limitations: Array.from(runtime3dState.limitations)
     };
@@ -2982,13 +4546,22 @@
     discoverSceneModelRoots();
     const metadata = runtime3dMetadata();
     let remainingPartBudget = MAX_RUNTIME_PARTS_PER_SNAPSHOT;
+    let remainingSpatialPartBudget = MAX_RUNTIME_SPATIAL_PARTS_PER_SNAPSHOT;
     let remainingActionBudget = MAX_RUNTIME_ACTIONS_PER_SNAPSHOT;
     const activeScenes = activeRuntimeSceneRecords();
     const models = Array.from(runtime3dState.models.values())
       .slice(0, MAX_RUNTIME_MODELS)
       .map((record) => {
-        const model = sampleRuntimeModel(record, { partLimit: remainingPartBudget, activeScenes });
+        const model = sampleRuntimeModel(record, {
+          partLimit: remainingPartBudget,
+          spatialPartLimit: remainingSpatialPartBudget,
+          activeScenes
+        });
         remainingPartBudget = Math.max(0, remainingPartBudget - model.visibleParts.length);
+        remainingSpatialPartBudget = Math.max(
+          0,
+          remainingSpatialPartBudget - model.spatialState.partStates.length
+        );
         for (const mixer of model.mixers) {
           const originalActions = mixer.actionStates;
           mixer.actionStates = originalActions.slice(0, remainingActionBudget);
@@ -3000,6 +4573,7 @@
         model.activeAnimationCount = model.activeAnimations.length;
         return model;
       });
+    const relationshipClues = collectRuntimeSpatialRelationshipClues(models);
     const cameras = Array.from(activeScenes)
       .map((sceneRecord) => sampleRuntimeCamera(sceneRecord.camera, sceneRecord))
       .filter(Boolean);
@@ -3017,6 +4591,15 @@
       && modelResources.every((url) => directlyIdentifiedAssetUrls.has(url));
     const observation = {
       ...metadata,
+      catalogRevision: runtime3dState.catalogRevision,
+      catalogModelRefs: models.map((model) => model.catalogModelId),
+      counts: {
+        ...metadata.counts,
+        catalogModels: runtime3dState.models.size,
+        catalogParts: runtime3dState.partCatalogRecords.size,
+        catalogGeometries: runtime3dState.geometryRecords.size,
+        explicitSpatialRelationships: runtime3dState.explicitSpatialRelationships.length
+      },
       source: "three-runtime-instrumentation",
       capturedAtElapsedMs: Math.round(performance.now()),
       renderedFrameAgeMs: runtime3dState.scenes.size
@@ -3025,14 +4608,21 @@
       modelCount: models.length,
       visibleModelCount: models.filter((model) => model.renderEligible).length,
       visiblePartCount: models.reduce((count, model) => count + model.visibleParts.length, 0),
+      spatialPartStateCount: models.reduce((count, model) => count + model.spatialState.partStates.length, 0),
       actionStateCount: models.reduce((count, model) => count + model.mixers.reduce((mixerCount, mixer) => mixerCount + mixer.actionStates.length, 0), 0),
       modelResourceCount: modelResources.length,
       identifiedAssetCount: identifiedAssetUrls.size,
       directlyIdentifiedAssetCount: directlyIdentifiedAssetUrls.size,
       assetCoverageComplete,
       visiblePartsTruncated: remainingPartBudget === 0 && models.some((model) => model.visiblePartTruncated),
+      spatialPartStatesTruncated: remainingSpatialPartBudget === 0
+        && models.some((model) => model.spatialState.partStatesTruncated),
       actionStatesTruncated: remainingActionBudget === 0 && models.some((model) => model.mixers.some((mixer) => mixer.actionTruncated)),
       models,
+      spatialRelationshipClueCount: relationshipClues.clues.length,
+      spatialRelationshipCandidateCount: relationshipClues.candidateCount,
+      spatialRelationshipCluesTruncated: relationshipClues.truncated,
+      spatialRelationshipClues: relationshipClues.clues,
       unassignedMixers,
       activeCameras: cameras
     };
@@ -3044,10 +4634,17 @@
     if (!observation || observation.captureStatus === "unavailable") return observation?.captureStatus || "unavailable";
     const models = (observation.models || []).map((model) => {
       const parts = (model.visibleParts || []).map((part) => `${part.nodeId}:${part.renderEligible ? 1 : 0}:${part.materialOpacity}:${part.worldTransformSignature || ""}`).join(",");
+      const spatialParts = (model.spatialState?.partStates || []).map((part) => (
+        `${part.catalogPartId}:${part.loadedStatus}:${part.worldTransform?.matrix?.join(",") || ""}:${part.worldBounds?.center?.join(",") || ""}`
+      )).join(",");
       const actions = (model.activeAnimations || []).map((action) => `${action.mixerId}:${action.actionId}:${action.clipIndex}:${action.time}:${action.playing ? 1 : 0}`).join(",");
-      return `${model.runtimeModelId}:${model.assetUrl}:${model.renderEligible ? 1 : 0}:${parts}:${actions}:${model.playbackMode}`;
+      const rootSpatial = `${model.spatialState?.loadedStatus || ""}:${model.spatialState?.worldTransform?.matrix?.join(",") || ""}:${model.spatialState?.worldBounds?.center?.join(",") || ""}`;
+      return `${model.runtimeModelId}:${model.assetUrl}:${model.renderEligible ? 1 : 0}:${parts}:${spatialParts}:${rootSpatial}:${actions}:${model.playbackMode}`;
     }).join("|");
-    return hashString(`${observation.captureStatus}:${models}:${(observation.activeCameras || []).map((camera) => `${camera.cameraId}:${camera.position?.join(",")}:${camera.quaternion?.join(",")}`).join("|")}`);
+    const relations = (observation.spatialRelationshipClues || []).map((clue) => (
+      `${clue.clueId}:${clue.relativeMatrix?.join(",") || ""}:${clue.referenceLocalOffset?.join(",") || ""}:${clue.stability?.status || ""}`
+    )).join("|");
+    return hashString(`${observation.captureStatus}:${models}:${relations}:${(observation.activeCameras || []).map((camera) => `${camera.cameraId}:${camera.position?.join(",")}:${camera.quaternion?.join(",")}`).join("|")}`);
   }
 
   function currentCandidateUrls() {
@@ -6456,6 +8053,7 @@
       scripts,
       data_params: dataParams,
       runtime_3d: runtime3dMetadata(),
+      runtime_3d_catalog: runtime3dStaticCatalog(),
       viewport_capture: viewportCaptureMetadata(),
       scroll_target_screenshots: scrollTargetScreenshots.map((item) => ({ ...item })),
       scroll_target_contact_sheets: serializedScrollTargetContactSheets(),
@@ -6477,6 +8075,8 @@
         "After one user-approved current-tab share, one full composited browser-client screenshot is captured at every planned scroll target. The primary-canvas crop/hash is retained separately as secondary diagnostic evidence.",
         "Full-page capture uses getDisplayMedia and requires the user to choose This Tab. Window/monitor selection is rejected. Canvas-only capture is available only through the explicit allowCanvasFallback option.",
         "runtime3D snapshot state is direct only when captureStatus is ok or partial and each record carries a runtime model/node/action identity; modelUrls remains cumulative resource inventory.",
+        "runtime_3d_catalog stores static model/part/geometry/source/frame identity once. runtime3D snapshots reference catalog IDs and retain numeric transforms, visibility, transformed bounds, and only bounded placement candidates.",
+        "Spatial placement clues never infer semantic composition from co-loading or beat co-occurrence. A clue requires an explicit bridge/source/config/frame/container hint or a shared direct non-scene parent corroborated by direct asset identity.",
         "Closure-owned Three.js state can opt into direct capture through NYTAnimationProbe.registerRuntime3D(...), a supported bridge global, a canvas/runtime DOM handle, or the storyvr-animation-probe:request-runtime event. Existing global Three.js discovery remains unchanged.",
         "capture_coverage reports DOM-derived beat targets, grid targets, dynamic snapshot limits, and any skipped targets; a reached limit means missing beat state must not be interpreted as absence.",
         "Model renderEligible means structurally eligible in a recent screen pass on a visible canvas; renderContributionCandidate preserves active offscreen passes for postprocessing analysis. Neither proves lack of occlusion or actual pixel contribution.",
@@ -6579,6 +8179,7 @@
     snapshot: () => collectSnapshot("manual-snapshot"),
     resourceCount: () => resourceMap.size,
     runtime3D: () => collectRuntime3DObservation(),
+    runtime3DCatalog: () => runtime3dStaticCatalog(),
     registerRuntime3D: (runtime, options = {}) => registerRuntime3DBridge(runtime, options),
     refreshRuntimeHooks: () => installRuntime3DInstrumentation(true),
     enableViewportCapture,

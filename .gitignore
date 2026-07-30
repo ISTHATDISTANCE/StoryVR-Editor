@@ -31,6 +31,14 @@ dist/
 **/dist/
 build/
 **/build/
+out/
+**/out/
+out-build/
+**/out-build/
+output/
+**/output/
+outputs/
+**/outputs/
 dist-webxr-adaptation/
 **/dist-webxr-adaptation/
 .vite/

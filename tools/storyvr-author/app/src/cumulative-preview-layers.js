@@ -1,6 +1,5 @@
 export const CUMULATIVE_PREVIEW_LAYER_ORDER = [
   "topology",
-  "topology-viewpoint",
   "environment-enhancement",
   "spatial-relations",
   "attention-guidance",
@@ -10,13 +9,13 @@ export const CUMULATIVE_PREVIEW_LAYER_ORDER = [
 ];
 
 const CUMULATIVE_PREVIEW_LAYERS_BY_COMPONENT = {
-  "asset-topology": ["topology", "topology-viewpoint"],
-  "environment-enhancement": ["topology", "topology-viewpoint", "environment-enhancement"],
-  "spatial-relations": ["topology", "topology-viewpoint", "environment-enhancement", "spatial-relations"],
-  "attention-guidance": ["topology", "topology-viewpoint", "environment-enhancement", "spatial-relations", "attention-guidance"],
-  "text-comfort": ["topology", "topology-viewpoint", "environment-enhancement", "spatial-relations"],
-  "dynamic-geometry": ["topology", "topology-viewpoint", "environment-enhancement", "spatial-relations", "attention-guidance", "dynamic-geometry"],
-  "inter-beat-dynamics": ["topology", "topology-viewpoint", "environment-enhancement", "spatial-relations", "attention-guidance", "dynamic-geometry", "inter-beat-dynamics"],
+  "asset-topology": ["topology"],
+  "environment-enhancement": ["topology", "environment-enhancement"],
+  "spatial-relations": ["topology", "environment-enhancement", "spatial-relations"],
+  "attention-guidance": ["topology", "environment-enhancement", "spatial-relations", "attention-guidance"],
+  "text-comfort": ["topology", "environment-enhancement", "spatial-relations"],
+  "dynamic-geometry": ["topology", "environment-enhancement", "spatial-relations", "attention-guidance", "dynamic-geometry"],
+  "inter-beat-dynamics": ["topology", "environment-enhancement", "spatial-relations", "attention-guidance", "dynamic-geometry", "inter-beat-dynamics"],
   "interaction-control": CUMULATIVE_PREVIEW_LAYER_ORDER,
   "transition-pacing": CUMULATIVE_PREVIEW_LAYER_ORDER,
 };

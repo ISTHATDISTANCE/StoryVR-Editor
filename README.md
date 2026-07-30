@@ -115,6 +115,19 @@ semantic progress strip for the saved Source Graph. Missing or stale grouping
 is refreshed in the background after the story order is saved; the continuous
 beat and variant graph remains the source of truth.
 
+Spatial Relations preserves probe-verified source GLB assemblies as one
+editable composition with the captured member transforms and beat-specific
+visibility intact. Ordinary or manually customized assets remain independent.
+The object list also supports Shift range selection and Command/Ctrl additive
+selection for moving related objects together.
+
+Interaction Control uses one shared Quest controller mapping across
+controller-button transitions. Its defaults keep A/X for next/back, use the
+left stick for continuous forward/backward movement and strafing, and use the
+right stick for 45-degree snap turns, ground-plane teleport on Up, and a
+180-degree turn on Down. Locomotion stays on directional stick inputs; Trigger
+and Grip remain reserved for UI rays and grabbing.
+
 ### Optional AI features
 
 StoryVR remains usable without an AI login, but Source Graph progress grouping,

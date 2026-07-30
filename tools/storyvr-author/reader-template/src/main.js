@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
@@ -52,11 +53,49 @@ const XR_TEXT_PANEL_WIDTH = 0.46;
 const XR_TEXT_PANEL_HEIGHT = 0.252;
 const XR_TEXT_PANEL_RENDER_ORDER = 20_000;
 const XR_TEXT_PANEL_RAY_LENGTH = 3.2;
+const XR_CONTROLLER_CONFIGURATION_SCHEMA = "storyvr-interaction-configuration/v3";
 const XR_RESERVED_CONTROLLER_CONTROLS = new Set(["trigger", "grip"]);
+const XR_DIRECTIONAL_THUMBSTICK_CONTROLS = new Set([
+  "thumbstick-up",
+  "thumbstick-down",
+  "thumbstick-left",
+  "thumbstick-right",
+]);
+const XR_LOCOMOTION_ACTIONS = new Set([
+  "move-forward",
+  "move-backward",
+  "strafe-left",
+  "strafe-right",
+  "turn-left",
+  "turn-right",
+  "teleport",
+  "turn-back",
+]);
+const XR_DEFAULT_LOCOMOTION_BINDINGS = Object.freeze([
+  Object.freeze({ hand: "left", input: "thumbstick-up", action: "move-forward" }),
+  Object.freeze({ hand: "left", input: "thumbstick-down", action: "move-backward" }),
+  Object.freeze({ hand: "left", input: "thumbstick-left", action: "strafe-left" }),
+  Object.freeze({ hand: "left", input: "thumbstick-right", action: "strafe-right" }),
+  Object.freeze({ hand: "right", input: "thumbstick-left", action: "turn-left" }),
+  Object.freeze({ hand: "right", input: "thumbstick-right", action: "turn-right" }),
+  Object.freeze({ hand: "right", input: "thumbstick-up", action: "teleport" }),
+  Object.freeze({ hand: "right", input: "thumbstick-down", action: "turn-back" }),
+]);
 const XR_GAMEPAD_BUTTON_PRESS_THRESHOLD = 0.72;
 const XR_GAMEPAD_BUTTON_RELEASE_THRESHOLD = 0.45;
 const XR_THUMBSTICK_PRESS_THRESHOLD = 0.72;
 const XR_THUMBSTICK_RELEASE_THRESHOLD = 0.45;
+const XR_LOCOMOTION_DEAD_ZONE = 0.2;
+const XR_READER_MOVE_SPEED_METERS_PER_SECOND = 1.8;
+const XR_READER_SNAP_TURN_RADIANS = Math.PI / 4;
+const XR_TELEPORT_GROUND_Y = 0;
+const XR_TELEPORT_GROUND_RADIUS_METERS = 5.5;
+const XR_TELEPORT_MIN_DISTANCE_METERS = 0.3;
+const XR_TELEPORT_MAX_DISTANCE_METERS = 8;
+const XR_TELEPORT_ARC_SPEED_METERS_PER_SECOND = 6;
+const XR_TELEPORT_ARC_GRAVITY_METERS_PER_SECOND_SQUARED = 9.8;
+const XR_TELEPORT_ARC_MAX_SECONDS = 1.8;
+const XR_TELEPORT_ARC_SEGMENTS = 28;
 const DESKTOP_READER_MOVE_SPEED_METERS_PER_SECOND = 2.8;
 const DEFAULT_LOCOMOTION_DISTANCE_METERS = 0.68;
 const DEFAULT_LOCOMOTION_DWELL_SECONDS = 1.25;
@@ -79,6 +118,8 @@ const DIRECT_GHOST_DESTINATION_HOLD_SECONDS = 3;
 const DIRECT_GHOST_INACTIVITY_REPLAY_SECONDS = 5;
 let sharedDracoLoader = null;
 let sharedKtx2Loader = null;
+let sourceCompositionNeutralEnvironmentMap = null;
+let sourceCompositionNeutralEnvironmentTarget = null;
 
 function createGltfLoader() {
   const loader = new GLTFLoader();
@@ -222,9 +263,6 @@ const runtimeAttentionGuidance = normalizeRuntimeAttentionGuidance(
   runtime.attentionGuidance,
   runtime.provenance?.decisions?.["attention-guidance"],
 );
-const fallbackReaderViewpoint = topologyViewpointKind({
-  viewpoint: runtimeSpatialRelations.viewpoint || assetTopologyOption.viewpoint,
-});
 const runtimeSpatialTraversal = normalizeRuntimeSpatialTraversal(runtime.interactions?.spatialTraversal, runtime.timeline);
 const runtimeVariantGroups = normalizeRuntimeVariantGroups(
   runtime.variantGroups || runtime.interactions?.variantGroups || runtime.sceneTopology?.storyGraph?.variantGroups,
@@ -300,6 +338,8 @@ let activeSourcePresentationSignature = "";
 const activeSupplementalModelEntries = [];
 const activeSpatialImageEntries = [];
 const activeProceduralDynamicsEntries = [];
+let activeSourceCompositionRoot = null;
+let activeSourceCompositionFrameRoot = null;
 let activeSceneLoadRevision = 0;
 let habitat = null;
 let spatialTextPanel = null;
@@ -312,6 +352,8 @@ let activeRuntimeEnvironment = null;
 let activeRuntimeEnvironmentSignature = "";
 let physicalTraversalEnteredAt = null;
 let physicalTraversalAdvancing = false;
+let freeTeleportRequiresPhysicalZoneClearance = false;
+let teleportInputOwnedFrame = false;
 let controllerAdvancePending = false;
 let directManipulationAdvancePending = false;
 let xrDirectManipulationGrab = null;
@@ -390,6 +432,15 @@ const desktopReaderLookDirection = new THREE.Vector3();
 const desktopReaderMovement = new THREE.Vector3();
 const desktopReaderForward = new THREE.Vector3();
 const desktopReaderRight = new THREE.Vector3();
+const xrReaderMovement = new THREE.Vector3();
+const xrReaderForward = new THREE.Vector3();
+const xrReaderRight = new THREE.Vector3();
+const xrReaderTurnPivotBefore = new THREE.Vector3();
+const xrReaderTurnPivotAfter = new THREE.Vector3();
+const xrReaderTurnQuaternion = new THREE.Quaternion();
+const xrReaderUp = new THREE.Vector3(0, 1, 0);
+const runtimeTeleportGroundCenterCache = new THREE.Vector3();
+let runtimeTeleportGroundCenterKey = "";
 let desktopReaderLookDistance = 1;
 let desktopReaderLookInitialized = false;
 
@@ -400,7 +451,6 @@ controls.enablePan = false;
 controls.enableZoom = false;
 controls.maxDistance = 9;
 controls.minDistance = 1.8;
-configureCameraForTopology();
 resetDesktopReaderLookAnchor();
 const desktopShadowMapEnabled = renderer.shadowMap.enabled;
 renderer.xr.addEventListener("sessionstart", () => {
@@ -414,6 +464,7 @@ renderer.xr.addEventListener("sessionstart", () => {
 });
 renderer.xr.addEventListener("sessionend", () => {
   xrEntryPosePending = false;
+  cancelAllRuntimeTeleportAims();
   cancelXrDirectManipulation();
   xrTextPanelGrabEntry = null;
   xrTextPanelGrabInput = null;
@@ -425,6 +476,21 @@ renderer.xr.addEventListener("sessionend", () => {
   renderer.shadowMap.needsUpdate = true;
   setSharedTimelineAnnotationsHidden(activeSourceAnimation, false);
 });
+
+function runtimeReaderCamera(renderCamera = camera) {
+  if (!renderCamera) return null;
+  if (renderer.xr.isPresenting) {
+    // WebXRManager's internal ArrayCamera is not parented to readerRig.
+    // Calling getWorldPosition/getWorldQuaternion on that camera therefore
+    // recomputes its matrix without the rig transform. Update the authored
+    // camera instead: Three.js copies the tracked pose into this camera and
+    // composes its matrix through readerRig.
+    renderer.xr.updateCamera(renderCamera);
+  } else {
+    renderCamera.updateWorldMatrix(true, false);
+  }
+  return renderCamera;
+}
 
 function resetDesktopReaderLookAnchor() {
   if (renderer.xr.isPresenting) return false;
@@ -580,6 +646,7 @@ readerPanelToggle?.addEventListener("click", (event) => {
 configureReaderPanelMouseDragging();
 window.addEventListener("resize", resize);
 window.addEventListener("pagehide", disposeRuntimeEnvironmentEnhancement, { once: true });
+window.addEventListener("pagehide", disposeSourceCompositionNeutralEnvironment, { once: true });
 renderer.domElement.addEventListener("pointerdown", () => renderer.domElement.focus());
 renderer.domElement.addEventListener("blur", () => desktopReaderMovementKeys.clear());
 window.addEventListener("blur", () => desktopReaderMovementKeys.clear());
@@ -1104,19 +1171,34 @@ function normalizeRuntimeSourceSpatialCues(value) {
   };
 }
 
+function omitRuntimeRetiredViewpointMetadata(value) {
+  if (Array.isArray(value)) return value.map(omitRuntimeRetiredViewpointMetadata);
+  if (!value || typeof value !== "object") return value;
+  const retiredKeys = new Set([
+    "viewpoint",
+    "viewpointLabel",
+    "viewpointScaleGuidance",
+    "readerViewpoint",
+    "reader-viewpoint",
+  ]);
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !retiredKeys.has(key))
+    .map(([key, entry]) => [key, omitRuntimeRetiredViewpointMetadata(entry)]));
+}
+
 function normalizeRuntimeSpatialRelations(value, decision) {
-  const source = value && typeof value === "object"
+  const rawSource = value && typeof value === "object"
     ? value
     : decision?.spatialRelations && typeof decision.spatialRelations === "object"
       ? decision.spatialRelations
       : {};
+  const source = omitRuntimeRetiredViewpointMetadata(rawSource);
   const entities = spatialEntityIndex(source.entities);
   const resolvedByBeat = source.resolvedByBeat && typeof source.resolvedByBeat === "object" ? source.resolvedByBeat : {};
   const resolvedByVariant = source.resolvedByVariant && typeof source.resolvedByVariant === "object" ? source.resolvedByVariant : {};
   return {
     schemaVersion: String(source.schemaVersion || "storyvr-spatial-relations/v1"),
     inferenceVersion: String(source.inferenceVersion || ""),
-    viewpoint: String(source.viewpoint || ""),
     entities,
     resolvedByBeat,
     resolvedByVariant,
@@ -1705,7 +1787,28 @@ function normalizeRuntimeControllerAction(value) {
   if (["next-option", "next-variant"].includes(action)) return "next-option";
   if (["previous-option", "previous-variant"].includes(action)) return "previous-option";
   if (["", "none", "unmapped", "disabled", "no-op"].includes(action)) return "unmapped";
+  if (["slide-forward", "walk-forward"].includes(action)) return "move-forward";
+  if (["slide-backward", "walk-backward"].includes(action)) return "move-backward";
+  if (["move-left", "slide-left"].includes(action)) return "strafe-left";
+  if (["move-right", "slide-right"].includes(action)) return "strafe-right";
+  if (["rotate-left", "snap-turn-left"].includes(action)) return "turn-left";
+  if (["rotate-right", "snap-turn-right"].includes(action)) return "turn-right";
+  if (["teleport-forward", "point-teleport"].includes(action)) return "teleport";
+  if (["turn-around", "turn-180", "about-face"].includes(action)) return "turn-back";
   return action;
+}
+
+function runtimeControllerActionAllowed(control, action) {
+  return !XR_LOCOMOTION_ACTIONS.has(action)
+    || XR_DIRECTIONAL_THUMBSTICK_CONTROLS.has(control);
+}
+
+function runtimeDefaultLocomotionBindingForInput(handedness, control) {
+  const hand = String(handedness || "").trim().toLowerCase();
+  const input = normalizeRuntimeControllerControl(control);
+  return XR_DEFAULT_LOCOMOTION_BINDINGS.find((binding) => (
+    binding.hand === hand && binding.input === input
+  )) || null;
 }
 
 function normalizeRuntimeTransform(value = {}) {
@@ -1917,19 +2020,44 @@ function normalizeRuntimeInteractionConfiguration(value, policy) {
   const normalizedPolicy = normalizeRuntimeInteractionPolicy(policy || source.type);
   const schemaVersion = String(source.schemaVersion || "storyvr-interaction-configuration/v1");
   if (normalizedPolicy === "Controller button press") {
-    const bindings = (Array.isArray(source.bindings) ? source.bindings : []).flatMap((binding) => {
+    const migrateLegacyDirectionalDefaults = schemaVersion !== "storyvr-interaction-configuration/v2"
+      && schemaVersion !== XR_CONTROLLER_CONFIGURATION_SCHEMA;
+    const migrateV2TeleportDefaults = schemaVersion === "storyvr-interaction-configuration/v2";
+    const migrationDefaults = migrateLegacyDirectionalDefaults
+      ? XR_DEFAULT_LOCOMOTION_BINDINGS
+      : migrateV2TeleportDefaults
+        ? XR_DEFAULT_LOCOMOTION_BINDINGS.filter((binding) => (
+          binding.hand === "right"
+          && ["thumbstick-up", "thumbstick-down"].includes(binding.input)
+        ))
+        : [];
+    const bindingMap = new Map(
+      migrationDefaults.map((binding) => (
+        [`${binding.hand}:${binding.input}`, { ...binding }]
+      )),
+    );
+    for (const binding of (Array.isArray(source.bindings) ? source.bindings : [])) {
       const hand = String(binding?.hand || binding?.handedness || "any").trim().toLowerCase();
       const input = normalizeRuntimeControllerControl(binding?.input || binding?.control);
       const action = normalizeRuntimeControllerAction(binding?.action);
-      if (!["left", "right", "any"].includes(hand) || !input) return [];
-      return [{ ...binding, hand, input, action }];
-    });
+      if (!["left", "right", "any"].includes(hand)
+        || !input
+        || !runtimeControllerActionAllowed(input, action)) continue;
+      if (migrateLegacyDirectionalDefaults
+        && XR_DIRECTIONAL_THUMBSTICK_CONTROLS.has(input)
+        && action === "unmapped") continue;
+      if (migrateV2TeleportDefaults
+        && hand === "right"
+        && ["thumbstick-up", "thumbstick-down"].includes(input)
+        && action === "unmapped") continue;
+      bindingMap.set(`${hand}:${input}`, { ...binding, hand, input, action });
+    }
     return {
       ...source,
-      schemaVersion,
+      schemaVersion: XR_CONTROLLER_CONFIGURATION_SCHEMA,
       type: "controller-button-press",
       profile: String(source.profile || "meta-quest-touch-plus"),
-      bindings,
+      bindings: [...bindingMap.values()],
     };
   }
   if (normalizedPolicy === "UI button press") {
@@ -2649,10 +2777,7 @@ function restoreRuntimeAttentionEffect(target) {
 }
 
 function runtimeAttentionViewerCamera(renderCamera = activeRenderCamera()) {
-  if (!renderer.xr.isPresenting) return renderCamera;
-  renderCamera.updateWorldMatrix(true, false);
-  renderer.xr.updateCamera(renderCamera);
-  return renderer.xr.getCamera();
+  return runtimeReaderCamera(renderCamera);
 }
 
 function runtimeAttentionTargetInFieldOfView(bounds, viewerCamera) {
@@ -2911,6 +3036,34 @@ function normalizedSpatialQuaternion(value, fallback = [0, 0, 0, 1]) {
 
 function effectiveSpatialEntityTransform(entity) {
   return normalizedSpatialTransform(entity?.transform || entity?.effectiveTransform || entity?.inferredTransform);
+}
+
+function sourceLockedSpatialMatrix(entity) {
+  if (
+    entity?.placementPolicy !== "source-locked"
+    || spatialRenderableEntityKind(entity) !== "model"
+  ) return null;
+  const matrix = Array.isArray(entity.sourceMatrix) ? entity.sourceMatrix.map(Number) : null;
+  return matrix?.length === 16 && matrix.every(Number.isFinite) ? matrix : null;
+}
+
+function runtimeSpatialEntityUsesSourceLockedPlacement(entity) {
+  return Boolean(sourceLockedSpatialMatrix(entity));
+}
+
+function sourceLockedSpatialScene(sceneRecord) {
+  return sceneRecord?.placementPolicy === "source-locked"
+    && sceneRecord?.sourceComposition?.placementPolicy === "source-locked"
+    ? sceneRecord.sourceComposition
+    : null;
+}
+
+function sourceCompositionRootEntity(sceneRecord, sourceComposition = sourceLockedSpatialScene(sceneRecord)) {
+  if (!sourceComposition) return null;
+  return Object.values(spatialEntityIndex(sceneRecord?.entities)).find((entity) => (
+    String(entity?.id || entity?.entityId || "") === String(sourceComposition.rootEntityId || "")
+    && String(entity?.kind || entity?.type || "") === "composition-root"
+  )) || null;
 }
 
 function spatialTextEntityForBeat(
@@ -3211,7 +3364,9 @@ function runtimeControllerBindingForInput(boundary, handedness, control) {
   return configuration.bindings.find((binding) => {
     const bindingHand = String(binding?.hand || binding?.handedness || "any").toLowerCase();
     const bindingInput = normalizeRuntimeControllerControl(binding?.input || binding?.control);
+    const bindingAction = normalizeRuntimeControllerAction(binding?.action);
     return !XR_RESERVED_CONTROLLER_CONTROLS.has(bindingInput)
+      && runtimeControllerActionAllowed(bindingInput, bindingAction)
       && (bindingHand === "any" || bindingHand === normalizedHand)
       && bindingInput === normalizedControl;
   }) || null;
@@ -3228,6 +3383,20 @@ function configuredControllerActionForInput(handedness, control) {
   const incomingAction = normalizeRuntimeControllerAction(incomingBinding?.action);
   if (incomingBinding && incomingAction === "previous-beat") return incomingAction;
   return "unmapped";
+}
+
+function runtimeControllerLocomotionActionForInput(handedness, control) {
+  const normalizedControl = normalizeRuntimeControllerControl(control);
+  if (!XR_DIRECTIONAL_THUMBSTICK_CONTROLS.has(normalizedControl)) return "unmapped";
+  const outgoing = runtimeInteractionForBoundary(activeIndex, activeIndex + 1);
+  if (isControllerButtonInteraction(outgoing)) {
+    const authoredBinding = runtimeControllerBindingForInput(outgoing, handedness, normalizedControl);
+    if (authoredBinding) {
+      const authoredAction = normalizeRuntimeControllerAction(authoredBinding.action);
+      return XR_LOCOMOTION_ACTIONS.has(authoredAction) ? authoredAction : "unmapped";
+    }
+  }
+  return runtimeDefaultLocomotionBindingForInput(handedness, normalizedControl)?.action || "unmapped";
 }
 
 function questGamepadButtonIndex(control, handedness) {
@@ -3250,6 +3419,69 @@ function runtimeThumbstickAxes(gamepad) {
   return [0, 0];
 }
 
+function runtimeThumbstickMagnitude(gamepad) {
+  const [axisX, axisY] = runtimeThumbstickAxes(gamepad);
+  return Math.hypot(axisX, axisY);
+}
+
+function runtimeLatchedThumbstickDirection(entry, gamepad) {
+  const magnitude = runtimeThumbstickMagnitude(gamepad);
+  if (entry?.thumbstickDirection) {
+    if (magnitude > XR_THUMBSTICK_RELEASE_THRESHOLD) return entry.thumbstickDirection;
+    entry.thumbstickDirection = null;
+    return null;
+  }
+  if (magnitude < XR_THUMBSTICK_PRESS_THRESHOLD) return null;
+  const [axisX, axisY] = runtimeThumbstickAxes(gamepad);
+  const direction = Math.abs(axisX) > Math.abs(axisY)
+    ? (axisX < 0 ? "thumbstick-left" : "thumbstick-right")
+    : (axisY < 0 ? "thumbstick-up" : "thumbstick-down");
+  if (entry) entry.thumbstickDirection = direction;
+  return direction;
+}
+
+function runtimeLocomotionAxisStrength(value) {
+  const magnitude = Math.abs(Number(value) || 0);
+  if (magnitude <= XR_LOCOMOTION_DEAD_ZONE) return 0;
+  return THREE.MathUtils.clamp(
+    (magnitude - XR_LOCOMOTION_DEAD_ZONE) / (1 - XR_LOCOMOTION_DEAD_ZONE),
+    0,
+    1,
+  );
+}
+
+function runtimeLocomotionInputForGamepad(
+  gamepad,
+  handedness,
+  actionForInput = runtimeControllerLocomotionActionForInput,
+) {
+  const [axisX, axisY] = runtimeThumbstickAxes(gamepad);
+  const directions = [
+    ["thumbstick-up", -axisY],
+    ["thumbstick-down", axisY],
+    ["thumbstick-left", -axisX],
+    ["thumbstick-right", axisX],
+  ];
+  let forward = 0;
+  let strafe = 0;
+  for (const [control, rawStrength] of directions) {
+    if (!(rawStrength > 0)) continue;
+    const strength = runtimeLocomotionAxisStrength(rawStrength);
+    if (!(strength > 0)) continue;
+    const action = actionForInput(handedness, control);
+    if (action === "move-forward") forward += strength;
+    if (action === "move-backward") forward -= strength;
+    if (action === "strafe-right") strafe += strength;
+    if (action === "strafe-left") strafe -= strength;
+  }
+  const magnitude = Math.hypot(forward, strafe);
+  if (magnitude > 1) {
+    forward /= magnitude;
+    strafe /= magnitude;
+  }
+  return { forward, strafe };
+}
+
 function runtimeControllerControlPressed(gamepad, control, handedness, wasPressed = false) {
   const normalizedControl = normalizeRuntimeControllerControl(control);
   const buttonIndex = questGamepadButtonIndex(normalizedControl, handedness);
@@ -3260,15 +3492,270 @@ function runtimeControllerControlPressed(gamepad, control, handedness, wasPresse
   }
   const [axisX, axisY] = runtimeThumbstickAxes(gamepad);
   const threshold = wasPressed ? XR_THUMBSTICK_RELEASE_THRESHOLD : XR_THUMBSTICK_PRESS_THRESHOLD;
-  if (normalizedControl === "thumbstick-left") return axisX <= -threshold;
-  if (normalizedControl === "thumbstick-right") return axisX >= threshold;
-  if (normalizedControl === "thumbstick-up") return axisY <= -threshold;
-  if (normalizedControl === "thumbstick-down") return axisY >= threshold;
+  const horizontalDominant = Math.abs(axisX) > Math.abs(axisY);
+  if (normalizedControl === "thumbstick-left") return horizontalDominant && axisX <= -threshold;
+  if (normalizedControl === "thumbstick-right") return horizontalDominant && axisX >= threshold;
+  if (normalizedControl === "thumbstick-up") return !horizontalDominant && axisY <= -threshold;
+  if (normalizedControl === "thumbstick-down") return !horizontalDominant && axisY >= threshold;
   return false;
+}
+
+function runtimeTeleportArcPoint(origin, direction, seconds, target = new THREE.Vector3()) {
+  const time = Math.max(0, Number(seconds) || 0);
+  return target
+    .copy(origin)
+    .addScaledVector(direction, XR_TELEPORT_ARC_SPEED_METERS_PER_SECOND * time)
+    .addScaledVector(
+      xrReaderUp,
+      -0.5 * XR_TELEPORT_ARC_GRAVITY_METERS_PER_SECOND_SQUARED * time * time,
+    );
+}
+
+function runtimeTeleportArcLanding(originValue, directionValue, options = {}) {
+  const origin = originValue?.isVector3 ? originValue.clone() : null;
+  const direction = directionValue?.isVector3 ? directionValue.clone() : null;
+  const groundY = Number.isFinite(Number(options.groundY))
+    ? Number(options.groundY)
+    : XR_TELEPORT_GROUND_Y;
+  const minimumDistance = Number.isFinite(Number(options.minimumDistance))
+    ? Math.max(0, Number(options.minimumDistance))
+    : XR_TELEPORT_MIN_DISTANCE_METERS;
+  const maximumDistance = Number.isFinite(Number(options.maximumDistance))
+    ? Math.max(minimumDistance, Number(options.maximumDistance))
+    : XR_TELEPORT_MAX_DISTANCE_METERS;
+  const maximumSeconds = Number.isFinite(Number(options.maximumSeconds))
+    ? Math.max(0.01, Number(options.maximumSeconds))
+    : XR_TELEPORT_ARC_MAX_SECONDS;
+  const groundCenter = options.groundCenter?.isVector3
+    ? options.groundCenter
+    : new THREE.Vector3(0, groundY, 0);
+  const groundRadius = Number.isFinite(Number(options.groundRadius))
+    ? Math.max(0, Number(options.groundRadius))
+    : XR_TELEPORT_GROUND_RADIUS_METERS;
+  if (!origin || !direction || ![
+    origin.x, origin.y, origin.z,
+    direction.x, direction.y, direction.z,
+    groundY, groundCenter.x, groundCenter.z,
+  ].every(Number.isFinite) || direction.lengthSq() < 1e-8 || origin.y < groundY) {
+    return { valid: false, landing: null, flightSeconds: 0, distanceMeters: Infinity };
+  }
+  direction.normalize();
+  const verticalVelocity = direction.y * XR_TELEPORT_ARC_SPEED_METERS_PER_SECOND;
+  const height = origin.y - groundY;
+  const discriminant = (verticalVelocity * verticalVelocity)
+    + (2 * XR_TELEPORT_ARC_GRAVITY_METERS_PER_SECOND_SQUARED * height);
+  const flightSeconds = (
+    verticalVelocity + Math.sqrt(Math.max(0, discriminant))
+  ) / XR_TELEPORT_ARC_GRAVITY_METERS_PER_SECOND_SQUARED;
+  if (!Number.isFinite(flightSeconds) || flightSeconds <= 0) {
+    return { valid: false, landing: null, flightSeconds: 0, distanceMeters: Infinity };
+  }
+  const landing = runtimeTeleportArcPoint(origin, direction, flightSeconds);
+  landing.y = groundY;
+  const distanceMeters = Math.hypot(landing.x - origin.x, landing.z - origin.z);
+  const groundCenterDistanceMeters = Math.hypot(
+    landing.x - groundCenter.x,
+    landing.z - groundCenter.z,
+  );
+  return {
+    valid: flightSeconds <= maximumSeconds
+      && distanceMeters >= minimumDistance
+      && distanceMeters <= maximumDistance
+      && groundCenterDistanceMeters <= groundRadius,
+    landing,
+    flightSeconds,
+    distanceMeters,
+    groundCenterDistanceMeters,
+  };
+}
+
+function currentRuntimeTeleportGroundCenter() {
+  const beat = beats[activeIndex] || null;
+  const stationPosition = worldReaderPositionForStation(traversalStationForBeat(beat));
+  if (stationPosition) {
+    return runtimeTeleportGroundCenterCache.set(
+      stationPosition.x,
+      XR_TELEPORT_GROUND_Y,
+      stationPosition.z,
+    );
+  }
+  const key = `${activeIndex}:${String(beat?.id || beat?.unitId || "")}`;
+  if (runtimeTeleportGroundCenterKey !== key) {
+    const viewer = runtimeReaderCamera().getWorldPosition(new THREE.Vector3());
+    runtimeTeleportGroundCenterCache.set(viewer.x, XR_TELEPORT_GROUND_Y, viewer.z);
+    runtimeTeleportGroundCenterKey = key;
+  }
+  return runtimeTeleportGroundCenterCache;
+}
+
+function createXrTeleportAimVisual(index = 0) {
+  const root = new THREE.Group();
+  root.name = `storyvr-teleport-aim-${index + 1}`;
+  root.visible = false;
+  const positions = new Float32Array((XR_TELEPORT_ARC_SEGMENTS + 1) * 3);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  const lineMaterial = new THREE.LineBasicMaterial({
+    color: 0x6ed8c2,
+    transparent: true,
+    opacity: 0.94,
+    depthWrite: false,
+  });
+  const line = new THREE.Line(geometry, lineMaterial);
+  line.name = "storyvr-teleport-arc";
+  line.frustumCulled = false;
+  root.add(line);
+  const reticleMaterial = new THREE.MeshBasicMaterial({
+    color: 0x6ed8c2,
+    transparent: true,
+    opacity: 0.92,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const reticle = new THREE.Mesh(
+    new THREE.RingGeometry(0.13, 0.19, 40),
+    reticleMaterial,
+  );
+  reticle.name = "storyvr-teleport-reticle";
+  reticle.rotation.x = -Math.PI / 2;
+  root.add(reticle);
+  return {
+    root,
+    line,
+    reticle,
+    positions,
+    materials: [lineMaterial, reticleMaterial],
+  };
+}
+
+function setRuntimeTeleportAimVisual(entry, result, origin, direction) {
+  const visual = entry?.teleportAimVisual;
+  if (!visual) return false;
+  const duration = Math.min(
+    Math.max(0.01, Number(result?.flightSeconds) || 0.01),
+    XR_TELEPORT_ARC_MAX_SECONDS,
+  );
+  const point = new THREE.Vector3();
+  for (let index = 0; index <= XR_TELEPORT_ARC_SEGMENTS; index += 1) {
+    runtimeTeleportArcPoint(
+      origin,
+      direction,
+      duration * (index / XR_TELEPORT_ARC_SEGMENTS),
+      point,
+    );
+    visual.line.geometry.attributes.position.setXYZ(index, point.x, point.y, point.z);
+  }
+  visual.line.geometry.attributes.position.needsUpdate = true;
+  visual.line.geometry.setDrawRange(0, XR_TELEPORT_ARC_SEGMENTS + 1);
+  const valid = result?.valid === true;
+  const color = valid ? 0x6ed8c2 : 0xe28b78;
+  for (const material of visual.materials) material.color.setHex(color);
+  visual.reticle.visible = Boolean(result?.landing);
+  if (result?.landing) visual.reticle.position.copy(result.landing).addScaledVector(xrReaderUp, 0.012);
+  visual.root.visible = true;
+  return true;
+}
+
+function runtimeTeleportAimIsSuppressed() {
+  return Boolean(
+    xrTextPanelGrabEntry
+    || xrTextPanelScrollGesture
+    || xrDirectManipulationGrab
+    || xrDirectManipulationScale,
+  );
+}
+
+function cancelRuntimeTeleportAim(entry) {
+  if (!entry) return false;
+  if (entry.teleportAimVisual) entry.teleportAimVisual.root.visible = false;
+  entry.teleportAimControl = null;
+  entry.teleportAimLanding = null;
+  entry.teleportAimBlocked = false;
+  return true;
+}
+
+function cancelAllRuntimeTeleportAims() {
+  for (const entry of xrTextPanelControllers.values()) cancelRuntimeTeleportAim(entry);
+}
+
+function updateRuntimeTeleportAim(entry) {
+  if (!renderer.xr.isPresenting || !xrControllerEntryOwnsHand(entry)) return false;
+  if (runtimeTeleportAimIsSuppressed()) {
+    entry.teleportAimBlocked = true;
+    entry.teleportAimLanding = null;
+    if (entry.teleportAimVisual) entry.teleportAimVisual.root.visible = false;
+    return false;
+  }
+  if (entry.teleportAimBlocked) return false;
+  entry.controller.updateWorldMatrix(true, false);
+  const origin = new THREE.Vector3().setFromMatrixPosition(entry.controller.matrixWorld);
+  const direction = new THREE.Vector3(0, 0, -1)
+    .transformDirection(entry.controller.matrixWorld)
+    .normalize();
+  const result = runtimeTeleportArcLanding(origin, direction, {
+    groundCenter: currentRuntimeTeleportGroundCenter(),
+  });
+  entry.teleportAimLanding = result.valid ? result.landing.clone() : null;
+  setRuntimeTeleportAimVisual(entry, result, origin, direction);
+  return result.valid;
+}
+
+function commitRuntimeTeleportAim(entry) {
+  const landing = entry?.teleportAimLanding?.clone?.() || null;
+  const blocked = runtimeTeleportAimIsSuppressed() || entry?.teleportAimBlocked;
+  cancelRuntimeTeleportAim(entry);
+  if (!renderer.xr.isPresenting || !landing || blocked) return false;
+  const viewerCamera = runtimeReaderCamera();
+  const destination = viewerCamera.getWorldPosition(new THREE.Vector3());
+  destination.x = landing.x;
+  destination.z = landing.z;
+  teleportReaderTo(destination);
+  freeTeleportRequiresPhysicalZoneClearance = true;
+  physicalTraversalEnteredAt = null;
+  physicalTraversalEnteredByZone.clear();
+  return true;
+}
+
+function updateRuntimeTeleportInput(entry, control, pressed, wasPressed) {
+  const normalizedControl = normalizeRuntimeControllerControl(control);
+  if (pressed && !wasPressed) {
+    cancelRuntimeTeleportAim(entry);
+    entry.teleportAimControl = normalizedControl;
+  }
+  if (pressed && entry.teleportAimControl === normalizedControl) {
+    updateRuntimeTeleportAim(entry);
+    return true;
+  }
+  if (!pressed && wasPressed && entry.teleportAimControl === normalizedControl) {
+    commitRuntimeTeleportAim(entry);
+    return true;
+  }
+  return false;
+}
+
+function snapTurnReader(action, angleRadians = XR_READER_SNAP_TURN_RADIANS) {
+  if (!renderer.xr.isPresenting) return false;
+  const direction = action === "turn-left" ? 1 : action === "turn-right" ? -1 : 0;
+  const angle = Math.abs(Number(angleRadians) || 0) * direction;
+  if (!angle) return false;
+  const viewerCamera = runtimeReaderCamera();
+  viewerCamera.getWorldPosition(xrReaderTurnPivotBefore);
+  xrReaderTurnQuaternion.setFromAxisAngle(xrReaderUp, angle);
+  readerRig.quaternion.premultiply(xrReaderTurnQuaternion).normalize();
+  readerRig.updateMatrixWorld(true);
+  runtimeReaderCamera(viewerCamera);
+  viewerCamera.getWorldPosition(xrReaderTurnPivotAfter);
+  readerRig.position.add(xrReaderTurnPivotBefore).sub(xrReaderTurnPivotAfter);
+  readerRig.updateMatrixWorld(true);
+  return true;
 }
 
 function performRuntimeControllerAction(action) {
   const normalizedAction = normalizeRuntimeControllerAction(action);
+  if (normalizedAction === "turn-left" || normalizedAction === "turn-right") {
+    return snapTurnReader(normalizedAction);
+  }
+  if (normalizedAction === "turn-back") return snapTurnReader("turn-right", Math.PI);
   if (controllerAdvancePending) return false;
   let destinationIndex = null;
   if (normalizedAction === "next-beat" && activeIndex < beats.length - 1) destinationIndex = activeIndex + 1;
@@ -3294,12 +3781,17 @@ function performRuntimeControllerAction(action) {
 }
 
 function handleConfiguredControllerInput(entry, control) {
+  const locomotionAction = runtimeControllerLocomotionActionForInput(entry?.handedness, control);
+  if (["turn-left", "turn-right", "turn-back"].includes(locomotionAction)) {
+    return performRuntimeControllerAction(locomotionAction);
+  }
   const action = configuredControllerActionForInput(entry?.handedness, control);
   if (action === "unmapped") return false;
   return performRuntimeControllerAction(action);
 }
 
 function updateConfiguredControllerInteractions() {
+  teleportInputOwnedFrame = false;
   const controls = [
     "thumbstick-press",
     "thumbstick-up",
@@ -3312,18 +3804,129 @@ function updateConfiguredControllerInteractions() {
     "y",
     "menu",
   ];
+  const controllerFrames = [];
   for (const entry of xrTextPanelControllers.values()) {
     if (!xrControllerEntryOwnsHand(entry)) continue;
     const gamepad = entry.inputSource?.gamepad;
     if (!gamepad) continue;
     entry.gamepadInputState ||= new Map();
-    for (const control of controls) {
+    const thumbstickDirection = runtimeLatchedThumbstickDirection(entry, gamepad);
+    const frameControls = controls.map((control) => {
       const previous = entry.gamepadInputState.get(control) === true;
-      const pressed = runtimeControllerControlPressed(gamepad, control, entry.handedness, previous);
+      const pressed = XR_DIRECTIONAL_THUMBSTICK_CONTROLS.has(control)
+        ? thumbstickDirection === control
+        : runtimeControllerControlPressed(gamepad, control, entry.handedness, previous);
       entry.gamepadInputState.set(control, pressed);
+      return {
+        control,
+        previous,
+        pressed,
+        locomotionAction: runtimeControllerLocomotionActionForInput(entry.handedness, control),
+      };
+    });
+    controllerFrames.push({ entry, thumbstickDirection, frameControls });
+  }
+  const activeAimFrame = controllerFrames.find(({ entry }) => entry.teleportAimControl);
+  if (activeAimFrame) {
+    teleportInputOwnedFrame = true;
+    const { entry, frameControls } = activeAimFrame;
+    const thumbstickPress = frameControls.find(({ control }) => control === "thumbstick-press");
+    const thumbstickPressStarted = thumbstickPress?.pressed && !thumbstickPress.previous;
+    if (thumbstickPressStarted) {
+      cancelRuntimeTeleportAim(entry);
+      entry.teleportAimNeedsCenter = true;
+      return;
+    }
+    const activeTeleport = frameControls.find(({ control }) => (
+      control === entry.teleportAimControl
+    ));
+    if (!activeTeleport || activeTeleport.locomotionAction !== "teleport") {
+      cancelRuntimeTeleportAim(entry);
+      entry.teleportAimNeedsCenter = true;
+      return;
+    }
+    updateRuntimeTeleportInput(
+      entry,
+      activeTeleport.control,
+      activeTeleport.pressed,
+      activeTeleport.previous,
+    );
+    return;
+  }
+  for (const { entry, thumbstickDirection } of controllerFrames) {
+    if (entry.teleportAimNeedsCenter) {
+      if (!thumbstickDirection) entry.teleportAimNeedsCenter = false;
+    }
+  }
+  const teleportStartFrame = controllerFrames.find(({ entry, frameControls }) => (
+    !entry.teleportAimNeedsCenter && frameControls.some(({ locomotionAction, pressed, previous }) => (
+      locomotionAction === "teleport" && pressed && !previous
+    ))
+  ));
+  if (teleportStartFrame) {
+    teleportInputOwnedFrame = true;
+    const { entry, frameControls } = teleportStartFrame;
+    const thumbstickPress = frameControls.find(({ control }) => control === "thumbstick-press");
+    if (thumbstickPress?.pressed && !thumbstickPress.previous) {
+      entry.teleportAimNeedsCenter = true;
+      return;
+    }
+    const teleportStart = frameControls.find(({ locomotionAction, pressed, previous }) => (
+      locomotionAction === "teleport" && pressed && !previous
+    ));
+    updateRuntimeTeleportInput(
+      entry,
+      teleportStart.control,
+      teleportStart.pressed,
+      teleportStart.previous,
+    );
+    return;
+  }
+  for (const { entry, frameControls } of controllerFrames) {
+    if (entry.teleportAimNeedsCenter) continue;
+    for (const { control, pressed, previous } of frameControls) {
       if (pressed && !previous) handleConfiguredControllerInput(entry, control);
     }
   }
+}
+
+function updateConfiguredControllerLocomotion(deltaSeconds) {
+  if (!renderer.xr.isPresenting) return false;
+  if (teleportInputOwnedFrame || [...xrTextPanelControllers.values()].some((entry) => (
+    entry.teleportAimControl
+  ))) return false;
+  let forward = 0;
+  let strafe = 0;
+  for (const entry of xrTextPanelControllers.values()) {
+    if (!xrControllerEntryOwnsHand(entry)) continue;
+    const gamepad = entry.inputSource?.gamepad;
+    if (!gamepad) continue;
+    const input = runtimeLocomotionInputForGamepad(gamepad, entry.handedness);
+    forward += input.forward;
+    strafe += input.strafe;
+  }
+  const inputMagnitude = Math.hypot(forward, strafe);
+  if (!(inputMagnitude > 0)) return false;
+  if (inputMagnitude > 1) {
+    forward /= inputMagnitude;
+    strafe /= inputMagnitude;
+  }
+  const viewerCamera = runtimeReaderCamera();
+  viewerCamera.getWorldDirection(xrReaderForward);
+  xrReaderForward.y = 0;
+  if (xrReaderForward.lengthSq() === 0) return false;
+  xrReaderForward.normalize();
+  xrReaderRight.crossVectors(xrReaderForward, xrReaderUp).normalize();
+  xrReaderMovement
+    .copy(xrReaderForward)
+    .multiplyScalar(forward)
+    .addScaledVector(xrReaderRight, strafe)
+    .multiplyScalar(
+      Math.max(0, Number(deltaSeconds) || 0) * XR_READER_MOVE_SPEED_METERS_PER_SECOND,
+    );
+  readerRig.position.add(xrReaderMovement);
+  readerRig.updateMatrixWorld(true);
+  return true;
 }
 
 function isReaderLocomotionInteraction(boundary) {
@@ -3354,10 +3957,11 @@ function runtimeConfiguredLocomotionStation(record, fromIndex, toIndex) {
   if (!destination?.transform || !isReaderLocomotionInteraction(record)) return null;
   const sourceBeat = beats[fromIndex];
   const sourceStation = authoredReaderStationForBeat(sourceBeat, fromIndex);
+  const sourceReaderCamera = runtimeReaderCamera();
   const sourcePosition = worldReaderPositionForStation(sourceStation)
-    || (renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : camera).getWorldPosition(new THREE.Vector3());
+    || sourceReaderCamera.getWorldPosition(new THREE.Vector3());
   const sourceQuaternion = worldReaderQuaternionForStation(sourceStation)
-    || (renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : camera).getWorldQuaternion(new THREE.Quaternion());
+    || sourceReaderCamera.getWorldQuaternion(new THREE.Quaternion());
   return {
     stationId: `interaction:${record.boundaryId || record.edgeId || `${fromIndex}->${toIndex}`}`,
     beatId: String(beats[toIndex]?.id || sourceBeat?.id || ""),
@@ -3397,6 +4001,8 @@ function configureXrInteractionControllers() {
     controller.userData.index = index;
     controller.userData.handedness = index === 0 ? "left" : "right";
     controller.add(createXrTextPanelRay());
+    const teleportAimVisual = createXrTeleportAimVisual(index);
+    scene.add(teleportAimVisual.root);
     const entry = {
       index,
       controller,
@@ -3405,6 +4011,12 @@ function configureXrInteractionControllers() {
       handedness: controller.userData.handedness,
       connected: false,
       connectionOrder: 0,
+      teleportAimVisual,
+      teleportAimControl: null,
+      teleportAimLanding: null,
+      teleportAimBlocked: false,
+      teleportAimNeedsCenter: false,
+      thumbstickDirection: null,
       controllerModel: null,
       controllerModelInput: null,
       controllerModelInputSource: null,
@@ -3479,6 +4091,9 @@ function xrControllerEntryOwnsHand(entry) {
 
 function deactivateXrControllerHandEntry(entry) {
   if (!entry) return false;
+  cancelRuntimeTeleportAim(entry);
+  entry.teleportAimNeedsCenter = false;
+  entry.thumbstickDirection = null;
   if (xrDirectManipulationEntryIsActive(entry)) cancelXrDirectManipulation();
   if (xrTextPanelGrabEntry === entry) {
     xrTextPanelGrabEntry = null;
@@ -4917,6 +5532,8 @@ function navigateInteraction(direction) {
 
 async function setBeat(index) {
   if (!beats.length) return;
+  cancelAllRuntimeTeleportAims();
+  freeTeleportRequiresPhysicalZoneClearance = false;
   if (storyComplete) storyComplete.hidden = true;
   const options = arguments[1] && typeof arguments[1] === "object" ? arguments[1] : {};
   const loadRevision = ++activeSceneLoadRevision;
@@ -5440,8 +6057,7 @@ function worldReaderPositionForStation(station) {
     return (runtimeActiveModelFocus(station.anchorAssetId) || runtimeSpatialAnchorFallback()).add(offset);
   }
   if (station.coordinateSpace === "reader") {
-    const viewer = (renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : camera)
-      .getWorldPosition(new THREE.Vector3());
+    const viewer = runtimeReaderCamera().getWorldPosition(new THREE.Vector3());
     viewer.y = 0;
     return viewer.add(offset);
   }
@@ -5560,8 +6176,7 @@ function addRuntimeVariantLocomotionZones(beat) {
 function teleportReaderTo(destination, station = null) {
   const desiredQuaternion = worldReaderQuaternionForStation(station);
   if (renderer.xr.isPresenting) {
-    const viewerCamera = renderer.xr.getCamera(camera);
-    viewerCamera.updateWorldMatrix(true, false);
+    const viewerCamera = runtimeReaderCamera();
     if (desiredQuaternion) {
       const currentQuaternion = viewerCamera.getWorldQuaternion(new THREE.Quaternion());
       const desiredYaw = xrEntryEuler.setFromQuaternion(desiredQuaternion, "YXZ").y;
@@ -5570,7 +6185,7 @@ function teleportReaderTo(destination, station = null) {
       readerRig.quaternion.premultiply(yawRotation);
       readerRig.updateMatrixWorld(true);
     }
-    viewerCamera.updateWorldMatrix(true, false);
+    runtimeReaderCamera(viewerCamera);
     const viewerPosition = viewerCamera.getWorldPosition(new THREE.Vector3());
     readerRig.position.add(destination.clone().sub(viewerPosition));
     readerRig.updateMatrixWorld(true);
@@ -5592,7 +6207,20 @@ function teleportReaderTo(destination, station = null) {
 function updatePhysicalTraversal() {
   const outgoingBoundary = runtimeInteractionForBoundary(activeIndex, activeIndex + 1);
   if (!isPhysicalLocomotionBoundary(outgoingBoundary) && !activePhysicalTraversalZones.length) return;
-  const viewer = (renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : camera).getWorldPosition(new THREE.Vector3());
+  const viewer = runtimeReaderCamera().getWorldPosition(new THREE.Vector3());
+  if (freeTeleportRequiresPhysicalZoneClearance) {
+    const insideAnyZone = activePhysicalTraversalZones.some((zone) => {
+      const destination = worldReaderPositionForStation(zone.station);
+      return Boolean(
+        destination
+        && Math.hypot(viewer.x - destination.x, viewer.z - destination.z) <= zone.tolerance.distanceMeters
+      );
+    });
+    physicalTraversalEnteredAt = null;
+    physicalTraversalEnteredByZone.clear();
+    if (insideAnyZone) return;
+    freeTeleportRequiresPhysicalZoneClearance = false;
+  }
   for (const zone of activePhysicalTraversalZones) {
     const destination = worldReaderPositionForStation(zone.station);
     if (!destination) continue;
@@ -5685,8 +6313,7 @@ async function showProceduralDynamicsForBeat(beat, variantOption, loadRevision, 
   readerRig.updateWorldMatrix(true, false);
   const authoredStation = authoredReaderStationForBeat(beat, activeIndex);
   const authoredAnchorPosition = worldReaderPositionForStation(authoredStation);
-  const readerCamera = renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : camera;
-  readerCamera.updateWorldMatrix(true, false);
+  const readerCamera = runtimeReaderCamera();
   const anchorPosition = readerCamera.getWorldPosition(new THREE.Vector3());
   if (![anchorPosition.x, anchorPosition.y, anchorPosition.z].every(Number.isFinite) && authoredAnchorPosition) {
     anchorPosition.copy(authoredAnchorPosition);
@@ -5908,14 +6535,170 @@ function supplementalSpatialTransitionPlayback(entry, primaryModelEntry, primary
     : null;
 }
 
+function sourceCompositionBounds(value) {
+  const minimum = Array.isArray(value?.min) ? value.min.map(Number) : null;
+  const maximum = Array.isArray(value?.max) ? value.max.map(Number) : null;
+  if (
+    minimum?.length !== 3
+    || maximum?.length !== 3
+    || ![...minimum, ...maximum].every(Number.isFinite)
+  ) return null;
+  return new THREE.Box3(
+    new THREE.Vector3(...minimum),
+    new THREE.Vector3(...maximum),
+  );
+}
+
+function frameSourceLockedComposition(frameRoot, sourceComposition) {
+  const bounds = sourceCompositionBounds(
+    sourceComposition?.framing?.compositionBounds
+      || sourceComposition?.framing?.anchorBounds,
+  );
+  if (!frameRoot || !bounds || bounds.isEmpty()) return false;
+  const center = bounds.getCenter(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
+  const maxAxis = Math.max(size.x, size.y, size.z) || 1;
+  const scale = modelFrameTarget() / maxAxis;
+  const groundAligned = String(sourceComposition?.framing?.verticalAlignment || "").toLowerCase() === "ground";
+  frameRoot.scale.setScalar(scale);
+  frameRoot.position.set(
+    -center.x * scale,
+    -(groundAligned ? bounds.min.y : center.y) * scale,
+    -center.z * scale,
+  );
+  frameRoot.updateWorldMatrix(true, true);
+  return true;
+}
+
+function applySourceLockedLoaderTransformPolicy(root, entity) {
+  if (
+    !root
+    || !runtimeSpatialEntityUsesSourceLockedPlacement(entity)
+    || entity.loaderTransformPolicy !== "reset-immediate-child-scale"
+  ) return false;
+  const target = String(entity.loaderTransformTarget || "").trim().toLowerCase().replace(/_/g, "-");
+  const targetRoot = target === "first-scene-child-children"
+    ? root.children?.[0]
+    : ["immediate-children", "default", "legacy"].includes(target)
+      ? root
+      : null;
+  if (!targetRoot) return false;
+  for (const child of targetRoot.children || []) child.scale.set(1, 1, 1);
+  root.updateMatrixWorld(true);
+  return true;
+}
+
+function sourceLockedEntityNeedsMaterialCompatibility(entity) {
+  return runtimeSpatialEntityUsesSourceLockedPlacement(entity)
+    && String(entity?.sourceRole || "").trim().toLowerCase() === "framing-anchor";
+}
+
+function sourceLockedMaterialNeedsNeutralEnvironment(material, activeEnvironment = null) {
+  return Boolean(
+    material?.isMeshStandardMaterial
+    && material.map
+    && !material.envMap
+    && !activeEnvironment
+    && Number(material.metalness) >= 0.9
+  );
+}
+
+function getSourceCompositionNeutralEnvironmentMap() {
+  if (sourceCompositionNeutralEnvironmentMap) return sourceCompositionNeutralEnvironmentMap;
+  const environment = new RoomEnvironment();
+  const generator = new THREE.PMREMGenerator(renderer);
+  sourceCompositionNeutralEnvironmentTarget = generator.fromScene(environment, 0.04);
+  sourceCompositionNeutralEnvironmentMap = sourceCompositionNeutralEnvironmentTarget.texture;
+  sourceCompositionNeutralEnvironmentMap.name = "storyvr-source-composition-neutral-environment";
+  environment.dispose();
+  generator.dispose();
+  return sourceCompositionNeutralEnvironmentMap;
+}
+
+function disposeSourceCompositionNeutralEnvironment() {
+  sourceCompositionNeutralEnvironmentTarget?.dispose();
+  sourceCompositionNeutralEnvironmentTarget = null;
+  sourceCompositionNeutralEnvironmentMap = null;
+}
+
+function applySourceLockedMaterialCompatibility(root, entity) {
+  if (!root || !sourceLockedEntityNeedsMaterialCompatibility(entity)) return 0;
+  let adjusted = 0;
+  let environmentMap = null;
+  root.traverse((node) => {
+    if (!node.isMesh || !node.material) return;
+    const sourceMaterials = Array.isArray(node.material) ? node.material : [node.material];
+    const compatibleMaterials = sourceMaterials.map((material) => {
+      if (!sourceLockedMaterialNeedsNeutralEnvironment(material, scene.environment)) return material;
+      environmentMap ||= getSourceCompositionNeutralEnvironmentMap();
+      const compatibleMaterial = material.clone();
+      compatibleMaterial.envMap = environmentMap;
+      compatibleMaterial.userData = {
+        ...compatibleMaterial.userData,
+        storyVrSourceCompositionMaterialClone: true,
+      };
+      compatibleMaterial.needsUpdate = true;
+      adjusted += 1;
+      return compatibleMaterial;
+    });
+    node.material = Array.isArray(node.material) ? compatibleMaterials : compatibleMaterials[0];
+  });
+  return adjusted;
+}
+
+function disposeSourceLockedMaterialCompatibility(root) {
+  if (!root) return;
+  const disposed = new Set();
+  root.traverse((node) => {
+    const materials = Array.isArray(node.material) ? node.material : [node.material].filter(Boolean);
+    for (const material of materials) {
+      if (
+        material?.userData?.storyVrSourceCompositionMaterialClone !== true
+        || disposed.has(material)
+      ) continue;
+      disposed.add(material);
+      material.dispose();
+    }
+  });
+}
+
+function sourceCompositionRenderableEntries(entries, sourceComposition) {
+  if (!sourceComposition) return entries;
+  const memberEntityIds = new Set(
+    (sourceComposition.memberEntityIds || []).map((value) => String(value || "")).filter(Boolean),
+  );
+  if (!memberEntityIds.size) return [];
+  return entries.filter((entry) => memberEntityIds.has(String(entry?.entity?.id || "")));
+}
+
 async function showSpatialSceneAssets(entries, beat, previousIndex, options = {}) {
   clearModel();
-  modelRoot.position.set(0, 0, 0);
+  const sourceComposition = sourceLockedSpatialScene(options.spatialScene);
+  if (sourceComposition) modelRoot.position.copy(modelRootPositionForBeat(beat));
+  else modelRoot.position.set(0, 0, 0);
+  const renderEntries = sourceCompositionRenderableEntries(entries, sourceComposition);
+  if (sourceComposition) {
+    activeSourceCompositionRoot = new THREE.Group();
+    activeSourceCompositionRoot.name = `storyvr-source-composition:${sourceComposition.compositionId || "assembly"}`;
+    activeSourceCompositionFrameRoot = new THREE.Group();
+    activeSourceCompositionFrameRoot.name = "storyvr-source-composition-frame";
+    activeSourceCompositionRoot.add(activeSourceCompositionFrameRoot);
+    modelRoot.add(activeSourceCompositionRoot);
+    const rootEntity = sourceCompositionRootEntity(options.spatialScene, sourceComposition);
+    applyRuntimeSpatialEntityTransform(
+      activeSourceCompositionRoot,
+      rootEntity,
+      sourceComposition.rootEntityId || null,
+    );
+    modelAuthorTransformRoot.removeFromParent();
+    activeSourceCompositionFrameRoot.add(modelAuthorTransformRoot);
+  }
   const primaryModelEntry = options.primaryModelEntry || null;
-  const tasks = entries.map((entry) => {
+  const tasks = renderEntries.map((entry) => {
     if (entry.kind === "image") {
       return showSpatialImage(entry, {
         loadRevision: options.loadRevision,
+        sourceCompositionFrameRoot: activeSourceCompositionFrameRoot,
       });
     }
     if (entry === primaryModelEntry) {
@@ -5923,12 +6706,14 @@ async function showSpatialSceneAssets(entries, beat, previousIndex, options = {}
         clear: false,
         directSpatialPlacement: true,
         spatialEntity: entry.entity,
+        sourceCompositionFrameRoot: activeSourceCompositionFrameRoot,
         loadRevision: options.loadRevision,
       });
     }
       return showSupplementalModel(entry, beat, previousIndex, {
         loadRevision: options.loadRevision,
         route: options.route,
+        sourceCompositionFrameRoot: activeSourceCompositionFrameRoot,
         transitionPlayback: supplementalSpatialTransitionPlayback(
           entry,
           primaryModelEntry,
@@ -5937,6 +6722,9 @@ async function showSpatialSceneAssets(entries, beat, previousIndex, options = {}
       });
   });
   const results = await Promise.allSettled(tasks);
+  if (sourceComposition && options.loadRevision === activeSceneLoadRevision) {
+    frameSourceLockedComposition(activeSourceCompositionFrameRoot, sourceComposition);
+  }
   return results.reduce((summary, result) => {
     if (result.status === "fulfilled" && result.value !== false) summary.loaded += 1;
     else if (!(result.status === "fulfilled" && result.value === false && options.loadRevision !== activeSceneLoadRevision)) summary.failed += 1;
@@ -5953,25 +6741,31 @@ async function showModel(asset, beat, transitionPlayback = null, options = {}) {
   activeModelAsset = asset;
   activeModelSpatialEntity = options.spatialEntity || null;
   activeModelAnimations = Array.isArray(model.animations) ? model.animations : [];
+  applySourceLockedLoaderTransformPolicy(activeModel, options.spatialEntity);
+  applySourceLockedMaterialCompatibility(activeModel, options.spatialEntity);
   activeModel.traverse((node) => {
     if (node.isMesh) {
       node.castShadow = true;
       node.receiveShadow = true;
     }
   });
-  if (options.directSpatialPlacement) modelRoot.position.set(0, 0, 0);
+  if (options.directSpatialPlacement && !options.sourceCompositionFrameRoot) {
+    modelRoot.position.set(0, 0, 0);
+  }
   else modelRoot.position.copy(modelRootPositionForBeat(beat, asset));
   if (options.spatialEntity) applyRuntimeGlbSpatialTransform(asset, beat, options.spatialEntity);
   else applyRuntimeGlbSpatialTransform(asset, beat);
   const sharedTimelineContract = sharedTimelineContractForAsset(asset.id);
   const contractedTimeline = Boolean(sharedTimelineContract);
-  frameModel(activeModel, {
-    groundAligned: runtimeSpatialEntityGroundAligned(
-      options.spatialEntity,
-      sharedTimelineContract,
-      runtimeSpatialRelations,
-    ),
-  });
+  if (!runtimeSpatialEntityUsesSourceLockedPlacement(options.spatialEntity)) {
+    frameModel(activeModel, {
+      groundAligned: runtimeSpatialEntityGroundAligned(
+        options.spatialEntity,
+        sharedTimelineContract,
+        runtimeSpatialRelations,
+      ),
+    });
+  }
   modelAuthorTransformRoot.add(activeModel);
   const sourcePartState = sourcePartStateForBeatAsset(beat.id, asset.id);
   const destinationPartSelectors = sourcePartSelectorsForBeatAsset(beat.id, asset.id);
@@ -6021,6 +6815,9 @@ async function showSupplementalModel(entry, beat, previousIndex, options = {}) {
   const loaded = await loadModel(source);
   if (options.loadRevision && options.loadRevision !== activeSceneLoadRevision) return false;
   const model = loaded.scene.clone(true);
+  const sourceLocked = runtimeSpatialEntityUsesSourceLockedPlacement(entry.entity);
+  applySourceLockedLoaderTransformPolicy(model, entry.entity);
+  applySourceLockedMaterialCompatibility(model, entry.entity);
   model.traverse((node) => {
     if (node.isMesh) {
       node.castShadow = true;
@@ -6029,18 +6826,22 @@ async function showSupplementalModel(entry, beat, previousIndex, options = {}) {
   });
   const sharedTimelineContract = sharedTimelineContractForAsset(entry.asset.id);
   const contractedTimeline = Boolean(sharedTimelineContract);
-  frameModel(model, {
-    groundAligned: runtimeSpatialEntityGroundAligned(
-      entry.entity,
-      sharedTimelineContract,
-      runtimeSpatialRelations,
-    ),
-  });
+  if (!sourceLocked) {
+    frameModel(model, {
+      groundAligned: runtimeSpatialEntityGroundAligned(
+        entry.entity,
+        sharedTimelineContract,
+        runtimeSpatialRelations,
+      ),
+    });
+  }
   const authorTransformRoot = new THREE.Group();
   authorTransformRoot.name = `storyvr-spatial-relations-author-transform:${entry.asset.id}`;
   applyRuntimeSpatialEntityTransform(authorTransformRoot, entry.entity, `glb:${entry.asset.id}`);
   authorTransformRoot.add(model);
-  modelRoot.add(authorTransformRoot);
+  (sourceLocked && options.sourceCompositionFrameRoot
+    ? options.sourceCompositionFrameRoot
+    : modelRoot).add(authorTransformRoot);
 
   const sourcePartState = sourcePartStateForBeatAsset(beat.id, entry.asset.id);
   const destinationPartSelectors = sourcePartSelectorsForBeatAsset(beat.id, entry.asset.id);
@@ -6131,7 +6932,9 @@ async function showSpatialImage(entry, options = {}) {
   authorTransformRoot.name = `storyvr-spatial-relations-author-transform:${entry.asset.id}`;
   applyRuntimeSpatialEntityTransform(authorTransformRoot, entry.entity, `image:${entry.asset.id}`);
   authorTransformRoot.add(plane);
-  modelRoot.add(authorTransformRoot);
+  (runtimeSpatialEntityUsesSourceLockedPlacement(entry.entity) && options.sourceCompositionFrameRoot
+    ? options.sourceCompositionFrameRoot
+    : modelRoot).add(authorTransformRoot);
   activeSpatialImageEntries.push({ asset: entry.asset, plane, authorTransformRoot });
   return true;
 }
@@ -6146,19 +6949,30 @@ function clearModel() {
     if (activeModel) activeSourceAnimation.mixer.uncacheRoot(activeModel);
     activeSourceAnimation = null;
   }
-  if (activeModel) modelAuthorTransformRoot.remove(activeModel);
+  if (activeModel) {
+    disposeSourceLockedMaterialCompatibility(activeModel);
+    modelAuthorTransformRoot.remove(activeModel);
+  }
   for (const entry of activeSupplementalModelEntries.splice(0)) {
     if (entry.playback) {
       for (const element of entry.playback.annotationElements || []) element.remove?.();
       entry.playback.mixer.stopAllAction();
       entry.playback.mixer.uncacheRoot(entry.model);
     }
+    disposeSourceLockedMaterialCompatibility(entry.model);
     entry.authorTransformRoot.removeFromParent();
   }
   for (const entry of activeSpatialImageEntries.splice(0)) {
     entry.authorTransformRoot.removeFromParent();
     entry.plane.geometry?.dispose?.();
     entry.plane.material?.dispose?.();
+  }
+  if (activeSourceCompositionRoot) {
+    modelAuthorTransformRoot.removeFromParent();
+    activeSourceCompositionRoot.removeFromParent();
+    modelRoot.add(modelAuthorTransformRoot);
+    activeSourceCompositionRoot = null;
+    activeSourceCompositionFrameRoot = null;
   }
   activeModel = null;
   activeModelAsset = null;
@@ -6179,10 +6993,20 @@ function applyRuntimeGlbSpatialTransform(asset, beat, declaredEntity = null) {
 
 function applyRuntimeSpatialEntityTransform(target, entity, fallbackEntityId = null) {
   if (!target) return;
-  const transform = effectiveSpatialEntityTransform(entity);
-  target.position.fromArray(transform.position);
-  target.quaternion.fromArray(transform.quaternion).normalize();
-  target.scale.fromArray(transform.scale);
+  const sourceMatrix = entity?.manual === true ? null : sourceLockedSpatialMatrix(entity);
+  if (sourceMatrix) {
+    new THREE.Matrix4().fromArray(sourceMatrix).decompose(
+      target.position,
+      target.quaternion,
+      target.scale,
+    );
+    target.quaternion.normalize();
+  } else {
+    const transform = effectiveSpatialEntityTransform(entity);
+    target.position.fromArray(transform.position);
+    target.quaternion.fromArray(transform.quaternion).normalize();
+    target.scale.fromArray(transform.scale);
+  }
   target.userData.spatialEntityId = entity?.id || entity?.entityId || fallbackEntityId;
   target.userData.assetId = spatialAssetIdFromEntity(entity) || null;
 }
@@ -6690,7 +7514,7 @@ function applySpatialTextOrientation(renderCamera) {
   if (applyRuntimeTextPanelClearanceLock(spatialTextPanel)) return;
   const policy = String(spatialTextPlacement.orientationPolicy || (spatialTextPlacement.facesReader ? "reader-facing" : "fixed"));
   if (!["yaw-to-reader", "billboard", "reader-facing-yaw", "reader-facing"].includes(policy)) return;
-  const facingCamera = renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : renderCamera;
+  const facingCamera = runtimeReaderCamera(renderCamera);
   const target = facingCamera.getWorldPosition(spatialTextOrientationTarget);
   if (["yaw-to-reader", "reader-facing-yaw"].includes(policy)) {
     target.y = spatialTextPanel.getWorldPosition(spatialTextPanelWorldPosition).y;
@@ -6713,7 +7537,7 @@ function applySpatialTextCollisionClearance(renderCamera) {
     setRuntimeTextPanelReveal(spatialTextPanel, 1);
     return;
   }
-  const facingCamera = renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : renderCamera;
+  const facingCamera = runtimeReaderCamera(renderCamera);
   const cameraPosition = facingCamera?.getWorldPosition?.(spatialTextCameraPosition);
   if (!cameraPosition) {
     spatialTextPanel.userData.spatialClearanceAwaitingFirstCommit = false;
@@ -7343,54 +8167,17 @@ function runtimeSpatialEntityGroundAligned(entity, sharedTimelineContract = null
   return sharedTimelineGroundAligned(sharedTimelineContract);
 }
 
-function activeRuntimeTopologyKind() {
-  const sceneRecord = runtimeSpatialSceneForBeat();
-  const topology = sceneRecord?.topology;
-  const label = typeof topology === "string" ? topology : topology?.kind || topology?.label || "";
-  return label ? topologyKindFromLabel(label) : runtimeTopologyKind;
-}
-
-function activeRuntimeViewpointKind(sceneRecord = runtimeSpatialSceneForBeat()) {
-  const viewpoint = String(sceneRecord?.viewpoint || "").trim();
-  return viewpoint ? topologyViewpointKind({ viewpoint }) : fallbackReaderViewpoint;
-}
-
 function modelFrameTarget() {
-  const viewpoint = activeRuntimeViewpointKind();
-  if (viewpoint === "egocentric" && activeRuntimeTopologyKind() === "single") return 5.4;
-  if (viewpoint === "egocentric") return 2.7;
   return 1.9;
 }
 
-function modelRootPositionForBeat(beat) {
-  if (activeRuntimeViewpointKind() !== "egocentric") return new THREE.Vector3(0, 1.18, 0);
-  if (runtimeTopologyKind === "single") return new THREE.Vector3(0, 1.18, -0.18);
-  const count = Math.max(beats.filter(modelAssetForBeat).length || beats.length, 1);
-  const modelIndex = Math.max(0, beats.filter(modelAssetForBeat).findIndex((candidate) => candidate.id === beat.id));
-  const angle = (-Math.PI / 2) + ((Math.PI * 2 * Math.max(modelIndex, 0)) / count);
-  const radius = runtimeTopologyKind === "map" ? 2.75 : 2.45;
-  return new THREE.Vector3(Math.cos(angle) * radius, 1.05, Math.sin(angle) * radius);
+function modelRootPositionForBeat() {
+  return new THREE.Vector3(0, 1.18, 0);
 }
 
 function updateHabitat() {
   if (habitat) scene.remove(habitat);
-  if (environmentLoaded) {
-    habitat = null;
-    return;
-  }
-  const viewpoint = activeRuntimeViewpointKind();
-  habitat = new THREE.Group();
-  if (!finalTuning.directives.hideGroundCircles) {
-    const ringRadius = viewpoint === "egocentric" ? (runtimeTopologyKind === "single" ? 2.75 : 2.55) : 2.05;
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(ringRadius, 0.015, 8, 96),
-      new THREE.MeshStandardMaterial({ color: 0x6ed8c2, transparent: true, opacity: 0.5 }),
-    );
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.03;
-    habitat.add(ring);
-  }
-  scene.add(habitat);
+  habitat = null;
 }
 
 function createRoom() {
@@ -7411,26 +8198,6 @@ function createRoom() {
   room.add(grid);
   scene.add(room);
   return room;
-}
-
-function configureCameraForTopology() {
-  if (activeRuntimeViewpointKind() !== "egocentric") return;
-  controls.minDistance = 0.05;
-  controls.maxDistance = runtimeTopologyKind === "single" ? 7 : 9;
-  if (runtimeTopologyKind === "single") {
-    camera.position.set(0, 1.35, 0.24);
-    controls.target.set(0, 1.24, -0.92);
-    return;
-  }
-  camera.position.set(0, 1.45, 0.18);
-  controls.target.set(0, 1.28, -1.35);
-}
-
-function topologyViewpointKind(option) {
-  const text = String(option?.viewpoint || "").toLowerCase();
-  if (text.includes("ego")) return "egocentric";
-  if (text.includes("exo")) return "exocentric";
-  return "exocentric";
 }
 
 function topologyKindFromLabel(label) {
@@ -7464,6 +8231,7 @@ function render(frameTime = performance.now(), xrFrame = null) {
   updateXrControllerVisuals();
   updateXrTextPanelInteractionRays();
   updateConfiguredControllerInteractions();
+  updateConfiguredControllerLocomotion(delta);
   updateRuntimeDirectManipulationCues();
   updatePhysicalTraversal();
   if (!renderer.xr.isPresenting) {
@@ -9166,7 +9934,11 @@ function sourcePartSelectorsForBeatAsset(beatId, assetId) {
   return uniqueStrings(sourcePartStates
     .filter((item) => item.beatId === beatId && item.assetId === assetId)
     .filter((item) => sourcePartStateCanApplyHardMask(item, assetId))
-    .flatMap((item) => [...(item.partSelectors || []), ...(item.animationTargetSelectors || [])]));
+    .flatMap((item) => sourceVisibilitySelectorsForState(item)));
+}
+
+function sourceVisibilitySelectorsForState(partState) {
+  return uniqueStrings(partState?.partSelectors || []);
 }
 
 function sourcePartStateCanApplyHardMask(partState, assetId) {

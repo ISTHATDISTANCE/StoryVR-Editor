@@ -18,7 +18,7 @@ export function normalizeStoryvrNavigationScene(value) {
   if (!beatId) return null;
   const variantOptionId = clean(value?.variantOptionId) || null;
   const transitionEdgeId = clean(value?.transitionEdgeId) || null;
-  const interactionTargetType = ["boundary", "variant-edge"].includes(clean(value?.interactionTargetType))
+  const interactionTargetType = ["boundary", "variant-edge", "global-controller"].includes(clean(value?.interactionTargetType))
     ? clean(value.interactionTargetType)
     : null;
   const interactionTargetId = interactionTargetType ? clean(value?.interactionTargetId) || null : null;

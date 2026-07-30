@@ -14,10 +14,12 @@ import {
   validatePcdBytes
 } from "./pointcloud-effect.mjs";
 
-const VERSION = "0.16.2";
+const VERSION = "0.18.0";
 const JUDGMENT_SCHEMA_VERSION = "storyvr-animation-judgment/v3";
-const CODEX_PROMPT_VERSION = "storyvr-animation-codex/v6";
+const CODEX_PROMPT_VERSION = "storyvr-animation-codex/v7";
 const JUDGMENT_CACHE_SCHEMA_VERSION = "storyvr-codex-judgment-cache/v1";
+const SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION = "storyvr-source-spatial-composition/v1";
+const RUNTIME_3D_CATALOG_SCHEMA_VERSION = "storyvr-runtime-3d-catalog/v1";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_DOWNLOADS = 140;
 const TEXT_SCAN_LIMIT_BYTES = 6 * 1024 * 1024;
@@ -181,6 +183,29 @@ const SCROLL_DRIVERS = [
   "unknown"
 ];
 
+const EXPLICIT_SPATIAL_BASIS = new Set([
+  "explicit-bridge-relationship",
+  "shared-explicit-composition",
+  "shared-explicit-frame",
+  "shared-explicit-source",
+  "shared-explicit-source-config",
+  "shared-explicit-container"
+]);
+const BOUNDED_SOURCE_SPATIAL_BASIS = new Set([
+  "explicit-bridge-relationship",
+  "shared-explicit-composition",
+  "shared-explicit-frame",
+  "shared-explicit-source-config",
+  "shared-explicit-container"
+]);
+const DIRECT_SPATIAL_IDENTITY_SOURCES = new Set([
+  "gltf-loader-hook",
+  "object-user-data",
+  "runtime-bridge",
+  "direct-runtime",
+  "direct-source-config"
+]);
+
 const IMAGE_RELEVANCE_POLICY = "balanced-story-images/v1";
 const IMAGE_RELEVANCE_STOP_WORDS = new Set([
   "interactive",
@@ -316,7 +341,8 @@ Options:
   -i, --input <file>          JSON exported by runtime-animation-collector.js
       --story-folder <dir>    Story slug folder for output placement
   -o, --out <dir>             Explicit output directory, mostly for testing
-      --from-output <dir>     Reuse an existing analysis output folder to write author input
+      --from-output <dir>     Offline-refresh deterministic GLB/spatial evidence from local downloads,
+                              then rewrite normalized output and optional author input; no network/Codex
       --codex-bin <path>      Codex executable. Default: CODEX_BIN or codex
       --timeout-ms <n>        Per-download timeout. Default: ${DEFAULT_TIMEOUT_MS}
       --codex-timeout-ms <n>  Deprecated no-op. Codex judging has no script-imposed timeout.
@@ -897,6 +923,7 @@ function semanticRuntimeModel(model) {
     visibilityChanged: Boolean(model?.visibilityChanged),
     opacityChanged: Boolean(model?.opacityChanged),
     changeKinds: [...new Set(model?.changeKinds || [])].sort(),
+    spatialState: canonicalObjectKeys(model?.spatialState || {}),
     visibleParts: semanticSort((model?.visibleParts || []).map(semanticRuntimePart)),
     partStateChanges: semanticSort((model?.partStateChanges || []).map(semanticRuntimePart)),
     playingAnimations: semanticSort((model?.playingAnimations || []).map(semanticRuntimeAction))
@@ -1065,12 +1092,40 @@ function judgmentSemanticInput(evidence) {
     nodeCount: Number(model.nodeCount || 0),
     meshCount: Number(model.meshCount || 0),
     cameraCount: Number(model.cameraCount || 0),
+    defaultScene: Number.isInteger(model.defaultScene) ? model.defaultScene : null,
+    sceneRoots: (model.sceneRoots || []).map((scene) => ({
+      sceneIndex: scene.sceneIndex,
+      name: scene.name || "",
+      rootNodeIndices: scene.rootNodeIndices || []
+    })),
     nodes: (model.nodes || []).map((node) => ({
       index: node.index,
       name: node.name || "",
       mesh: node.mesh,
       camera: node.camera,
-      children: node.children || []
+      children: node.children || [],
+      parentNodeIndices: node.parentNodeIndices || [],
+      matrix: node.matrix || null,
+      translation: node.translation || null,
+      rotation: node.rotation || null,
+      scale: node.scale || null
+    })),
+    primitiveBounds: (model.primitiveBounds || []).map((primitive) => ({
+      meshIndex: primitive.meshIndex,
+      primitiveIndex: primitive.primitiveIndex,
+      positionAccessor: primitive.positionAccessor,
+      positionBounds: canonicalObjectKeys(primitive.positionBounds || null)
+    })),
+    positionBounds: canonicalObjectKeys(model.positionBounds || null),
+    scenePositionBounds: canonicalObjectKeys(model.scenePositionBounds || null),
+    scenePositionBoundsWithImmediateChildScaleReset: canonicalObjectKeys(
+      model.scenePositionBoundsWithImmediateChildScaleReset || null
+    ),
+    meshNodeTransformsIdentity: Boolean(model.meshNodeTransformsIdentity),
+    meshNodeMatrices: (model.meshNodeMatrices || []).map((item) => ({
+      sceneIndex: item.sceneIndex,
+      nodeIndex: item.nodeIndex,
+      matrix: item.matrix
     })),
     animations: (model.animations || []).map((animation) => ({
       index: animation.index,
@@ -1120,6 +1175,14 @@ function judgmentSemanticInput(evidence) {
     assetDiscovery,
     sourceEvidence,
     glbModels,
+    runtime3DCatalog: canonicalObjectKeys(evidence?.runtime3DCatalog || {}),
+    spatialCompositionSignature: evidence?.spatialCompositionSignature || "",
+    spatialCompositionCandidates: semanticSort((evidence?.spatialCompositionCandidates || []).map((item) => (
+      canonicalObjectKeys(deterministicSpatialSignatureInput(item))
+    ))),
+    sourceSpatialCompositions: semanticSort((evidence?.sourceSpatialCompositions || []).map((item) => (
+      canonicalObjectKeys(deterministicSpatialSignatureInput(item))
+    ))),
     ...((evidence?.pointCloudEffects || []).length ? {
       pointCloudEffects: canonicalObjectKeys(evidence.pointCloudEffects)
     } : {}),
@@ -1784,14 +1847,272 @@ function numberOrNull(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function fixedNumericArray(value, length) {
+  if (!Array.isArray(value) || value.length !== length) return null;
+  const normalized = value.map(numberOrNull);
+  return normalized.every((item) => item !== null) ? normalized : null;
+}
+
+function accessorBoundsSummary(accessor, accessorIndex) {
+  const min = fixedNumericArray(accessor?.min, 3);
+  const max = fixedNumericArray(accessor?.max, 3);
+  if (!min || !max) return null;
+  return {
+    accessorIndex,
+    min,
+    max,
+    center: min.map((value, index) => (value + max[index]) / 2),
+    size: min.map((value, index) => max[index] - value),
+    count: Number.isInteger(accessor?.count) ? accessor.count : null,
+    componentType: Number.isInteger(accessor?.componentType) ? accessor.componentType : null,
+    type: accessor?.type || ""
+  };
+}
+
+function unionAabbs(bounds) {
+  const valid = (Array.isArray(bounds) ? bounds : []).filter((item) => (
+    fixedNumericArray(item?.min, 3) && fixedNumericArray(item?.max, 3)
+  ));
+  if (!valid.length) return null;
+  const min = [0, 1, 2].map((axis) => Math.min(...valid.map((item) => Number(item.min[axis]))));
+  const max = [0, 1, 2].map((axis) => Math.max(...valid.map((item) => Number(item.max[axis]))));
+  const center = min.map((value, index) => (value + max[index]) / 2);
+  const size = min.map((value, index) => max[index] - value);
+  const radius = Math.sqrt(size.reduce((sum, value) => sum + value * value, 0)) / 2;
+  const positiveExtents = size.filter((value) => value > 1e-9);
+  const isotropic = positiveExtents.length === 3
+    && Math.max(...positiveExtents) / Math.min(...positiveExtents) <= 1.25;
+  const surfaceRadiusEstimate = isotropic
+    ? positiveExtents.reduce((sum, value) => sum + value, 0) / positiveExtents.length / 2
+    : radius;
+  return {
+    min,
+    max,
+    center,
+    size,
+    boundingSphere: { center, radius },
+    surfaceRadiusEstimate,
+    surfaceRadiusEstimator: isotropic
+      ? "half-mean-axis-extent-isotropic"
+      : "half-aabb-diagonal-enclosing"
+  };
+}
+
+function matrix4FromGltfNode(node, { resetScale = false } = {}) {
+  const directMatrix = fixedNumericArray(node?.matrix, 16);
+  if (directMatrix) {
+    if (!resetScale) return directMatrix;
+    const output = [...directMatrix];
+    for (const columnOffset of [0, 4, 8]) {
+      const length = Math.hypot(output[columnOffset], output[columnOffset + 1], output[columnOffset + 2]);
+      if (length <= 1e-12) continue;
+      output[columnOffset] /= length;
+      output[columnOffset + 1] /= length;
+      output[columnOffset + 2] /= length;
+    }
+    return output;
+  }
+  const translation = fixedNumericArray(node?.translation, 3) || [0, 0, 0];
+  const rotation = fixedNumericArray(node?.rotation, 4) || [0, 0, 0, 1];
+  const scale = resetScale ? [1, 1, 1] : fixedNumericArray(node?.scale, 3) || [1, 1, 1];
+  const [x, y, z, w] = rotation;
+  const [sx, sy, sz] = scale;
+  const x2 = x + x;
+  const y2 = y + y;
+  const z2 = z + z;
+  const xx = x * x2;
+  const xy = x * y2;
+  const xz = x * z2;
+  const yy = y * y2;
+  const yz = y * z2;
+  const zz = z * z2;
+  const wx = w * x2;
+  const wy = w * y2;
+  const wz = w * z2;
+  return [
+    (1 - (yy + zz)) * sx,
+    (xy + wz) * sx,
+    (xz - wy) * sx,
+    0,
+    (xy - wz) * sy,
+    (1 - (xx + zz)) * sy,
+    (yz + wx) * sy,
+    0,
+    (xz + wy) * sz,
+    (yz - wx) * sz,
+    (1 - (xx + yy)) * sz,
+    0,
+    translation[0],
+    translation[1],
+    translation[2],
+    1
+  ];
+}
+
+function transformAabb(bounds, matrix) {
+  const min = fixedNumericArray(bounds?.min, 3);
+  const max = fixedNumericArray(bounds?.max, 3);
+  if (!min || !max || !fixedNumericArray(matrix, 16)) return null;
+  const corners = [];
+  for (const x of [min[0], max[0]]) {
+    for (const y of [min[1], max[1]]) {
+      for (const z of [min[2], max[2]]) {
+        corners.push(matrix4TransformPoint(matrix, [x, y, z]));
+      }
+    }
+  }
+  return {
+    min: [0, 1, 2].map((axis) => Math.min(...corners.map((corner) => corner[axis]))),
+    max: [0, 1, 2].map((axis) => Math.max(...corners.map((corner) => corner[axis])))
+  };
+}
+
+function matrix4IsIdentity(matrix, tolerance = 1e-8) {
+  const normalized = fixedNumericArray(matrix, 16);
+  if (!normalized) return false;
+  return normalized.every((value, index) => Math.abs(value - matrix4Identity()[index]) <= tolerance);
+}
+
+function sceneTransformedPositionBounds(json, primitiveBounds, { resetImmediateChildScale = false } = {}) {
+  const scenes = Array.isArray(json?.scenes) ? json.scenes : [];
+  const fallbackRoots = (json.nodes || [])
+    .map((_node, index) => index)
+    .filter((index) => !(json.nodes || []).some((node) => (node?.children || []).includes(index)));
+  const defaultSceneIndex = Number.isInteger(json?.scene) && json.scene >= 0 && json.scene < scenes.length
+    ? json.scene
+    : 0;
+  const selectedScenes = scenes.length
+    ? [{
+      sceneIndex: defaultSceneIndex,
+      roots: Array.isArray(scenes[defaultSceneIndex]?.nodes)
+        ? scenes[defaultSceneIndex].nodes.filter(Number.isInteger)
+        : []
+    }]
+    : [{ sceneIndex: null, roots: fallbackRoots }];
+  const primitiveByMesh = new Map();
+  for (const primitive of primitiveBounds) {
+    const values = primitiveByMesh.get(primitive.meshIndex) || [];
+    values.push(primitive);
+    primitiveByMesh.set(primitive.meshIndex, values);
+  }
+  const transformedBounds = [];
+  const meshNodeMatrices = [];
+  const visit = (
+    nodeIndex,
+    parentMatrix,
+    sceneIndex,
+    ancestors,
+    resetScaleForNode = false,
+    resetDirectChildren = false
+  ) => {
+    if (!Number.isInteger(nodeIndex) || ancestors.has(nodeIndex)) return;
+    const node = json.nodes?.[nodeIndex];
+    if (!node) return;
+    const localMatrix = matrix4FromGltfNode(node, {
+      resetScale: resetImmediateChildScale && resetScaleForNode
+    });
+    const worldMatrix = matrix4Multiply(parentMatrix, localMatrix);
+    if (!worldMatrix) return;
+    if (Number.isInteger(node.mesh)) {
+      meshNodeMatrices.push({ sceneIndex, nodeIndex, matrix: worldMatrix });
+      for (const primitive of primitiveByMesh.get(node.mesh) || []) {
+        const transformed = transformAabb(primitive.positionBounds, worldMatrix);
+        if (transformed) transformedBounds.push(transformed);
+      }
+    }
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(nodeIndex);
+    for (const childIndex of Array.isArray(node.children) ? node.children : []) {
+      visit(childIndex, worldMatrix, sceneIndex, nextAncestors, resetDirectChildren, false);
+    }
+  };
+  for (const scene of selectedScenes) {
+    for (const [rootOffset, rootIndex] of scene.roots.entries()) {
+      visit(
+        rootIndex,
+        matrix4Identity(),
+        scene.sceneIndex,
+        new Set(),
+        false,
+        resetImmediateChildScale && rootOffset === 0
+      );
+    }
+  }
+  return {
+    bounds: unionAabbs(transformedBounds),
+    meshNodeMatrices,
+    meshNodeTransformsIdentity: meshNodeMatrices.length > 0
+      && meshNodeMatrices.every((item) => matrix4IsIdentity(item.matrix))
+  };
+}
+
 function summarizeGltfJson(json, download) {
+  const parentNodeIndices = new Map();
+  for (const [parentIndex, node] of (json.nodes ?? []).entries()) {
+    for (const childIndex of Array.isArray(node?.children) ? node.children : []) {
+      if (!Number.isInteger(childIndex)) continue;
+      const parents = parentNodeIndices.get(childIndex) || [];
+      parents.push(parentIndex);
+      parentNodeIndices.set(childIndex, parents);
+    }
+  }
   const nodes = (json.nodes ?? []).map((node, index) => ({
     index,
     name: node.name ?? "",
     mesh: Number.isInteger(node.mesh) ? node.mesh : null,
     camera: Number.isInteger(node.camera) ? node.camera : null,
-    children: Array.isArray(node.children) ? node.children : []
+    children: Array.isArray(node.children) ? node.children.filter(Number.isInteger) : [],
+    parentNodeIndices: (parentNodeIndices.get(index) || []).sort((left, right) => left - right),
+    matrix: fixedNumericArray(node.matrix, 16),
+    translation: fixedNumericArray(node.translation, 3),
+    rotation: fixedNumericArray(node.rotation, 4),
+    scale: fixedNumericArray(node.scale, 3)
   }));
+
+  const sceneRoots = (json.scenes ?? []).map((scene, sceneIndex) => ({
+    sceneIndex,
+    name: scene?.name || "",
+    rootNodeIndices: (Array.isArray(scene?.nodes) ? scene.nodes : []).filter(Number.isInteger)
+  }));
+
+  const positionAccessorBounds = [];
+  const primitiveBounds = [];
+  const meshes = (json.meshes ?? []).map((mesh, meshIndex) => {
+    const primitives = (mesh?.primitives ?? []).map((primitive, primitiveIndex) => {
+      const positionAccessorIndex = Number.isInteger(primitive?.attributes?.POSITION)
+        ? primitive.attributes.POSITION
+        : null;
+      const positionBounds = positionAccessorIndex !== null
+        ? accessorBoundsSummary(json.accessors?.[positionAccessorIndex], positionAccessorIndex)
+        : null;
+      if (positionBounds && !positionAccessorBounds.some((item) => item.accessorIndex === positionAccessorIndex)) {
+        positionAccessorBounds.push(positionBounds);
+      }
+      const summary = {
+        meshIndex,
+        primitiveIndex,
+        mode: Number.isInteger(primitive?.mode) ? primitive.mode : 4,
+        material: Number.isInteger(primitive?.material) ? primitive.material : null,
+        indicesAccessor: Number.isInteger(primitive?.indices) ? primitive.indices : null,
+        positionAccessor: positionAccessorIndex,
+        positionBounds
+      };
+      if (positionBounds) primitiveBounds.push(summary);
+      return summary;
+    });
+    return {
+      meshIndex,
+      name: mesh?.name || "",
+      primitiveCount: primitives.length,
+      primitives
+    };
+  });
+  positionAccessorBounds.sort((left, right) => left.accessorIndex - right.accessorIndex);
+  const positionBounds = unionAabbs(positionAccessorBounds);
+  const sceneBounds = sceneTransformedPositionBounds(json, primitiveBounds);
+  const resetSceneBounds = sceneTransformedPositionBounds(json, primitiveBounds, {
+    resetImmediateChildScale: true
+  });
 
   const animations = (json.animations ?? []).map((animation, index) => {
     const channels = (animation.channels ?? []).map((channel, channelIndex) => {
@@ -1848,13 +2169,81 @@ function summarizeGltfJson(json, download) {
     materialCount: json.materials?.length ?? 0,
     textureCount: json.textures?.length ?? 0,
     cameraCount: json.cameras?.length ?? 0,
+    defaultScene: Number.isInteger(json.scene) ? json.scene : null,
     animationCount: animations.length,
     hasEmbeddedAnimation: animations.length > 0,
     animatedTargetPathCounts,
     hasCameraAnimation: animations.some((animation) => animation.cameraChannelCount > 0),
+    sceneRoots,
     nodes: nodes.slice(0, 160),
+    meshes: meshes.slice(0, 160),
+    positionAccessorBounds: positionAccessorBounds.slice(0, 320),
+    primitiveBounds: primitiveBounds.slice(0, 320),
+    positionBounds,
+    scenePositionBounds: sceneBounds.bounds,
+    scenePositionBoundsWithImmediateChildScaleReset: resetSceneBounds.bounds,
+    meshNodeTransformsIdentity: sceneBounds.meshNodeTransformsIdentity,
+    meshNodeMatrices: sceneBounds.meshNodeMatrices.slice(0, 320),
     animations
   };
+}
+
+function modelEvidenceFromDownloads(downloads) {
+  const modelSummaries = [];
+  const modelParseFailures = [];
+  for (const download of (downloads || []).filter((item) => item.assetType === "model")) {
+    try {
+      const json = parseGltfJsonFromDownload(download);
+      modelSummaries.push(summarizeGltfJson(json, download));
+    } catch (error) {
+      const stableFailure = stableModelParseFailure(error);
+      modelParseFailures.push({
+        url: download.url,
+        localPath: toPosix(path.relative(REPO_ROOT, download.localPath)),
+        code: stableFailure.code,
+        message: stableFailure.message,
+        diagnostic: error.message
+      });
+    }
+  }
+  const modelRecords = (downloads || []).filter((item) => item.assetType === "model").map((download) => {
+    const parsed = modelSummaries.find((summary) => summary.assetUrl === download.url);
+    if (parsed) return parsed;
+    const failure = modelParseFailures.find((item) => item.url === download.url);
+    return {
+      parseStatus: "failed",
+      parseError: failure?.message || "Model metadata could not be parsed.",
+      assetUrl: download.url,
+      finalUrl: download.finalUrl,
+      localPath: toPosix(path.relative(REPO_ROOT, download.localPath)),
+      file: path.basename(download.localPath),
+      fileSize: download.fileSize,
+      contentType: download.contentType,
+      sceneCount: 0,
+      nodeCount: 0,
+      meshCount: 0,
+      materialCount: 0,
+      textureCount: 0,
+      cameraCount: 0,
+      animationCount: 0,
+      hasEmbeddedAnimation: false,
+      animatedTargetPathCounts: {},
+      hasCameraAnimation: false,
+      defaultScene: null,
+      sceneRoots: [],
+      nodes: [],
+      meshes: [],
+      positionAccessorBounds: [],
+      primitiveBounds: [],
+      positionBounds: null,
+      scenePositionBounds: null,
+      scenePositionBoundsWithImmediateChildScaleReset: null,
+      meshNodeTransformsIdentity: false,
+      meshNodeMatrices: [],
+      animations: []
+    };
+  });
+  return { modelRecords, modelParseFailures };
 }
 
 function hasKeyword(value) {
@@ -2022,6 +2411,7 @@ function nullableBoolean(value) {
 }
 
 function normalizedNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 }
@@ -2030,6 +2420,166 @@ function normalizeRuntimeVector(value, length) {
   if (!Array.isArray(value)) return null;
   const normalized = value.slice(0, length).map((item) => normalizedNumber(item));
   return normalized.length === length && normalized.every((item) => item !== null) ? normalized : null;
+}
+
+function normalizeRuntimeTrs(value) {
+  if (!value || typeof value !== "object") return null;
+  const translation = normalizeRuntimeVector(value.translation || value.position, 3);
+  const rotation = normalizeRuntimeVector(value.rotation || value.quaternion, 4);
+  const scale = normalizeRuntimeVector(value.scale, 3);
+  if (!translation && !rotation && !scale) return null;
+  return {
+    translation,
+    rotation,
+    scale
+  };
+}
+
+function normalizeRuntimeTransform(value) {
+  if (!value || typeof value !== "object") return null;
+  const matrix = normalizeRuntimeVector(value.matrix, 16);
+  const trs = normalizeRuntimeTrs(value.trs || value);
+  if (!matrix && !trs) return null;
+  return { matrix, trs };
+}
+
+function normalizeRuntimeBoundingSphere(value) {
+  if (!value || typeof value !== "object") return null;
+  const center = normalizeRuntimeVector(value.center, 3);
+  const radius = normalizedNumber(value.radius);
+  if (!center || radius === null || radius < 0) return null;
+  return { center, radius };
+}
+
+function normalizeRuntimeAabb(value) {
+  if (Array.isArray(value) && value.length === 6) {
+    const numbers = normalizeRuntimeVector(value, 6);
+    return numbers ? { min: numbers.slice(0, 3), max: numbers.slice(3, 6) } : null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const min = normalizeRuntimeVector(value.min, 3);
+  const max = normalizeRuntimeVector(value.max, 3);
+  return min && max ? { min, max } : null;
+}
+
+function normalizeRuntimeBounds(value) {
+  if (!value || typeof value !== "object") return null;
+  const aabb = normalizeRuntimeAabb(value.aabb || value);
+  const center = normalizeRuntimeVector(value.center, 3)
+    || (aabb ? aabb.min.map((item, index) => (item + aabb.max[index]) / 2) : null);
+  const boundingSphere = normalizeRuntimeBoundingSphere(value.boundingSphere);
+  if (!aabb && !center && !boundingSphere) return null;
+  return {
+    aabb,
+    center,
+    boundingSphere,
+    approximate: Boolean(value.approximate)
+  };
+}
+
+function normalizeRuntimeSpatialPartState(part, index) {
+  if (!part || typeof part !== "object") return null;
+  return {
+    catalogPartId: String(part.catalogPartId || "").slice(0, 240),
+    nodeId: String(part.nodeId || `runtime-spatial-part-${index + 1}`).slice(0, 240),
+    loadedStatus: String(part.loadedStatus || "unknown").slice(0, 80),
+    hiddenLoaded: nullableBoolean(part.hiddenLoaded),
+    localTransform: normalizeRuntimeTransform(part.localTransform),
+    worldTransform: normalizeRuntimeTransform(part.worldTransform),
+    worldBounds: normalizeRuntimeBounds(part.worldBounds)
+  };
+}
+
+function normalizeRuntimeSpatialState(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    catalogModelId: String(value.catalogModelId || "").slice(0, 240),
+    instanceId: String(value.instanceId || "").slice(0, 240),
+    loadedStatus: String(value.loadedStatus || "unknown").slice(0, 80),
+    hiddenLoaded: nullableBoolean(value.hiddenLoaded),
+    parentObjectId: String(value.parentObjectId || "").slice(0, 240),
+    containerId: String(value.containerId || "").slice(0, 240),
+    rootPath: String(value.rootPath || "").slice(0, 1000),
+    instanceBoundarySource: String(value.instanceBoundarySource || "").slice(0, 160),
+    instanceBoundaryConfidence: clampConfidence(value.instanceBoundaryConfidence, 0.2),
+    localTransform: normalizeRuntimeTransform(value.localTransform),
+    worldTransform: normalizeRuntimeTransform(value.worldTransform),
+    rootLocalBounds: normalizeRuntimeBounds(value.rootLocalBounds),
+    worldBounds: normalizeRuntimeBounds(value.worldBounds),
+    partStates: (Array.isArray(value.partStates) ? value.partStates : [])
+      .map(normalizeRuntimeSpatialPartState)
+      .filter(Boolean)
+      .slice(0, 320)
+  };
+}
+
+function normalizeRuntimeSpatialRelationshipClue(value, index) {
+  if (!value || typeof value !== "object") return null;
+  const stability = value.stability && typeof value.stability === "object" ? {
+    sampleCount: normalizedNumber(value.stability.sampleCount, 0),
+    stableSampleCount: normalizedNumber(value.stability.stableSampleCount, 0),
+    status: String(value.stability.status || "unobserved").slice(0, 40),
+    stableAcrossSamples: nullableBoolean(value.stability.stableAcrossSamples),
+    maxObservedDelta: normalizedNumber(value.stability.maxObservedDelta)
+  } : {
+    sampleCount: 0,
+    stableSampleCount: 0,
+    status: "unobserved",
+    stableAcrossSamples: null,
+    maxObservedDelta: null
+  };
+  return {
+    evidenceType: String(value.evidenceType || "runtime-spatial-placement-candidate").slice(0, 120),
+    candidateOnly: value.candidateOnly !== false,
+    relationshipHintId: String(value.relationshipHintId || value.id || `spatial-clue-${index + 1}`).slice(0, 240),
+    subjectInstanceId: String(value.subjectInstanceId || "").slice(0, 240),
+    referenceInstanceId: String(value.referenceInstanceId || "").slice(0, 240),
+    subjectAssetUrl: String(value.subjectAssetUrl || "").slice(0, 2000),
+    referenceAssetUrl: String(value.referenceAssetUrl || "").slice(0, 2000),
+    subjectIdentitySource: String(value.subjectIdentitySource || "unknown").slice(0, 120),
+    referenceIdentitySource: String(value.referenceIdentitySource || "unknown").slice(0, 120),
+    relationshipType: String(value.relationshipType || "relative-placement").slice(0, 120),
+    compositionId: String(value.compositionId || "").slice(0, 240),
+    frameId: String(value.frameId || "").slice(0, 240),
+    sourceId: String(value.sourceId || "").slice(0, 240),
+    sourceConfigId: String(value.sourceConfigId || "").slice(0, 240),
+    containerId: String(value.containerId || "").slice(0, 240),
+    activeStateId: String(value.activeStateId || "").slice(0, 240),
+    evidenceBasis: stableStringSet(value.evidenceBasis),
+    transformEvidence: String(value.transformEvidence || "").slice(0, 160),
+    relativeMatrix: normalizeRuntimeVector(value.relativeMatrix, 16),
+    subjectAnchorWorld: normalizeRuntimeVector(value.subjectAnchorWorld, 3),
+    referenceAnchorWorld: normalizeRuntimeVector(value.referenceAnchorWorld, 3),
+    subjectAnchorInReferenceFrame: normalizeRuntimeVector(value.subjectAnchorInReferenceFrame, 3),
+    referenceAnchorInReferenceFrame: normalizeRuntimeVector(value.referenceAnchorInReferenceFrame, 3),
+    referenceLocalOffset: normalizeRuntimeVector(value.referenceLocalOffset, 3),
+    referenceLocalDirection: normalizeRuntimeVector(value.referenceLocalDirection, 3),
+    radialDistance: normalizedNumber(value.radialDistance),
+    referenceRadius: normalizedNumber(value.referenceRadius),
+    radialDistanceRatio: normalizedNumber(value.radialDistanceRatio),
+    signedSurfaceOffset: normalizedNumber(value.signedSurfaceOffset),
+    stability,
+    evidenceRefs: stableStringSet(value.evidenceRefs)
+  };
+}
+
+function normalizeRuntime3DCatalog(value) {
+  if (!value || typeof value !== "object") return null;
+  const array = (key) => Array.isArray(value[key])
+    ? value[key].filter((item) => item && typeof item === "object").map(canonicalObjectKeys)
+    : [];
+  return {
+    schemaVersion: String(value.schemaVersion || RUNTIME_3D_CATALOG_SCHEMA_VERSION),
+    revision: String(value.revision ?? ""),
+    models: array("models"),
+    parts: array("parts"),
+    geometries: array("geometries"),
+    containers: array("containers"),
+    compositions: array("compositions"),
+    frames: array("frames"),
+    sources: array("sources"),
+    explicitRelationships: array("explicitRelationships")
+  };
 }
 
 function normalizeRuntimePart(part, index) {
@@ -2196,6 +2746,7 @@ function normalizeRuntimeModel(model, index) {
     activeAnimationCount: playingAnimations.length,
     activeAnimations: playingAnimations,
     playbackMode: model.playbackMode || (playbackModes.length > 1 ? "mixed" : playbackModes[0] || "unknown"),
+    spatialState: normalizeRuntimeSpatialState(model.spatialState),
     provenance: model.provenance || "direct-runtime"
   };
 }
@@ -2234,10 +2785,18 @@ function normalizeRuntime3D(value) {
     .map(normalizeRuntimeMixer)
     .filter(Boolean)
     .slice(0, 24);
+  const spatialRelationshipClues = (Array.isArray(value.spatialRelationshipClues) ? value.spatialRelationshipClues : [])
+    .map(normalizeRuntimeSpatialRelationshipClue)
+    .filter(Boolean)
+    .slice(0, 320);
   const allowedStatuses = new Set(["ok", "partial", "unavailable"]);
   const captureStatus = allowedStatuses.has(value.captureStatus) ? value.captureStatus : models.length ? "partial" : "unavailable";
   return {
     schemaVersion: String(value.schemaVersion || "storyvr-runtime-3d-observation/v1"),
+    backwardCompatibleWith: stableStringSet(value.backwardCompatibleWith),
+    catalogSchemaVersion: String(value.catalogSchemaVersion || ""),
+    catalogRevision: String(value.catalogRevision ?? ""),
+    catalogModelRefs: stableStringSet(value.catalogModelRefs),
     captureStatus,
     reason: String(value.reason || "").slice(0, 1000),
     source: String(value.source || "three-runtime-instrumentation").slice(0, 120),
@@ -2259,7 +2818,8 @@ function normalizeRuntime3D(value) {
     actionStatesTruncated: Boolean(value.actionStatesTruncated),
     models,
     unassignedMixers,
-    activeCameras
+    activeCameras,
+    spatialRelationshipClues
   };
 }
 
@@ -2576,6 +3136,7 @@ function compactRuntimeModelForBeat(model, relationships, snapshotId) {
     actionStatesTruncated: model.mixers.some((mixer) => mixer.actionTruncated),
     playingAnimations,
     playbackMode: model.playbackMode,
+    spatialState: model.spatialState,
     snapshotIds: [snapshotId],
     visibilitySource: "direct-runtime"
   };
@@ -3890,6 +4451,1641 @@ function investigationTargetsFromEvidence(evidence) {
   };
 }
 
+function matrix4Identity() {
+  return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+}
+
+function deterministicSpatialSignatureInput(value, key = "") {
+  if (["evidenceRefs", "snapshotIds", "sourceOrder", "localPath"].includes(key)) return undefined;
+  if (key === "stability" && value && typeof value === "object") {
+    return {
+      status: String(value.status || "unobserved"),
+      stableAcrossSamples: nullableBoolean(value.stableAcrossSamples)
+    };
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => deterministicSpatialSignatureInput(item))
+      .filter((item) => item !== undefined);
+  }
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).flatMap(([childKey, childValue]) => {
+    const normalized = deterministicSpatialSignatureInput(childValue, childKey);
+    return normalized === undefined ? [] : [[childKey, normalized]];
+  }));
+}
+
+function matrix4Multiply(left, right) {
+  if (!fixedNumericArray(left, 16) || !fixedNumericArray(right, 16)) return null;
+  const output = new Array(16).fill(0);
+  for (let column = 0; column < 4; column += 1) {
+    for (let row = 0; row < 4; row += 1) {
+      output[column * 4 + row] = (
+        left[0 * 4 + row] * right[column * 4 + 0]
+        + left[1 * 4 + row] * right[column * 4 + 1]
+        + left[2 * 4 + row] * right[column * 4 + 2]
+        + left[3 * 4 + row] * right[column * 4 + 3]
+      );
+    }
+  }
+  return output;
+}
+
+function matrix4Inverse(value) {
+  const matrix = fixedNumericArray(value, 16);
+  if (!matrix) return null;
+  const output = new Array(16);
+  const a00 = matrix[0], a01 = matrix[1], a02 = matrix[2], a03 = matrix[3];
+  const a10 = matrix[4], a11 = matrix[5], a12 = matrix[6], a13 = matrix[7];
+  const a20 = matrix[8], a21 = matrix[9], a22 = matrix[10], a23 = matrix[11];
+  const a30 = matrix[12], a31 = matrix[13], a32 = matrix[14], a33 = matrix[15];
+  const b00 = a00 * a11 - a01 * a10;
+  const b01 = a00 * a12 - a02 * a10;
+  const b02 = a00 * a13 - a03 * a10;
+  const b03 = a01 * a12 - a02 * a11;
+  const b04 = a01 * a13 - a03 * a11;
+  const b05 = a02 * a13 - a03 * a12;
+  const b06 = a20 * a31 - a21 * a30;
+  const b07 = a20 * a32 - a22 * a30;
+  const b08 = a20 * a33 - a23 * a30;
+  const b09 = a21 * a32 - a22 * a31;
+  const b10 = a21 * a33 - a23 * a31;
+  const b11 = a22 * a33 - a23 * a32;
+  const determinant = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) return null;
+  const inverseDeterminant = 1 / determinant;
+  output[0] = (a11 * b11 - a12 * b10 + a13 * b09) * inverseDeterminant;
+  output[1] = (a02 * b10 - a01 * b11 - a03 * b09) * inverseDeterminant;
+  output[2] = (a31 * b05 - a32 * b04 + a33 * b03) * inverseDeterminant;
+  output[3] = (a22 * b04 - a21 * b05 - a23 * b03) * inverseDeterminant;
+  output[4] = (a12 * b08 - a10 * b11 - a13 * b07) * inverseDeterminant;
+  output[5] = (a00 * b11 - a02 * b08 + a03 * b07) * inverseDeterminant;
+  output[6] = (a32 * b02 - a30 * b05 - a33 * b01) * inverseDeterminant;
+  output[7] = (a20 * b05 - a22 * b02 + a23 * b01) * inverseDeterminant;
+  output[8] = (a10 * b10 - a11 * b08 + a13 * b06) * inverseDeterminant;
+  output[9] = (a01 * b08 - a00 * b10 - a03 * b06) * inverseDeterminant;
+  output[10] = (a30 * b04 - a31 * b02 + a33 * b00) * inverseDeterminant;
+  output[11] = (a21 * b02 - a20 * b04 - a23 * b00) * inverseDeterminant;
+  output[12] = (a11 * b07 - a10 * b09 - a12 * b06) * inverseDeterminant;
+  output[13] = (a00 * b09 - a01 * b07 + a02 * b06) * inverseDeterminant;
+  output[14] = (a31 * b01 - a30 * b03 - a32 * b00) * inverseDeterminant;
+  output[15] = (a20 * b03 - a21 * b01 + a22 * b00) * inverseDeterminant;
+  return output;
+}
+
+function matrix4MaxScale(value) {
+  const matrix = fixedNumericArray(value, 16);
+  if (!matrix) return 1;
+  return Math.max(
+    Math.hypot(matrix[0], matrix[1], matrix[2]),
+    Math.hypot(matrix[4], matrix[5], matrix[6]),
+    Math.hypot(matrix[8], matrix[9], matrix[10])
+  );
+}
+
+function matrix4TransformPoint(matrixValue, pointValue) {
+  const matrix = fixedNumericArray(matrixValue, 16);
+  const point = fixedNumericArray(pointValue, 3);
+  if (!matrix || !point) return null;
+  const [x, y, z] = point;
+  const w = matrix[3] * x + matrix[7] * y + matrix[11] * z + matrix[15];
+  const divisor = Number.isFinite(w) && Math.abs(w) > 1e-12 ? w : 1;
+  return [
+    (matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12]) / divisor,
+    (matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13]) / divisor,
+    (matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14]) / divisor
+  ];
+}
+
+function sourceVector(value, fallback) {
+  if (Array.isArray(value)) {
+    const normalized = value.slice(0, 3).map(numberOrNull);
+    return normalized.length === 3 && normalized.every((item) => item !== null) ? normalized : fallback;
+  }
+  if (!value || typeof value !== "object") return fallback;
+  const normalized = ["x", "y", "z"].map((key) => numberOrNull(value[key]));
+  return normalized.every((item) => item !== null) ? normalized : fallback;
+}
+
+function sourceTransformRecord(value) {
+  if (!value || typeof value !== "object") return null;
+  const directMatrix = fixedNumericArray(value.matrix, 16);
+  if (directMatrix) {
+    return {
+      matrix: directMatrix,
+      trs: null,
+      rotationUnit: "matrix"
+    };
+  }
+  const translation = sourceVector(value.position || value.translation, [0, 0, 0]);
+  const rotationInput = sourceVector(value.rotation, [0, 0, 0]);
+  const scale = sourceVector(value.scale, [1, 1, 1]);
+  if (!translation || !rotationInput || !scale) return null;
+  const rotationUnit = rotationInput.some((item) => Math.abs(item) > Math.PI * 2 + 1e-6)
+    ? "degrees"
+    : "radians";
+  const [rx, ry, rz] = rotationUnit === "degrees"
+    ? rotationInput.map((item) => item * Math.PI / 180)
+    : rotationInput;
+  const c1 = Math.cos(rx / 2);
+  const c2 = Math.cos(ry / 2);
+  const c3 = Math.cos(rz / 2);
+  const s1 = Math.sin(rx / 2);
+  const s2 = Math.sin(ry / 2);
+  const s3 = Math.sin(rz / 2);
+  const quaternion = [
+    s1 * c2 * c3 + c1 * s2 * s3,
+    c1 * s2 * c3 - s1 * c2 * s3,
+    c1 * c2 * s3 + s1 * s2 * c3,
+    c1 * c2 * c3 - s1 * s2 * s3
+  ];
+  const [x, y, z, w] = quaternion;
+  const [sx, sy, sz] = scale;
+  const x2 = x + x;
+  const y2 = y + y;
+  const z2 = z + z;
+  const xx = x * x2;
+  const xy = x * y2;
+  const xz = x * z2;
+  const yy = y * y2;
+  const yz = y * z2;
+  const zz = z * z2;
+  const wx = w * x2;
+  const wy = w * y2;
+  const wz = w * z2;
+  return {
+    matrix: [
+      (1 - (yy + zz)) * sx,
+      (xy + wz) * sx,
+      (xz - wy) * sx,
+      0,
+      (xy - wz) * sy,
+      (1 - (xx + zz)) * sy,
+      (yz + wx) * sy,
+      0,
+      (xz + wy) * sz,
+      (yz - wx) * sz,
+      (1 - (xx + yy)) * sz,
+      0,
+      translation[0],
+      translation[1],
+      translation[2],
+      1
+    ],
+    trs: {
+      translation,
+      rotation: quaternion,
+      scale
+    },
+    sourceRotation: rotationInput,
+    rotationUnit
+  };
+}
+
+function matchingBracePairs(text) {
+  const pairs = [];
+  const stack = [];
+  let quote = "";
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (character === "\"" || character === "'" || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === "{") stack.push(index);
+    if (character === "}" && stack.length) {
+      pairs.push({ start: stack.pop(), end: index + 1 });
+    }
+  }
+  return pairs;
+}
+
+function boundedSpatialConfigObjectsFromText(text, source) {
+  const normalizedText = String(text || "");
+  if (!normalizedText || normalizedText.length > TEXT_SCAN_LIMIT_BYTES) return [];
+  const tokenOffsets = Array.from(normalizedText.matchAll(/["']models["']\s*:/gi)).map((match) => match.index);
+  if (!tokenOffsets.length || !/["']highlights["']\s*:/i.test(normalizedText)) return [];
+  const pairs = matchingBracePairs(normalizedText);
+  const results = [];
+  const seen = new Set();
+  for (const tokenOffset of tokenOffsets.slice(0, 80)) {
+    const enclosing = pairs
+      .filter((pair) => pair.start <= tokenOffset && pair.end > tokenOffset)
+      .sort((left, right) => (left.end - left.start) - (right.end - right.start));
+    for (const pair of enclosing.slice(0, 20)) {
+      if (pair.end - pair.start > 1_000_000) continue;
+      let parsed;
+      try {
+        parsed = JSON.parse(normalizedText.slice(pair.start, pair.end));
+      } catch {
+        continue;
+      }
+      if (
+        !parsed
+        || typeof parsed !== "object"
+        || !Array.isArray(parsed.models)
+        || !Array.isArray(parsed.highlights)
+      ) continue;
+      const signature = sha1Bytes(Buffer.from(JSON.stringify(canonicalObjectKeys({
+        models: parsed.models,
+        highlights: parsed.highlights
+      }))), 24);
+      if (seen.has(signature)) break;
+      seen.add(signature);
+      results.push({
+        source,
+        offset: pair.start,
+        signature,
+        config: parsed
+      });
+      break;
+    }
+  }
+  return results.slice(0, 32);
+}
+
+function boundedSpatialConfigObjectsFromProbe(probe) {
+  const sources = [];
+  for (const [index, script] of (Array.isArray(probe?.scripts) ? probe.scripts : []).entries()) {
+    if (!script?.text) continue;
+    sources.push({
+      source: script.src || `inline-script-${script.index ?? index}`,
+      text: script.text
+    });
+  }
+  for (const [index, value] of (Array.isArray(probe?.data_params) ? probe.data_params : []).entries()) {
+    if (typeof value === "string") {
+      sources.push({ source: `data-param-${index}`, text: value });
+    } else if (value && typeof value === "object") {
+      if (typeof value.text === "string") {
+        sources.push({
+          source: `${value.attribute || "data-param"}:${value.id ?? value.index ?? index}`,
+          text: value.text
+        });
+      }
+      for (const [windowIndex, window] of (Array.isArray(value.keywordWindows) ? value.keywordWindows : []).entries()) {
+        if (typeof window?.context !== "string") continue;
+        sources.push({
+          source: `${value.attribute || "data-param"}:${value.id ?? value.index ?? index}:window-${windowIndex}`,
+          text: window.context
+        });
+      }
+    }
+  }
+  const records = sources.flatMap((entry) => boundedSpatialConfigObjectsFromText(entry.text, entry.source));
+  const unique = new Map(records.map((record) => [record.signature, record]));
+  return Array.from(unique.values()).sort((left, right) => (
+    stableCompare(left.source, right.source) || left.offset - right.offset
+  ));
+}
+
+function sourceModelPath(value) {
+  return String(value?.path || value?.assetUrl || value?.url || value?.src || "").trim();
+}
+
+function resolvedAssetUrlForSourcePath(sourcePath, modelRecords) {
+  const pathKey = String(sourcePath || "").replace(/\\/g, "/").toLowerCase();
+  if (!pathKey) return "";
+  const basename = pathKey.split("/").pop();
+  const matches = (modelRecords || []).filter((model) => {
+    const candidates = [model?.assetUrl, model?.finalUrl, model?.file]
+      .map((value) => String(value || "").replace(/\\/g, "/").toLowerCase());
+    return candidates.some((value) => value === pathKey || value.endsWith(`/${pathKey}`) || value.endsWith(`/${basename}`) || value === basename);
+  });
+  return matches.length === 1 ? matches[0].assetUrl : "";
+}
+
+function sourceActiveStateIds(value) {
+  const source = value?.slideindeces
+    || value?.slideIndices
+    || value?.slides
+    || value?.activeStates
+    || value?.states;
+  const values = Array.isArray(source) ? source : source === undefined || source === null ? [] : [source];
+  return stableStringSet(values.map((item) => String(item)));
+}
+
+function loaderTransformPoliciesFromSources(probe, downloads) {
+  const sources = [
+    ...(Array.isArray(probe?.scripts) ? probe.scripts : []).map((script, index) => ({
+      source: script?.src || `inline-script-${script?.index ?? index}`,
+      text: script?.text || ""
+    })),
+    ...(Array.isArray(downloads) ? downloads : [])
+      .filter((download) => download?.assetType === "script" && download?.bytes)
+      .map((download) => ({
+        source: download.url || download.finalUrl || download.localPath || "downloaded-script",
+        text: download.bytes.toString("utf8")
+      }))
+  ];
+  const policies = [];
+  const seen = new Set();
+  for (const source of sources) {
+    const pattern = /(?:gltf\s*&&\s*gltf\.scene\s*&&\s*gltf\.scene\.children\s*\[\s*0\s*\]|gltf\.scene\.children\s*\[\s*0\s*\])[\s\S]{0,1800}?\.children\.forEach\s*\([\s\S]{0,320}?\.scale\.set\s*\(\s*1\s*,\s*1\s*,\s*1\s*\)/g;
+    for (const match of source.text.matchAll(pattern)) {
+      const contextStart = Math.max(0, match.index - 500);
+      const contextEnd = Math.min(source.text.length, match.index + match[0].length + 500);
+      const context = source.text.slice(contextStart, contextEnd);
+      const excludedPathSegments = Array.from(context.matchAll(/filename\.split\s*\(\s*["']\/["']\s*\)[\s\S]{0,100}?\[\s*0\s*\]\s*!={0,1}\s*["']([^"']+)["']/g))
+        .map((item) => item[1])
+        .filter(Boolean);
+      const policy = {
+        operation: "reset-immediate-child-scale",
+        loaderTransformTarget: "first-scene-child-children",
+        value: [1, 1, 1],
+        source: source.source,
+        evidenceRef: `loader-transform-${sha1(`${source.source}|${match.index}|${match[0]}`, 16)}`,
+        excludedPathSegments: stableStringSet(excludedPathSegments),
+        confidence: 0.94
+      };
+      const key = JSON.stringify(canonicalObjectKeys(policy));
+      if (!seen.has(key)) {
+        seen.add(key);
+        policies.push(policy);
+      }
+    }
+  }
+  return policies;
+}
+
+function loaderTransformPolicyForSourcePath(sourcePath, policies) {
+  const segments = String(sourcePath || "").replace(/\\/g, "/").split("/").filter(Boolean);
+  return (policies || []).find((policy) => (
+    !policy.excludedPathSegments.some((excluded) => segments.includes(excluded))
+  )) || null;
+}
+
+function extractedSourceSpatialCatalog(probe, modelRecords, loaderTransformPolicies = []) {
+  const configs = boundedSpatialConfigObjectsFromProbe(probe);
+  if (!configs.length) return null;
+  const catalog = {
+    schemaVersion: RUNTIME_3D_CATALOG_SCHEMA_VERSION,
+    revision: "",
+    models: [],
+    parts: [],
+    geometries: [],
+    containers: [],
+    compositions: [],
+    frames: [],
+    sources: [],
+    explicitRelationships: []
+  };
+  for (const record of configs) {
+    const models = record.config.models.flatMap((model, index) => {
+      const sourcePath = sourceModelPath(model);
+      const transform = sourceTransformRecord(model?.transform);
+      if (!sourcePath || !transform) return [];
+      return [{
+        kind: "reference",
+        sourceIndex: index,
+        sourcePath,
+        transform,
+        activeStateIds: ["*"],
+        sourceRecord: model
+      }];
+    });
+    const highlights = record.config.highlights.flatMap((model, index) => {
+      const sourcePath = sourceModelPath(model);
+      const transform = sourceTransformRecord(model?.transform);
+      const activeStateIds = sourceActiveStateIds(model);
+      if (!sourcePath || !transform || !activeStateIds.length) return [];
+      return [{
+        kind: "highlight",
+        sourceIndex: index,
+        sourcePath,
+        transform,
+        activeStateIds,
+        sourceRecord: model
+      }];
+    });
+    if (!models.length || !highlights.length) continue;
+    const sourceConfigId = `source-config-${record.signature}`;
+    const sourceId = `source-${sha1(record.source, 16)}`;
+    const compositionId = `source-composition-${record.signature}`;
+    const frameId = `source-frame-${record.signature}`;
+    const containerId = `source-container-${record.signature}`;
+    catalog.sources.push({
+      sourceId,
+      sourceConfigId,
+      source: record.source,
+      objectOffset: record.offset,
+      evidenceType: "balanced-json-source-config",
+      confidence: 0.96
+    });
+    catalog.compositions.push({
+      compositionId,
+      sourceConfigId,
+      frameId,
+      containerId,
+      activeStateIds: stableStringSet(highlights.flatMap((item) => item.activeStateIds)),
+      evidenceType: "bounded-model-highlight-config"
+    });
+    catalog.frames.push({
+      frameId,
+      sourceConfigId,
+      containerId,
+      frameKind: "bounded-source-scene-window"
+    });
+    catalog.containers.push({
+      containerId,
+      sourceConfigId,
+      frameId,
+      containerKind: "bounded-source-config"
+    });
+    const normalizedModels = [...models, ...highlights].map((entry) => {
+      const instanceId = `${sourceConfigId}:${entry.kind}:${entry.sourceIndex}`;
+      const catalogModelId = `catalog-model-${sha1(`${instanceId}|${entry.sourcePath}`, 16)}`;
+      const assetUrl = resolvedAssetUrlForSourcePath(entry.sourcePath, modelRecords);
+      const loaderTransformPolicy = loaderTransformPolicyForSourcePath(entry.sourcePath, loaderTransformPolicies);
+      return {
+        catalogModelId,
+        instanceId,
+        assetUrl,
+        sourcePath: entry.sourcePath,
+        sourceConfigId,
+        compositionId,
+        frameId,
+        sourceId,
+        containerId,
+        activeStateId: entry.kind === "highlight" && entry.activeStateIds.length === 1 ? entry.activeStateIds[0] : "",
+        activeStateIds: entry.activeStateIds,
+        sourceConfig: {
+          path: entry.sourcePath,
+          index: entry.sourceRecord?.index ?? entry.sourceIndex,
+          activeStateIds: entry.activeStateIds,
+          transform: entry.transform
+        },
+        ...(loaderTransformPolicy ? { loaderTransformPolicy } : {}),
+        localTransform: entry.transform,
+        worldTransform: entry.transform,
+        identitySource: "direct-source-config"
+      };
+    });
+    catalog.models.push(...normalizedModels);
+    const normalizedReferences = normalizedModels.filter((model) => model.activeStateIds.includes("*"));
+    const normalizedHighlights = normalizedModels.filter((model) => !model.activeStateIds.includes("*"));
+    for (const subject of normalizedHighlights) {
+      for (const reference of normalizedReferences) {
+        for (const activeStateId of subject.activeStateIds) {
+          catalog.explicitRelationships.push({
+            relationshipHintId: `source-spatial-${sha1(`${subject.instanceId}|${reference.instanceId}|${activeStateId}`, 16)}`,
+            subjectInstanceId: subject.instanceId,
+            referenceInstanceId: reference.instanceId,
+            relationshipType: "source-config-relative-placement",
+            compositionId,
+            frameId,
+            sourceId,
+            sourceConfigId,
+            containerId,
+            activeStateId,
+            confidence: 0.96,
+            source: "direct-source-config-balanced-object"
+          });
+        }
+      }
+    }
+  }
+  if (!catalog.explicitRelationships.length) return null;
+  catalog.revision = sha1Bytes(Buffer.from(JSON.stringify(canonicalObjectKeys({
+    models: catalog.models,
+    explicitRelationships: catalog.explicitRelationships
+  }))), 24);
+  return normalizeRuntime3DCatalog(catalog);
+}
+
+function mergeRuntime3DCatalogs(...catalogs) {
+  const available = catalogs.filter(Boolean).map(normalizeRuntime3DCatalog).filter(Boolean);
+  if (!available.length) return null;
+  const merged = {
+    schemaVersion: RUNTIME_3D_CATALOG_SCHEMA_VERSION,
+    revision: "",
+    models: [],
+    parts: [],
+    geometries: [],
+    containers: [],
+    compositions: [],
+    frames: [],
+    sources: [],
+    explicitRelationships: []
+  };
+  const identityKey = {
+    models: (item) => item.instanceId || item.catalogModelId,
+    parts: (item) => item.catalogPartId,
+    geometries: (item) => item.geometryCatalogId,
+    containers: (item) => item.containerId,
+    compositions: (item) => item.compositionId,
+    frames: (item) => item.frameId,
+    sources: (item) => item.sourceId,
+    explicitRelationships: (item) => item.relationshipHintId
+  };
+  for (const key of Object.keys(identityKey)) {
+    const values = available.flatMap((catalog) => catalog[key] || []);
+    const byId = new Map();
+    for (const value of values) {
+      const id = String(identityKey[key](value) || JSON.stringify(canonicalObjectKeys(value)));
+      if (!byId.has(id)) byId.set(id, value);
+    }
+    merged[key] = Array.from(byId.values()).sort((left, right) => stableCompare(
+      identityKey[key](left) || JSON.stringify(canonicalObjectKeys(left)),
+      identityKey[key](right) || JSON.stringify(canonicalObjectKeys(right))
+    ));
+  }
+  merged.revision = sha1Bytes(Buffer.from(JSON.stringify(canonicalObjectKeys(
+    available.map((catalog) => catalog.revision)
+  ))), 24);
+  return merged;
+}
+
+function catalogModelInstanceId(model) {
+  return String(model?.instanceId || model?.catalogModelId || "").trim();
+}
+
+function catalogModelAssetUrl(model) {
+  return String(model?.assetUrl || model?.finalUrl || model?.sourceConfig?.assetUrl || model?.sourceConfig?.url || "").trim();
+}
+
+function catalogModelTransform(model) {
+  const candidates = [
+    model?.worldTransform,
+    model?.localTransform,
+    model?.sourceConfig?.worldTransform,
+    model?.sourceConfig?.localTransform,
+    model?.sourceConfig?.transform,
+    model?.sourceConfig
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeRuntimeTransform(candidate);
+    if (normalized?.matrix) return normalized.matrix;
+  }
+  return null;
+}
+
+function spatialCatalogIndexes(catalog) {
+  const models = Array.isArray(catalog?.models) ? catalog.models : [];
+  const parts = Array.isArray(catalog?.parts) ? catalog.parts : [];
+  const geometries = Array.isArray(catalog?.geometries) ? catalog.geometries : [];
+  return {
+    modelByInstanceId: new Map(models.flatMap((model) => {
+      const id = catalogModelInstanceId(model);
+      return id ? [[id, model]] : [];
+    })),
+    partById: new Map(parts.flatMap((part) => {
+      const id = String(part?.catalogPartId || "").trim();
+      return id ? [[id, part]] : [];
+    })),
+    geometryById: new Map(geometries.flatMap((geometry) => {
+      const id = String(geometry?.geometryCatalogId || "").trim();
+      return id ? [[id, geometry]] : [];
+    }))
+  };
+}
+
+function radiusForBounds(value) {
+  const bounds = normalizeRuntimeBounds(value);
+  if (Number.isFinite(bounds?.boundingSphere?.radius)) return bounds.boundingSphere.radius;
+  if (!bounds?.aabb) return null;
+  const size = bounds.aabb.min.map((item, index) => bounds.aabb.max[index] - item);
+  return Math.sqrt(size.reduce((sum, item) => sum + item * item, 0)) / 2;
+}
+
+function sizeForBounds(value) {
+  const bounds = normalizeRuntimeBounds(value);
+  return bounds?.aabb
+    ? bounds.aabb.min.map((item, index) => bounds.aabb.max[index] - item)
+    : null;
+}
+
+function sourcePositionBoundsProfile(summary, transform, loaderTransformPolicy) {
+  const resetsImmediateChildScale = loaderTransformPolicy?.operation === "reset-immediate-child-scale"
+    && loaderTransformPolicy?.loaderTransformTarget === "first-scene-child-children";
+  const bounds = resetsImmediateChildScale
+    ? summary?.scenePositionBoundsWithImmediateChildScaleReset
+    : summary?.scenePositionBounds
+      || (summary?.meshNodeTransformsIdentity ? summary?.positionBounds : null);
+  const intrinsicTransformPolicy = resetsImmediateChildScale
+    ? "scene-node-transforms-with-reset-immediate-child-scale"
+    : summary?.scenePositionBounds
+      ? "scene-node-transforms"
+      : summary?.meshNodeTransformsIdentity
+        ? "raw-position-bounds-with-identity-mesh-node-transforms"
+        : "";
+  const intrinsicCenter = fixedNumericArray(bounds?.center, 3);
+  const intrinsicSize = fixedNumericArray(bounds?.size, 3);
+  const intrinsicRadius = normalizedNumber(
+    bounds?.surfaceRadiusEstimate,
+    normalizedNumber(bounds?.boundingSphere?.radius)
+  );
+  if (!intrinsicCenter || !intrinsicSize || !Number.isFinite(intrinsicRadius)) return null;
+  const positiveExtents = intrinsicSize.filter((value) => value > 1e-9);
+  const isotropic = positiveExtents.length === 3
+    && Math.max(...positiveExtents) / Math.min(...positiveExtents) <= 1.25;
+  const centeredTolerance = Math.max(intrinsicRadius * 0.12, 1e-6);
+  const transformedCenter = matrix4TransformPoint(transform || matrix4Identity(), intrinsicCenter);
+  const transformedRadius = intrinsicRadius * matrix4MaxScale(transform || matrix4Identity());
+  const centered = Math.hypot(...intrinsicCenter) <= centeredTolerance
+    || (
+      fixedNumericArray(transformedCenter, 3)
+      && Math.hypot(...transformedCenter) <= Math.max(transformedRadius * 0.12, 1e-6)
+    );
+  const primitiveCount = Number(summary?.primitiveBounds?.length || 0);
+  const meshCount = Number(summary?.meshCount || 0);
+  return {
+    intrinsicCenter,
+    intrinsicSize,
+    intrinsicRadius,
+    intrinsicBounds: bounds,
+    intrinsicTransformPolicy,
+    center: transformedCenter,
+    radius: transformedRadius,
+    radiusEstimator: bounds.surfaceRadiusEstimator || "glb-position-bounds",
+    plausibleReferenceSurface: isotropic
+      && centered
+      && meshCount > 0
+      && meshCount <= 4
+      && primitiveCount > 0
+      && primitiveCount <= 8,
+    topology: {
+      meshCount,
+      primitiveCount,
+      nodeCount: Number(summary?.nodeCount || 0),
+      isotropic,
+      centered
+    }
+  };
+}
+
+function modelSummaryForAsset(modelRecords, assetUrl) {
+  const key = normalizeAssetKey(assetUrl);
+  if (!key) return null;
+  return (modelRecords || []).find((model) => normalizeAssetKey(model?.assetUrl) === key) || null;
+}
+
+function latestSpatialStateForInstance(runtimeSnapshots, instanceId) {
+  const states = [];
+  for (const snapshot of runtimeSnapshots || []) {
+    for (const model of snapshot?.runtime3D?.models || []) {
+      if (model?.spatialState?.instanceId === instanceId) states.push(model.spatialState);
+    }
+  }
+  return states.at(-1) || null;
+}
+
+function geometryProfileForSpatialInstance({
+  instanceId,
+  assetUrl,
+  runtimeSnapshots,
+  modelRecords,
+  catalog,
+  catalogIndexes
+}) {
+  const catalogModel = catalogIndexes.modelByInstanceId.get(instanceId) || null;
+  const runtimeState = latestSpatialStateForInstance(runtimeSnapshots, instanceId);
+  const summary = modelSummaryForAsset(modelRecords, assetUrl || catalogModelAssetUrl(catalogModel));
+  const transform = runtimeState?.worldTransform?.matrix
+    || runtimeState?.localTransform?.matrix
+    || catalogModelTransform(catalogModel);
+  const sourceBounds = sourcePositionBoundsProfile(summary, transform, catalogModel?.loaderTransformPolicy);
+  const radii = [
+    ...(catalogModel?.sourceConfigId && sourceBounds
+      ? [{ value: sourceBounds.radius, source: "glb-position-accessor-bounds+source-matrix" }]
+      : []),
+    { value: radiusForBounds(runtimeState?.worldBounds), source: "runtime-world-bounds" },
+    { value: radiusForBounds(runtimeState?.rootLocalBounds), source: "runtime-root-local-bounds" },
+    { value: radiusForBounds(catalogModel?.worldBounds), source: "catalog-world-bounds" },
+    { value: radiusForBounds(catalogModel?.rootLocalBounds), source: "catalog-root-local-bounds" },
+    { value: normalizedNumber(summary?.positionBounds?.surfaceRadiusEstimate ?? summary?.positionBounds?.boundingSphere?.radius), source: "glb-position-accessor-bounds" }
+  ].filter((item) => Number.isFinite(item.value) && item.value >= 0);
+  const sizeCandidates = [
+    sizeForBounds(runtimeState?.worldBounds),
+    sizeForBounds(runtimeState?.rootLocalBounds),
+    sizeForBounds(catalogModel?.worldBounds),
+    sizeForBounds(catalogModel?.rootLocalBounds),
+    fixedNumericArray(summary?.positionBounds?.size, 3)
+  ].filter(Boolean);
+  const partIds = [
+    ...(Array.isArray(catalogModel?.partIds) ? catalogModel.partIds : []),
+    ...(Array.isArray(catalogModel?.catalogPartIds) ? catalogModel.catalogPartIds : [])
+  ];
+  const geometryIds = new Set(
+    partIds
+      .map((partId) => catalogIndexes.partById.get(String(partId || ""))?.geometryCatalogId)
+      .filter(Boolean)
+  );
+  for (const part of catalog?.parts || []) {
+    if (part?.catalogModelId === catalogModel?.catalogModelId && part?.geometryCatalogId) {
+      geometryIds.add(part.geometryCatalogId);
+    }
+  }
+  const geometries = Array.from(geometryIds)
+    .map((geometryId) => catalogIndexes.geometryById.get(geometryId))
+    .filter(Boolean);
+  const fingerprints = stableStringSet(geometries.map((geometry) => geometry?.fingerprint).filter(Boolean));
+  const geometryRadius = geometries
+    .map((geometry) => radiusForBounds({
+      aabb: geometry.localAabb,
+      center: geometry.localCenter,
+      boundingSphere: geometry.localBoundingSphere
+    }))
+    .find(Number.isFinite);
+  if (Number.isFinite(geometryRadius)) radii.push({ value: geometryRadius, source: "catalog-geometry-bounds" });
+  const preferred = radii[0] || null;
+  const scaledRadius = preferred && preferred.source.includes("local")
+    ? preferred.value * matrix4MaxScale(transform)
+    : preferred?.value ?? null;
+  const runtimeCenter = normalizeRuntimeBounds(runtimeState?.worldBounds)?.center
+    || normalizeRuntimeBounds(catalogModel?.worldBounds)?.center;
+  return {
+    instanceId,
+    assetUrl: assetUrl || catalogModelAssetUrl(catalogModel),
+    radius: Number.isFinite(scaledRadius) ? scaledRadius : null,
+    radiusSource: preferred?.source || "",
+    center: runtimeCenter || sourceBounds?.center || null,
+    size: sizeCandidates[0] || null,
+    intrinsicBounds: sourceBounds?.intrinsicBounds || summary?.positionBounds || null,
+    intrinsicTransformPolicy: sourceBounds?.intrinsicTransformPolicy || "",
+    intrinsicCenter: sourceBounds?.intrinsicCenter || null,
+    transform,
+    plausibleReferenceSurface: Boolean(sourceBounds?.plausibleReferenceSurface),
+    topology: sourceBounds?.topology || {
+      meshCount: Number(summary?.meshCount || 0),
+      primitiveCount: Number(summary?.primitiveBounds?.length || 0),
+      nodeCount: Number(summary?.nodeCount || 0),
+      isotropic: false,
+      centered: false
+    },
+    radiusEstimator: sourceBounds?.radiusEstimator || preferred?.source || "",
+    geometryFingerprints: fingerprints,
+    geometryCatalogIds: Array.from(geometryIds).sort(stableCompare),
+    glbPositionBoundsAvailable: Boolean(summary?.positionBounds),
+    catalogModelId: String(catalogModel?.catalogModelId || ""),
+    sourceConfigId: String(catalogModel?.sourceConfigId || ""),
+    activeStateId: String(catalogModel?.activeStateId || catalogModel?.sourceConfig?.activeStateId || ""),
+    loaderTransformPolicy: catalogModel?.loaderTransformPolicy
+      ? canonicalObjectKeys(catalogModel.loaderTransformPolicy)
+      : null
+  };
+}
+
+function spatialRelationshipKey(value) {
+  return [
+    value?.subjectInstanceId || "",
+    value?.referenceInstanceId || "",
+    value?.compositionId || "",
+    value?.frameId || "",
+    value?.sourceConfigId || "",
+    value?.containerId || ""
+  ].join("|");
+}
+
+function catalogRelationshipIndex(catalog) {
+  return new Map((catalog?.explicitRelationships || []).flatMap((relationship) => {
+    const key = spatialRelationshipKey(relationship);
+    return relationship?.subjectInstanceId && relationship?.referenceInstanceId ? [[key, relationship]] : [];
+  }));
+}
+
+function catalogRelationshipForClue(clue, catalog) {
+  const relationships = Array.isArray(catalog?.explicitRelationships) ? catalog.explicitRelationships : [];
+  return relationships.find((relationship) => (
+    relationship?.subjectInstanceId === clue.subjectInstanceId
+    && relationship?.referenceInstanceId === clue.referenceInstanceId
+    && (!clue.compositionId || !relationship?.compositionId || clue.compositionId === relationship.compositionId)
+    && (!clue.frameId || !relationship?.frameId || clue.frameId === relationship.frameId)
+  )) || null;
+}
+
+function evidenceBasisForCatalogRelationship(relationship, subjectModel, referenceModel) {
+  const basis = [];
+  const source = String(relationship?.source || "").toLowerCase();
+  if (/bridge/.test(source)) basis.push("explicit-bridge-relationship");
+  if (relationship?.compositionId) basis.push("shared-explicit-composition");
+  if (relationship?.frameId) basis.push("shared-explicit-frame");
+  if (relationship?.sourceId) basis.push("shared-explicit-source");
+  if (
+    subjectModel?.sourceConfigId
+    && referenceModel?.sourceConfigId
+    && subjectModel.sourceConfigId === referenceModel.sourceConfigId
+  ) basis.push("shared-explicit-source-config");
+  if (
+    subjectModel?.containerId
+    && referenceModel?.containerId
+    && subjectModel.containerId === referenceModel.containerId
+  ) basis.push("shared-explicit-container");
+  if (relationship?.activeStateId) basis.push("shared-explicit-active-state");
+  const subjectActiveState = subjectModel?.activeStateId || subjectModel?.sourceConfig?.activeStateId;
+  const referenceActiveState = referenceModel?.activeStateId || referenceModel?.sourceConfig?.activeStateId;
+  if (subjectActiveState && referenceActiveState && subjectActiveState === referenceActiveState) {
+    basis.push("shared-explicit-active-state");
+  }
+  return stableStringSet(basis);
+}
+
+function synthesizeCatalogRelationshipClues(catalog) {
+  const indexes = spatialCatalogIndexes(catalog);
+  return (catalog?.explicitRelationships || []).flatMap((relationship, index) => {
+    const subjectModel = indexes.modelByInstanceId.get(String(relationship?.subjectInstanceId || ""));
+    const referenceModel = indexes.modelByInstanceId.get(String(relationship?.referenceInstanceId || ""));
+    const subjectMatrix = catalogModelTransform(subjectModel);
+    const referenceMatrix = catalogModelTransform(referenceModel);
+    const inverseReference = matrix4Inverse(referenceMatrix);
+    const relativeMatrix = inverseReference && subjectMatrix ? matrix4Multiply(inverseReference, subjectMatrix) : null;
+    const evidenceBasis = evidenceBasisForCatalogRelationship(relationship, subjectModel, referenceModel);
+    if (!relativeMatrix || !evidenceBasis.some((basis) => EXPLICIT_SPATIAL_BASIS.has(basis))) return [];
+    return [normalizeRuntimeSpatialRelationshipClue({
+      ...relationship,
+      relationshipHintId: relationship.relationshipHintId || `catalog-spatial-relationship-${index + 1}`,
+      candidateOnly: true,
+      subjectAssetUrl: catalogModelAssetUrl(subjectModel),
+      referenceAssetUrl: catalogModelAssetUrl(referenceModel),
+      subjectIdentitySource: subjectModel?.sourceConfigId ? "direct-source-config" : "unknown",
+      referenceIdentitySource: referenceModel?.sourceConfigId ? "direct-source-config" : "unknown",
+      sourceConfigId: subjectModel?.sourceConfigId === referenceModel?.sourceConfigId ? subjectModel?.sourceConfigId : "",
+      containerId: subjectModel?.containerId === referenceModel?.containerId ? subjectModel?.containerId : "",
+      activeStateId: relationship.activeStateId || (
+        (subjectModel?.activeStateId || subjectModel?.sourceConfig?.activeStateId)
+          === (referenceModel?.activeStateId || referenceModel?.sourceConfig?.activeStateId)
+          ? (subjectModel?.activeStateId || subjectModel?.sourceConfig?.activeStateId || "")
+          : ""
+      ),
+      evidenceBasis,
+      transformEvidence: "numeric-source-config-matrix",
+      relativeMatrix,
+      stability: {
+        sampleCount: 0,
+        stableSampleCount: 0,
+        status: "unobserved",
+        stableAcrossSamples: null,
+        maxObservedDelta: null
+      },
+      evidenceRefs: [relationship.relationshipHintId || `catalog-spatial-relationship-${index + 1}`]
+    }, index)];
+  });
+}
+
+function spatialCluesForEvidence(runtimeSnapshots, catalog) {
+  const snapshotClues = (runtimeSnapshots || []).flatMap((snapshot) => (
+    (snapshot?.runtime3D?.spatialRelationshipClues || []).map((clue) => ({
+      ...clue,
+      snapshotIds: [snapshot.id]
+    }))
+  ));
+  const catalogClues = synthesizeCatalogRelationshipClues(catalog).filter(Boolean);
+  const grouped = new Map();
+  for (const rawClue of [...snapshotClues, ...catalogClues]) {
+    const relationship = catalogRelationshipForClue(rawClue, catalog);
+    const clue = normalizeRuntimeSpatialRelationshipClue({
+      ...rawClue,
+      relationshipType: relationship?.relationshipType || rawClue.relationshipType,
+      compositionId: relationship?.compositionId || rawClue.compositionId,
+      frameId: relationship?.frameId || rawClue.frameId,
+      sourceId: relationship?.sourceId || rawClue.sourceId,
+      evidenceBasis: [
+        ...(rawClue.evidenceBasis || []),
+        ...(relationship ? evidenceBasisForCatalogRelationship(
+          relationship,
+          spatialCatalogIndexes(catalog).modelByInstanceId.get(rawClue.subjectInstanceId),
+          spatialCatalogIndexes(catalog).modelByInstanceId.get(rawClue.referenceInstanceId)
+        ) : [])
+      ],
+      evidenceRefs: [...(rawClue.evidenceRefs || []), relationship?.relationshipHintId].filter(Boolean)
+    }, grouped.size);
+    if (!clue?.subjectInstanceId || !clue?.referenceInstanceId || !clue.relativeMatrix) continue;
+    if (!clue.evidenceBasis.some((basis) => EXPLICIT_SPATIAL_BASIS.has(basis) || basis === "shared-runtime-container-with-direct-asset-identity")) continue;
+    const key = spatialRelationshipKey(clue);
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, { ...clue, snapshotIds: stableStringSet(rawClue.snapshotIds) });
+      continue;
+    }
+    const existingSamples = Number(existing.stability?.sampleCount || 0);
+    const nextSamples = Number(clue.stability?.sampleCount || 0);
+    const preferred = nextSamples > existingSamples ? clue : existing;
+    grouped.set(key, {
+      ...preferred,
+      evidenceBasis: stableStringSet([...(existing.evidenceBasis || []), ...(clue.evidenceBasis || [])]),
+      evidenceRefs: stableStringSet([...(existing.evidenceRefs || []), ...(clue.evidenceRefs || [])]),
+      snapshotIds: stableStringSet([...(existing.snapshotIds || []), ...(rawClue.snapshotIds || [])])
+    });
+  }
+  return semanticSort(Array.from(grouped.values()));
+}
+
+function similarGeometrySizes(left, right) {
+  if (!fixedNumericArray(left, 3) || !fixedNumericArray(right, 3)) return false;
+  return left.every((value, index) => {
+    const denominator = Math.max(Math.abs(value), Math.abs(right[index]), 1e-9);
+    return Math.abs(value - right[index]) / denominator <= 0.08;
+  });
+}
+
+function geometryCorroborationForSpatialClue(clue, profiles) {
+  const subject = profiles.subject;
+  const reference = profiles.reference;
+  const referenceRadius = Number.isFinite(clue.referenceRadius) && clue.referenceRadius > 0
+    ? clue.referenceRadius
+    : reference.radius;
+  const centerDistance = fixedNumericArray(subject.center, 3) && fixedNumericArray(reference.center, 3)
+    ? Math.hypot(...subject.center.map((value, index) => value - reference.center[index]))
+    : null;
+  const radialDistance = Number.isFinite(clue.radialDistance)
+    ? clue.radialDistance
+    : Number.isFinite(centerDistance)
+      ? centerDistance
+    : Number.isFinite(clue.radialDistanceRatio) && Number.isFinite(referenceRadius)
+      ? clue.radialDistanceRatio * referenceRadius
+      : null;
+  const radialDistanceRatio = Number.isFinite(clue.radialDistanceRatio)
+    ? clue.radialDistanceRatio
+    : Number.isFinite(radialDistance) && Number.isFinite(referenceRadius) && referenceRadius > 0
+      ? radialDistance / referenceRadius
+      : null;
+  const signedSurfaceOffset = Number.isFinite(clue.signedSurfaceOffset)
+    ? clue.signedSurfaceOffset
+    : Number.isFinite(radialDistance) && Number.isFinite(referenceRadius)
+      ? radialDistance - referenceRadius
+      : null;
+  const subjectToReferenceRadiusRatio = (
+    Number.isFinite(subject.radius)
+    && Number.isFinite(referenceRadius)
+    && referenceRadius > 0
+  ) ? subject.radius / referenceRadius : null;
+  const surfaceTolerance = Number.isFinite(referenceRadius)
+    ? Math.max(referenceRadius * 0.25, Number.isFinite(subject.radius) ? subject.radius * 3 : 0)
+    : null;
+  const nearReferenceSurface = Number.isFinite(radialDistanceRatio)
+    && radialDistanceRatio >= 0.7
+    && radialDistanceRatio <= 1.3
+    && Number.isFinite(signedSurfaceOffset)
+    && Number.isFinite(surfaceTolerance)
+    && Math.abs(signedSurfaceOffset) <= surfaceTolerance;
+  const markerScale = Number.isFinite(subjectToReferenceRadiusRatio)
+    && subjectToReferenceRadiusRatio > 0
+    && subjectToReferenceRadiusRatio <= 0.18;
+  if (nearReferenceSurface && markerScale && reference.plausibleReferenceSurface) {
+    return {
+      accepted: true,
+      relationType: "surface-marker-placement",
+      reason: "A bounded smaller subject is placed near the reference model's geometric surface.",
+      subjectRadius: subject.radius,
+      referenceRadius,
+      subjectToReferenceRadiusRatio,
+      radialDistance,
+      radialDistanceRatio,
+      signedSurfaceOffset,
+      subjectCenter: subject.center,
+      referenceCenter: reference.center,
+      referenceSurfacePlausible: true,
+      referenceTopology: reference.topology,
+      referenceRadiusEstimator: reference.radiusEstimator,
+      subjectGeometrySource: subject.radiusSource,
+      referenceGeometrySource: Number.isFinite(clue.referenceRadius) ? "collector-reference-radius" : reference.radiusSource
+    };
+  }
+
+  const relationshipType = String(clue.relationshipType || "").toLowerCase();
+  const fingerprintOverlap = subject.geometryFingerprints.some((fingerprint) => reference.geometryFingerprints.includes(fingerprint));
+  const counterpartType = /(counterpart|active|inactive|variant|state-pair|swap-pair)/.test(relationshipType);
+  const counterpartGeometry = fingerprintOverlap || similarGeometrySizes(subject.size, reference.size);
+  if (counterpartType && counterpartGeometry) {
+    return {
+      accepted: true,
+      relationType: "state-geometry-counterpart",
+      reason: "The explicit state/counterpart relation is corroborated by matching geometry.",
+      matchingGeometryFingerprint: fingerprintOverlap,
+      matchingGeometrySize: similarGeometrySizes(subject.size, reference.size),
+      subjectGeometrySource: subject.radiusSource,
+      referenceGeometrySource: reference.radiusSource
+    };
+  }
+  return {
+    accepted: false,
+    relationType: "unresolved-relative-placement",
+    reason: "Geometry did not establish a bounded surface-marker or state-counterpart relation.",
+    subjectRadius: subject.radius,
+    referenceRadius,
+    subjectToReferenceRadiusRatio,
+    radialDistance,
+    radialDistanceRatio,
+    signedSurfaceOffset,
+    subjectCenter: subject.center,
+    referenceCenter: reference.center,
+    referenceSurfacePlausible: reference.plausibleReferenceSurface,
+    referenceTopology: reference.topology,
+    referenceRadiusEstimator: reference.radiusEstimator,
+    subjectGeometrySource: subject.radiusSource,
+    referenceGeometrySource: reference.radiusSource
+  };
+}
+
+function spatialCandidateTransformRef(clue) {
+  const transform = {
+    coordinateSpace: "reference-instance-local",
+    relativeToInstanceId: clue.referenceInstanceId,
+    matrix: clue.relativeMatrix,
+    source: clue.transformEvidence || "numeric-collector-matrix"
+  };
+  return {
+    ...transform,
+    signature: sha1Bytes(Buffer.from(JSON.stringify(canonicalObjectKeys(transform))), 24)
+  };
+}
+
+function spatialCandidateSpecificityScore(candidate) {
+  const geometry = candidate?.geometryCorroboration || {};
+  if (candidate?.relationshipType === "surface-marker-placement") {
+    return Math.abs(Number(geometry.radialDistanceRatio || 0) - 1)
+      + Number(geometry.subjectToReferenceRadiusRatio || 0)
+      + (geometry.referenceSurfacePlausible ? 0 : 1);
+  }
+  if (candidate?.relationshipType === "state-geometry-counterpart") {
+    return geometry.matchingGeometryFingerprint ? 0.15 : 0.3;
+  }
+  return 10;
+}
+
+function resolveSpatialReferenceAmbiguity(candidates) {
+  const groups = new Map();
+  for (const candidate of candidates) {
+    if (!candidate.accepted) continue;
+    if (candidate?.acceptance?.sourceCoordinateFrame) continue;
+    const key = [
+      candidate.subject.instanceId,
+      candidate.sourceConfigId,
+      candidate.activeStateId,
+      candidate.compositionKey
+    ].join("|");
+    const group = groups.get(key) || [];
+    group.push(candidate);
+    groups.set(key, group);
+  }
+  const decisionById = new Map();
+  for (const group of groups.values()) {
+    if (group.length <= 1) continue;
+    const ranked = [...group].sort((left, right) => (
+      spatialCandidateSpecificityScore(left) - spatialCandidateSpecificityScore(right)
+      || stableCompare(left.reference.instanceId, right.reference.instanceId)
+    ));
+    const bestScore = spatialCandidateSpecificityScore(ranked[0]);
+    const secondScore = spatialCandidateSpecificityScore(ranked[1]);
+    if (secondScore - bestScore <= 0.08) {
+      for (const candidate of ranked) decisionById.set(candidate.id, "ambiguous");
+    } else {
+      for (const candidate of ranked.slice(1)) decisionById.set(candidate.id, "less-specific");
+    }
+  }
+  return candidates.map((candidate) => {
+    const decision = decisionById.get(candidate.id);
+    if (!decision) return candidate;
+    const reason = decision === "ambiguous"
+      ? "Multiple reference candidates have near-equal specific geometric support; no reference is promoted automatically."
+      : "A different reference candidate has unambiguously more specific geometric support for this subject.";
+    const revised = {
+      ...candidate,
+      accepted: false,
+      placementPolicy: "independent",
+      acceptance: {
+        ...candidate.acceptance,
+        accepted: false,
+        ambiguousReference: decision === "ambiguous",
+        reason
+      }
+    };
+    const { signature: _signature, ...signatureInput } = revised;
+    return {
+      ...revised,
+      signature: sha1Bytes(Buffer.from(JSON.stringify(canonicalObjectKeys(
+        deterministicSpatialSignatureInput(signatureInput)
+      ))), 24)
+    };
+  });
+}
+
+function boundedSourceConfigurationProfiles({
+  runtimeSnapshots,
+  modelRecords,
+  catalog,
+  catalogIndexes
+}) {
+  const profilesBySourceConfigId = new Map();
+  const modelsBySourceConfigId = new Map();
+  for (const model of catalog?.models || []) {
+    const sourceConfigId = String(model?.sourceConfigId || "").trim();
+    if (!sourceConfigId) continue;
+    const models = modelsBySourceConfigId.get(sourceConfigId) || [];
+    models.push(model);
+    modelsBySourceConfigId.set(sourceConfigId, models);
+  }
+  for (const [sourceConfigId, models] of modelsBySourceConfigId) {
+    const matchingComposition = (catalog?.compositions || []).find((composition) => (
+      composition?.sourceConfigId === sourceConfigId
+      && composition?.compositionId
+      && composition?.frameId
+      && composition?.containerId
+    ));
+    const persistent = models.filter((model) => (model?.activeStateIds || []).includes("*"));
+    const stateSpecific = models.filter((model) => (
+      Array.isArray(model?.activeStateIds)
+      && model.activeStateIds.length
+      && !model.activeStateIds.includes("*")
+    ));
+    if (!matchingComposition || !persistent.length || !stateSpecific.length) continue;
+    const profiles = models.map((model) => geometryProfileForSpatialInstance({
+      instanceId: catalogModelInstanceId(model),
+      assetUrl: catalogModelAssetUrl(model),
+      runtimeSnapshots,
+      modelRecords,
+      catalog,
+      catalogIndexes
+    }));
+    const safe = models.every((model, index) => (
+      catalogModelInstanceId(model)
+      && catalogModelAssetUrl(model)
+      && DIRECT_SPATIAL_IDENTITY_SOURCES.has(String(model?.identitySource || ""))
+      && fixedNumericArray(catalogModelTransform(model), 16)
+      && matrix4Inverse(catalogModelTransform(model))
+      && profiles[index]?.intrinsicBounds
+      && profiles[index]?.intrinsicTransformPolicy
+    ));
+    if (!safe) continue;
+    profilesBySourceConfigId.set(sourceConfigId, {
+      composition: matchingComposition,
+      models: [...models].sort((left, right) => (
+        Number(left?.sourceConfig?.index ?? Number.MAX_SAFE_INTEGER)
+          - Number(right?.sourceConfig?.index ?? Number.MAX_SAFE_INTEGER)
+        || stableCompare(catalogModelInstanceId(left), catalogModelInstanceId(right))
+      )),
+      profiles,
+      persistentInstanceIds: new Set(persistent.map(catalogModelInstanceId)),
+      stateSpecificInstanceIds: new Set(stateSpecific.map(catalogModelInstanceId))
+    });
+  }
+  return profilesBySourceConfigId;
+}
+
+function sourceSpatialMemberForCatalogModel({
+  catalogModel,
+  anchorInstanceId,
+  anchorMatrix,
+  coordinateSpace = "reference-instance-local",
+  role,
+  relationType = "",
+  transformRef = null,
+  runtimeSnapshots,
+  modelRecords,
+  catalog,
+  catalogIndexes
+}) {
+  const instanceId = catalogModelInstanceId(catalogModel);
+  const worldMatrix = catalogModelTransform(catalogModel);
+  const sourceConfigurationFrame = coordinateSpace === "source-config-local";
+  const inverseAnchor = sourceConfigurationFrame ? null : matrix4Inverse(anchorMatrix);
+  const resolvedLocalMatrix = sourceConfigurationFrame
+    ? worldMatrix
+    : instanceId === anchorInstanceId
+      ? matrix4Identity()
+      : inverseAnchor && worldMatrix
+        ? matrix4Multiply(inverseAnchor, worldMatrix)
+        : transformRef?.matrix || null;
+  if (!resolvedLocalMatrix) return null;
+  const assetUrl = catalogModelAssetUrl(catalogModel);
+  const geometry = geometryProfileForSpatialInstance({
+    instanceId,
+    assetUrl,
+    runtimeSnapshots,
+    modelRecords,
+    catalog,
+    catalogIndexes
+  });
+  const source = sourceConfigurationFrame
+    ? "numeric-source-config-matrix"
+    : instanceId === anchorInstanceId
+      ? "composition-anchor-identity"
+      : transformRef?.source || "numeric-source-config-matrix";
+  const transformCore = sourceConfigurationFrame
+    ? {
+      coordinateSpace: "source-config-local",
+      sourceConfigId: String(catalogModel?.sourceConfigId || ""),
+      matrix: resolvedLocalMatrix,
+      source
+    }
+    : {
+      coordinateSpace: "reference-instance-local",
+      relativeToInstanceId: anchorInstanceId,
+      matrix: resolvedLocalMatrix,
+      source
+    };
+  const resolvedTransformRef = sourceConfigurationFrame
+    ? {
+      ...transformCore,
+      signature: sha1Bytes(Buffer.from(JSON.stringify(canonicalObjectKeys(transformCore))), 24)
+    }
+    : transformRef || {
+      ...transformCore,
+      signature: sha1Bytes(Buffer.from(JSON.stringify(canonicalObjectKeys(transformCore))), 24)
+    };
+  const loaderTransformPolicy = catalogModel?.loaderTransformPolicy?.operation === "reset-immediate-child-scale"
+    ? "reset-immediate-child-scale"
+    : "";
+  const loaderTransformTarget = loaderTransformPolicy
+    ? String(
+      catalogModel?.loaderTransformPolicy?.loaderTransformTarget
+      || "first-scene-child-children"
+    )
+    : "";
+  return {
+    instanceId,
+    catalogModelId: String(catalogModel?.catalogModelId || geometry.catalogModelId || ""),
+    assetUrl,
+    assetFile: modelBasename(assetUrl || catalogModel?.sourcePath),
+    sourcePath: String(catalogModel?.sourcePath || catalogModel?.sourceConfig?.path || ""),
+    role,
+    ...(relationType ? { relationType } : {}),
+    persistent: (catalogModel?.activeStateIds || []).includes("*"),
+    sourceActiveStateIds: stableStringSet(catalogModel?.activeStateIds || []),
+    resolvedLocalMatrix,
+    transformRef: resolvedTransformRef,
+    intrinsicBounds: geometry.intrinsicBounds,
+    intrinsicTransformPolicy: geometry.intrinsicTransformPolicy,
+    ...(loaderTransformPolicy ? {
+      loaderTransformPolicy,
+    loaderTransformTarget,
+    loaderTransformEvidence: canonicalObjectKeys(catalogModel.loaderTransformPolicy)
+  } : {})
+  };
+}
+
+function sourceSpatialCompositionBounds(members) {
+  const transformed = (members || []).flatMap((member) => {
+    const bounds = transformAabb(member?.intrinsicBounds, member?.resolvedLocalMatrix);
+    return bounds ? [bounds] : [];
+  });
+  const bounds = unionAabbs(transformed);
+  return bounds ? { min: bounds.min, max: bounds.max } : null;
+}
+
+function spatialCompositionEvidence({
+  runtimeSnapshots,
+  modelRecords,
+  catalog
+}) {
+  const normalizedCatalog = normalizeRuntime3DCatalog(catalog);
+  if (!normalizedCatalog) {
+    return {
+      spatialCompositionCandidates: [],
+      sourceSpatialCompositions: [],
+      spatialCompositionSignature: sha1Bytes(Buffer.from("[]"), 24)
+    };
+  }
+  const indexes = spatialCatalogIndexes(normalizedCatalog);
+  const boundedSourceConfigurations = boundedSourceConfigurationProfiles({
+    runtimeSnapshots,
+    modelRecords,
+    catalog: normalizedCatalog,
+    catalogIndexes: indexes
+  });
+  const clues = spatialCluesForEvidence(runtimeSnapshots, normalizedCatalog);
+  const initialCandidates = clues.map((clue, index) => {
+    const subjectProfile = geometryProfileForSpatialInstance({
+      instanceId: clue.subjectInstanceId,
+      assetUrl: clue.subjectAssetUrl,
+      runtimeSnapshots,
+      modelRecords,
+      catalog: normalizedCatalog,
+      catalogIndexes: indexes
+    });
+    const referenceProfile = geometryProfileForSpatialInstance({
+      instanceId: clue.referenceInstanceId,
+      assetUrl: clue.referenceAssetUrl,
+      runtimeSnapshots,
+      modelRecords,
+      catalog: normalizedCatalog,
+      catalogIndexes: indexes
+    });
+    const geometryCorroboration = geometryCorroborationForSpatialClue(clue, {
+      subject: subjectProfile,
+      reference: referenceProfile
+    });
+    const basis = new Set(clue.evidenceBasis || []);
+    const hasExplicitBasis = [...basis].some((item) => EXPLICIT_SPATIAL_BASIS.has(item));
+    const hasBoundedSourceBasis = [...basis].some((item) => BOUNDED_SOURCE_SPATIAL_BASIS.has(item));
+    const sharedSourceConfig = basis.has("shared-explicit-source-config");
+    const sharedActiveState = basis.has("shared-explicit-active-state") && Boolean(clue.activeStateId || subjectProfile.activeStateId);
+    const sourceGeometryTransformSafe = Boolean(
+      subjectProfile.intrinsicTransformPolicy
+      && referenceProfile.intrinsicTransformPolicy
+    );
+    const sourceConfigAcceptance = hasBoundedSourceBasis
+      && sharedSourceConfig
+      && sharedActiveState
+      && sourceGeometryTransformSafe
+      && clue.transformEvidence.includes("matrix");
+    const directIdentity = (
+      DIRECT_SPATIAL_IDENTITY_SOURCES.has(clue.subjectIdentitySource)
+      && DIRECT_SPATIAL_IDENTITY_SOURCES.has(clue.referenceIdentitySource)
+    ) || basis.has("shared-runtime-container-with-direct-asset-identity");
+    const sourceCoordinateFrame = sourceConfigAcceptance
+      && directIdentity
+      && boundedSourceConfigurations.has(clue.sourceConfigId);
+    const stableRuntime = clue.stability?.status === "stable"
+      && clue.stability?.stableAcrossSamples !== false
+      && Number(clue.stability?.sampleCount || 0) >= 2;
+    const runtimeAcceptance = (
+      hasExplicitBasis || basis.has("shared-runtime-container-with-direct-asset-identity")
+    ) && directIdentity && stableRuntime;
+    const accepted = sourceCoordinateFrame || (geometryCorroboration.accepted && runtimeAcceptance);
+    const relationshipType = geometryCorroboration.accepted
+      ? geometryCorroboration.relationType
+      : sourceCoordinateFrame
+        ? "source-config-coordinate-frame"
+        : geometryCorroboration.relationType;
+    const runtimeValidation = stableRuntime ? "stable" : clue.stability?.status === "changed" ? "changed" : "unobserved";
+    const provenance = sourceCoordinateFrame && !stableRuntime
+      ? "direct-source-config+glb-intrinsic-geometry"
+      : runtimeAcceptance
+        ? "direct-runtime-spatial+glb-geometry"
+        : "candidate-only";
+    const transformRef = spatialCandidateTransformRef(clue);
+    const candidateCore = {
+      schemaVersion: SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION,
+      id: `spatial-candidate-${sha1([
+        clue.subjectInstanceId,
+        clue.referenceInstanceId,
+        clue.compositionId,
+        clue.frameId,
+        transformRef.signature
+      ].join("|"), 16)}`,
+      accepted,
+      placementPolicy: accepted ? "source-locked" : "independent",
+      relationshipType,
+      sourceRelationshipType: clue.relationshipType,
+      compositionKey: clue.compositionId
+        || clue.frameId
+        || clue.sourceConfigId
+        || clue.containerId
+        || clue.sourceId
+        || clue.referenceInstanceId,
+      compositionId: clue.compositionId,
+      frameId: clue.frameId,
+      sourceId: clue.sourceId,
+      sourceConfigId: clue.sourceConfigId,
+      containerId: clue.containerId,
+      activeStateId: clue.activeStateId || subjectProfile.activeStateId,
+      subject: {
+        instanceId: clue.subjectInstanceId,
+        catalogModelId: subjectProfile.catalogModelId,
+        assetUrl: clue.subjectAssetUrl || subjectProfile.assetUrl,
+        assetFile: modelBasename(clue.subjectAssetUrl || subjectProfile.assetUrl),
+        intrinsicBounds: subjectProfile.intrinsicBounds,
+        intrinsicTransformPolicy: subjectProfile.intrinsicTransformPolicy,
+        loaderTransformPolicy: subjectProfile.loaderTransformPolicy
+      },
+      reference: {
+        instanceId: clue.referenceInstanceId,
+        catalogModelId: referenceProfile.catalogModelId,
+        assetUrl: clue.referenceAssetUrl || referenceProfile.assetUrl,
+        assetFile: modelBasename(clue.referenceAssetUrl || referenceProfile.assetUrl),
+        intrinsicBounds: referenceProfile.intrinsicBounds,
+        intrinsicTransformPolicy: referenceProfile.intrinsicTransformPolicy,
+        loaderTransformPolicy: referenceProfile.loaderTransformPolicy
+      },
+      transformRef,
+      evidenceBasis: clue.evidenceBasis,
+      evidenceRefs: stableStringSet([...(clue.evidenceRefs || []), ...(clue.snapshotIds || [])]),
+      geometryCorroboration,
+      runtimeValidation,
+      stability: clue.stability,
+      provenance,
+      acceptance: {
+        accepted,
+        explicitBasis: hasExplicitBasis,
+        boundedSourceConfig: sourceConfigAcceptance,
+        sourceCoordinateFrame,
+        sourceGeometryTransformSafe,
+        directRuntimeIdentity: directIdentity,
+        stableRuntime,
+        geometryCorroborated: geometryCorroboration.accepted,
+        reason: accepted
+          ? sourceCoordinateFrame && !stableRuntime
+            ? "A complete bounded source configuration supplies direct asset identities, shared active state, exact matrices, and safe intrinsic GLB geometry for one coordinate frame."
+            : "Explicit/common meaningful frame evidence, direct runtime identity, stable placement, and GLB geometry agree."
+          : sourceConfigAcceptance && !sourceCoordinateFrame
+            ? "The bounded source configuration is incomplete, ambiguous, or lacks safe intrinsic GLB geometry for one or more declared members."
+            : !geometryCorroboration.accepted
+            ? geometryCorroboration.reason
+            : "The relation lacks either stable direct runtime validation or bounded source-config active-state evidence."
+      }
+    };
+    return {
+      ...candidateCore,
+      signature: sha1Bytes(Buffer.from(JSON.stringify(canonicalObjectKeys(
+        deterministicSpatialSignatureInput(candidateCore)
+      ))), 24),
+      sourceOrder: index
+    };
+  }).sort((left, right) => stableCompare(left.id, right.id));
+  const candidates = resolveSpatialReferenceAmbiguity(initialCandidates);
+
+  const acceptedGroups = new Map();
+  for (const candidate of candidates.filter((item) => item.accepted)) {
+    const key = candidate.acceptance?.sourceCoordinateFrame
+      ? `${candidate.compositionKey}|source-config-frame:${candidate.sourceConfigId}`
+      : `${candidate.compositionKey}|${candidate.reference.instanceId}`;
+    const group = acceptedGroups.get(key) || [];
+    group.push(candidate);
+    acceptedGroups.set(key, group);
+  }
+  const sourceSpatialCompositions = Array.from(acceptedGroups.values()).map((group) => {
+    const ordered = [...group].sort((left, right) => stableCompare(left.subject.instanceId, right.subject.instanceId));
+    const sourceCoordinateFrame = ordered.every((candidate) => candidate.acceptance?.sourceCoordinateFrame);
+    const groupSourceConfigId = ordered[0].sourceConfigId;
+    const sourceConfiguration = sourceCoordinateFrame
+      ? boundedSourceConfigurations.get(groupSourceConfigId)
+      : null;
+    const sourceConfigurationModels = sourceConfiguration?.models || [];
+    const persistentCatalogModels = (sourceCoordinateFrame
+      ? sourceConfigurationModels
+      : normalizedCatalog.models
+    ).filter((model) => (
+      groupSourceConfigId
+      && model?.sourceConfigId === groupSourceConfigId
+      && Array.isArray(model?.activeStateIds)
+      && model.activeStateIds.includes("*")
+    ));
+    const reference = sourceCoordinateFrame
+      ? {
+        instanceId: catalogModelInstanceId(persistentCatalogModels[0]),
+        assetUrl: catalogModelAssetUrl(persistentCatalogModels[0])
+      }
+      : ordered[0].reference;
+    const referenceCatalogModel = indexes.modelByInstanceId.get(reference.instanceId);
+    const anchorMatrix = sourceCoordinateFrame ? matrix4Identity() : catalogModelTransform(referenceCatalogModel);
+    const memberByInstanceId = new Map();
+    const addMember = (catalogModel, role, relationType = "", transformRef = null) => {
+      if (!catalogModel) return;
+      const member = sourceSpatialMemberForCatalogModel({
+        catalogModel,
+        anchorInstanceId: reference.instanceId,
+        anchorMatrix,
+        coordinateSpace: sourceCoordinateFrame ? "source-config-local" : "reference-instance-local",
+        role,
+        relationType,
+        transformRef,
+        runtimeSnapshots,
+        modelRecords,
+        catalog: normalizedCatalog,
+        catalogIndexes: indexes
+      });
+      if (member) memberByInstanceId.set(member.instanceId, member);
+    };
+    addMember(referenceCatalogModel, "framing-anchor");
+    for (const catalogModel of persistentCatalogModels) {
+      if (catalogModelInstanceId(catalogModel) === reference.instanceId) continue;
+      addMember(catalogModel, "context");
+    }
+    if (sourceCoordinateFrame) {
+      for (const catalogModel of sourceConfigurationModels) {
+        if (sourceConfiguration.persistentInstanceIds.has(catalogModelInstanceId(catalogModel))) continue;
+        addMember(catalogModel, "placed", "source-config-coordinate-frame");
+      }
+    } else {
+      for (const candidate of ordered) {
+        addMember(
+          indexes.modelByInstanceId.get(candidate.subject.instanceId),
+          "placed",
+          candidate.relationshipType,
+          candidate.transformRef
+        );
+      }
+    }
+    const roleOrder = { "framing-anchor": 0, context: 1, placed: 2 };
+    const members = Array.from(memberByInstanceId.values()).sort((left, right) => (
+      (roleOrder[left.role] ?? 3) - (roleOrder[right.role] ?? 3)
+      || stableCompare(left.instanceId, right.instanceId)
+    ));
+    const id = `source-spatial-composition-${sha1(
+      sourceCoordinateFrame
+        ? `${ordered[0].compositionKey}|${groupSourceConfigId}|source-config-local`
+        : `${ordered[0].compositionKey}|${reference.instanceId}`,
+      16
+    )}`;
+    const relationCandidates = sourceCoordinateFrame
+      ? Array.from(ordered.reduce((bySubject, candidate) => {
+        const existing = bySubject.get(candidate.subject.instanceId);
+        if (
+          !existing
+          || spatialCandidateSpecificityScore(candidate) < spatialCandidateSpecificityScore(existing)
+          || (
+            spatialCandidateSpecificityScore(candidate) === spatialCandidateSpecificityScore(existing)
+            && stableCompare(candidate.id, existing.id) < 0
+          )
+        ) bySubject.set(candidate.subject.instanceId, candidate);
+        return bySubject;
+      }, new Map()).values())
+      : ordered;
+    const relations = relationCandidates.map((candidate) => {
+      const member = memberByInstanceId.get(candidate.subject.instanceId);
+      const usesSemanticReference = candidate.relationshipType !== "source-config-coordinate-frame";
+      return {
+        candidateId: candidate.id,
+        subjectInstanceId: candidate.subject.instanceId,
+        referenceInstanceId: usesSemanticReference
+          ? candidate.reference.instanceId
+          : reference.instanceId,
+        relationshipType: candidate.relationshipType,
+        predicate: candidate.relationshipType,
+        resolvedLocalMatrix: sourceCoordinateFrame
+          ? member?.resolvedLocalMatrix
+          : candidate.transformRef.matrix,
+        transformRef: sourceCoordinateFrame
+          ? member?.transformRef
+          : candidate.transformRef
+      };
+    });
+    const sourceActiveStateIds = stableStringSet(members.flatMap((member) => (
+      member.sourceActiveStateIds.filter((stateId) => stateId !== "*")
+    )));
+    const relationshipTypes = stableStringSet(relations.map((item) => item.relationshipType));
+    const readerViewpoint = relationshipTypes.some((type) => (
+      ["surface-marker-placement", "surface-landmark"].includes(type)
+    ))
+      ? "exocentric"
+      : null;
+    const compositionBounds = sourceCoordinateFrame
+      ? sourceSpatialCompositionBounds(
+        members.filter((member) => member.persistent || ["framing-anchor", "context"].includes(member.role))
+      )
+      : null;
+    const compositionCore = {
+      schemaVersion: SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION,
+      id,
+      compositionId: id,
+      accepted: true,
+      placementPolicy: "source-locked",
+      compositionKey: ordered[0].compositionKey,
+      sourceCompositionId: ordered[0].compositionId,
+      frameId: ordered[0].frameId,
+      sourceId: ordered[0].sourceId,
+      sourceConfigId: ordered[0].sourceConfigId,
+      containerId: ordered[0].containerId,
+      framing: {
+        anchorInstanceId: reference.instanceId,
+        ...(sourceCoordinateFrame ? {
+          coordinateSpace: "source-config-local",
+          compositionBounds
+        } : {}),
+        ...(readerViewpoint ? { readerViewpoint } : {}),
+        exclusions: members
+          .filter((member) => member.instanceId !== reference.instanceId)
+          .map((member) => ({
+            instanceId: member.instanceId,
+            reason: member.role === "context"
+              ? "persistent-context-not-framing-anchor"
+              : "state-specific-placement-not-framing-anchor"
+          }))
+      },
+      relationshipTypes,
+      relations,
+      activeSetsByBeat: {},
+      beatIds: [],
+      sourceActiveStateIds,
+      runtimeValidation: ordered.every((item) => item.runtimeValidation === "stable") ? "stable" : "unobserved",
+      provenance: stableStringSet(ordered.map((item) => item.provenance)).join("+"),
+      confidence: sourceCoordinateFrame
+        ? 0.96
+        : ordered.every((item) => item.provenance === "direct-source-config+glb-geometry") ? 0.94 : 0.9,
+      candidateIds: ordered.map((item) => item.id),
+      evidenceRefs: stableStringSet(ordered.flatMap((item) => item.evidenceRefs)),
+      members
+    };
+    return {
+      ...compositionCore,
+      signature: sha1Bytes(Buffer.from(JSON.stringify(canonicalObjectKeys(
+        deterministicSpatialSignatureInput(compositionCore)
+      ))), 24)
+    };
+  }).sort((left, right) => stableCompare(left.id, right.id));
+  const signature = sha1Bytes(Buffer.from(JSON.stringify(canonicalObjectKeys({
+    candidates: candidates.map((item) => ({ id: item.id, accepted: item.accepted, signature: item.signature })),
+    compositions: sourceSpatialCompositions.map((item) => ({ id: item.id, signature: item.signature }))
+  }))), 24);
+  return {
+    spatialCompositionCandidates: candidates.map(({ sourceOrder: _sourceOrder, ...candidate }) => candidate),
+    sourceSpatialCompositions,
+    spatialCompositionSignature: signature
+  };
+}
+
 async function buildEvidenceBundle(probe, inputPath, outputRoot, options) {
   await ensureFolders(outputRoot);
   const visualObservation = await extractScrollTargetVisualObservation(probe, outputRoot);
@@ -3910,50 +6106,7 @@ async function buildEvidenceBundle(probe, inputPath, outputRoot, options) {
   addProbeTextEvidence(sourceEvidence, probe);
   for (const download of downloads) addDownloadedTextEvidence(sourceEvidence, download);
 
-  const modelSummaries = [];
-  const modelParseFailures = [];
-  for (const download of downloads.filter((item) => item.assetType === "model")) {
-    try {
-      const json = parseGltfJsonFromDownload(download);
-      modelSummaries.push(summarizeGltfJson(json, download));
-    } catch (error) {
-      const stableFailure = stableModelParseFailure(error);
-      modelParseFailures.push({
-        url: download.url,
-        localPath: toPosix(path.relative(REPO_ROOT, download.localPath)),
-        code: stableFailure.code,
-        message: stableFailure.message,
-        diagnostic: error.message
-      });
-    }
-  }
-  const modelRecords = downloads.filter((item) => item.assetType === "model").map((download) => {
-    const parsed = modelSummaries.find((summary) => summary.assetUrl === download.url);
-    if (parsed) return parsed;
-    const failure = modelParseFailures.find((item) => item.url === download.url);
-    return {
-      parseStatus: "failed",
-      parseError: failure?.message || "Model metadata could not be parsed.",
-      assetUrl: download.url,
-      finalUrl: download.finalUrl,
-      localPath: toPosix(path.relative(REPO_ROOT, download.localPath)),
-      file: path.basename(download.localPath),
-      fileSize: download.fileSize,
-      contentType: download.contentType,
-      sceneCount: 0,
-      nodeCount: 0,
-      meshCount: 0,
-      materialCount: 0,
-      textureCount: 0,
-      cameraCount: 0,
-      animationCount: 0,
-      hasEmbeddedAnimation: false,
-      animatedTargetPathCounts: {},
-      hasCameraAnimation: false,
-      nodes: [],
-      animations: []
-    };
-  });
+  const { modelRecords, modelParseFailures } = modelEvidenceFromDownloads(downloads);
   const pointCloudEffects = analyzeExplicitPointCloudEffects({
     links: explicitPointCloudLinks,
     downloads,
@@ -3961,6 +6114,20 @@ async function buildEvidenceBundle(probe, inputPath, outputRoot, options) {
   });
 
   const runtimeSnapshots = (Array.isArray(probe.snapshots) ? probe.snapshots : []).map(normalizeSnapshot);
+  const loaderTransformPolicies = loaderTransformPoliciesFromSources(probe, downloads);
+  const runtime3DCatalog = mergeRuntime3DCatalogs(
+    normalizeRuntime3DCatalog(probe.runtime_3d_catalog),
+    extractedSourceSpatialCatalog(probe, modelRecords, loaderTransformPolicies)
+  );
+  const {
+    spatialCompositionCandidates,
+    sourceSpatialCompositions,
+    spatialCompositionSignature
+  } = spatialCompositionEvidence({
+    runtimeSnapshots,
+    modelRecords,
+    catalog: runtime3DCatalog
+  });
   const relationships = modelRecords.map((modelSummary, index) => ({
     id: `relationship-${String(index + 1).padStart(2, "0")}`,
     assetUrl: modelSummary.assetUrl,
@@ -4010,6 +6177,13 @@ async function buildEvidenceBundle(probe, inputPath, outputRoot, options) {
       collectorHash: probe.collector_hash || "",
       snapshotCount: runtimeSnapshots.length,
       runtime3DInstrumentation: probe.runtime_3d || probe.runtime_3d_instrumentation || null,
+      runtime3DCatalog: runtime3DCatalog ? {
+        schemaVersion: runtime3DCatalog.schemaVersion,
+        revision: runtime3DCatalog.revision,
+        modelCount: runtime3DCatalog.models.length,
+        explicitRelationshipCount: runtime3DCatalog.explicitRelationships.length
+      } : null,
+      loaderTransformPolicyCount: loaderTransformPolicies.length,
       viewportCapture: probe.viewport_capture || null,
       captureCoverage: probe.capture_coverage || null,
       variantGroupCount: Array.isArray(probe.variant_groups) ? probe.variant_groups.length : 0,
@@ -4047,6 +6221,10 @@ async function buildEvidenceBundle(probe, inputPath, outputRoot, options) {
       beatRuntimeStates,
       snapshots: runtimeSnapshots
     },
+    runtime3DCatalog,
+    spatialCompositionCandidates,
+    sourceSpatialCompositions,
+    spatialCompositionSignature,
     visualObservation,
     imageRelevance,
     imageAssets,
@@ -4253,6 +6431,12 @@ function compactEvidenceForCodexPrompt(evidence, semanticEvidence, profile) {
       animatedModelCount: semanticEvidence.glbModels.filter((model) => model.animations.length > 0).length,
       models: semanticEvidence.glbModels
     },
+    sourceSpatialComposition: {
+      schemaVersion: SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION,
+      signature: semanticEvidence.spatialCompositionSignature,
+      candidates: semanticEvidence.spatialCompositionCandidates,
+      acceptedCompositions: semanticEvidence.sourceSpatialCompositions
+    },
     relationships,
     globalSignals: semanticEvidence.globalSignals,
     classificationVocabulary: CLASSIFICATIONS
@@ -4320,6 +6504,8 @@ function renderCodexPrompt(compactEvidence) {
     "- If a relationship has hasEmbeddedAnimation, scriptSignals.hasScrollScrubbedAnimation, and multiple runtime active text states, classify that relationship as inter-beat-dynamics even when globalSignals.modelResourceSequenceChanged=false.",
     "- If embedded GLB animation targets model/body/camera nodes and runtime active text shows multiple caption/state beats, prefer inter-beat-dynamics over within-beat-dynamics.",
     "- If your fetched-resource investigation contradicts relationship.hints, prefer the fetched-resource investigation and explain the contradiction.",
+    "- sourceSpatialComposition.candidates and acceptedCompositions are deterministic analyzer output. Never promote/reject a candidate, change accepted, compositionId, placementPolicy, numeric matrices, intrinsic bounds, or transformRef. Same beat, preload membership, a broad scene, proximity, or prose alone are never sufficient placement evidence.",
+    "- Return exactly one spatialCompositionJudgments row per sourceSpatialComposition candidate. Add semanticLabel, subjectRole, referenceRole, semanticConfidence, reasoning, and evidenceRefs only; the analyzer replaces all identity, acceptance, provenance, and transform fields from deterministic evidence.",
     "- A GLB with no embedded animation is not automatically static. If runtime JS animates, transforms, shows/hides, swaps, or sequences it across beats, include that runtime behavior in the dynamics interpretation and classify accordingly.",
     "- If a GLB has no embedded animation, no camera path, and no runtime-driven behavior found, only return beat association for it; do not force a dynamics classification.",
     "- For each animated GLB asset, return an assetJudgments item with associatedBeats: the caption/state beat content that the GLB is associated with. For within-beat-dynamics, return one beat unless direct evidence proves more. For inter-beat-dynamics or asset-topology-transition, return multiple beats when the evidence supports a progression across beats.",
@@ -4336,9 +6522,10 @@ function renderCodexPrompt(compactEvidence) {
     "- summaryMarkdown must also include '## Inferred Beat Asset State' when inferredBeatAssetStates contains records.",
     "- summaryMarkdown must also include '## Image Beat Associations' and '## GLB Animation Interpretation' sections when those assets exist.",
     "- Include investigationSummary in the returned JSON. It must name the resources inspected and summarize the traced model loading, visibility/swap behavior, animation driver, runtime JS behavior, and multi-GLB behavior.",
+    "spatialCompositionJudgments item shape: {\"candidateId\":\"spatial-candidate-id\",\"semanticLabel\":\"semantic relationship label\",\"subjectRole\":\"semantic subject role\",\"referenceRole\":\"semantic reference role\",\"semanticConfidence\":0.0,\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-id\"]}",
     "inferredBeatAssetStates item shape: {\"beatId\":\"runtime-beat-id-or-empty\",\"text\":\"beat text\",\"scrollPercent\":0.0,\"relationshipId\":\"relationship-id\",\"assetUrl\":\"string\",\"visibilityState\":\"visible|active|hidden|unknown\",\"parts\":[{\"name\":\"string\",\"nodePath\":\"string\",\"role\":\"string\",\"visibilityState\":\"visible|active|hidden|unknown\",\"confidence\":0.0,\"provenance\":\"direct-source-config|inferred-runtime|inferred-source|inferred-preload-based|unknown\",\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-id\"]}],\"animations\":[{\"clipIndex\":0,\"clipName\":\"string\",\"playState\":\"playing|active|paused|stopped|unknown\",\"driverMode\":\"time-based|scroll-based|state-based|mixed|unknown\",\"scrollDriverType\":\"time-based|local-scroll-window-progress|slide-indexed-scroll-transition|absolute-page-scroll|unknown\",\"triggerMechanism\":\"string\",\"targetParts\":[\"string\"],\"confidence\":0.0,\"provenance\":\"direct-source-config|inferred-runtime|inferred-source|inferred-preload-based|unknown\",\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-id\"]}],\"confidence\":0.0,\"provenance\":\"direct-source-config|inferred-runtime|inferred-source|inferred-preload-based|unknown\",\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-id\"]}",
-    "The returned top-level JSON object MUST include inferredBeatAssetStates as an array of the items above. This required v3 field is a sibling of modelBeatAssociations and glbAnimationInterpretations. Every associatedBeats object may also include beatId; the compact legacy shape below does not repeat that optional stable identity field.",
-    "Required top-level v3 envelope: {\"storyTitle\":\"string\",\"dominantLogic\":\"classification\",\"modelBeatAssociations\":[],\"inferredBeatAssetStates\":[{\"beatId\":\"string\",\"relationshipId\":\"string\",\"assetUrl\":\"string\",\"modelVisibility\":{\"state\":\"visible|active|hidden|unknown\"},\"parts\":[],\"animations\":[],\"provenance\":\"direct-source-config|inferred-runtime|inferred-source|inferred-preload-based|unknown\",\"confidence\":0.0,\"reasoning\":\"string\",\"evidenceRefs\":[]}],\"glbAnimationInterpretations\":[],\"relationshipJudgments\":[],\"uncertainties\":[],\"recommendedStoryVRUse\":\"string\"}",
+    "The returned top-level JSON object MUST include inferredBeatAssetStates and spatialCompositionJudgments as arrays. These required v3 fields are siblings of modelBeatAssociations and glbAnimationInterpretations. Every associatedBeats object may also include beatId; the compact legacy shape below does not repeat that optional stable identity field.",
+    "Required top-level v3 envelope: {\"storyTitle\":\"string\",\"dominantLogic\":\"classification\",\"modelBeatAssociations\":[],\"inferredBeatAssetStates\":[{\"beatId\":\"string\",\"relationshipId\":\"string\",\"assetUrl\":\"string\",\"modelVisibility\":{\"state\":\"visible|active|hidden|unknown\"},\"parts\":[],\"animations\":[],\"provenance\":\"direct-source-config|inferred-runtime|inferred-source|inferred-preload-based|unknown\",\"confidence\":0.0,\"reasoning\":\"string\",\"evidenceRefs\":[]}],\"glbAnimationInterpretations\":[],\"relationshipJudgments\":[],\"spatialCompositionJudgments\":[],\"uncertainties\":[],\"recommendedStoryVRUse\":\"string\"}",
     "Use these detailed field shapes for the complete returned JSON:",
     "{\"storyTitle\":\"string\",\"dominantLogic\":\"classification\",\"confidence\":0.0,\"overallSummary\":\"string\",\"summaryMarkdown\":\"string\",\"investigationSummary\":{\"resourcesInspected\":[\"path-or-url\"],\"behaviorTrace\":{\"modelDiscovery\":\"string\",\"modelLoading\":\"string\",\"visibilityOrSwap\":\"string\",\"animationDriver\":\"string\",\"multipleGlbHandling\":\"string\",\"runtimeJsBehavior\":\"string\"},\"directEvidence\":\"string\",\"remainingGaps\":[\"string\"]},\"assetJudgments\":[{\"assetUrl\":\"string\",\"assetFile\":\"string\",\"hasEmbeddedAnimation\":true,\"classification\":\"classification\",\"scrollDriver\":{\"type\":\"scroll-driver\",\"confidence\":0.0},\"confidence\":0.0,\"associatedBeats\":[{\"text\":\"caption/state beat text\",\"scrollPercent\":0.0,\"source\":\"provenance\"}],\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-001\"]}],\"modelBeatAssociations\":[{\"assetUrl\":\"string\",\"assetFile\":\"string\",\"hasEmbeddedAnimation\":false,\"associatedBeats\":[{\"text\":\"caption/state beat text\",\"scrollPercent\":0.0,\"source\":\"provenance\"}],\"associationConfidence\":0.0,\"associationSource\":\"direct-runtime|direct-source-config|inferred-runtime|inferred-source|inferred-preload-based|mixed|unknown\",\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-001\"]}],\"imageBeatAssociations\":[{\"imageGroupId\":\"string\",\"assetUrl\":\"string\",\"associatedBeats\":[{\"text\":\"caption/state beat text\",\"scrollPercent\":0.0,\"source\":\"direct|inferred\"}],\"associationConfidence\":0.0,\"associationSource\":\"direct|inferred|unknown\",\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-001\"]}],\"glbAnimationInterpretations\":[{\"assetUrl\":\"string\",\"assetFile\":\"string\",\"hasEmbeddedAnimation\":true,\"hasCameraPath\":false,\"classification\":\"classification\",\"triggerMapping\":{\"type\":\"time-based|local-scroll-window-progress|slide-indexed-scroll-transition|absolute-page-scroll|click-or-state-machine|unknown\",\"localFormula\":\"string|null\",\"fullPageFormula\":\"string|null\",\"confidence\":0.0,\"evidenceRefs\":[\"evidence-001\"],\"reasoning\":\"string\"},\"runtimeJsBehavior\":{\"isRuntimeDriven\":false,\"summary\":\"string\",\"evidenceRefs\":[\"evidence-001\"]},\"clips\":[{\"animationName\":\"string\",\"targetNodes\":[\"string\"],\"targetPaths\":[\"translation|rotation|scale|weights\"],\"role\":\"behavior-role\",\"triggerMechanism\":\"mixer-time|scale-threshold|shader-uniform|runtime-state|time-loop|unknown\",\"associatedBeats\":[{\"text\":\"caption/state beat text\",\"scrollPercent\":0.0,\"source\":\"provenance\"}],\"reasoning\":\"string\",\"confidence\":0.0}],\"cameraPath\":{\"hasCameraPath\":false,\"driver\":\"string\",\"summary\":\"string\",\"associatedBeats\":[{\"text\":\"caption/state beat text\",\"scrollPercent\":0.0,\"source\":\"provenance\"}],\"evidenceRefs\":[\"evidence-001\"]},\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-001\"]}],\"relationshipJudgments\":[{\"relationshipId\":\"string\",\"assetUrl\":\"string\",\"classification\":\"classification\",\"scrollDriver\":{\"type\":\"scroll-driver\",\"confidence\":0.0},\"confidence\":0.0,\"explanation\":\"string\",\"evidenceRefs\":[\"evidence-001\"]}],\"uncertainties\":[\"string\"],\"recommendedStoryVRUse\":\"string\"}",
     `Evidence JSON:\n${JSON.stringify(compactEvidence, null, 2)}`
@@ -5744,6 +7931,50 @@ function normalizeAssociatedBeatArrays(value, evidence, key = "") {
   )));
 }
 
+function spatialCompositionJudgmentsForEvidence(judgment, evidence) {
+  const inputRows = Array.isArray(judgment?.spatialCompositionJudgments)
+    ? judgment.spatialCompositionJudgments
+    : [];
+  const inputByCandidateId = new Map(inputRows.flatMap((row) => {
+    const id = String(row?.candidateId || row?.id || "");
+    return id ? [[id, row]] : [];
+  }));
+  const compositions = Array.isArray(evidence?.sourceSpatialCompositions)
+    ? evidence.sourceSpatialCompositions
+    : [];
+  return (Array.isArray(evidence?.spatialCompositionCandidates)
+    ? evidence.spatialCompositionCandidates
+    : []).map((candidate) => {
+    const input = inputByCandidateId.get(candidate.id) || {};
+    const composition = compositions.find((item) => (
+      (item?.candidateIds || []).includes(candidate.id)
+    ));
+    return {
+      candidateId: candidate.id,
+      accepted: candidate.accepted === true,
+      placementPolicy: candidate.placementPolicy || "independent",
+      compositionId: composition?.compositionId || "",
+      relationshipType: candidate.relationshipType || "unresolved-relative-placement",
+      subjectInstanceId: candidate.subject?.instanceId || "",
+      referenceInstanceId: candidate.reference?.instanceId || "",
+      subjectAssetUrl: candidate.subject?.assetUrl || "",
+      referenceAssetUrl: candidate.reference?.assetUrl || "",
+      transformRef: canonicalObjectKeys(candidate.transformRef || {}),
+      runtimeValidation: candidate.runtimeValidation || "unobserved",
+      provenance: candidate.provenance || "candidate-only",
+      semanticLabel: String(input.semanticLabel || input.label || "").slice(0, 240),
+      subjectRole: String(input.subjectRole || "").slice(0, 120),
+      referenceRole: String(input.referenceRole || "").slice(0, 120),
+      semanticConfidence: clampConfidence(input.semanticConfidence ?? input.confidence, 0.25),
+      reasoning: String(input.reasoning || input.explanation || "").slice(0, 1800),
+      evidenceRefs: stableStringSet([
+        ...(candidate.evidenceRefs || []),
+        ...(Array.isArray(input.evidenceRefs) ? input.evidenceRefs : [])
+      ])
+    };
+  });
+}
+
 function normalizeJudgmentForEvidence(judgment, evidence) {
   const assetJudgments = Array.isArray(judgment.assetJudgments)
     ? sortJudgmentItemsByRelationship(judgment.assetJudgments.filter((item) => {
@@ -5772,6 +8003,7 @@ function normalizeJudgmentForEvidence(judgment, evidence) {
       Array.isArray(judgment.relationshipJudgments) ? judgment.relationshipJudgments : [],
       evidence
     ),
+    spatialCompositionJudgments: spatialCompositionJudgmentsForEvidence(judgment, evidence),
     modelBeatAssociations: modelBeatAssociationsForJudgment(judgment, evidence),
     imageBeatAssociations: imageBeatAssociationsForJudgment(judgment, evidence),
     glbAnimationInterpretations: glbAnimationInterpretationsForJudgment(judgment, evidence),
@@ -6058,6 +8290,22 @@ function pointCloudEffectsSection(judgment, evidence) {
   return `${lines.join("\n")}\n`;
 }
 
+function sourceSpatialCompositionSection(judgment, evidence) {
+  const rows = spatialCompositionJudgmentsForEvidence(judgment, evidence);
+  if (!rows.length) return "";
+  const lines = ["## Source Spatial Composition"];
+  for (const row of rows) {
+    const status = row.accepted ? `accepted in ${row.compositionId}` : "candidate-only";
+    const label = row.semanticLabel ? `; semantic=${row.semanticLabel}` : "";
+    lines.push(
+      `- ${row.subjectInstanceId} relative to ${row.referenceInstanceId}: ${row.relationshipType}; ${status}; `
+      + `provenance=${row.provenance}; runtime=${row.runtimeValidation}${label}. `
+      + `${row.reasoning || "No additional semantic interpretation was returned."}`
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 function glbAnimationInterpretationSection(judgment, evidence) {
   const interpretations = glbAnimationInterpretationsForJudgment(judgment, evidence);
   if (!interpretations.length) return "";
@@ -6119,6 +8367,7 @@ function summaryMarkdownFromJudgment(judgment, evidence) {
   const inferredBeatSection = inferredBeatAssetStateSection(judgment, evidence);
   const imageSection = imageBeatAssociationsSection(judgment, evidence);
   const pointCloudSection = pointCloudEffectsSection(judgment, evidence);
+  const spatialCompositionSection = sourceSpatialCompositionSection(judgment, evidence);
   const interpretationSection = glbAnimationInterpretationSection(judgment, evidence);
   const investigationSection = investigationSummarySection(judgment);
   if (typeof judgment.summaryMarkdown === "string" && judgment.summaryMarkdown.trim()) {
@@ -6129,6 +8378,7 @@ function summaryMarkdownFromJudgment(judgment, evidence) {
     summary = replaceOrAppendMarkdownSection(summary, "Inferred Beat Asset State", inferredBeatSection);
     summary = replaceOrAppendMarkdownSection(summary, "Image Beat Associations", imageSection);
     summary = replaceOrAppendMarkdownSection(summary, "Explicit Point-Cloud Composite Effects", pointCloudSection);
+    summary = replaceOrAppendMarkdownSection(summary, "Source Spatial Composition", spatialCompositionSection);
     summary = replaceOrAppendMarkdownSection(summary, "GLB Animation Interpretation", interpretationSection);
     summary = replaceOrAppendMarkdownSection(summary, "Investigation Notes", investigationSection);
     return `${summary}\n`;
@@ -6157,6 +8407,8 @@ function summaryMarkdownFromJudgment(judgment, evidence) {
     imageSection.trim(),
     "",
     pointCloudSection.trim(),
+    "",
+    spatialCompositionSection.trim(),
     "",
     interpretationSection.trim(),
     "",
@@ -8209,6 +10461,174 @@ function pointCloudEffectsForAuthorInput(evidence, assetManifest) {
   });
 }
 
+function authorSlideBeatId(slide, index) {
+  return String(
+    slide?.id
+    || slide?.beatId
+    || `slide-${index + 1}`
+  );
+}
+
+function spatialMemberAssetKeys(member) {
+  return new Set([
+    member?.assetUrl,
+    member?.assetFile,
+    member?.sourcePath,
+    member?.localPath
+  ].flatMap((value) => {
+    if (!value) return [];
+    const stringValue = String(value);
+    return [
+      normalizeAssetKey(stringValue),
+      normalizeAssetKey(path.basename(urlPathname(stringValue))),
+      normalizeUrl(stringValue)
+    ].filter(Boolean);
+  }));
+}
+
+function authorSlideAssetKeys(slide) {
+  return new Set([
+    slide?.url,
+    slide?.file,
+    ...(Array.isArray(slide?.attributes?.probeAssetFiles) ? slide.attributes.probeAssetFiles : []),
+    ...(Array.isArray(slide?.attributes?.probeAssetUrls) ? slide.attributes.probeAssetUrls : [])
+  ].flatMap((value) => {
+    if (!value) return [];
+    const stringValue = String(value);
+    return [
+      normalizeAssetKey(stringValue),
+      normalizeAssetKey(path.basename(urlPathname(stringValue))),
+      normalizeUrl(stringValue)
+    ].filter(Boolean);
+  }));
+}
+
+function sourceSpatialStateCompare(left, right) {
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+    return leftNumber - rightNumber || stableCompare(left, right);
+  }
+  return stableCompare(left, right);
+}
+
+function sourceSpatialSlideStateMatches(members, slides) {
+  const placedMembers = members.filter((member) => member.role === "placed");
+  const matches = slides.map((slide, slideIndex) => {
+    const slideKeys = authorSlideAssetKeys(slide);
+    const matchedMembers = placedMembers.filter((member) => (
+      [...spatialMemberAssetKeys(member)].some((key) => slideKeys.has(key))
+    ));
+    const candidateStateIds = stableStringSet(matchedMembers.flatMap((member) => (
+      (member.sourceActiveStateIds || []).filter((stateId) => stateId !== "*")
+    ))).sort(sourceSpatialStateCompare);
+    return {
+      slide,
+      slideIndex,
+      matchedMembers,
+      candidateStateIds,
+      selectedStateIds: candidateStateIds.length === 1 ? candidateStateIds : []
+    };
+  });
+  const ambiguousGroups = new Map();
+  for (const match of matches) {
+    if (match.candidateStateIds.length <= 1) continue;
+    const key = match.candidateStateIds.join("|");
+    const group = ambiguousGroups.get(key) || [];
+    group.push(match);
+    ambiguousGroups.set(key, group);
+  }
+  for (const group of ambiguousGroups.values()) {
+    const stateIds = group[0].candidateStateIds;
+    if (group.length !== stateIds.length) continue;
+    const orderedMatches = [...group].sort((left, right) => left.slideIndex - right.slideIndex);
+    for (const [index, match] of orderedMatches.entries()) {
+      const stateId = stateIds[index];
+      if (!match.matchedMembers.some((member) => (member.sourceActiveStateIds || []).includes(stateId))) continue;
+      match.selectedStateIds = [stateId];
+    }
+  }
+  return matches;
+}
+
+function sourceSpatialCompositionEnvelopeForAuthorInput(evidence, slides, assetManifest) {
+  const accepted = (Array.isArray(evidence?.sourceSpatialCompositions)
+    ? evidence.sourceSpatialCompositions
+    : []).filter((composition) => composition?.accepted === true);
+  if (!accepted.length) return null;
+  const assetIndexes = assetRecordIndexes(assetManifest);
+  const compositions = accepted.flatMap((sourceComposition) => {
+    const members = (sourceComposition.members || []).map((member) => {
+      const assetRecord = assetRecordForProbeAssociation(member, assetIndexes);
+      return {
+        ...member,
+        ...(assetRecord?.local_path ? { localPath: assetRecord.local_path } : {})
+      };
+    });
+    const persistentMemberIds = members
+      .filter((member) => member.persistent || ["framing-anchor", "context"].includes(member.role))
+      .map((member) => member.instanceId);
+    const activeSetsByBeat = {};
+    const sourceBeatAliasesByBeat = {};
+    const activeBeatIdsByMember = new Map(members.map((member) => [member.instanceId, []]));
+    for (const {
+      slide,
+      slideIndex,
+      matchedMembers,
+      candidateStateIds,
+      selectedStateIds
+    } of sourceSpatialSlideStateMatches(members, slides)) {
+      if (!matchedMembers.length) continue;
+      if (candidateStateIds.length && !selectedStateIds.length) continue;
+      const selectedStateIdSet = new Set(selectedStateIds);
+      const matchedPlaced = selectedStateIdSet.size
+        ? matchedMembers.filter((member) => (
+          (member.sourceActiveStateIds || []).some((stateId) => selectedStateIdSet.has(stateId))
+        ))
+        : matchedMembers;
+      if (!matchedPlaced.length) continue;
+      const beatId = authorSlideBeatId(slide, slideIndex);
+      if (slide?.attributes?.probeBeatId) {
+        sourceBeatAliasesByBeat[beatId] = String(slide.attributes.probeBeatId);
+      }
+      const activeMemberIds = stableStringSet([
+        ...persistentMemberIds,
+        ...matchedPlaced.map((member) => member.instanceId)
+      ]);
+      activeSetsByBeat[beatId] = activeMemberIds;
+      for (const instanceId of activeMemberIds) {
+        activeBeatIdsByMember.get(instanceId)?.push(beatId);
+      }
+    }
+    const beatIds = Object.keys(activeSetsByBeat);
+    const composition = {
+      ...sourceComposition,
+      members: members.map((member) => ({
+        ...member,
+        activeBeatIds: activeBeatIdsByMember.get(member.instanceId) || []
+      })),
+      activeSetsByBeat,
+      beatIds,
+      ...(Object.keys(sourceBeatAliasesByBeat).length ? { sourceBeatAliasesByBeat } : {})
+    };
+    const { signature: _sourceSignature, ...signatureInput } = composition;
+    return [{
+      ...composition,
+      signature: sha1Bytes(Buffer.from(JSON.stringify(canonicalObjectKeys(
+        deterministicSpatialSignatureInput(signatureInput)
+      ))), 24)
+    }];
+  });
+  if (!compositions.length) return null;
+  return {
+    schemaVersion: SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION,
+    signature: sha1Bytes(Buffer.from(JSON.stringify(canonicalObjectKeys(
+      deterministicSpatialSignatureInput(compositions)
+    ))), 24),
+    compositions
+  };
+}
+
 function buildStoryStructureForAuthorInput(probe, evidence, judgment, assetManifest) {
   const { variantGroups, unresolvedVariantGroups } = variantHierarchyForAuthorInput(probe, judgment, assetManifest);
   const nonSequentialVariantGroups = [...variantGroups, ...unresolvedVariantGroups];
@@ -8221,6 +10641,11 @@ function buildStoryStructureForAuthorInput(probe, evidence, judgment, assetManif
   const headings = authorInputHeadingsFromProbe(probe, title);
   const imageGroups = authorInputImageGroupsFromProbe(probe);
   const pointCloudEffects = pointCloudEffectsForAuthorInput(evidence, assetManifest);
+  const sourceSpatialCompositions = sourceSpatialCompositionEnvelopeForAuthorInput(
+    evidence,
+    slides,
+    assetManifest
+  );
   return {
     story_url: evidence.story?.url || probe.story_url || "",
     timestamp: evidence.generatedAt || new Date().toISOString(),
@@ -8231,6 +10656,7 @@ function buildStoryStructureForAuthorInput(probe, evidence, judgment, assetManif
     captions: [],
     image_groups: imageGroups,
     ...(pointCloudEffects.length ? { point_cloud_effects: pointCloudEffects } : {}),
+    ...(sourceSpatialCompositions ? { source_spatial_compositions: sourceSpatialCompositions } : {}),
     variant_groups: variantGroups,
     unresolved_variant_groups: unresolvedVariantGroups,
     text_only_parts: textOnlyParts,
@@ -8246,7 +10672,10 @@ function buildStoryStructureForAuthorInput(probe, evidence, judgment, assetManif
       variantGroupCount: variantGroups.length,
       unresolvedVariantGroupCount: unresolvedVariantGroups.length,
       variantAssetAssociationCount: collectedVariantAssetAssociations(probe).length,
-      ...(pointCloudEffects.length ? { pointCloudEffectCount: pointCloudEffects.length } : {})
+      ...(pointCloudEffects.length ? { pointCloudEffectCount: pointCloudEffects.length } : {}),
+      ...(sourceSpatialCompositions ? {
+        sourceSpatialCompositionCount: sourceSpatialCompositions.compositions.length
+      } : {})
     },
     notes: [
       "Generated from animation logic probe output so StoryVR author can load this probe as a fetched-resource story.",
@@ -8256,6 +10685,9 @@ function buildStoryStructureForAuthorInput(probe, evidence, judgment, assetManif
       "Dependent-looking controls without direct parent interaction evidence are retained in unresolved_variant_groups and are not promoted to top-level beats.",
       ...(pointCloudEffects.length ? [
         "point_cloud_effects is optional and appears only when captured source configuration explicitly links a GLB model to a PCD asset."
+      ] : []),
+      ...(sourceSpatialCompositions ? [
+        "source_spatial_compositions preserves accepted source-locked GLB placement, intrinsic bounds, framing exclusions, and beat-specific active member sets."
       ] : [])
     ]
   };
@@ -8317,6 +10749,10 @@ async function writeAuthorInput(probe, inputPath, outputRoot, evidence, judgment
     unresolvedVariantGroupCount: storyStructure.unresolved_variant_groups.length,
     ...(Array.isArray(storyStructure.point_cloud_effects) ? {
       pointCloudEffectCount: storyStructure.point_cloud_effects.length
+    } : {}),
+    ...(storyStructure.source_spatial_compositions ? {
+      sourceSpatialCompositionCount: storyStructure.source_spatial_compositions.compositions.length,
+      sourceSpatialCompositionSignature: storyStructure.source_spatial_compositions.signature
     } : {})
   };
 
@@ -8346,6 +10782,177 @@ async function writeOutputs(outputRoot, evidence, judgment) {
   return normalizedJudgment;
 }
 
+function outputDownloadFolderForAssetType(assetType) {
+  if (assetType === "model") return "models";
+  if (assetType === "script") return "scripts";
+  if (assetType === "data") return "data";
+  if (assetType === "image") return "textures";
+  if (assetType === "pointcloud") return "pointclouds";
+  return "other";
+}
+
+async function localDownloadsFromExistingOutput(outputRoot, evidence) {
+  const downloads = [];
+  const seenPaths = new Set();
+  for (const record of Array.isArray(evidence?.downloads) ? evidence.downloads : []) {
+    const folder = outputDownloadFolderForAssetType(record.assetType);
+    const filename = path.basename(record.localPath || filenameForUrl(record.url || "asset"));
+    const preferredPath = path.join(outputRoot, "downloads", folder, filename);
+    const candidates = [
+      preferredPath,
+      absoluteLocalPath(record.localPath)
+    ].filter(Boolean);
+    let localPath = "";
+    let bytes = null;
+    for (const candidate of candidates) {
+      try {
+        bytes = await fs.readFile(candidate);
+        localPath = candidate;
+        break;
+      } catch {
+        // Keep checking bounded local candidates; this path never fetches.
+      }
+    }
+    if (!bytes || !localPath) continue;
+    const resolvedPath = path.resolve(localPath);
+    seenPaths.add(resolvedPath);
+    downloads.push({
+      ...record,
+      localPath: resolvedPath,
+      fileSize: bytes.length,
+      bytes
+    });
+  }
+
+  for (const assetType of ["model", "script"]) {
+    const folder = outputDownloadFolderForAssetType(assetType);
+    const directory = path.join(outputRoot, "downloads", folder);
+    let entries = [];
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries.filter((item) => item.isFile()).sort((left, right) => stableCompare(left.name, right.name))) {
+      const localPath = path.resolve(directory, entry.name);
+      if (seenPaths.has(localPath)) continue;
+      let bytes;
+      try {
+        bytes = await fs.readFile(localPath);
+      } catch {
+        continue;
+      }
+      const oldModel = (evidence?.glbAnimations?.models || []).find((model) => model.file === entry.name);
+      const url = oldModel?.assetUrl || `https://storyvr.invalid/offline/${encodeURIComponent(entry.name)}`;
+      downloads.push({
+        url,
+        finalUrl: oldModel?.finalUrl || url,
+        localPath,
+        assetType,
+        contentType: oldModel?.contentType || "",
+        fileSize: bytes.length,
+        bytes,
+        discovery: null
+      });
+      seenPaths.add(localPath);
+    }
+  }
+  return downloads.sort((left, right) => (
+    stableCompare(left.assetType, right.assetType)
+    || stableCompare(left.url, right.url)
+  ));
+}
+
+async function refreshDeterministicSpatialEvidenceFromOutput(probe, evidence, outputRoot) {
+  const localDownloads = await localDownloadsFromExistingOutput(outputRoot, evidence);
+  const expectedLocalModelCount = new Set(
+    (evidence?.downloads || [])
+      .filter((download) => download.assetType === "model")
+      .map((download) => download.url || download.finalUrl || download.localPath)
+      .filter(Boolean)
+  ).size;
+  const availableLocalModelCount = localDownloads.filter((download) => download.assetType === "model").length;
+  if (expectedLocalModelCount > availableLocalModelCount) {
+    throw new Error(
+      `Offline spatial refresh found ${availableLocalModelCount}/${expectedLocalModelCount} retained model downloads in ${outputRoot}; `
+      + "the existing evidence was not rewritten."
+    );
+  }
+  const { modelRecords, modelParseFailures } = modelEvidenceFromDownloads(localDownloads);
+  const runtimeSnapshots = (Array.isArray(probe.snapshots) ? probe.snapshots : []).map(normalizeSnapshot);
+  const loaderTransformPolicies = loaderTransformPoliciesFromSources(probe, localDownloads);
+  const runtime3DCatalog = mergeRuntime3DCatalogs(
+    normalizeRuntime3DCatalog(probe.runtime_3d_catalog),
+    extractedSourceSpatialCatalog(probe, modelRecords, loaderTransformPolicies)
+  );
+  const spatial = spatialCompositionEvidence({
+    runtimeSnapshots,
+    modelRecords,
+    catalog: runtime3DCatalog
+  });
+  const refreshedDownloadByUrl = new Map(localDownloads.map((download) => [download.url, download]));
+  const compactDownloads = (evidence?.downloads || []).map((record) => {
+    const local = refreshedDownloadByUrl.get(record.url);
+    if (!local) return record;
+    return {
+      ...record,
+      localPath: toPosix(path.relative(REPO_ROOT, local.localPath)),
+      fileSize: local.fileSize,
+      contentHash: sha1Bytes(local.bytes)
+    };
+  });
+  for (const download of localDownloads) {
+    if (compactDownloads.some((record) => record.url === download.url)) continue;
+    compactDownloads.push({
+      url: download.url,
+      finalUrl: download.finalUrl,
+      assetType: download.assetType,
+      localPath: toPosix(path.relative(REPO_ROOT, download.localPath)),
+      contentType: download.contentType,
+      fileSize: download.fileSize,
+      contentHash: sha1Bytes(download.bytes),
+      discovery: download.discovery || null
+    });
+  }
+  const refreshed = {
+    ...evidence,
+    version: VERSION,
+    sourceProbe: {
+      ...(evidence.sourceProbe || {}),
+      runtime3DCatalog: runtime3DCatalog ? {
+        schemaVersion: runtime3DCatalog.schemaVersion,
+        revision: runtime3DCatalog.revision,
+        modelCount: runtime3DCatalog.models.length,
+        explicitRelationshipCount: runtime3DCatalog.explicitRelationships.length
+      } : null,
+      loaderTransformPolicyCount: loaderTransformPolicies.length
+    },
+    runtime3DCatalog,
+    ...spatial,
+    downloads: compactDownloads.sort((left, right) => (
+      stableCompare(left.assetType, right.assetType)
+      || stableCompare(left.url, right.url)
+    )),
+    glbAnimations: {
+      ...(evidence.glbAnimations || {}),
+      modelCount: modelRecords.length,
+      animatedModelCount: modelRecords.filter((item) => item.hasEmbeddedAnimation).length,
+      parseFailures: modelParseFailures,
+      models: modelRecords
+    }
+  };
+  const evidenceFingerprint = judgmentEvidenceFingerprint(refreshed);
+  refreshed.judgmentInput = {
+    ...(evidence.judgmentInput || {}),
+    judgmentSchemaVersion: JUDGMENT_SCHEMA_VERSION,
+    promptVersion: CODEX_PROMPT_VERSION,
+    cacheSchemaVersion: JUDGMENT_CACHE_SCHEMA_VERSION,
+    evidenceFingerprint,
+    fingerprintBasis: "semantic source resources plus beat/model/part/action/driver state, deterministic source spatial composition and GLB geometry, and scroll-target perceptual hashes; volatile capture timing, raw image bytes, and local paths excluded"
+  };
+  return refreshed;
+}
+
 async function main(options) {
   const inputPath = path.resolve(options.input);
   const probe = await readJson(inputPath);
@@ -8354,7 +10961,16 @@ async function main(options) {
   console.log(`Output folder: ${outputRoot}`);
 
   if (options.fromOutput) {
-    const evidence = await readJson(path.join(outputRoot, "animation-evidence.json"));
+    const evidence = await refreshDeterministicSpatialEvidenceFromOutput(
+      probe,
+      await readJson(path.join(outputRoot, "animation-evidence.json")),
+      outputRoot
+    );
+    console.log(
+      `Offline spatial refresh: ${evidence.sourceSpatialCompositions.length} accepted composition(s), `
+      + `${evidence.spatialCompositionCandidates.length} candidate(s), `
+      + `${evidence.glbAnimations.modelCount} local model(s); no network or Codex.`
+    );
     const judgment = await writeOutputs(outputRoot, evidence, normalizeJudgmentForEvidence(
       await readJson(path.join(outputRoot, "codex-animation-judgment.json")),
       evidence
@@ -8379,7 +10995,7 @@ async function main(options) {
     promptVersion: CODEX_PROMPT_VERSION,
     cacheSchemaVersion: JUDGMENT_CACHE_SCHEMA_VERSION,
     evidenceFingerprint,
-    fingerprintBasis: "semantic source resources plus beat/model/part/action/driver state and scroll-target perceptual hashes; volatile capture timing, raw image bytes, and local paths excluded"
+    fingerprintBasis: "semantic source resources plus beat/model/part/action/driver state, deterministic source spatial composition and GLB geometry, and scroll-target perceptual hashes; volatile capture timing, raw image bytes, and local paths excluded"
   };
   await writeJson(path.join(outputRoot, "animation-evidence.json"), evidence);
   console.log(`Evidence: ${path.join(outputRoot, "animation-evidence.json")}`);
@@ -8450,6 +11066,19 @@ function padJsonBuffer(jsonText) {
   return Buffer.from(`${jsonText}${" ".repeat(padding)}`, "utf8");
 }
 
+function createJsonFixtureGlb(json) {
+  const jsonChunk = padJsonBuffer(JSON.stringify(json));
+  const totalLength = 12 + 8 + jsonChunk.length;
+  const buffer = Buffer.alloc(totalLength);
+  buffer.write("glTF", 0, "utf8");
+  buffer.writeUInt32LE(2, 4);
+  buffer.writeUInt32LE(totalLength, 8);
+  buffer.writeUInt32LE(jsonChunk.length, 12);
+  buffer.writeUInt32LE(0x4e4f534a, 16);
+  jsonChunk.copy(buffer, 20);
+  return buffer;
+}
+
 function createFixtureGlb({ animated = true } = {}) {
   const json = {
     asset: { version: "2.0" },
@@ -8467,22 +11096,49 @@ function createFixtureGlb({ animated = true } = {}) {
       }
     ];
   }
-  const jsonChunk = padJsonBuffer(JSON.stringify(json));
-  const totalLength = 12 + 8 + jsonChunk.length;
-  const buffer = Buffer.alloc(totalLength);
-  buffer.write("glTF", 0, "utf8");
-  buffer.writeUInt32LE(2, 4);
-  buffer.writeUInt32LE(totalLength, 8);
-  buffer.writeUInt32LE(jsonChunk.length, 12);
-  buffer.writeUInt32LE(0x4e4f534a, 16);
-  jsonChunk.copy(buffer, 20);
-  return buffer;
+  return createJsonFixtureGlb(json);
+}
+
+function createSpatialFixtureGlb({
+  min = [-1, -1, -1],
+  max = [1, 1, 1],
+  nodeScale = [1, 1, 1],
+  nodeTranslation = [0, 0, 0]
+} = {}) {
+  return createJsonFixtureGlb({
+    asset: { version: "2.0" },
+    scene: 0,
+    scenes: [{ name: "Spatial Scene", nodes: [0] }],
+    nodes: [{
+      name: "Loaded Root",
+      children: [1]
+    }, {
+      name: "Spatial Mesh",
+      mesh: 0,
+      translation: nodeTranslation,
+      scale: nodeScale
+    }],
+    meshes: [{
+      name: "Spatial Geometry",
+      primitives: [{ attributes: { POSITION: 0 }, mode: 4 }]
+    }],
+    accessors: [{
+      min,
+      max,
+      count: 128,
+      componentType: 5126,
+      type: "VEC3"
+    }]
+  });
 }
 
 async function runSelfTest() {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "animation-logic-probe-"));
   const fixturePath = path.join(tempDir, "fixture.glb");
   const staticFixturePath = path.join(tempDir, "static-fixture.glb");
+  const spatialSphereFixturePath = path.join(tempDir, "mars-sphere.glb");
+  const spatialPinFixturePath = path.join(tempDir, "mission-pin.glb");
+  const spatialContextFixturePath = path.join(tempDir, "starfield.glb");
   const imageFixturePath = path.join(tempDir, "mars-image.jpg");
   const marsCoverFixturePath = path.join(tempDir, "Mars_desktopCover_1600.jpg");
   const marsVikingFixturePath = path.join(tempDir, "viking1.jpg");
@@ -8490,6 +11146,20 @@ async function runSelfTest() {
   const marsOlympicsFixturePath = path.join(tempDir, "05-NYT-AR-oly-ar-promo-container-master315-v4.jpg");
   await fs.writeFile(fixturePath, createFixtureGlb());
   await fs.writeFile(staticFixturePath, createFixtureGlb({ animated: false }));
+  await fs.writeFile(spatialSphereFixturePath, createSpatialFixtureGlb({
+    min: [-1, -1, -1],
+    max: [1, 1, 1],
+    nodeScale: [10, 10, 10]
+  }));
+  await fs.writeFile(spatialPinFixturePath, createSpatialFixtureGlb({
+    min: [0.99, -0.01, -0.01],
+    max: [1.01, 0.01, 0.01],
+    nodeScale: [0.01, 0.01, 0.01]
+  }));
+  await fs.writeFile(spatialContextFixturePath, createSpatialFixtureGlb({
+    min: [-50, -50, -50],
+    max: [50, 50, 50]
+  }));
   await fs.writeFile(imageFixturePath, Buffer.from("fixture image bytes"));
   await fs.writeFile(marsCoverFixturePath, Buffer.from("mars cover bytes"));
   await fs.writeFile(marsVikingFixturePath, Buffer.from("mars viking bytes"));
@@ -8602,6 +11272,518 @@ async function runSelfTest() {
   assert.equal(summary.hasCameraAnimation, true);
   assert.equal(staticSummary.animationCount, 0);
   assert.equal(staticSummary.hasEmbeddedAnimation, false);
+  const spatialSphereBytes = await fs.readFile(spatialSphereFixturePath);
+  const spatialPinBytes = await fs.readFile(spatialPinFixturePath);
+  const spatialContextBytes = await fs.readFile(spatialContextFixturePath);
+  const spatialDownloads = [
+    {
+      url: "https://example.com/models/mars-sphere.glb",
+      finalUrl: "https://example.com/models/mars-sphere.glb",
+      localPath: spatialSphereFixturePath,
+      fileSize: spatialSphereBytes.length,
+      contentType: "model/gltf-binary",
+      assetType: "model",
+      bytes: spatialSphereBytes
+    },
+    {
+      url: "https://example.com/models/mission-pin.glb",
+      finalUrl: "https://example.com/models/mission-pin.glb",
+      localPath: spatialPinFixturePath,
+      fileSize: spatialPinBytes.length,
+      contentType: "model/gltf-binary",
+      assetType: "model",
+      bytes: spatialPinBytes
+    },
+    {
+      url: "https://example.com/models/starfield.glb",
+      finalUrl: "https://example.com/models/starfield.glb",
+      localPath: spatialContextFixturePath,
+      fileSize: spatialContextBytes.length,
+      contentType: "model/gltf-binary",
+      assetType: "model",
+      bytes: spatialContextBytes
+    }
+  ];
+  const spatialModelRecords = modelEvidenceFromDownloads(spatialDownloads).modelRecords;
+  const spatialSphereSummary = spatialModelRecords.find((model) => model.file === "mars-sphere.glb");
+  const spatialPinSummary = spatialModelRecords.find((model) => model.file === "mission-pin.glb");
+  assert.deepEqual(spatialSphereSummary.sceneRoots[0].rootNodeIndices, [0]);
+  assert.equal(spatialSphereSummary.nodes[1].scale[0], 10);
+  assert.equal(spatialSphereSummary.positionBounds.surfaceRadiusEstimate, 1);
+  assert.equal(spatialSphereSummary.scenePositionBounds.surfaceRadiusEstimate, 10);
+  assert.equal(
+    spatialSphereSummary.scenePositionBoundsWithImmediateChildScaleReset.surfaceRadiusEstimate,
+    1
+  );
+  assert.equal(spatialPinSummary.scenePositionBounds.center[0], 0.01);
+  assert.equal(spatialPinSummary.scenePositionBoundsWithImmediateChildScaleReset.center[0], 1);
+  assert.equal(
+    sourcePositionBoundsProfile({
+      positionBounds: spatialSphereSummary.positionBounds,
+      meshNodeTransformsIdentity: false
+    }, matrix4Identity(), null),
+    null,
+    "Raw POSITION bounds without identity or scene-transform proof must remain candidate-only."
+  );
+  const spatialSourceConfig = {
+    models: [
+      {
+        path: "models/mars-sphere.glb",
+        transform: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [100, 100, 100] }
+      },
+      {
+        path: "models/starfield.glb",
+        transform: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] }
+      }
+    ],
+    highlights: [
+      {
+        path: "models/mission-pin.glb",
+        slideindeces: [0],
+        transform: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [100, 100, 100] }
+      }
+    ]
+  };
+  const loaderPolicySource = [
+    "const loadedRoot = gltf.scene.children[0];",
+    "loadedRoot.children.forEach((child) => child.scale.set(1, 1, 1));"
+  ].join("\n");
+  const spatialProbeFixture = {
+    story_url: "https://example.com/mars-like-story",
+    scripts: [{ index: 0, text: loaderPolicySource, keywordWindows: [] }],
+    data_params: [{
+      index: 0,
+      attribute: "data-params",
+      text: JSON.stringify(spatialSourceConfig),
+      keywordWindows: []
+    }],
+    snapshots: []
+  };
+  const loaderPolicies = loaderTransformPoliciesFromSources(spatialProbeFixture, []);
+  assert.equal(loaderPolicies[0].operation, "reset-immediate-child-scale");
+  assert.equal(loaderPolicies[0].loaderTransformTarget, "first-scene-child-children");
+  const spatialCatalog = extractedSourceSpatialCatalog(
+    spatialProbeFixture,
+    spatialModelRecords,
+    loaderPolicies
+  );
+  const positiveSpatialEvidence = spatialCompositionEvidence({
+    runtimeSnapshots: [],
+    modelRecords: spatialModelRecords,
+    catalog: spatialCatalog
+  });
+  assert.equal(positiveSpatialEvidence.spatialCompositionCandidates.length, 2);
+  assert.equal(
+    positiveSpatialEvidence.spatialCompositionCandidates.filter((candidate) => candidate.accepted).length,
+    2
+  );
+  const acceptedSpatialCandidate = positiveSpatialEvidence.spatialCompositionCandidates.find(
+    (candidate) => candidate.relationshipType === "surface-marker-placement"
+  );
+  assert.equal(acceptedSpatialCandidate.relationshipType, "surface-marker-placement");
+  assert.equal(acceptedSpatialCandidate.provenance, "direct-source-config+glb-intrinsic-geometry");
+  assert.equal(acceptedSpatialCandidate.runtimeValidation, "unobserved");
+  assert.equal(acceptedSpatialCandidate.acceptance.sourceGeometryTransformSafe, true);
+  assert.equal(acceptedSpatialCandidate.acceptance.sourceCoordinateFrame, true);
+  assert.equal(positiveSpatialEvidence.sourceSpatialCompositions.length, 1);
+  const positiveComposition = positiveSpatialEvidence.sourceSpatialCompositions[0];
+  assert.equal(positiveComposition.accepted, true);
+  assert.equal(positiveComposition.placementPolicy, "source-locked");
+  assert.equal(positiveComposition.relations[0].predicate, "surface-marker-placement");
+  assert.equal(positiveComposition.framing.readerViewpoint, "exocentric");
+  assert.equal(positiveComposition.framing.coordinateSpace, "source-config-local");
+  assert(positiveComposition.framing.compositionBounds);
+  assert.deepEqual(
+    positiveComposition.members.map((member) => member.role),
+    ["framing-anchor", "context", "placed"]
+  );
+  assert.deepEqual(
+    positiveComposition.members.find((member) => member.role === "framing-anchor").resolvedLocalMatrix,
+    sourceTransformRecord(spatialSourceConfig.models[0].transform).matrix
+  );
+  assert.deepEqual(
+    positiveComposition.members.find((member) => member.role === "placed").resolvedLocalMatrix,
+    sourceTransformRecord(spatialSourceConfig.highlights[0].transform).matrix
+  );
+  assert.equal(
+    positiveComposition.members.find((member) => member.role === "framing-anchor")
+      .intrinsicBounds.surfaceRadiusEstimate,
+    1
+  );
+  assert.equal(
+    positiveComposition.members.find((member) => member.role === "placed").intrinsicBounds.center[0],
+    1
+  );
+  assert(
+    positiveComposition.members.every((member) => (
+      member.loaderTransformPolicy === "reset-immediate-child-scale"
+      && member.loaderTransformTarget === "first-scene-child-children"
+    ))
+  );
+  const genericAssemblyConfig = {
+    models: [{
+      path: "models/starfield.glb",
+      transform: {
+        position: [2, -1, 4],
+        rotation: [0.2, 0.4, -0.1],
+        scale: [2, 3, 4]
+      }
+    }],
+    highlights: [
+      {
+        path: "models/mission-pin.glb",
+        slideindeces: [0],
+        transform: {
+          position: [-3, 5, 7],
+          rotation: [0.3, -0.2, 0.5],
+          scale: [0.25, 0.5, 0.75]
+        }
+      },
+      {
+        path: "models/mission-pin.glb",
+        slideindeces: [1],
+        transform: {
+          position: [1, 2, 3],
+          rotation: [-0.4, 0.1, 0.2],
+          scale: [0.8, 0.6, 0.4]
+        }
+      }
+    ]
+  };
+  const genericAssemblyProbe = {
+    story_url: "https://example.com/generic-assembly-story",
+    scripts: [],
+    data_params: [{
+      index: 0,
+      attribute: "data-params",
+      text: JSON.stringify(genericAssemblyConfig),
+      keywordWindows: []
+    }],
+    snapshots: []
+  };
+  const genericAssemblyCatalog = extractedSourceSpatialCatalog(
+    genericAssemblyProbe,
+    spatialModelRecords,
+    []
+  );
+  const genericAssemblyEvidence = spatialCompositionEvidence({
+    runtimeSnapshots: [],
+    modelRecords: spatialModelRecords,
+    catalog: genericAssemblyCatalog
+  });
+  assert.equal(genericAssemblyEvidence.spatialCompositionCandidates.length, 2);
+  assert(
+    genericAssemblyEvidence.spatialCompositionCandidates.every((candidate) => (
+      candidate.accepted
+      && candidate.relationshipType === "source-config-coordinate-frame"
+      && candidate.acceptance.sourceCoordinateFrame
+      && !candidate.acceptance.geometryCorroborated
+    )),
+    "A complete bounded source frame does not require a story-specific surface or counterpart shape."
+  );
+  assert.equal(genericAssemblyEvidence.sourceSpatialCompositions.length, 1);
+  const genericAssemblyComposition = genericAssemblyEvidence.sourceSpatialCompositions[0];
+  assert.equal(genericAssemblyComposition.framing.coordinateSpace, "source-config-local");
+  assert(genericAssemblyComposition.framing.compositionBounds);
+  assert.deepEqual(
+    genericAssemblyComposition.members.find((member) => member.role === "framing-anchor").resolvedLocalMatrix,
+    sourceTransformRecord(genericAssemblyConfig.models[0].transform).matrix
+  );
+  assert.deepEqual(
+    genericAssemblyComposition.members.find((member) => member.sourceActiveStateIds.includes("0")).resolvedLocalMatrix,
+    sourceTransformRecord(genericAssemblyConfig.highlights[0].transform).matrix
+  );
+  assert.deepEqual(
+    genericAssemblyComposition.members.find((member) => member.sourceActiveStateIds.includes("1")).resolvedLocalMatrix,
+    sourceTransformRecord(genericAssemblyConfig.highlights[1].transform).matrix
+  );
+  const genericAssemblyEnvelope = sourceSpatialCompositionEnvelopeForAuthorInput(
+    genericAssemblyEvidence,
+    [0, 1].map((stateIndex) => ({
+      file: "mission-pin.glb",
+      attributes: {
+        probeBeatId: `raw-probe-beat-${stateIndex}`,
+        probeAssetFiles: ["mission-pin.glb"],
+        probeAssetUrls: ["https://example.com/models/mission-pin.glb"]
+      }
+    })),
+    spatialDownloads.map((download) => ({
+      asset_url: download.url,
+      final_url: download.finalUrl,
+      local_path: `models/${path.basename(download.localPath)}`,
+      asset_type: "model"
+    }))
+  );
+  const genericActiveSets = genericAssemblyEnvelope.compositions[0].activeSetsByBeat;
+  const stateZeroInstanceId = genericAssemblyComposition.members.find(
+    (member) => member.sourceActiveStateIds.includes("0")
+  ).instanceId;
+  const stateOneInstanceId = genericAssemblyComposition.members.find(
+    (member) => member.sourceActiveStateIds.includes("1")
+  ).instanceId;
+  assert(genericActiveSets["slide-1"].includes(stateZeroInstanceId));
+  assert(!genericActiveSets["slide-1"].includes(stateOneInstanceId));
+  assert(genericActiveSets["slide-2"].includes(stateOneInstanceId));
+  assert(!genericActiveSets["slide-2"].includes(stateZeroInstanceId));
+  const ambiguousAssetCatalog = extractedSourceSpatialCatalog(
+    genericAssemblyProbe,
+    [
+      ...spatialModelRecords,
+      {
+        ...spatialModelRecords.find((model) => model.file === "mission-pin.glb"),
+        assetUrl: "https://duplicate.example.com/models/mission-pin.glb",
+        finalUrl: "https://duplicate.example.com/models/mission-pin.glb"
+      }
+    ],
+    []
+  );
+  const ambiguousAssetEvidence = spatialCompositionEvidence({
+    runtimeSnapshots: [],
+    modelRecords: spatialModelRecords,
+    catalog: ambiguousAssetCatalog
+  });
+  assert.equal(
+    ambiguousAssetEvidence.sourceSpatialCompositions.length,
+    0,
+    "An ambiguous source asset identity must fail closed instead of creating a composition."
+  );
+  const spatialAuthorEnvelope = sourceSpatialCompositionEnvelopeForAuthorInput(
+    positiveSpatialEvidence,
+    [{
+      file: "mission-pin.glb",
+      attributes: {
+        probeBeatId: "raw-probe-beat-9",
+        probeAssetFiles: ["mission-pin.glb"],
+        probeAssetUrls: ["https://example.com/models/mission-pin.glb"]
+      }
+    }],
+    spatialDownloads.map((download) => ({
+      asset_url: download.url,
+      final_url: download.finalUrl,
+      local_path: `models/${path.basename(download.localPath)}`,
+      asset_type: "model"
+    }))
+  );
+  assert.equal(spatialAuthorEnvelope.schemaVersion, SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION);
+  assert.deepEqual(spatialAuthorEnvelope.compositions[0].beatIds, ["slide-1"]);
+  assert.deepEqual(
+    spatialAuthorEnvelope.compositions[0].activeSetsByBeat["slide-1"],
+    positiveComposition.members.map((member) => member.instanceId).sort(stableCompare)
+  );
+  assert.equal(
+    spatialAuthorEnvelope.compositions[0].sourceBeatAliasesByBeat["slide-1"],
+    "raw-probe-beat-9"
+  );
+  const relocatedSpatialAuthorEnvelope = sourceSpatialCompositionEnvelopeForAuthorInput(
+    positiveSpatialEvidence,
+    [{
+      file: "mission-pin.glb",
+      attributes: {
+        probeBeatId: "raw-probe-beat-9",
+        probeAssetFiles: ["mission-pin.glb"],
+        probeAssetUrls: ["https://example.com/models/mission-pin.glb"]
+      }
+    }],
+    spatialDownloads.map((download) => ({
+      asset_url: download.url,
+      final_url: download.finalUrl,
+      local_path: `relocated/${path.basename(download.localPath)}`,
+      asset_type: "model"
+    }))
+  );
+  assert.equal(
+    relocatedSpatialAuthorEnvelope.signature,
+    spatialAuthorEnvelope.signature,
+    "Author-copy paths must not change the semantic composition signature."
+  );
+  assert.equal(
+    sourceSpatialCompositionEnvelopeForAuthorInput(
+      { sourceSpatialCompositions: [] },
+      [],
+      []
+    ),
+    null
+  );
+  const broadSceneOnly = spatialCompositionEvidence({
+    runtimeSnapshots: [{
+      id: "co-loaded-only",
+      runtime3D: {
+        models: [
+          { runtimeModelId: "shark-a", assetUrl: "https://example.com/shark-a.glb" },
+          { runtimeModelId: "shark-b", assetUrl: "https://example.com/shark-b.glb" }
+        ],
+        spatialRelationshipClues: []
+      }
+    }],
+    modelRecords: [],
+    catalog: {
+      schemaVersion: RUNTIME_3D_CATALOG_SCHEMA_VERSION,
+      models: [
+        { instanceId: "shark-a", containerId: "broad-scene" },
+        { instanceId: "shark-b", containerId: "broad-scene" }
+      ],
+      explicitRelationships: []
+    }
+  });
+  assert.equal(broadSceneOnly.spatialCompositionCandidates.length, 0);
+  assert.equal(broadSceneOnly.sourceSpatialCompositions.length, 0);
+  const legacyRuntime3D = normalizeRuntime3D({
+    captureStatus: "ok",
+    models: [{ runtimeModelId: "legacy-model", assetUrl: "https://example.com/legacy.glb" }]
+  });
+  assert.equal(legacyRuntime3D.schemaVersion, "storyvr-runtime-3d-observation/v1");
+  assert.equal(legacyRuntime3D.models[0].spatialState, null);
+  assert.deepEqual(legacyRuntime3D.spatialRelationshipClues, []);
+  const normalizedV2Runtime3D = normalizeRuntime3D({
+    schemaVersion: "storyvr-runtime-3d-observation/v2",
+    backwardCompatibleWith: ["storyvr-runtime-3d-observation/v1"],
+    catalogSchemaVersion: RUNTIME_3D_CATALOG_SCHEMA_VERSION,
+    catalogRevision: "catalog-revision",
+    catalogModelRefs: ["catalog-model-a"],
+    captureStatus: "ok",
+    models: [{
+      runtimeModelId: "v2-model",
+      spatialState: {
+        instanceId: "v2-instance",
+        localTransform: { matrix: matrix4Identity() },
+        worldTransform: { matrix: matrix4Identity() },
+        worldBounds: {
+          aabb: { min: [-1, -1, -1], max: [1, 1, 1] },
+          center: [0, 0, 0],
+          boundingSphere: { center: [0, 0, 0], radius: 1 }
+        }
+      }
+    }]
+  });
+  assert.deepEqual(normalizedV2Runtime3D.backwardCompatibleWith, [
+    "storyvr-runtime-3d-observation/v1"
+  ]);
+  assert.equal(normalizedV2Runtime3D.catalogRevision, "catalog-revision");
+  assert.deepEqual(normalizedV2Runtime3D.models[0].spatialState.worldTransform.matrix, matrix4Identity());
+  const normalizedSpatialJudgment = normalizeJudgmentForEvidence({
+    spatialCompositionJudgments: [{
+      candidateId: acceptedSpatialCandidate.id,
+      accepted: false,
+      transformRef: { matrix: new Array(16).fill(999) },
+      semanticLabel: "mission location on planetary surface",
+      subjectRole: "mission marker",
+      referenceRole: "planet",
+      confidence: 0.91
+    }]
+  }, {
+    story: { title: "Mars-like fixture" },
+    spatialCompositionCandidates: positiveSpatialEvidence.spatialCompositionCandidates,
+    sourceSpatialCompositions: positiveSpatialEvidence.sourceSpatialCompositions,
+    relationships: [],
+    runtimeObservation: { beatRuntimeStates: [] }
+  });
+  const immutableSpatialRow = normalizedSpatialJudgment.spatialCompositionJudgments.find(
+    (row) => row.candidateId === acceptedSpatialCandidate.id
+  );
+  assert.equal(immutableSpatialRow.accepted, true);
+  assert.deepEqual(immutableSpatialRow.transformRef, acceptedSpatialCandidate.transformRef);
+  assert.equal(immutableSpatialRow.semanticLabel, "mission location on planetary surface");
+  const spatialFingerprintFixture = {
+    story: { url: "https://example.com/mars-like-story", slug: "mars-like-story", title: "Mars-like Story" },
+    sourceProbe: {},
+    downloads: [],
+    failedDownloads: [],
+    sourceEvidence: [],
+    glbAnimations: { models: spatialModelRecords },
+    relationships: [],
+    runtime3DCatalog: spatialCatalog,
+    runtimeObservation: { beatRuntimeStates: [] },
+    imageAssets: [],
+    imageRelevance: {},
+    spatialCompositionCandidates: positiveSpatialEvidence.spatialCompositionCandidates,
+    sourceSpatialCompositions: positiveSpatialEvidence.sourceSpatialCompositions,
+    spatialCompositionSignature: positiveSpatialEvidence.spatialCompositionSignature
+  };
+  const stableSpatialFingerprint = judgmentEvidenceFingerprint(spatialFingerprintFixture);
+  const volatileSpatialFingerprintFixture = structuredClone(spatialFingerprintFixture);
+  volatileSpatialFingerprintFixture.spatialCompositionCandidates[0].evidenceRefs = ["snapshot-random"];
+  volatileSpatialFingerprintFixture.spatialCompositionCandidates[0].stability.sampleCount = 999;
+  volatileSpatialFingerprintFixture.sourceSpatialCompositions[0].evidenceRefs = ["snapshot-other"];
+  assert.equal(
+    judgmentEvidenceFingerprint(volatileSpatialFingerprintFixture),
+    stableSpatialFingerprint,
+    "Snapshot IDs and sample-count jitter must not change a static-placement fingerprint."
+  );
+  const changedSpatialFingerprintFixture = structuredClone(spatialFingerprintFixture);
+  changedSpatialFingerprintFixture.spatialCompositionCandidates[0].transformRef.matrix[12] += 0.25;
+  assert.notEqual(
+    judgmentEvidenceFingerprint(changedSpatialFingerprintFixture),
+    stableSpatialFingerprint,
+    "A numeric placement change must invalidate the semantic judgment fingerprint."
+  );
+  const offlineOutputRoot = path.join(tempDir, "offline-output");
+  await fs.mkdir(path.join(offlineOutputRoot, "downloads", "models"), { recursive: true });
+  await fs.mkdir(path.join(offlineOutputRoot, "downloads", "scripts"), { recursive: true });
+  for (const download of spatialDownloads) {
+    await fs.copyFile(download.localPath, path.join(
+      offlineOutputRoot,
+      "downloads",
+      "models",
+      path.basename(download.localPath)
+    ));
+  }
+  const offlineLoaderPath = path.join(offlineOutputRoot, "downloads", "scripts", "loader.js");
+  await fs.writeFile(offlineLoaderPath, loaderPolicySource, "utf8");
+  const offlineEvidence = {
+    tool: "animation-logic-probe-analyzer",
+    version: "0.16.2",
+    generatedAt: "2026-01-01T00:00:00.000Z",
+    sourceProbe: {},
+    story: {
+      url: spatialProbeFixture.story_url,
+      slug: "mars-like-story",
+      title: "Mars-like Story"
+    },
+    runtimeObservation: { beatRuntimeStates: [], snapshots: [] },
+    downloads: [
+      ...spatialDownloads.map((download) => ({
+        url: download.url,
+        finalUrl: download.finalUrl,
+        assetType: "model",
+        localPath: `stale-output/downloads/models/${path.basename(download.localPath)}`,
+        contentType: download.contentType,
+        fileSize: download.fileSize,
+        contentHash: "old"
+      })),
+      {
+        url: "https://example.com/scripts/loader.js",
+        finalUrl: "https://example.com/scripts/loader.js",
+        assetType: "script",
+        localPath: "stale-output/downloads/scripts/loader.js",
+        contentType: "text/javascript",
+        fileSize: loaderPolicySource.length,
+        contentHash: "old"
+      }
+    ],
+    failedDownloads: [],
+    sourceEvidence: [],
+    glbAnimations: { modelCount: 0, animatedModelCount: 0, parseFailures: [], models: [] },
+    relationships: [],
+    imageAssets: [],
+    imageRelevance: {}
+  };
+  const offlineRefreshedEvidence = await refreshDeterministicSpatialEvidenceFromOutput(
+    spatialProbeFixture,
+    offlineEvidence,
+    offlineOutputRoot
+  );
+  assert.equal(offlineRefreshedEvidence.version, VERSION);
+  assert.equal(offlineRefreshedEvidence.glbAnimations.modelCount, 3);
+  assert.equal(offlineRefreshedEvidence.sourceSpatialCompositions.length, 1);
+  assert.equal(
+    offlineRefreshedEvidence.sourceSpatialCompositions[0].members
+      .find((member) => member.role === "placed").loaderTransformTarget,
+    "first-scene-child-children"
+  );
+  assert.equal(
+    offlineRefreshedEvidence.downloads.every((download) => !download.localPath.startsWith("stale-output/")),
+    true
+  );
   assert.equal(parseGltfJsonFromDownload({ url: "https://example.com/model-endpoint", localPath: path.join(tempDir, "model-endpoint"), bytes }).animations.length, 1);
   const extensionlessCandidates = discoverCandidateRecords({
     story_url: "https://example.com/story",
