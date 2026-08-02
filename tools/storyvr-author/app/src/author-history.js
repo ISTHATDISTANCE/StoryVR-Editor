@@ -25,7 +25,7 @@ export class AuthorHistory {
     if (!this.active) return null;
     const active = this.active;
     this.active = null;
-    return this.record({ ...active, after });
+    return this.recordCloned({ ...active, after: cloneValue(after) });
   }
 
   cancel() {
@@ -33,15 +33,22 @@ export class AuthorHistory {
   }
 
   record({ label, componentId = "", before, after }) {
-    const normalizedBefore = cloneValue(before);
-    const normalizedAfter = cloneValue(after);
-    if (equivalentHistoryState(normalizedBefore, normalizedAfter)) return null;
+    return this.recordCloned({
+      label,
+      componentId,
+      before: cloneValue(before),
+      after: cloneValue(after),
+    });
+  }
+
+  recordCloned({ label, componentId = "", before, after }) {
+    if (equivalentHistoryState(before, after)) return null;
     const entry = {
       id: ++this.sequence,
       label: normalizeLabel(label),
       componentId: String(componentId || ""),
-      before: normalizedBefore,
-      after: normalizedAfter,
+      before,
+      after,
     };
     this.past.push(entry);
     if (this.past.length > this.limit) this.past.splice(0, this.past.length - this.limit);
@@ -134,8 +141,44 @@ export function isEditableHistoryTarget(target) {
   return ["input", "textarea", "select"].includes(tagName) || target.isContentEditable === true;
 }
 
-function equivalentHistoryState(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right);
+function equivalentHistoryState(left, right, seen = new WeakMap()) {
+  if (Object.is(left, right)) return true;
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return false;
+  if (Object.getPrototypeOf(left) !== Object.getPrototypeOf(right)) return false;
+
+  const seenRight = seen.get(left);
+  if (seenRight) return seenRight === right;
+  seen.set(left, right);
+
+  if (Array.isArray(left)) {
+    if (left.length !== right.length) return false;
+    return left.every((value, index) => equivalentHistoryState(value, right[index], seen));
+  }
+  if (left instanceof Date) return left.getTime() === right.getTime();
+  if (left instanceof Set) {
+    if (left.size !== right.size) return false;
+    const leftValues = [...left];
+    const rightValues = [...right];
+    return leftValues.every((value, index) => equivalentHistoryState(value, rightValues[index], seen));
+  }
+  if (left instanceof Map) {
+    if (left.size !== right.size) return false;
+    const leftEntries = [...left.entries()];
+    const rightEntries = [...right.entries()];
+    return leftEntries.every(([key, value], index) => (
+      equivalentHistoryState(key, rightEntries[index][0], seen)
+      && equivalentHistoryState(value, rightEntries[index][1], seen)
+    ));
+  }
+
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+  for (const key of leftKeys) {
+    if (!Object.prototype.hasOwnProperty.call(right, key)) return false;
+    if (!equivalentHistoryState(left[key], right[key], seen)) return false;
+  }
+  return true;
 }
 
 function normalizeLabel(value) {

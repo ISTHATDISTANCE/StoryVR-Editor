@@ -14,9 +14,9 @@ import {
   validatePcdBytes
 } from "./pointcloud-effect.mjs";
 
-const VERSION = "0.18.0";
+const VERSION = "0.20.0";
 const JUDGMENT_SCHEMA_VERSION = "storyvr-animation-judgment/v3";
-const CODEX_PROMPT_VERSION = "storyvr-animation-codex/v7";
+const CODEX_PROMPT_VERSION = "storyvr-animation-codex/v9";
 const JUDGMENT_CACHE_SCHEMA_VERSION = "storyvr-codex-judgment-cache/v1";
 const SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION = "storyvr-source-spatial-composition/v1";
 const RUNTIME_3D_CATALOG_SCHEMA_VERSION = "storyvr-runtime-3d-catalog/v1";
@@ -43,6 +43,8 @@ const CODEX_PROMPT_PROFILES = [
     sourceEvidenceLimit: MAX_EVIDENCE_ITEMS,
     sourceContextChars: null,
     runtimeBeatLimit: MAX_CODEX_RUNTIME_BEATS,
+    runtimePartLimit: 80,
+    runtimeChangedPartLimit: 80,
     downloadLimit: DEFAULT_MAX_DOWNLOADS,
     activeTextExampleLimit: 6,
     activeTextChars: 480
@@ -52,6 +54,8 @@ const CODEX_PROMPT_PROFILES = [
     sourceEvidenceLimit: 180,
     sourceContextChars: 720,
     runtimeBeatLimit: 300,
+    runtimePartLimit: 48,
+    runtimeChangedPartLimit: 64,
     downloadLimit: 120,
     activeTextExampleLimit: 4,
     activeTextChars: 360
@@ -61,6 +65,8 @@ const CODEX_PROMPT_PROFILES = [
     sourceEvidenceLimit: 120,
     sourceContextChars: 420,
     runtimeBeatLimit: 200,
+    runtimePartLimit: 32,
+    runtimeChangedPartLimit: 48,
     downloadLimit: 100,
     activeTextExampleLimit: 3,
     activeTextChars: 280
@@ -70,6 +76,8 @@ const CODEX_PROMPT_PROFILES = [
     sourceEvidenceLimit: 80,
     sourceContextChars: 240,
     runtimeBeatLimit: 120,
+    runtimePartLimit: 20,
+    runtimeChangedPartLimit: 32,
     downloadLimit: 80,
     activeTextExampleLimit: 2,
     activeTextChars: 200
@@ -864,6 +872,7 @@ function semanticRound(value, digits = 3) {
 
 function semanticRuntimePart(part) {
   return {
+    catalogPartId: part?.catalogPartId || "",
     nodeIndex: Number.isInteger(part?.nodeIndex) ? part.nodeIndex : null,
     nodePath: part?.nodePath || "",
     name: part?.name || "",
@@ -5734,6 +5743,114 @@ function sourceSpatialCompositionBounds(members) {
   return bounds ? { min: bounds.min, max: bounds.max } : null;
 }
 
+function sourceSpatialMemberBounds(member) {
+  const bounds = transformAabb(member?.intrinsicBounds, member?.resolvedLocalMatrix);
+  return bounds ? { min: bounds.min, max: bounds.max } : null;
+}
+
+function sourceSpatialBoundsExtent(bounds) {
+  if (!bounds?.min || !bounds?.max) return null;
+  const extent = [0, 1, 2].map((index) => Number(bounds.max[index]) - Number(bounds.min[index]));
+  return extent.every((value) => Number.isFinite(value) && value >= 0) ? extent : null;
+}
+
+function sourceSpatialBoundsEnclose(outer, inner, minimumExtentRatio = 2.5) {
+  const outerExtent = sourceSpatialBoundsExtent(outer);
+  const innerExtent = sourceSpatialBoundsExtent(inner);
+  if (!outerExtent || !innerExtent) return false;
+  const outerMaximum = Math.max(...outerExtent);
+  const innerMaximum = Math.max(...innerExtent);
+  if (!(outerMaximum > 0) || !(innerMaximum > 0) || outerMaximum / innerMaximum < minimumExtentRatio) {
+    return false;
+  }
+  const tolerance = outerMaximum * 0.01;
+  return [0, 1, 2].every((index) => (
+    Number(outer.min[index]) <= Number(inner.min[index]) + tolerance
+    && Number(outer.max[index]) >= Number(inner.max[index]) - tolerance
+  ));
+}
+
+const SOURCE_SPATIAL_VISUAL_FRAMING_ROLES = new Set([
+  "anchor",
+  "content",
+  "context",
+  "environment",
+  "placed",
+  "unknown"
+]);
+
+function normalizedSourceSpatialVisualFramingRole(value) {
+  const role = String(value || "").trim().toLowerCase();
+  return SOURCE_SPATIAL_VISUAL_FRAMING_ROLES.has(role) ? role : "unknown";
+}
+
+function sourceSpatialVisualRoleEvidence(rows) {
+  const byInstanceId = new Map();
+  const add = (instanceId, role, row) => {
+    const id = String(instanceId || "").trim();
+    const normalizedRole = normalizedSourceSpatialVisualFramingRole(role);
+    if (!id || normalizedRole === "unknown") return;
+    const entries = byInstanceId.get(id) || [];
+    entries.push({
+      role: normalizedRole,
+      confidence: clampConfidence(row?.semanticConfidence, 0.25),
+      evidenceRefs: stableStringSet(row?.evidenceRefs || [])
+    });
+    byInstanceId.set(id, entries);
+  };
+  for (const row of rows || []) {
+    add(row?.subjectInstanceId, row?.subjectFramingRole, row);
+    add(row?.referenceInstanceId, row?.referenceFramingRole, row);
+  }
+  return byInstanceId;
+}
+
+function sourceSpatialCompositionWithContentFraming(composition, visualJudgments = []) {
+  const members = Array.isArray(composition?.members) ? composition.members : [];
+  const anchor = members.find((member) => (
+    member.instanceId === composition?.framing?.anchorInstanceId
+  ));
+  const anchorBounds = sourceSpatialMemberBounds(anchor);
+  if (!anchor || !anchorBounds) return composition;
+  const visualRoleEvidence = sourceSpatialVisualRoleEvidence(visualJudgments);
+  const environmentInstanceIds = [];
+  const visualEvidenceRefs = new Set();
+  const contentMembers = [];
+  for (const member of members) {
+    if (!(member.persistent || ["framing-anchor", "context"].includes(member.role))) continue;
+    const roleEvidence = visualRoleEvidence.get(member.instanceId) || [];
+    const visuallyEnvironmental = roleEvidence.some((entry) => (
+      entry.role === "environment" && entry.confidence >= 0.55
+    ));
+    const geometryEnvironmental = member.role === "context"
+      && sourceSpatialBoundsEnclose(sourceSpatialMemberBounds(member), anchorBounds);
+    if (member.instanceId !== anchor.instanceId && (visuallyEnvironmental || geometryEnvironmental)) {
+      environmentInstanceIds.push(member.instanceId);
+      for (const entry of roleEvidence) {
+        if (entry.role !== "environment") continue;
+        for (const evidenceRef of entry.evidenceRefs) visualEvidenceRefs.add(evidenceRef);
+      }
+      continue;
+    }
+    contentMembers.push(member);
+  }
+  if (!contentMembers.some((member) => member.instanceId === anchor.instanceId)) contentMembers.unshift(anchor);
+  const contentBounds = sourceSpatialCompositionBounds(contentMembers) || anchorBounds;
+  return {
+    ...composition,
+    framing: {
+      ...composition.framing,
+      contentBounds,
+      environmentInstanceIds: stableStringSet(environmentInstanceIds),
+      visualEvidenceRefs: stableStringSet([...visualEvidenceRefs]),
+      sizeInference: {
+        primary: "fetched-source-matrices+glb-bounds",
+        visualValidation: visualEvidenceRefs.size ? "story-screenshots" : "geometry-containment"
+      }
+    }
+  };
+}
+
 function spatialCompositionEvidence({
   runtimeSnapshots,
   modelRecords,
@@ -6357,11 +6474,269 @@ function downloadedFilesForCodexPrompt(semanticEvidence, evidence, profile, inve
   }));
 }
 
+function runtimePartForCodexPrompt(part) {
+  return {
+    catalogPartId: part?.catalogPartId || "",
+    nodeIndex: Number.isInteger(part?.nodeIndex) ? part.nodeIndex : null,
+    nodePath: part?.nodePath || "",
+    name: part?.name || "",
+    objectType: part?.objectType || "",
+    changed: Boolean(part?.changed),
+    motionObserved: Boolean(part?.motionObserved),
+    transformChanged: Boolean(part?.transformChanged),
+    visibilityChanged: Boolean(part?.visibilityChanged),
+    opacityChanged: Boolean(part?.opacityChanged),
+    runtimeObservationKind: part?.runtimeObservationKind || "",
+    changeKind: part?.changeKind || "",
+    changeKinds: [...new Set(part?.changeKinds || [])].sort(),
+    opacityRange: Array.isArray(part?.opacityRange) ? part.opacityRange : null
+  };
+}
+
+function promptRuntimePartScore(part) {
+  let score = 0;
+  if (part?.changed) score += 40;
+  if (part?.motionObserved || part?.transformChanged) score += 30;
+  if (part?.visibilityChanged || part?.opacityChanged) score += 25;
+  if ((part?.changeKinds || []).length) score += 10;
+  if (part?.catalogPartId) score += 4;
+  if (part?.name || part?.nodePath) score += 2;
+  return score;
+}
+
+function promptRuntimeParts(parts, maxCount) {
+  const values = Array.isArray(parts) ? parts : [];
+  if (!Number.isInteger(maxCount) || maxCount < 1 || values.length <= maxCount) {
+    return values.map(runtimePartForCodexPrompt);
+  }
+  return values
+    .map((part, index) => ({ part, index, score: promptRuntimePartScore(part) }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, maxCount)
+    .sort((left, right) => left.index - right.index)
+    .map(({ part }) => runtimePartForCodexPrompt(part));
+}
+
+function runtimeSpatialStateForCodexPrompt(spatialState) {
+  const state = spatialState && typeof spatialState === "object" ? spatialState : {};
+  const partStates = Array.isArray(state.partStates) ? state.partStates : [];
+  return {
+    catalogModelId: state.catalogModelId || "",
+    instanceId: state.instanceId || "",
+    loadedStatus: state.loadedStatus || "",
+    hiddenLoaded: Boolean(state.hiddenLoaded),
+    parentObjectId: state.parentObjectId || "",
+    containerId: state.containerId || "",
+    containerCatalogId: state.containerCatalogId || "",
+    rootPath: state.rootPath || "",
+    instanceBoundarySource: state.instanceBoundarySource || "",
+    instanceBoundaryConfidence: semanticRound(state.instanceBoundaryConfidence, 3),
+    compositionId: state.compositionId || "",
+    frameId: state.frameId || "",
+    sourceId: state.sourceId || "",
+    sourceConfigId: state.sourceConfigId || "",
+    activeStateId: state.activeStateId || "",
+    localTransform: canonicalObjectKeys(state.localTransform || null),
+    worldTransform: canonicalObjectKeys(state.worldTransform || null),
+    rootLocalBounds: canonicalObjectKeys(state.rootLocalBounds || null),
+    worldBounds: canonicalObjectKeys(state.worldBounds || null),
+    anchorKind: state.anchorKind || "",
+    anchorWorld: canonicalObjectKeys(state.anchorWorld || null),
+    anchorInRootFrame: canonicalObjectKeys(state.anchorInRootFrame || null),
+    partStateInventory: {
+      included: 0,
+      total: Math.max(Number(state.partStateCount || 0), partStates.length),
+      sourceTruncated: Boolean(state.partStatesTruncated),
+      representation: "static identity is in runtime3DCatalog; beat changes are in partStateChanges"
+    }
+  };
+}
+
+function runtimeModelForCodexPrompt(model, profile, counters) {
+  const visibleParts = Array.isArray(model?.visibleParts) ? model.visibleParts : [];
+  const changedParts = Array.isArray(model?.partStateChanges) ? model.partStateChanges : [];
+  const spatialPartStates = Array.isArray(model?.spatialState?.partStates) ? model.spatialState.partStates : [];
+  const includedVisibleParts = promptRuntimeParts(visibleParts, profile.runtimePartLimit);
+  const includedChangedParts = promptRuntimeParts(changedParts, profile.runtimeChangedPartLimit);
+  counters.visibleParts.total += visibleParts.length;
+  counters.visibleParts.included += includedVisibleParts.length;
+  counters.changedParts.total += changedParts.length;
+  counters.changedParts.included += includedChangedParts.length;
+  counters.spatialPartStates.total += Math.max(
+    Number(model?.spatialState?.partStateCount || 0),
+    spatialPartStates.length
+  );
+  return {
+    relationshipId: model?.relationshipId || "",
+    assetUrl: model?.assetUrl || "",
+    assetFile: model?.assetFile || "",
+    rootName: model?.rootName || "",
+    assetIdentitySource: model?.assetIdentitySource || "unknown",
+    renderEligibility: model?.renderEligibility || "unknown",
+    playbackMode: model?.playbackMode || "unknown",
+    runtimeChanged: Boolean(model?.runtimeChanged),
+    modelChanged: Boolean(model?.modelChanged),
+    modelSwapped: Boolean(model?.modelSwapped),
+    activeModelChanged: Boolean(model?.activeModelChanged),
+    newlyPresent: Boolean(model?.newlyPresent),
+    becameVisible: Boolean(model?.becameVisible),
+    transformChanged: Boolean(model?.transformChanged),
+    visibilityChanged: Boolean(model?.visibilityChanged),
+    opacityChanged: Boolean(model?.opacityChanged),
+    changeKinds: [...new Set(model?.changeKinds || [])].sort(),
+    spatialState: runtimeSpatialStateForCodexPrompt(model?.spatialState),
+    visibleParts: includedVisibleParts,
+    partStateChanges: includedChangedParts,
+    playingAnimations: Array.isArray(model?.playingAnimations) ? model.playingAnimations : []
+  };
+}
+
+function runtimeBeatSignalScore(beat, index, total) {
+  let score = index === 0 || index === total - 1 ? 1_000 : 0;
+  if (beat?.cameraStateChanged) score += 180;
+  if (beat?.variantGroupId || beat?.variantOptionId || (beat?.interactionPath || []).length) score += 160;
+  if ((beat?.visualEvidence || []).some((item) => item?.status === "ok")) score += 30;
+  const models = [...(beat?.visibleModels || []), ...(beat?.renderActiveModels || [])];
+  for (const model of models) {
+    if ((model?.playingAnimations || []).length) score += 240;
+    if (model?.modelSwapped || model?.activeModelChanged || model?.becameVisible) score += 180;
+    if (model?.runtimeChanged || model?.modelChanged) score += 120;
+    if (model?.transformChanged || model?.visibilityChanged || model?.opacityChanged) score += 100;
+    score += Math.min(120, (model?.partStateChanges || []).length * 8);
+  }
+  return score;
+}
+
+function selectedRuntimeBeatIndexes(runtimeBeats, maxCount) {
+  const beats = Array.isArray(runtimeBeats) ? runtimeBeats : [];
+  if (!Number.isInteger(maxCount) || maxCount < 1 || beats.length <= maxCount) {
+    return beats.map((_, index) => index);
+  }
+  const selected = new Set([0, beats.length - 1]);
+  const priorityCapacity = Math.max(0, Math.min(
+    maxCount - selected.size,
+    Math.floor(maxCount * 0.65)
+  ));
+  const ranked = beats
+    .map((beat, index) => ({ index, score: runtimeBeatSignalScore(beat, index, beats.length) }))
+    .filter((item) => !selected.has(item.index) && item.score > 0)
+    .sort((left, right) => right.score - left.score || left.index - right.index);
+  for (const item of ranked.slice(0, priorityCapacity)) selected.add(item.index);
+
+  const remaining = beats.map((_, index) => index).filter((index) => !selected.has(index));
+  for (const index of evenlySample(remaining, Math.max(0, maxCount - selected.size))) selected.add(index);
+  if (selected.size < maxCount) {
+    for (const index of remaining) {
+      selected.add(index);
+      if (selected.size >= maxCount) break;
+    }
+  }
+  return Array.from(selected).sort((left, right) => left - right);
+}
+
+function runtimeBeatsForCodexPrompt(runtimeBeats, profile) {
+  const values = Array.isArray(runtimeBeats) ? runtimeBeats : [];
+  const indexes = selectedRuntimeBeatIndexes(values, profile.runtimeBeatLimit);
+  const counters = {
+    visibleParts: { included: 0, total: 0 },
+    changedParts: { included: 0, total: 0 },
+    spatialPartStates: { included: 0, total: 0 }
+  };
+  const beats = indexes.map((index) => {
+    const beat = values[index];
+    return {
+      ...beat,
+      visibleModels: (beat?.visibleModels || []).map((model) => runtimeModelForCodexPrompt(model, profile, counters)),
+      renderActiveModels: (beat?.renderActiveModels || []).map((model) => runtimeModelForCodexPrompt(model, profile, counters))
+    };
+  });
+  return {
+    beats,
+    diagnostics: {
+      included: beats.length,
+      total: values.length,
+      requestedLimit: profile.runtimeBeatLimit,
+      selection: beats.length < values.length
+        ? "signal-prioritized with even temporal coverage"
+        : "all semantic beats",
+      visibleParts: counters.visibleParts,
+      changedParts: counters.changedParts,
+      spatialPartStates: {
+        ...counters.spatialPartStates,
+        representation: "deduplicated from beats"
+      }
+    }
+  };
+}
+
+function runtime3DCatalogForCodexPrompt(runtime3DCatalog) {
+  const catalog = runtime3DCatalog && typeof runtime3DCatalog === "object" ? runtime3DCatalog : {};
+  const models = Array.isArray(catalog.models) ? catalog.models : [];
+  const parts = Array.isArray(catalog.parts) ? catalog.parts : [];
+  const explicitRelationships = Array.isArray(catalog.explicitRelationships) ? catalog.explicitRelationships : [];
+  return {
+    schemaVersion: catalog.schemaVersion || RUNTIME_3D_CATALOG_SCHEMA_VERSION,
+    revision: catalog.revision || "",
+    inventory: {
+      models: models.length,
+      parts: parts.length,
+      geometries: Array.isArray(catalog.geometries) ? catalog.geometries.length : 0,
+      containers: Array.isArray(catalog.containers) ? catalog.containers.length : 0,
+      compositions: Array.isArray(catalog.compositions) ? catalog.compositions.length : 0,
+      frames: Array.isArray(catalog.frames) ? catalog.frames.length : 0,
+      sources: Array.isArray(catalog.sources) ? catalog.sources.length : 0,
+      explicitRelationships: explicitRelationships.length
+    },
+    models: models.map((model) => ({
+      catalogModelId: model?.catalogModelId || "",
+      runtimeModelId: model?.runtimeModelId || "",
+      instanceId: model?.instanceId || "",
+      assetUrl: semanticUrlIdentity(model?.assetUrl),
+      rootName: model?.rootName || "",
+      rootPath: model?.rootPath || "",
+      identitySource: model?.identitySource || "unknown",
+      identityConfidence: semanticRound(model?.identityConfidence, 3),
+      instanceBoundarySource: model?.instanceBoundarySource || "",
+      compositionId: model?.compositionId || "",
+      compositionRole: model?.compositionRole || "",
+      frameId: model?.frameId || "",
+      sourceId: model?.sourceId || "",
+      sourceConfigId: model?.sourceConfigId || "",
+      activeStateId: model?.activeStateId || "",
+      partCatalogIds: Array.isArray(model?.partCatalogIds) ? model.partCatalogIds : []
+    })),
+    parts: parts.map((part) => ({
+      catalogPartId: part?.catalogPartId || "",
+      catalogModelId: part?.catalogModelId || "",
+      instanceId: part?.instanceId || "",
+      geometryCatalogId: part?.geometryCatalogId || "",
+      geometryFingerprint: part?.geometryFingerprint || "",
+      nodeIndex: Number.isInteger(part?.nodeIndex) ? part.nodeIndex : null,
+      nodePath: part?.nodePath || "",
+      name: part?.name || "",
+      objectType: part?.objectType || ""
+    })),
+    explicitRelationships: explicitRelationships.map((relationship) => ({
+      relationshipHintId: relationship?.relationshipHintId || "",
+      relationshipType: relationship?.relationshipType || "",
+      subjectInstanceId: relationship?.subjectInstanceId || "",
+      referenceInstanceId: relationship?.referenceInstanceId || "",
+      compositionId: relationship?.compositionId || "",
+      frameId: relationship?.frameId || "",
+      sourceConfigId: relationship?.sourceConfigId || "",
+      activeStateId: relationship?.activeStateId || "",
+      source: relationship?.source || "",
+      confidence: semanticRound(relationship?.confidence, 3)
+    }))
+  };
+}
+
 function compactEvidenceForCodexPrompt(evidence, semanticEvidence, profile) {
   const investigationTargets = investigationTargetsFromEvidence(evidence);
   const downloads = downloadedFilesForCodexPrompt(semanticEvidence, evidence, profile, investigationTargets);
   const sourceEvidence = sourceEvidenceForCodexPrompt(semanticEvidence.sourceEvidence, profile);
-  const runtimeBeats = semanticEvidence.runtimeBeats.slice(0, profile.runtimeBeatLimit);
+  const runtimeBeatProjection = runtimeBeatsForCodexPrompt(semanticEvidence.runtimeBeats, profile);
+  const runtimeBeats = runtimeBeatProjection.beats;
   const rawRelationshipsById = new Map((evidence.relationships || []).map((relationship) => [relationship.id, relationship]));
   const relationships = semanticEvidence.relationships.map((relationship) => (
     relationshipForCodexPrompt(relationship, rawRelationshipsById.get(relationship.id), profile)
@@ -6374,7 +6749,7 @@ function compactEvidenceForCodexPrompt(evidence, semanticEvidence, profile) {
       profile: profile.name,
       sourceEvidence: { included: sourceEvidence.length, total: semanticEvidence.sourceEvidence.length },
       downloads: { included: downloads.length, total: semanticEvidence.downloads.length },
-      runtimeBeats: { included: runtimeBeats.length, total: semanticEvidence.runtimeBeats.length },
+      runtimeBeats: runtimeBeatProjection.diagnostics,
       relationships: {
         included: relationships.length,
         total: semanticEvidence.relationships.length,
@@ -6402,6 +6777,7 @@ function compactEvidenceForCodexPrompt(evidence, semanticEvidence, profile) {
       omittedBeatRuntimeStateCount: Math.max(0, semanticEvidence.runtimeBeats.length - runtimeBeats.length),
       beatRuntimeStates: runtimeBeats
     },
+    runtime3DCatalog: runtime3DCatalogForCodexPrompt(semanticEvidence.runtime3DCatalog),
     visualObservation: semanticEvidence.visualObservation ? {
       ...semanticEvidence.visualObservation,
       manifestPath: evidence.visualObservation?.manifestPath || "",
@@ -6454,6 +6830,7 @@ function renderCodexPrompt(compactEvidence) {
     "Do not assume one NYT implementation architecture. Follow the actual loader, scene manager, framework, data/config, and animation code present in this story, including custom bundles or nonstandard multi-model setups.",
     "Make output identity stable: refer to story URLs, asset URLs/files, relationship IDs, clip index/name, beat text/selectors, and evidence IDs instead of timestamped local analysis paths.",
     "When runtimeObservation.beatRuntimeStates is present, treat its sampled model visibility, render-eligible parts, AnimationAction state, mixer state, and active camera as authoritative for the listed stable beatId. Interpret semantics around it, but do not override direct runtime facts with preload URLs or naming guesses. The analyzer attaches the current capture's exact snapshot IDs after Codex returns.",
+    "runtime3DCatalog stores static model and part identity once. Each beat's spatialState.partStateInventory counts repeated numeric part states omitted from this prompt; use the catalog plus beat-level visibleParts, partStateChanges, root transforms/bounds, and playingAnimations. Omitted repeated matrices remain in deterministic analyzer evidence and are not an evidence gap to fill by guessing.",
     "When visualObservation is present, inspect the attached scroll-target contact sheets and their manifest. The primary frame is the fully composited current-tab client area, including WebGL, DOM captions, CSS overlays, and annotations. Each optional canvasCrop is secondary diagnostic evidence only. A screenshot can support visible scene/part state and scroll-correlated visual change, but it does not by itself prove GLB asset identity, exact node identity, clip identity, hidden/offscreen state, or a time-based driver.",
     "Use visual evidenceRefs in reasoning when screenshots support a claim. Link frames through targetIndex, activeText, and the corresponding runtime beat visualEvidence. Do not call visual-only identity direct-runtime; combine direct visual visibility with direct-source-config or inferred-source identity as separate evidence.",
     "One screenshot per scroll target can show changes across scroll targets. It cannot prove fixed-time playback without a same-scroll temporal comparison, so retain driverMode unknown unless mixer/source evidence independently establishes time-based playback.",
@@ -6505,7 +6882,9 @@ function renderCodexPrompt(compactEvidence) {
     "- If embedded GLB animation targets model/body/camera nodes and runtime active text shows multiple caption/state beats, prefer inter-beat-dynamics over within-beat-dynamics.",
     "- If your fetched-resource investigation contradicts relationship.hints, prefer the fetched-resource investigation and explain the contradiction.",
     "- sourceSpatialComposition.candidates and acceptedCompositions are deterministic analyzer output. Never promote/reject a candidate, change accepted, compositionId, placementPolicy, numeric matrices, intrinsic bounds, or transformRef. Same beat, preload membership, a broad scene, proximity, or prose alone are never sufficient placement evidence.",
-    "- Return exactly one spatialCompositionJudgments row per sourceSpatialComposition candidate. Add semanticLabel, subjectRole, referenceRole, semanticConfidence, reasoning, and evidenceRefs only; the analyzer replaces all identity, acceptance, provenance, and transform fields from deterministic evidence.",
+    "- Return exactly one spatialCompositionJudgments row per sourceSpatialComposition candidate. Add semanticLabel, subjectRole, referenceRole, subjectFramingRole, referenceFramingRole, semanticConfidence, reasoning, and evidenceRefs only; the analyzer replaces all identity, acceptance, provenance, and transform fields from deterministic evidence.",
+    "- Framing roles are semantic constraints, never numeric transforms. Use anchor for the focal object that should set Reader-scale framing; environment only when fetched code plus story screenshots or strong enclosing geometry show that a persistent model surrounds/backgrounds the focal content; content/context for bounded visible assembly parts; placed for state-specific markers; otherwise unknown.",
+    "- Story screenshots may validate environment-versus-content role and perceived enclosure, but never invent an asset identity or replace fetched source matrices. Cite the supporting visual evidenceRefs when assigning environment.",
     "- A GLB with no embedded animation is not automatically static. If runtime JS animates, transforms, shows/hides, swaps, or sequences it across beats, include that runtime behavior in the dynamics interpretation and classify accordingly.",
     "- If a GLB has no embedded animation, no camera path, and no runtime-driven behavior found, only return beat association for it; do not force a dynamics classification.",
     "- For each animated GLB asset, return an assetJudgments item with associatedBeats: the caption/state beat content that the GLB is associated with. For within-beat-dynamics, return one beat unless direct evidence proves more. For inter-beat-dynamics or asset-topology-transition, return multiple beats when the evidence supports a progression across beats.",
@@ -6522,20 +6901,20 @@ function renderCodexPrompt(compactEvidence) {
     "- summaryMarkdown must also include '## Inferred Beat Asset State' when inferredBeatAssetStates contains records.",
     "- summaryMarkdown must also include '## Image Beat Associations' and '## GLB Animation Interpretation' sections when those assets exist.",
     "- Include investigationSummary in the returned JSON. It must name the resources inspected and summarize the traced model loading, visibility/swap behavior, animation driver, runtime JS behavior, and multi-GLB behavior.",
-    "spatialCompositionJudgments item shape: {\"candidateId\":\"spatial-candidate-id\",\"semanticLabel\":\"semantic relationship label\",\"subjectRole\":\"semantic subject role\",\"referenceRole\":\"semantic reference role\",\"semanticConfidence\":0.0,\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-id\"]}",
+    "spatialCompositionJudgments item shape: {\"candidateId\":\"spatial-candidate-id\",\"semanticLabel\":\"semantic relationship label\",\"subjectRole\":\"semantic subject role\",\"referenceRole\":\"semantic reference role\",\"subjectFramingRole\":\"anchor|content|context|environment|placed|unknown\",\"referenceFramingRole\":\"anchor|content|context|environment|placed|unknown\",\"semanticConfidence\":0.0,\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-id\"]}",
     "inferredBeatAssetStates item shape: {\"beatId\":\"runtime-beat-id-or-empty\",\"text\":\"beat text\",\"scrollPercent\":0.0,\"relationshipId\":\"relationship-id\",\"assetUrl\":\"string\",\"visibilityState\":\"visible|active|hidden|unknown\",\"parts\":[{\"name\":\"string\",\"nodePath\":\"string\",\"role\":\"string\",\"visibilityState\":\"visible|active|hidden|unknown\",\"confidence\":0.0,\"provenance\":\"direct-source-config|inferred-runtime|inferred-source|inferred-preload-based|unknown\",\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-id\"]}],\"animations\":[{\"clipIndex\":0,\"clipName\":\"string\",\"playState\":\"playing|active|paused|stopped|unknown\",\"driverMode\":\"time-based|scroll-based|state-based|mixed|unknown\",\"scrollDriverType\":\"time-based|local-scroll-window-progress|slide-indexed-scroll-transition|absolute-page-scroll|unknown\",\"triggerMechanism\":\"string\",\"targetParts\":[\"string\"],\"confidence\":0.0,\"provenance\":\"direct-source-config|inferred-runtime|inferred-source|inferred-preload-based|unknown\",\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-id\"]}],\"confidence\":0.0,\"provenance\":\"direct-source-config|inferred-runtime|inferred-source|inferred-preload-based|unknown\",\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-id\"]}",
     "The returned top-level JSON object MUST include inferredBeatAssetStates and spatialCompositionJudgments as arrays. These required v3 fields are siblings of modelBeatAssociations and glbAnimationInterpretations. Every associatedBeats object may also include beatId; the compact legacy shape below does not repeat that optional stable identity field.",
     "Required top-level v3 envelope: {\"storyTitle\":\"string\",\"dominantLogic\":\"classification\",\"modelBeatAssociations\":[],\"inferredBeatAssetStates\":[{\"beatId\":\"string\",\"relationshipId\":\"string\",\"assetUrl\":\"string\",\"modelVisibility\":{\"state\":\"visible|active|hidden|unknown\"},\"parts\":[],\"animations\":[],\"provenance\":\"direct-source-config|inferred-runtime|inferred-source|inferred-preload-based|unknown\",\"confidence\":0.0,\"reasoning\":\"string\",\"evidenceRefs\":[]}],\"glbAnimationInterpretations\":[],\"relationshipJudgments\":[],\"spatialCompositionJudgments\":[],\"uncertainties\":[],\"recommendedStoryVRUse\":\"string\"}",
     "Use these detailed field shapes for the complete returned JSON:",
     "{\"storyTitle\":\"string\",\"dominantLogic\":\"classification\",\"confidence\":0.0,\"overallSummary\":\"string\",\"summaryMarkdown\":\"string\",\"investigationSummary\":{\"resourcesInspected\":[\"path-or-url\"],\"behaviorTrace\":{\"modelDiscovery\":\"string\",\"modelLoading\":\"string\",\"visibilityOrSwap\":\"string\",\"animationDriver\":\"string\",\"multipleGlbHandling\":\"string\",\"runtimeJsBehavior\":\"string\"},\"directEvidence\":\"string\",\"remainingGaps\":[\"string\"]},\"assetJudgments\":[{\"assetUrl\":\"string\",\"assetFile\":\"string\",\"hasEmbeddedAnimation\":true,\"classification\":\"classification\",\"scrollDriver\":{\"type\":\"scroll-driver\",\"confidence\":0.0},\"confidence\":0.0,\"associatedBeats\":[{\"text\":\"caption/state beat text\",\"scrollPercent\":0.0,\"source\":\"provenance\"}],\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-001\"]}],\"modelBeatAssociations\":[{\"assetUrl\":\"string\",\"assetFile\":\"string\",\"hasEmbeddedAnimation\":false,\"associatedBeats\":[{\"text\":\"caption/state beat text\",\"scrollPercent\":0.0,\"source\":\"provenance\"}],\"associationConfidence\":0.0,\"associationSource\":\"direct-runtime|direct-source-config|inferred-runtime|inferred-source|inferred-preload-based|mixed|unknown\",\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-001\"]}],\"imageBeatAssociations\":[{\"imageGroupId\":\"string\",\"assetUrl\":\"string\",\"associatedBeats\":[{\"text\":\"caption/state beat text\",\"scrollPercent\":0.0,\"source\":\"direct|inferred\"}],\"associationConfidence\":0.0,\"associationSource\":\"direct|inferred|unknown\",\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-001\"]}],\"glbAnimationInterpretations\":[{\"assetUrl\":\"string\",\"assetFile\":\"string\",\"hasEmbeddedAnimation\":true,\"hasCameraPath\":false,\"classification\":\"classification\",\"triggerMapping\":{\"type\":\"time-based|local-scroll-window-progress|slide-indexed-scroll-transition|absolute-page-scroll|click-or-state-machine|unknown\",\"localFormula\":\"string|null\",\"fullPageFormula\":\"string|null\",\"confidence\":0.0,\"evidenceRefs\":[\"evidence-001\"],\"reasoning\":\"string\"},\"runtimeJsBehavior\":{\"isRuntimeDriven\":false,\"summary\":\"string\",\"evidenceRefs\":[\"evidence-001\"]},\"clips\":[{\"animationName\":\"string\",\"targetNodes\":[\"string\"],\"targetPaths\":[\"translation|rotation|scale|weights\"],\"role\":\"behavior-role\",\"triggerMechanism\":\"mixer-time|scale-threshold|shader-uniform|runtime-state|time-loop|unknown\",\"associatedBeats\":[{\"text\":\"caption/state beat text\",\"scrollPercent\":0.0,\"source\":\"provenance\"}],\"reasoning\":\"string\",\"confidence\":0.0}],\"cameraPath\":{\"hasCameraPath\":false,\"driver\":\"string\",\"summary\":\"string\",\"associatedBeats\":[{\"text\":\"caption/state beat text\",\"scrollPercent\":0.0,\"source\":\"provenance\"}],\"evidenceRefs\":[\"evidence-001\"]},\"reasoning\":\"string\",\"evidenceRefs\":[\"evidence-001\"]}],\"relationshipJudgments\":[{\"relationshipId\":\"string\",\"assetUrl\":\"string\",\"classification\":\"classification\",\"scrollDriver\":{\"type\":\"scroll-driver\",\"confidence\":0.0},\"confidence\":0.0,\"explanation\":\"string\",\"evidenceRefs\":[\"evidence-001\"]}],\"uncertainties\":[\"string\"],\"recommendedStoryVRUse\":\"string\"}",
-    `Evidence JSON:\n${JSON.stringify(compactEvidence, null, 2)}`
+    `Evidence JSON:\n${JSON.stringify(compactEvidence)}`
   ].join("\n\n");
 }
 
 function createCodexPromptBundle(evidence) {
   const semanticEvidence = judgmentSemanticInput(evidence);
   let smallestAttempt = null;
-  for (const profile of CODEX_PROMPT_PROFILES) {
+  const createAttempt = (profile) => {
     const compactEvidence = compactEvidenceForCodexPrompt(evidence, semanticEvidence, profile);
     const prompt = renderCodexPrompt(compactEvidence);
     const diagnostics = {
@@ -6548,8 +6927,38 @@ function createCodexPromptBundle(evidence) {
       runtimeBeats: compactEvidence.promptCompaction.runtimeBeats,
       relationships: compactEvidence.promptCompaction.relationships
     };
-    smallestAttempt = { prompt, compactEvidence, diagnostics };
-    if (prompt.length <= CODEX_PROMPT_TARGET_CHARS) return smallestAttempt;
+    return { prompt, compactEvidence, diagnostics };
+  };
+  for (const profile of CODEX_PROMPT_PROFILES) {
+    smallestAttempt = createAttempt(profile);
+    if (smallestAttempt.prompt.length <= CODEX_PROMPT_TARGET_CHARS) return smallestAttempt;
+  }
+
+  const minimalProfile = CODEX_PROMPT_PROFILES.at(-1);
+  const totalRuntimeBeats = semanticEvidence.runtimeBeats.length;
+  const minimumRuntimeBeatCount = Math.min(totalRuntimeBeats, totalRuntimeBeats > 1 ? 2 : totalRuntimeBeats);
+  let runtimeBeatLimit = Math.min(
+    totalRuntimeBeats,
+    smallestAttempt?.diagnostics?.runtimeBeats?.included || minimalProfile.runtimeBeatLimit
+  );
+  while (
+    smallestAttempt?.prompt?.length > CODEX_PROMPT_TARGET_CHARS
+    && runtimeBeatLimit > minimumRuntimeBeatCount
+  ) {
+    const runtimeChars = JSON.stringify(
+      smallestAttempt.compactEvidence.runtimeObservation.beatRuntimeStates
+    ).length;
+    const excessChars = smallestAttempt.prompt.length - CODEX_PROMPT_TARGET_CHARS;
+    const usefulRatio = runtimeChars > 0
+      ? Math.max(0.25, Math.min(0.8, (runtimeChars - excessChars) / runtimeChars))
+      : 0.5;
+    const nextLimit = Math.max(
+      minimumRuntimeBeatCount,
+      Math.min(runtimeBeatLimit - 1, Math.floor(runtimeBeatLimit * usefulRatio))
+    );
+    runtimeBeatLimit = nextLimit;
+    smallestAttempt = createAttempt({ ...minimalProfile, runtimeBeatLimit });
+    if (smallestAttempt.prompt.length <= CODEX_PROMPT_TARGET_CHARS) return smallestAttempt;
   }
   throw new Error(
     `Codex prompt compaction could not reach the ${CODEX_PROMPT_TARGET_CHARS}-character target: `
@@ -7965,6 +8374,8 @@ function spatialCompositionJudgmentsForEvidence(judgment, evidence) {
       semanticLabel: String(input.semanticLabel || input.label || "").slice(0, 240),
       subjectRole: String(input.subjectRole || "").slice(0, 120),
       referenceRole: String(input.referenceRole || "").slice(0, 120),
+      subjectFramingRole: normalizedSourceSpatialVisualFramingRole(input.subjectFramingRole),
+      referenceFramingRole: normalizedSourceSpatialVisualFramingRole(input.referenceFramingRole),
       semanticConfidence: clampConfidence(input.semanticConfidence ?? input.confidence, 0.25),
       reasoning: String(input.reasoning || input.explanation || "").slice(0, 1800),
       evidenceRefs: stableStringSet([
@@ -10551,13 +10962,18 @@ function sourceSpatialSlideStateMatches(members, slides) {
   return matches;
 }
 
-function sourceSpatialCompositionEnvelopeForAuthorInput(evidence, slides, assetManifest) {
+function sourceSpatialCompositionEnvelopeForAuthorInput(evidence, slides, assetManifest, judgment = {}) {
   const accepted = (Array.isArray(evidence?.sourceSpatialCompositions)
     ? evidence.sourceSpatialCompositions
     : []).filter((composition) => composition?.accepted === true);
   if (!accepted.length) return null;
   const assetIndexes = assetRecordIndexes(assetManifest);
-  const compositions = accepted.flatMap((sourceComposition) => {
+  const visualJudgments = spatialCompositionJudgmentsForEvidence(judgment, evidence);
+  const compositions = accepted.flatMap((unrefinedSourceComposition) => {
+    const sourceComposition = sourceSpatialCompositionWithContentFraming(
+      unrefinedSourceComposition,
+      visualJudgments
+    );
     const members = (sourceComposition.members || []).map((member) => {
       const assetRecord = assetRecordForProbeAssociation(member, assetIndexes);
       return {
@@ -10644,7 +11060,8 @@ function buildStoryStructureForAuthorInput(probe, evidence, judgment, assetManif
   const sourceSpatialCompositions = sourceSpatialCompositionEnvelopeForAuthorInput(
     evidence,
     slides,
-    assetManifest
+    assetManifest,
+    judgment
   );
   return {
     story_url: evidence.story?.url || probe.story_url || "",
@@ -11396,6 +11813,45 @@ async function runSelfTest() {
   assert.deepEqual(
     positiveComposition.members.map((member) => member.role),
     ["framing-anchor", "context", "placed"]
+  );
+  const positiveContextMember = positiveComposition.members.find((member) => member.role === "context");
+  const visualEnvironmentJudgments = [{
+    subjectInstanceId: positiveContextMember.instanceId,
+    subjectFramingRole: "environment",
+    semanticConfidence: 0.92,
+    evidenceRefs: ["visual-story-screenshot-enclosing-environment"]
+  }];
+  assert.deepEqual(
+    sourceSpatialVisualRoleEvidence(visualEnvironmentJudgments)
+      .get(positiveContextMember.instanceId)?.[0]?.evidenceRefs,
+    ["visual-story-screenshot-enclosing-environment"]
+  );
+  const visuallyFramedComposition = sourceSpatialCompositionWithContentFraming(
+    positiveComposition,
+    visualEnvironmentJudgments
+  );
+  assert.deepEqual(
+    visuallyFramedComposition.framing.environmentInstanceIds,
+    [positiveContextMember.instanceId]
+  );
+  assert.deepEqual(
+    visuallyFramedComposition.framing.visualEvidenceRefs,
+    ["visual-story-screenshot-enclosing-environment"]
+  );
+  assert.deepEqual(
+    visuallyFramedComposition.framing.contentBounds,
+    sourceSpatialMemberBounds(
+      positiveComposition.members.find((member) => member.role === "framing-anchor")
+    ),
+    "An enclosing environment keeps its fetched source size but does not control content framing."
+  );
+  assert.equal(
+    visuallyFramedComposition.framing.sizeInference.primary,
+    "fetched-source-matrices+glb-bounds"
+  );
+  assert.equal(
+    visuallyFramedComposition.framing.sizeInference.visualValidation,
+    "story-screenshots"
   );
   assert.deepEqual(
     positiveComposition.members.find((member) => member.role === "framing-anchor").resolvedLocalMatrix,
@@ -13887,6 +14343,169 @@ async function runSelfTest() {
   assert.equal(oversizedPromptBundle.diagnostics.sourceEvidence.included, 180);
   assert.equal(repeatedPromptBundle.prompt, oversizedPromptBundle.prompt);
   assert.deepEqual(repeatedPromptBundle.diagnostics, oversizedPromptBundle.diagnostics);
+
+  const spatialPromptMarker = "full-spatial-part-state-must-not-enter-codex-prompt";
+  const promptCatalogParts = Array.from({ length: 44 }, (_, index) => ({
+    catalogPartId: `runtime-part-${index + 1}`,
+    catalogModelId: "runtime-model-catalog-1",
+    instanceId: "runtime-instance-1",
+    geometryCatalogId: `runtime-geometry-${index + 1}`,
+    geometryFingerprint: `geometry-${index + 1}`,
+    nodeIndex: index,
+    nodePath: `Scene[0]/Assembly[0]/Part[${index}]`,
+    name: `Part ${index + 1}`,
+    objectType: "Mesh"
+  }));
+  const promptSpatialPartStates = promptCatalogParts.map((part, index) => ({
+    catalogPartId: part.catalogPartId,
+    nodeId: `runtime-node-${index + 1}`,
+    loadedStatus: "loaded-visible",
+    hiddenLoaded: false,
+    localTransform: { matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, index, 0, 0, 1] },
+    worldTransform: { matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, index, 0, 0, 1] },
+    worldBounds: {
+      center: [index, 0, 0],
+      min: [index - 0.5, -0.5, -0.5],
+      max: [index + 0.5, 0.5, 0.5],
+      source: spatialPromptMarker
+    }
+  }));
+  const promptVisibleParts = promptCatalogParts.map((part) => ({
+    catalogPartId: part.catalogPartId,
+    nodeIndex: part.nodeIndex,
+    nodePath: part.nodePath,
+    name: part.name,
+    objectType: part.objectType,
+    changed: false,
+    motionObserved: false,
+    transformChanged: false,
+    visibilityChanged: false,
+    opacityChanged: false,
+    changeKinds: []
+  }));
+  const spatialPromptBeats = Array.from({ length: 51 }, (_, index) => ({
+    beatId: `runtime-beat-${String(index).padStart(3, "0")}`,
+    text: `Runtime beat ${index}`,
+    beatSelectors: { dataStep: String(index) },
+    captureStatus: "ok",
+    assetCoverageComplete: true,
+    truncation: {},
+    visibleModels: [{
+      relationshipId: "relationship-01",
+      assetUrl: "https://example.com/model.glb",
+      assetFile: "model.glb",
+      rootName: "Assembly",
+      assetIdentitySource: "direct-runtime",
+      renderEligibility: "screen-render-eligible",
+      playbackMode: index === 25 ? "time-based" : "unknown",
+      runtimeChanged: index === 25,
+      transformChanged: index === 25,
+      spatialState: {
+        catalogModelId: "runtime-model-catalog-1",
+        instanceId: "runtime-instance-1",
+        loadedStatus: "loaded-visible",
+        hiddenLoaded: false,
+        rootPath: "Scene[0]/Assembly[0]",
+        localTransform: { matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, index, 0, 0, 1] },
+        worldTransform: { matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, index, 0, 0, 1] },
+        rootLocalBounds: { center: [0, 0, 0], min: [-1, -1, -1], max: [1, 1, 1] },
+        worldBounds: { center: [index, 0, 0], min: [index - 1, -1, -1], max: [index + 1, 1, 1] },
+        partStateCount: promptSpatialPartStates.length,
+        partStatesTruncated: false,
+        partStates: promptSpatialPartStates
+      },
+      visibleParts: promptVisibleParts,
+      partStateChanges: index === 25 ? [{ ...promptVisibleParts[0], changed: true, transformChanged: true }] : [],
+      playingAnimations: index === 25 ? [{
+        clipIndex: 0,
+        clipName: "Take 001",
+        playback: { mode: "time-based", mechanism: "mixer-time", confidence: 0.9, source: "direct-runtime" },
+        targetNodeNames: ["Part 1"],
+        targetPaths: ["rotation"],
+        targetParts: [{ nodeIndex: 0, nodePath: promptVisibleParts[0].nodePath, nodeName: "Part 1", matchSource: "node-index" }]
+      }] : []
+    }],
+    renderActiveModels: [],
+    observedHiddenModels: [],
+    activeCameras: [],
+    renderActiveCameras: [],
+    cameraStateChanged: false,
+    visualEvidence: []
+  }));
+  const spatialPromptEvidence = {
+    ...oversizedPromptEvidence,
+    sourceEvidence: [],
+    runtime3DCatalog: {
+      schemaVersion: RUNTIME_3D_CATALOG_SCHEMA_VERSION,
+      revision: "spatial-prompt-fixture",
+      models: [{
+        catalogModelId: "runtime-model-catalog-1",
+        runtimeModelId: "runtime-model-1",
+        instanceId: "runtime-instance-1",
+        assetUrl: "https://example.com/model.glb",
+        rootName: "Assembly",
+        rootPath: "Scene[0]/Assembly[0]",
+        identitySource: "direct-runtime",
+        identityConfidence: 0.95,
+        partCatalogIds: promptCatalogParts.map((part) => part.catalogPartId)
+      }],
+      parts: promptCatalogParts,
+      geometries: promptCatalogParts.map((part) => ({ geometryCatalogId: part.geometryCatalogId })),
+      explicitRelationships: []
+    },
+    runtimeObservation: { beatRuntimeStates: spatialPromptBeats },
+    globalSignals: {}
+  };
+  const spatialPromptBundle = createCodexPromptBundle(spatialPromptEvidence);
+  assert.ok(spatialPromptBundle.diagnostics.actualChars <= CODEX_PROMPT_TARGET_CHARS);
+  assert.equal(spatialPromptBundle.diagnostics.runtimeBeats.included, spatialPromptBeats.length);
+  assert.equal(
+    spatialPromptBundle.diagnostics.runtimeBeats.spatialPartStates.total,
+    spatialPromptBeats.length * promptSpatialPartStates.length
+  );
+  assert.equal(spatialPromptBundle.diagnostics.runtimeBeats.spatialPartStates.included, 0);
+  assert.doesNotMatch(spatialPromptBundle.prompt, new RegExp(spatialPromptMarker));
+  assert.match(spatialPromptBundle.prompt, /runtime-part-44/);
+  assert.match(spatialPromptBundle.prompt, /runtime-beat-050/);
+  assert.match(spatialPromptBundle.prompt, /Evidence JSON:\n\{"tool"/);
+
+  const changedSpatialPromptEvidence = structuredClone(spatialPromptEvidence);
+  changedSpatialPromptEvidence.runtimeObservation.beatRuntimeStates[25]
+    .visibleModels[0].spatialState.partStates[0].worldBounds.center[0] = 999;
+  assert.notEqual(
+    judgmentEvidenceFingerprint(changedSpatialPromptEvidence),
+    judgmentEvidenceFingerprint(spatialPromptEvidence)
+  );
+
+  const runtimeHeavySignalBeatIndex = 91;
+  const runtimeHeavyBeats = Array.from({ length: 180 }, (_, beatIndex) => {
+    const beat = structuredClone(spatialPromptBeats[beatIndex % spatialPromptBeats.length]);
+    beat.beatId = `runtime-heavy-beat-${String(beatIndex).padStart(3, "0")}`;
+    beat.text = `Runtime-heavy beat ${beatIndex}`;
+    beat.visibleModels[0].visibleParts = Array.from({ length: 44 }, (_, partIndex) => ({
+      ...promptVisibleParts[partIndex],
+      nodePath: `Scene[0]/${`long-runtime-path-${beatIndex}-${partIndex}/`.repeat(45)}Part[${partIndex}]`
+    }));
+    beat.visibleModels[0].runtimeChanged = beatIndex === runtimeHeavySignalBeatIndex;
+    beat.visibleModels[0].playingAnimations = beatIndex === runtimeHeavySignalBeatIndex
+      ? spatialPromptBeats[25].visibleModels[0].playingAnimations
+      : [];
+    return beat;
+  });
+  const runtimeHeavyPromptBundle = createCodexPromptBundle({
+    ...spatialPromptEvidence,
+    runtimeObservation: { beatRuntimeStates: runtimeHeavyBeats }
+  });
+  const retainedRuntimeHeavyBeatIds = runtimeHeavyPromptBundle.compactEvidence
+    .runtimeObservation.beatRuntimeStates.map((beat) => beat.beatId);
+  assert.ok(runtimeHeavyPromptBundle.diagnostics.actualChars <= CODEX_PROMPT_TARGET_CHARS);
+  assert.ok(runtimeHeavyPromptBundle.diagnostics.runtimeBeats.included < runtimeHeavyBeats.length);
+  assert.equal(runtimeHeavyPromptBundle.diagnostics.runtimeBeats.selection, "signal-prioritized with even temporal coverage");
+  assert.ok(retainedRuntimeHeavyBeatIds.includes("runtime-heavy-beat-000"));
+  assert.ok(retainedRuntimeHeavyBeatIds.includes("runtime-heavy-beat-179"));
+  assert.ok(retainedRuntimeHeavyBeatIds.includes(
+    `runtime-heavy-beat-${String(runtimeHeavySignalBeatIndex).padStart(3, "0")}`
+  ));
 
   assert.throws(() => createCodexPromptBundle({
     ...oversizedPromptEvidence,

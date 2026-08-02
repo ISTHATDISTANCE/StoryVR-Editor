@@ -3,6 +3,7 @@ import * as THREE from "three";
 const DEFAULT_MOVEMENT_CUE = Object.freeze({
   enabled: false,
   style: "sand",
+  coverage: "bounded",
   texture: null,
   rotationY: 0,
   position: Object.freeze([0, 0.004, -0.4]),
@@ -12,6 +13,11 @@ const DEFAULT_MOVEMENT_CUE = Object.freeze({
   textureScaleMeters: 0.2,
   opacity: 0.55,
 });
+
+export const INFINITE_GROUND_MIN_TILE_SIZE_METERS = 512;
+export const INFINITE_GROUND_MAX_TILE_SIZE_METERS = 8192;
+export const INFINITE_GROUND_RECENTER_TARGET_METERS = 8;
+const INFINITE_GROUND_FAR_CORNER_MARGIN = 1.05;
 
 const SAND_TEXTURE_SIZE = 512;
 const SAND_TEXTURE_SEED = 0x51a7d;
@@ -23,6 +29,7 @@ export function normalizeGroundMovementCue(value) {
   return {
     enabled: source.enabled === true,
     style: texture ? "generated" : "sand",
+    coverage: source.coverage === "infinite" ? "infinite" : "bounded",
     texture,
     rotationY: boundedNumber(
       source.rotationY,
@@ -52,6 +59,99 @@ export function normalizeGroundMovementCue(value) {
     ),
     opacity: boundedNumber(source.opacity, DEFAULT_MOVEMENT_CUE.opacity, 0, 1),
   };
+}
+
+/**
+ * Keeps an infinite-coverage ground patch near the viewer while moving it only
+ * by whole texture periods. The generated texture therefore stays fixed in the
+ * authored world instead of visibly swimming as the viewer travels.
+ */
+export function infiniteGroundCuePosition(value, cameraPosition) {
+  const config = normalizeGroundMovementCue(value);
+  return infiniteGroundCuePositionFromConfig(config, cameraPosition);
+}
+
+export function infiniteGroundSpanForCamera(camera, textureScaleMeters = DEFAULT_MOVEMENT_CUE.textureScaleMeters) {
+  const inverseProjection = camera?.projectionMatrixInverse?.elements;
+  const fallbackFar = finitePositiveNumber(camera?.far, 100);
+  let farCornerDistance = fallbackFar;
+  if (inverseProjection?.length >= 16) {
+    for (const x of [-1, 1]) {
+      for (const y of [-1, 1]) {
+        const projectedX = inverseProjection[0] * x
+          + inverseProjection[4] * y
+          + inverseProjection[8]
+          + inverseProjection[12];
+        const projectedY = inverseProjection[1] * x
+          + inverseProjection[5] * y
+          + inverseProjection[9]
+          + inverseProjection[13];
+        const projectedZ = inverseProjection[2] * x
+          + inverseProjection[6] * y
+          + inverseProjection[10]
+          + inverseProjection[14];
+        const projectedW = inverseProjection[3] * x
+          + inverseProjection[7] * y
+          + inverseProjection[11]
+          + inverseProjection[15];
+        if (!Number.isFinite(projectedW) || Math.abs(projectedW) < Number.EPSILON) continue;
+        const distance = Math.hypot(
+          projectedX / projectedW,
+          projectedY / projectedW,
+          projectedZ / projectedW,
+        );
+        if (Number.isFinite(distance)) farCornerDistance = Math.max(farCornerDistance, distance);
+      }
+    }
+  }
+  const requiredSpan = Math.max(
+    INFINITE_GROUND_MIN_TILE_SIZE_METERS,
+    farCornerDistance * 2 * INFINITE_GROUND_FAR_CORNER_MARGIN,
+  );
+  const powerOfTwoSpan = 2 ** Math.ceil(Math.log2(requiredSpan));
+  // The ground follows the viewer, so this cap limits only the currently
+  // rendered patch, not how far the viewer can travel. It covers the author
+  // panorama camera's 2 km far plane while keeping texture coordinates within
+  // a range that remains stable on the GPU.
+  const boundedSpan = Math.min(
+    INFINITE_GROUND_MAX_TILE_SIZE_METERS,
+    Number.isFinite(powerOfTwoSpan) ? powerOfTwoSpan : requiredSpan,
+  );
+  return textureAlignedGroundSpan(
+    boundedSpan,
+    textureScaleMeters,
+  );
+}
+
+function infiniteGroundCuePositionFromConfig(config, cameraPosition) {
+  if (config.coverage !== "infinite") return [...config.position];
+
+  const cameraX = finiteCoordinate(cameraPosition?.x ?? cameraPosition?.[0], config.position[0]);
+  const cameraZ = finiteCoordinate(cameraPosition?.z ?? cameraPosition?.[2], config.position[2]);
+  const deltaX = cameraX - config.position[0];
+  const deltaZ = cameraZ - config.position[2];
+  const cosine = Math.cos(config.rotationY);
+  const sine = Math.sin(config.rotationY);
+  const localX = cosine * deltaX - sine * deltaZ;
+  const localZ = sine * deltaX + cosine * deltaZ;
+  const texturePeriodsPerStep = Math.max(
+    1,
+    Math.round(INFINITE_GROUND_RECENTER_TARGET_METERS / config.textureScaleMeters),
+  );
+  const recenterStep = texturePeriodsPerStep * config.textureScaleMeters;
+  const snappedLocalX = Math.round(localX / recenterStep) * recenterStep;
+  const snappedLocalZ = Math.round(localZ / recenterStep) * recenterStep;
+  return [
+    finiteCoordinate(
+      config.position[0] + cosine * snappedLocalX + sine * snappedLocalZ,
+      config.position[0],
+    ),
+    config.position[1],
+    finiteCoordinate(
+      config.position[2] - sine * snappedLocalX + cosine * snappedLocalZ,
+      config.position[2],
+    ),
+  ];
 }
 
 export function createGroundMovementCue(value, {
@@ -85,13 +185,56 @@ export function createGroundMovementCue(value, {
   let generatedTexture = null;
   let requestedTextureUrl = "";
   let textureLoadRevision = 0;
+  let infiniteGroundSpan = textureAlignedGroundSpan(
+    INFINITE_GROUND_MIN_TILE_SIZE_METERS,
+    config.textureScaleMeters,
+  );
+  const cameraWorldPosition = new THREE.Vector3();
+
+  mesh.onBeforeRender = (_activeRenderer, _scene, renderCamera) => {
+    if (disposed || config.coverage !== "infinite") return;
+    if (!renderCamera?.matrixWorld) return;
+    const requiredSpan = infiniteGroundSpanForCamera(renderCamera, config.textureScaleMeters);
+    let matrixChanged = false;
+    if (requiredSpan !== infiniteGroundSpan) {
+      infiniteGroundSpan = requiredSpan;
+      applyRenderedGroundDimensions();
+      matrixChanged = true;
+    }
+    // Three's WebXR eye cameras are unparented, but WebXRManager precomposes
+    // their matrixWorld with the authored camera rig. Reading that matrix
+    // directly preserves Reader alignment and locomotion; getWorldPosition()
+    // would recompute the unparented eye matrix and discard the rig transform.
+    cameraWorldPosition.setFromMatrixPosition(renderCamera.matrixWorld);
+    const nextPosition = infiniteGroundCuePositionFromConfig(config, cameraWorldPosition);
+    if (
+      mesh.position.x !== nextPosition[0]
+      || mesh.position.y !== nextPosition[1]
+      || mesh.position.z !== nextPosition[2]
+    ) {
+      mesh.position.fromArray(nextPosition);
+      matrixChanged = true;
+    }
+    if (matrixChanged) mesh.updateMatrixWorld(true);
+  };
 
   function applyTextureRepeat(texture) {
+    const widthMeters = renderedGroundWidth(config, infiniteGroundSpan);
+    const depthMeters = renderedGroundDepth(config, infiniteGroundSpan);
     texture.repeat.set(
-      config.widthMeters / config.textureScaleMeters,
-      config.depthMeters / config.textureScaleMeters,
+      widthMeters / config.textureScaleMeters,
+      depthMeters / config.textureScaleMeters,
     );
     texture.needsUpdate = true;
+  }
+
+  function applyRenderedGroundDimensions() {
+    mesh.scale.set(
+      renderedGroundWidth(config, infiniteGroundSpan),
+      config.thicknessMeters,
+      renderedGroundDepth(config, infiniteGroundSpan),
+    );
+    applyTextureRepeat(activeTexture);
   }
 
   function useFallbackTexture() {
@@ -165,8 +308,12 @@ export function createGroundMovementCue(value, {
       mesh.visible = config.enabled;
       mesh.position.fromArray(config.position);
       mesh.rotation.set(0, config.rotationY, 0);
-      mesh.scale.set(config.widthMeters, config.thicknessMeters, config.depthMeters);
-      applyTextureRepeat(activeTexture);
+      infiniteGroundSpan = textureAlignedGroundSpan(
+        Math.max(INFINITE_GROUND_MIN_TILE_SIZE_METERS, infiniteGroundSpan),
+        config.textureScaleMeters,
+      );
+      applyRenderedGroundDimensions();
+      mesh.frustumCulled = config.coverage !== "infinite";
       material.opacity = config.opacity;
       mesh.userData.movementCue = {
         ...config,
@@ -183,6 +330,7 @@ export function createGroundMovementCue(value, {
       if (disposed) return;
       disposed = true;
       textureLoadRevision += 1;
+      mesh.onBeforeRender = () => {};
       mesh.removeFromParent();
       geometry.dispose();
       material.dispose();
@@ -194,6 +342,44 @@ export function createGroundMovementCue(value, {
 
   controller.update(config, { textureUrl });
   return controller;
+}
+
+function renderedGroundWidth(config, infiniteGroundSpan) {
+  return config.coverage === "infinite"
+    ? infiniteGroundSpan
+    : config.widthMeters;
+}
+
+function renderedGroundDepth(config, infiniteGroundSpan) {
+  return config.coverage === "infinite"
+    ? infiniteGroundSpan
+    : config.depthMeters;
+}
+
+function textureAlignedGroundSpan(value, textureScaleMeters) {
+  const span = finitePositiveNumber(value, INFINITE_GROUND_MIN_TILE_SIZE_METERS);
+  const textureScale = boundedNumber(
+    textureScaleMeters,
+    DEFAULT_MOVEMENT_CUE.textureScaleMeters,
+    0.02,
+    5,
+  );
+  // Centered box UVs place the origin at half the repeat count. Keeping that
+  // count even prevents the world texture phase from shifting by half a period
+  // when the camera requires a larger render span.
+  const evenTexturePeriods = Math.ceil(span / textureScale / 2) * 2;
+  const aligned = evenTexturePeriods * textureScale;
+  return Number.isFinite(aligned) ? aligned : span;
+}
+
+function finiteCoordinate(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function finitePositiveNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
 function createSandCanvasTexture(renderer) {

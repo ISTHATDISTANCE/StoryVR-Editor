@@ -1,15 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, createReadStream } from "node:fs";
 import {
   copyFile,
-  link,
   lstat,
   mkdir,
   mkdtemp,
-  readFile,
   readdir,
   rename,
   rm,
+  rmdir,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -41,14 +40,22 @@ export function createHistoryCheckpointStore({
     await sweepExpiredSessions();
     const id = randomUUID();
     const root = path.join(await historyRoot(), id);
-    await mkdir(root, { recursive: true });
+    const checkpointsRoot = path.join(root, "checkpoints");
+    const blobsRoot = path.join(root, "blobs");
+    await Promise.all([
+      mkdir(checkpointsRoot, { recursive: true }),
+      mkdir(blobsRoot, { recursive: true }),
+    ]);
     const session = {
       id,
       root,
+      checkpointsRoot,
+      blobsRoot,
       createdAt: Date.now(),
       touchedAt: Date.now(),
       checkpoints: new Map(),
       signatureToId: new Map(),
+      digestCache: new Map(),
     };
     sessions.set(id, session);
     const checkpoint = await captureCheckpoint(id);
@@ -57,46 +64,56 @@ export function createHistoryCheckpointStore({
 
   async function captureCheckpoint(sessionId) {
     const session = requireSession(sessionId);
+    session.touchedAt = Date.now();
+    const manifest = await collectAuthorArtifacts(paths, assetRoot, session.digestCache);
+    const signature = checkpointSignature(manifest);
+    const existingId = session.signatureToId.get(signature);
+    if (existingId && session.checkpoints.has(existingId)) {
+      return {
+        checkpointId: existingId,
+        signature,
+        deduplicated: true,
+        capturedFileCount: manifest.length,
+        storedBlobCount: 0,
+      };
+    }
     if (session.checkpoints.size >= maxCheckpoints) {
       throw historyError(409, `This StoryVR history session reached its ${maxCheckpoints}-checkpoint limit. Reload the author workspace to start a new session.`);
     }
-    session.touchedAt = Date.now();
+
     const checkpointId = randomUUID();
-    const checkpointRoot = path.join(session.root, checkpointId);
-    const filesRoot = path.join(checkpointRoot, "files");
-    await mkdir(filesRoot, { recursive: true });
-
-    const manifest = await collectAuthorArtifacts(paths, assetRoot);
-    const hash = createHash("sha256");
+    const checkpointRoot = path.join(session.checkpointsRoot, checkpointId);
+    let storedBlobCount = 0;
     for (const entry of manifest) {
-      hash.update(`${entry.relativePath}\0${entry.kind}\0${entry.size}\0${entry.fingerprint}\n`);
-      const destination = path.join(filesRoot, entry.relativePath);
-      await mkdir(path.dirname(destination), { recursive: true });
-      if (entry.kind === "environment-asset") await linkOrClone(entry.absolutePath, destination);
-      else await copyFile(entry.absolutePath, destination);
+      if (await ensureContentBlob(session, entry)) storedBlobCount += 1;
     }
-    const signature = hash.digest("hex");
-    const existingId = session.signatureToId.get(signature);
-    if (existingId && session.checkpoints.has(existingId)) {
-      await rm(checkpointRoot, { recursive: true, force: true });
-      return { checkpointId: existingId, signature };
-    }
-
+    await mkdir(checkpointRoot, { recursive: true });
     const checkpoint = {
       id: checkpointId,
       root: checkpointRoot,
       signature,
-      manifest: manifest.map(({ relativePath, kind, size }) => ({ relativePath, kind, size })),
+      manifest: manifest.map(({ relativePath, kind, size, digest }) => ({ relativePath, kind, size, digest })),
       createdAt: Date.now(),
     };
-    await writeFile(path.join(checkpointRoot, "manifest.json"), `${JSON.stringify({
-      schemaVersion: "storyvr-history-checkpoint/v1",
-      signature,
-      files: checkpoint.manifest,
-    }, null, 2)}\n`);
+    try {
+      await writeFile(path.join(checkpointRoot, "manifest.json"), `${JSON.stringify({
+        schemaVersion: "storyvr-history-checkpoint/v2",
+        signature,
+        files: checkpoint.manifest,
+      }, null, 2)}\n`);
+    } catch (error) {
+      await rm(checkpointRoot, { recursive: true, force: true });
+      throw error;
+    }
     session.checkpoints.set(checkpointId, checkpoint);
     session.signatureToId.set(signature, checkpointId);
-    return { checkpointId, signature };
+    return {
+      checkpointId,
+      signature,
+      deduplicated: false,
+      capturedFileCount: manifest.length,
+      storedBlobCount,
+    };
   }
 
   async function restoreCheckpoint(sessionId, checkpointId) {
@@ -107,13 +124,18 @@ export function createHistoryCheckpointStore({
 
     const rollback = await captureCheckpoint(sessionId);
     try {
-      await applyCheckpoint(paths, assetRoot, checkpoint);
+      const applied = await applyCheckpoint(paths, assetRoot, checkpoint, session);
+      return {
+        checkpointId: checkpoint.id,
+        signature: checkpoint.signature,
+        restored: true,
+        ...applied,
+      };
     } catch (error) {
       const rollbackCheckpoint = session.checkpoints.get(rollback.checkpointId);
-      if (rollbackCheckpoint) await applyCheckpoint(paths, assetRoot, rollbackCheckpoint).catch(() => {});
+      if (rollbackCheckpoint) await applyCheckpoint(paths, assetRoot, rollbackCheckpoint, session).catch(() => {});
       throw error;
     }
-    return { checkpointId: checkpoint.id, signature: checkpoint.signature, restored: true };
   }
 
   async function deleteSession(sessionId) {
@@ -152,7 +174,7 @@ export function createHistoryCheckpointStore({
   }
 }
 
-async function collectAuthorArtifacts(paths, assetRoot) {
+async function collectAuthorArtifacts(paths, assetRoot, digestCache = new Map()) {
   const entries = [];
   const staticFiles = [
     paths.storyGraphPath,
@@ -161,16 +183,18 @@ async function collectAuthorArtifacts(paths, assetRoot) {
     paths.proceduralDynamicsPath,
     path.join(paths.analysisRoot, "environment-enhancement.json"),
   ].filter(Boolean);
-  for (const filePath of staticFiles) await addFileIfPresent(entries, paths.storyFolder, filePath, "author-json");
-  await addJsonDirectory(entries, paths.storyFolder, paths.proposalsRoot);
-  await addJsonDirectory(entries, paths.storyFolder, paths.decisionsRoot);
+  for (const filePath of staticFiles) {
+    await addFileIfPresent(entries, paths.storyFolder, filePath, "author-json", digestCache);
+  }
+  await addJsonDirectory(entries, paths.storyFolder, paths.proposalsRoot, digestCache);
+  await addJsonDirectory(entries, paths.storyFolder, paths.decisionsRoot, digestCache);
   await walkFiles(assetRoot, async (filePath) => {
-    await addFileIfPresent(entries, paths.storyFolder, filePath, "environment-asset");
+    await addFileIfPresent(entries, paths.storyFolder, filePath, "environment-asset", digestCache);
   });
   return entries.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
 }
 
-async function addJsonDirectory(entries, storyFolder, directory) {
+async function addJsonDirectory(entries, storyFolder, directory, digestCache) {
   let names;
   try {
     names = await readdir(directory, { withFileTypes: true });
@@ -180,12 +204,12 @@ async function addJsonDirectory(entries, storyFolder, directory) {
   }
   for (const entry of names) {
     if (entry.isFile() && entry.name.endsWith(".json")) {
-      await addFileIfPresent(entries, storyFolder, path.join(directory, entry.name), "author-json");
+      await addFileIfPresent(entries, storyFolder, path.join(directory, entry.name), "author-json", digestCache);
     }
   }
 }
 
-async function addFileIfPresent(entries, storyFolder, filePath, kind) {
+async function addFileIfPresent(entries, storyFolder, filePath, kind, digestCache) {
   let metadata;
   try {
     metadata = await lstat(filePath);
@@ -197,13 +221,8 @@ async function addFileIfPresent(entries, storyFolder, filePath, kind) {
   const absolutePath = path.resolve(filePath);
   assertInside(storyFolder, absolutePath, "history artifact");
   const relativePath = toPosix(path.relative(storyFolder, absolutePath));
-  let fingerprint;
-  if (kind === "author-json") {
-    fingerprint = createHash("sha256").update(await readFile(absolutePath)).digest("hex");
-  } else {
-    fingerprint = `${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeMs}`;
-  }
-  entries.push({ absolutePath, relativePath, kind, size: metadata.size, fingerprint });
+  const digest = await digestForFile(absolutePath, metadata, digestCache);
+  entries.push({ absolutePath, relativePath, kind, size: metadata.size, digest });
 }
 
 async function walkFiles(directory, visitor) {
@@ -215,74 +234,152 @@ async function walkFiles(directory, visitor) {
     throw error;
   }
   for (const entry of entries) {
-    if (entry.name.startsWith(".upload-") || entry.name.startsWith(".backup-")) continue;
+    if (entry.name.startsWith(".generation-") || entry.name.startsWith(".backup-")) continue;
     const entryPath = path.join(directory, entry.name);
     if (entry.isDirectory()) await walkFiles(entryPath, visitor);
     else if (entry.isFile()) await visitor(entryPath);
   }
 }
 
-async function linkOrClone(source, destination) {
-  try {
-    await link(source, destination);
-    return;
-  } catch (error) {
-    if (!["EXDEV", "EPERM", "EACCES", "EMLINK", "EEXIST"].includes(error?.code)) throw error;
+function checkpointSignature(manifest) {
+  const hash = createHash("sha256");
+  hash.update("storyvr-history-checkpoint/v2\n");
+  for (const entry of manifest) {
+    hash.update(`${entry.relativePath}\0${entry.kind}\0${entry.size}\0${entry.digest}\n`);
   }
+  return hash.digest("hex");
+}
+
+async function digestForFile(filePath, metadata, digestCache) {
+  const cacheKey = path.resolve(filePath);
+  const metadataSignature = [
+    metadata.dev,
+    metadata.ino,
+    metadata.size,
+    metadata.mtimeMs,
+    metadata.ctimeMs,
+  ].join(":");
+  const cached = digestCache.get(cacheKey);
+  if (cached?.metadataSignature === metadataSignature) return cached.digest;
+  const digest = await fileDigest(filePath);
+  digestCache.set(cacheKey, { metadataSignature, digest });
+  return digest;
+}
+
+async function fileDigest(filePath) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
+function contentBlobPath(session, digest) {
+  if (!/^[a-f0-9]{64}$/.test(String(digest || ""))) throw new Error("StoryVR history artifact digest is invalid.");
+  return path.join(session.blobsRoot, digest);
+}
+
+async function ensureContentBlob(session, entry) {
+  const destination = contentBlobPath(session, entry.digest);
+  const existing = await stat(destination).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (existing) {
+    if (!existing.isFile() || existing.size !== entry.size) {
+      throw new Error("StoryVR history content storage is inconsistent.");
+    }
+    return false;
+  }
+
+  const temporary = path.join(session.blobsRoot, `.blob-${randomUUID()}.tmp`);
+  try {
+    await cloneOrCopyFile(entry.absolutePath, temporary);
+    const [storedMetadata, storedDigest] = await Promise.all([
+      stat(temporary),
+      fileDigest(temporary),
+    ]);
+    if (storedMetadata.size !== entry.size || storedDigest !== entry.digest) {
+      throw new Error("An authored file changed while StoryVR was capturing history. Try the action again.");
+    }
+    await rename(temporary, destination);
+    return true;
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
+async function cloneOrCopyFile(source, destination) {
   await copyFile(source, destination, fsConstants.COPYFILE_FICLONE).catch(async (error) => {
     if (!["ENOSYS", "ENOTSUP", "EINVAL", "EXDEV"].includes(error?.code)) throw error;
     await copyFile(source, destination);
   });
 }
 
-async function applyCheckpoint(paths, assetRoot, checkpoint) {
-  const filesRoot = path.join(checkpoint.root, "files");
-  const desired = new Set(checkpoint.manifest.map((entry) => entry.relativePath));
-  const staticFiles = [
-    paths.storyGraphPath,
-    paths.sourceMotionOverridesPath,
-    paths.sourceMotionPlaybackPath,
-    paths.proceduralDynamicsPath,
-    path.join(paths.analysisRoot, "environment-enhancement.json"),
-  ].filter(Boolean);
-  for (const filePath of staticFiles) {
-    const relative = toPosix(path.relative(paths.storyFolder, filePath));
-    if (!desired.has(relative)) await rm(filePath, { force: true });
-  }
-  await removeJsonFilesNotInCheckpoint(paths.proposalsRoot, paths.storyFolder, desired);
-  await removeJsonFilesNotInCheckpoint(paths.decisionsRoot, paths.storyFolder, desired);
-  await rm(assetRoot, { recursive: true, force: true });
+async function applyCheckpoint(paths, assetRoot, checkpoint, session) {
+  const currentManifest = await collectAuthorArtifacts(paths, assetRoot, session.digestCache);
+  const currentByPath = new Map(currentManifest.map((entry) => [entry.relativePath, entry]));
+  const desiredByPath = new Map(checkpoint.manifest.map((entry) => [entry.relativePath, entry]));
+  const removed = currentManifest.filter((entry) => !desiredByPath.has(entry.relativePath));
+  const changed = checkpoint.manifest.filter((entry) => {
+    const current = currentByPath.get(entry.relativePath);
+    return !current || current.kind !== entry.kind || current.digest !== entry.digest;
+  });
 
-  for (const entry of checkpoint.manifest) {
-    const source = path.join(filesRoot, entry.relativePath);
+  for (const entry of removed) {
+    await rm(entry.absolutePath, { force: true });
+    session.digestCache.delete(entry.absolutePath);
+    const cleanup = cleanupBoundaryForArtifact(paths, assetRoot, entry);
+    if (cleanup) await removeEmptyAncestors(path.dirname(entry.absolutePath), cleanup.boundary, cleanup.removeBoundary);
+  }
+
+  for (const entry of changed) {
+    const source = contentBlobPath(session, entry.digest);
     const destination = path.join(paths.storyFolder, entry.relativePath);
     assertInside(paths.storyFolder, destination, "restored history artifact");
     await mkdir(path.dirname(destination), { recursive: true });
-    if (entry.kind === "environment-asset") await linkOrClone(source, destination);
-    else await replaceFileAtomic(source, destination);
+    await replaceFileAtomic(source, destination);
+    session.digestCache.delete(path.resolve(destination));
   }
+
+  return {
+    removedFileCount: removed.length,
+    restoredFileCount: changed.length,
+    unchangedFileCount: checkpoint.manifest.length - changed.length,
+  };
 }
 
-async function removeJsonFilesNotInCheckpoint(directory, storyFolder, desired) {
-  let entries;
-  try {
-    entries = await readdir(directory, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return;
-    throw error;
+function cleanupBoundaryForArtifact(paths, assetRoot, entry) {
+  const absolutePath = path.resolve(entry.absolutePath);
+  const resolvedAssetRoot = path.resolve(assetRoot);
+  if (absolutePath.startsWith(`${resolvedAssetRoot}${path.sep}`)) {
+    return { boundary: resolvedAssetRoot, removeBoundary: true };
   }
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-    const filePath = path.join(directory, entry.name);
-    const relative = toPosix(path.relative(storyFolder, filePath));
-    if (!desired.has(relative)) await rm(filePath, { force: true });
+  for (const directory of [paths.proposalsRoot, paths.decisionsRoot].filter(Boolean)) {
+    const boundary = path.resolve(directory);
+    if (absolutePath.startsWith(`${boundary}${path.sep}`)) return { boundary, removeBoundary: false };
+  }
+  return null;
+}
+
+async function removeEmptyAncestors(directory, boundary, removeBoundary) {
+  let current = path.resolve(directory);
+  const resolvedBoundary = path.resolve(boundary);
+  while (current === resolvedBoundary || current.startsWith(`${resolvedBoundary}${path.sep}`)) {
+    if (current === resolvedBoundary && !removeBoundary) return;
+    try {
+      await rmdir(current);
+    } catch (error) {
+      if (["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error?.code)) return;
+      throw error;
+    }
+    if (current === resolvedBoundary) return;
+    current = path.dirname(current);
   }
 }
 
 async function replaceFileAtomic(source, destination) {
   const temporary = `${destination}.history-${randomUUID()}.tmp`;
   try {
-    await copyFile(source, temporary);
+    await cloneOrCopyFile(source, temporary);
     await rename(temporary, destination);
   } finally {
     await rm(temporary, { force: true });

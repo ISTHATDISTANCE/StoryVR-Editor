@@ -47,8 +47,8 @@ import {
   participantComponentLabel,
   participantStatusLabel,
   storyDynamicsPlaceholder,
+  storyHeaderEyebrow,
   storyProfileId,
-  storyShortName,
   storyStageInstruction,
 } from "./story-language.js";
 import {
@@ -107,6 +107,8 @@ const INTERACTION_CONTROLLER_CONFIGURATION_SCHEMA_V2 = "storyvr-interaction-conf
 const INTERACTION_CONTROLLER_CONFIGURATION_SCHEMA = "storyvr-interaction-configuration/v3";
 const IN_BEAT_INTERACTIONS_SCHEMA = "storyvr-in-beat-interactions/v1";
 const CURRENT_SPATIAL_RELATIONS_INFERENCE_VERSION = "per-scene-exact-assets-v3";
+const SPATIAL_TRANSFORM_POSITION_LIMIT = 1_000_000;
+const SPATIAL_TRANSFORM_SCALE_LIMIT = 1_000_000;
 const INTERACTION_DIRECTIONAL_THUMBSTICK_INPUTS = new Set([
   "thumbstick-up",
   "thumbstick-down",
@@ -215,6 +217,37 @@ function createGltfLoader() {
   });
 }
 
+function configureSpatialEditorMouseControls(controls) {
+  if (!controls) return controls;
+  const applyDefaultMapping = () => {
+    controls.mouseButtons.LEFT = -1;
+    controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
+    controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
+  };
+  controls.enablePan = true;
+  controls.enableRotate = true;
+  applyDefaultMapping();
+  controls.domElement?.classList?.add("spatial-editor-mouse-controls");
+  const preventContextMenu = (event) => event.preventDefault();
+  controls.domElement?.addEventListener?.("contextmenu", preventContextMenu);
+  const preserveMappingWithModifiers = (event) => {
+    applyDefaultMapping();
+    if (!(event.ctrlKey || event.metaKey || event.shiftKey)) return;
+    if (event.button === 2) controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
+    if (event.button === 1) controls.mouseButtons.MIDDLE = THREE.MOUSE.ROTATE;
+    queueMicrotask(applyDefaultMapping);
+  };
+  controls.storyvrMouseMappingPointerDownHandler = preserveMappingWithModifiers;
+  controls.domElement?.addEventListener?.("pointerdown", preserveMappingWithModifiers, true);
+  const dispose = controls.dispose?.bind(controls);
+  if (dispose) controls.dispose = () => {
+    controls.domElement?.removeEventListener?.("contextmenu", preventContextMenu);
+    controls.domElement?.removeEventListener?.("pointerdown", preserveMappingWithModifiers, true);
+    dispose();
+  };
+  return controls;
+}
+
 function currentPointCloudEffects() {
   const graphEffects = state.data?.graph?.pointCloudEffects;
   if (Array.isArray(graphEffects) && graphEffects.length) return graphEffects;
@@ -258,6 +291,9 @@ const state = {
   sourceGraphTextDetail: null,
   selectedModelAssetId: null,
   sourceGraphAssetFilter: "all",
+  sourceGraphFocusedAssetId: null,
+  sourceGraphAssetFocusPending: false,
+  sourceGraphSpatialPreview: null,
   sourceGraphDragAnnouncement: "",
   sourceGraphDragActive: false,
   sourceGraphCardDragActive: false,
@@ -308,34 +344,17 @@ const state = {
   selectedContextBeatIndex: 0,
   contextViewerCameraState: null,
   environmentUi: {
-    acquisitionMode: "search",
-    candidates: [],
-    providerStatus: null,
-    selectedSourceId: null,
-    query: "",
-    queryInitialized: false,
-    queryOrigin: "empty",
-    queryInteractionRevision: 0,
-    searchStatus: "",
-    searched: false,
-    searchBusy: false,
-    recommendationBusy: false,
-    recommendationError: "",
-    recommendationRequestId: 0,
-    recommendationAttemptedSignature: "",
-    pendingRecommendedQuery: "",
     operationBusy: false,
-    uploadStatus: "",
     generationPrompt: "",
-    generationPromptOrigin: "empty",
     generationStatus: "",
     generationError: false,
     generationBusy: false,
+    generationPhase: "idle",
+    generationSceneContext: null,
+    generationNoticeVisible: false,
     generationRequestId: 0,
     generationResult: null,
-    generationReferences: [],
-    generationReferenceCounter: 0,
-    generationReferenceLoading: false,
+    generationDraftsByBeat: {},
     applyTargetsOpen: false,
     applyTargetBeatIds: [],
     applyStatus: "",
@@ -345,6 +364,7 @@ const state = {
     draftDirty: false,
     draftRevision: 0,
     draftTimer: null,
+    draftPromise: null,
   },
   environmentEditorScene: null,
   environmentCanvasReturnScroll: null,
@@ -356,18 +376,16 @@ const state = {
   selectedSpatialEntityId: null,
   selectedSpatialEntityIds: [],
   spatialSelectionAnchorEntityId: null,
+  spatialSelectionClearedSceneKey: "",
   spatialHierarchyScope: "current",
-  spatialHierarchyQuery: "",
-  spatialExpandedAssemblyIds: new Set(),
   spatialTransformMode: "translate",
-  spatialTransformSpace: "world",
   spatialScaleRatioLocked: true,
   spatialClipboard: null,
   spatialClipboardStatus: "Select a GLB model to copy.",
   spatialPropagationSelectionId: null,
   spatialPropagationTargetsOpen: false,
   spatialPropagationTargetBeatIds: [],
-  spatialPropagationStatus: "Select a GLB model to reuse its transform in other scenes.",
+  spatialPropagationStatus: "",
   spatialDraftRevision: 0,
   spatialDraftDirty: false,
   spatialAutosaveTimer: null,
@@ -451,12 +469,23 @@ const state = {
 const authorHistory = new AuthorHistory({
   onChange: () => updateHistoryControlsDom(),
 });
+const pendingStoryvrCheckpointCompletions = new Set();
 let historyFinalizePromise = Promise.resolve();
+let authorHistoryInteractionBusy = false;
 let storyvrNavigationEntryCounter = 0;
 let pendingStoryvrPopNavigation = null;
 let storyvrPopNavigationPromise = Promise.resolve();
+let storyvrNavigationRequestPromise = Promise.resolve(false);
+let storyvrNavigationRequestPending = false;
+let appliedStoryvrBrowserEntry = null;
+let storyvrPopRollbackEntryId = null;
+let activeStoryvrPointerGestureFinalizer = null;
+let spatialBeatNavigationPending = false;
+let environmentBeatNavigationPending = false;
+let attentionBeatNavigationPending = false;
 
 let modelViewer = null;
+let sourceGraphSpatialPreviewViewer = null;
 let topologyViewer = null;
 let dynamicViewer = null;
 let interBeatViewer = null;
@@ -470,15 +499,6 @@ const INTER_BEAT_TRANSITION_CYCLE_SECONDS = 1 / 0.38;
 const SOURCE_CAMERA_CUE_SECONDS = 0.65;
 const DEFAULT_SOURCE_ORDER_CYCLE_SECONDS = 3.6;
 const INTERACTION_PREVIEW_CAMERA_FRAMING_CONTRACT = "interaction-spatial-editor/v4";
-const MAX_ENVIRONMENT_UPLOAD_BYTES = 120 * 1024 * 1024;
-const MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGES = 4;
-const MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024;
-const MAX_ENVIRONMENT_GENERATION_REFERENCE_TOTAL_BYTES = 20 * 1024 * 1024;
-const ENVIRONMENT_GENERATION_REFERENCE_MEDIA_TYPES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-]);
 const DEFAULT_ENVIRONMENT_TRANSFORM = Object.freeze({
   position: Object.freeze([0, 0, 0]),
   rotationY: 0,
@@ -519,14 +539,6 @@ const api = {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
-    });
-    return readResponse(response);
-  },
-  async upload(path, file) {
-    const response = await fetch(path, {
-      method: "POST",
-      headers: { "content-type": file.type || "application/octet-stream" },
-      body: file,
     });
     return readResponse(response);
   },
@@ -639,12 +651,14 @@ function captureAuthorHistoryUi() {
     environmentDraft: historyClone(state.environmentUi?.draft),
     environmentDraftDirty: Boolean(state.environmentUi?.draftDirty),
     environmentSelectionMode: state.environmentUi?.selectionMode || null,
-    environmentAcquisitionMode: state.environmentUi?.acquisitionMode || "search",
-    environmentGenerationPrompt: state.environmentUi?.generationPrompt || "",
-    environmentGenerationPromptOrigin: state.environmentUi?.generationPromptOrigin || "empty",
-    environmentGenerationStatus: state.environmentUi?.generationStatus || "",
-    environmentGenerationError: Boolean(state.environmentUi?.generationError),
-    environmentGenerationResult: historyClone(state.environmentUi?.generationResult),
+    environmentGenerationLifecycle: historyClone({
+      status: state.environmentUi?.generationStatus || "",
+      error: Boolean(state.environmentUi?.generationError),
+      phase: state.environmentUi?.generationPhase || "idle",
+      sceneContext: state.environmentUi?.generationSceneContext || null,
+      noticeVisible: Boolean(state.environmentUi?.generationNoticeVisible),
+      result: state.environmentUi?.generationResult || null,
+    }),
     environmentEditorScene: historyClone(state.environmentEditorScene),
     textPlacementDraft: historyClone(state.textPlacementDraft),
     spatialRelationsDraft: historyClone(state.spatialRelationsDraft),
@@ -671,6 +685,7 @@ function captureAuthorHistoryUi() {
     interactionSelectedInBeatTargetKey: state.interactionSelectedInBeatTargetKey,
     interactionConstraintEndpoint: state.interactionConstraintEndpoint,
     interactionConstraintTransformMode: state.interactionConstraintTransformMode,
+    pendingStoryvrCheckpointCompletions: [...pendingStoryvrCheckpointCompletions],
   };
 }
 
@@ -704,12 +719,16 @@ function restoreAuthorHistoryUi(snapshot) {
   state.environmentUi.draft = historyClone(snapshot.environmentDraft);
   state.environmentUi.draftDirty = Boolean(snapshot.environmentDraftDirty);
   state.environmentUi.selectionMode = snapshot.environmentSelectionMode || state.environmentUi.selectionMode || null;
-  state.environmentUi.acquisitionMode = snapshot.environmentAcquisitionMode || "search";
-  state.environmentUi.generationPrompt = String(snapshot.environmentGenerationPrompt || "");
-  state.environmentUi.generationPromptOrigin = snapshot.environmentGenerationPromptOrigin || "empty";
-  state.environmentUi.generationStatus = String(snapshot.environmentGenerationStatus || "");
-  state.environmentUi.generationError = Boolean(snapshot.environmentGenerationError);
-  state.environmentUi.generationResult = historyClone(snapshot.environmentGenerationResult);
+  if (!state.environmentUi.generationBusy) {
+    const lifecycle = snapshot.environmentGenerationLifecycle;
+    const terminalLifecycle = ["ready", "error"].includes(lifecycle?.phase);
+    state.environmentUi.generationStatus = terminalLifecycle ? String(lifecycle.status || "") : "";
+    state.environmentUi.generationError = terminalLifecycle && Boolean(lifecycle.error);
+    state.environmentUi.generationPhase = terminalLifecycle ? lifecycle.phase : "idle";
+    state.environmentUi.generationSceneContext = terminalLifecycle ? historyClone(lifecycle.sceneContext) : null;
+    state.environmentUi.generationNoticeVisible = terminalLifecycle && Boolean(lifecycle.noticeVisible);
+    state.environmentUi.generationResult = terminalLifecycle ? historyClone(lifecycle.result) : null;
+  }
   state.environmentEditorScene = historyClone(snapshot.environmentEditorScene);
   state.textPlacementDraft = historyClone(snapshot.textPlacementDraft);
   state.spatialRelationsDraft = historyClone(snapshot.spatialRelationsDraft);
@@ -738,6 +757,10 @@ function restoreAuthorHistoryUi(snapshot) {
   state.interactionConstraintTransformMode = ["translate", "rotate", "scale"].includes(snapshot.interactionConstraintTransformMode)
     ? snapshot.interactionConstraintTransformMode
     : "translate";
+  pendingStoryvrCheckpointCompletions.clear();
+  for (const componentId of snapshot.pendingStoryvrCheckpointCompletions || []) {
+    pendingStoryvrCheckpointCompletions.add(componentId);
+  }
   clearMissingSelectedBeat();
 }
 
@@ -830,7 +853,7 @@ function bindCoalescedAuthorTextHistory(element, label, componentId = state.acti
 }
 
 async function performHistoryAction(action) {
-  if (state.busy || authorHistory.busy) return;
+  if (state.busy || authorHistory.busy || authorHistoryInteractionBusy) return;
   await historyFinalizePromise;
   if (authorHistory.active) commitAuthorHistory();
   setAuthorHistoryInteractionBusy(true);
@@ -864,9 +887,26 @@ async function performHistoryAction(action) {
 }
 
 function setAuthorHistoryInteractionBusy(value) {
-  app.inert = Boolean(value);
-  if (value) app.setAttribute("aria-busy", "true");
+  authorHistoryInteractionBusy = Boolean(value);
+  updateAuthorBusyDom();
+}
+
+function updateAuthorBusyDom() {
+  const busy = Boolean(state.busy || authorHistoryInteractionBusy || authorHistory.busy);
+  app.inert = busy;
+  if (busy) app.setAttribute("aria-busy", "true");
   else app.removeAttribute("aria-busy");
+
+  let indicator = app.querySelector(":scope > .busy");
+  if (busy && !indicator) {
+    indicator = document.createElement("div");
+    indicator.className = "busy";
+    indicator.textContent = "Working...";
+    app.append(indicator);
+  } else if (!busy) {
+    indicator?.remove();
+  }
+  updateHistoryControlsDom();
 }
 
 function cancelPendingAuthorHistoryWrites() {
@@ -889,15 +929,23 @@ window.addEventListener("keydown", (event) => {
 }, { capture: true });
 
 window.addEventListener("popstate", (event) => {
-  const requested = storyvrNavigationFromHistoryState(event.state)
-    || storyvrNavigationFromUrl(window.location.href);
+  const historyEntry = storyvrNavigationFromHistoryState(event.state);
+  const requested = historyEntry || storyvrNavigationFromUrl(window.location.href);
   if (!state.data) {
     pendingStoryvrPopNavigation = requested;
     return;
   }
+  if (storyvrPopRollbackEntryId && historyEntry?.entryId === storyvrPopRollbackEntryId) {
+    storyvrPopRollbackEntryId = null;
+    appliedStoryvrBrowserEntry = historyEntry;
+    return;
+  }
   storyvrPopNavigationPromise = storyvrPopNavigationPromise
     .catch(() => {})
-    .then(() => applyStoryvrPopNavigation(requested || createStoryvrNavigationRoute("source-graph")));
+    .then(() => applyStoryvrPopNavigation(
+      requested || createStoryvrNavigationRoute("source-graph"),
+      historyEntry,
+    ));
 });
 
 window.addEventListener("pagehide", () => {
@@ -934,6 +982,15 @@ function resetStoryCanvasGroupingUiForSavedGraph() {
   state.storyCanvasGroupingUi.error = "";
   state.storyCanvasGroupingUi.attemptedSignature = "";
   state.storyCanvasGroupingUi.flowDirty = false;
+}
+
+function reconcileStoryCanvasGroupingUiAfterRefresh(previousGenerationSignature, options = {}) {
+  const nextGenerationSignature = storyCanvasGroupingGenerationSignature();
+  if (String(previousGenerationSignature || "") === String(nextGenerationSignature || "")) {
+    if (options.savedGraph === true) state.storyCanvasGroupingUi.flowDirty = false;
+    return;
+  }
+  resetStoryCanvasGroupingUiForSavedGraph();
 }
 
 function createStoryvrBrowserEntryId() {
@@ -1015,6 +1072,7 @@ function initializeStoryvrBrowserNavigation(defaultComponentId) {
     "",
     storyvrNavigationUrl(window.location.href, navigation),
   );
+  appliedStoryvrBrowserEntry = storyvrNavigationFromHistoryState(window.history.state);
 }
 
 function pushStoryvrBrowserNavigation(route, options = {}) {
@@ -1032,6 +1090,7 @@ function pushStoryvrBrowserNavigation(route, options = {}) {
     storyvrNavigationUrl(window.location.href, navigation),
   );
   applyStoryvrBrowserNavigation(navigation);
+  appliedStoryvrBrowserEntry = storyvrNavigationFromHistoryState(window.history.state);
   return true;
 }
 
@@ -1048,40 +1107,282 @@ function replaceStoryvrBrowserNavigation(route) {
     storyvrNavigationUrl(window.location.href, navigation),
   );
   applyStoryvrBrowserNavigation(navigation);
+  appliedStoryvrBrowserEntry = storyvrNavigationFromHistoryState(window.history.state);
 }
 
-async function applyStoryvrPopNavigation(route) {
-  const navigation = normalizeStoryvrBrowserNavigation(route);
-  const previousNavigation = currentStoryvrBrowserNavigation();
-  if (!storyvrNavigationRoutesEqual(previousNavigation, navigation)) {
-    try {
-      if (
-        previousNavigation.componentId === "environment-enhancement"
-        && previousNavigation.editorScene
-        && state.environmentUi.draftDirty
-      ) {
-        await flushEnvironmentDraft();
-      } else if (
-        isSpatialRelationsComponentId(previousNavigation.componentId)
-        && previousNavigation.editorScene
-        && (state.spatialDraftDirty || state.spatialAutosaveTimer || state.spatialAutosavePromise)
-      ) {
-        await flushSpatialRelationsAutosave();
-      } else if (
-        previousNavigation.componentId === ATTENTION_GUIDANCE_COMPONENT_ID
-        && previousNavigation.editorScene
-        && (state.attentionDraftDirty || state.attentionAutosaveTimer || state.attentionAutosavePromise)
-      ) {
-        await flushAttentionGuidanceAutosave({ force: true });
-      }
-    } catch (error) {
-      state.output = {
-        error: `Scene autosave failed before browser navigation: ${error.message}`,
-        diagnostics: error.diagnostics || [],
-      };
+function markStoryvrCheckpointCompletionPending(componentId = state.activeId) {
+  if (componentId && componentId !== "source-graph") {
+    pendingStoryvrCheckpointCompletions.add(componentId);
+  }
+}
+
+function clearStoryvrCheckpointCompletionPending(componentId) {
+  pendingStoryvrCheckpointCompletions.delete(componentId);
+}
+
+function storyvrComponentHasPendingPersistence(componentId) {
+  if (componentId === "source-graph") return state.graphDirty;
+  if (componentId === "environment-enhancement") {
+    return Boolean(state.environmentUi.draftDirty || state.environmentUi.draftPromise || environmentSelectionIsDirty());
+  }
+  if (isSpatialRelationsComponentId(componentId)) {
+    return Boolean(state.spatialDraftDirty || state.spatialAutosaveTimer || state.spatialAutosavePromise || checkpointHasLocalDraft(componentId));
+  }
+  if (componentId === ATTENTION_GUIDANCE_COMPONENT_ID) {
+    return Boolean(state.attentionDraftDirty || state.attentionAutosaveTimer || state.attentionAutosavePromise || checkpointHasLocalDraft(componentId));
+  }
+  if (["dynamic-geometry", "inter-beat-dynamics"].includes(componentId) && sourceMotionHasUnsavedChanges()) {
+    return true;
+  }
+  return checkpointHasLocalDraft(componentId);
+}
+
+function storyvrDecisionDraftPayload(component) {
+  const payload = {
+    authorEdits: currentEditNotesValue(),
+  };
+  const optionId = selectedOptionIdForComponent(component);
+  if (optionId) payload.optionId = optionId;
+  if (component.id === "transition-pacing") payload.finalTuningPrompt = currentEditNotesValue();
+  if (component.id === "interaction-control") {
+    payload.controllerConfiguration = ensureInteractionControllerConfiguration();
+    payload.boundaryOverrides = interactionBoundaryOverridesPayload();
+    payload.variantOverrides = interactionVariantOverridesPayload();
+    payload.inBeatInteractionsSchemaVersion = IN_BEAT_INTERACTIONS_SCHEMA;
+    payload.inBeatInteractions = interactionInBeatInteractionsPayload();
+    payload.locomotionMode = state.interactionLocomotionMode;
+  }
+  return payload;
+}
+
+function storyvrDecisionRecordIsCurrent(decision) {
+  return decision?.stale !== true && (
+    decision?.current === true
+    || ["current", "saved"].includes(String(decision?.status || "").toLowerCase())
+  );
+}
+
+async function persistStoryvrComponentDraft(componentId) {
+  const component = componentById(componentId);
+  if (!component || componentId === "source-graph") return false;
+  let changed = false;
+  let refreshed = false;
+
+  if (componentId === "environment-enhancement") {
+    changed = await flushEnvironmentDraft() || changed;
+  } else if (isSpatialRelationsComponentId(componentId)) {
+    changed = await flushSpatialRelationsAutosave() || changed;
+  } else if (componentId === ATTENTION_GUIDANCE_COMPONENT_ID) {
+    changed = await flushAttentionGuidanceAutosave() || changed;
+  }
+  if (changed && storyvrDecisionRecordIsCurrent(state.data?.decisions?.[componentId])) {
+    changed = false;
+    clearStoryvrCheckpointCompletionPending(componentId);
+  }
+
+  if (["dynamic-geometry", "inter-beat-dynamics"].includes(componentId) && sourceMotionHasUnsavedChanges()) {
+    await persistSourceMotionLinks({ silent: true });
+    changed = true;
+    refreshed = true;
+  }
+
+  if (checkpointHasLocalDraft(componentId)) {
+    const decision = await api.post(`/api/decisions/${componentId}/draft`, storyvrDecisionDraftPayload(component));
+    if (!state.data.decisions) state.data.decisions = {};
+    state.data.decisions[componentId] = decision;
+    if (storyvrDecisionRecordIsCurrent(decision)) clearStoryvrCheckpointCompletionPending(componentId);
+    else {
+      changed = true;
+      refreshed = false;
     }
   }
-  applyStoryvrBrowserNavigation(navigation);
+
+  if (componentId === "dynamic-geometry" && proceduralDynamicsCheckpointHasUnsavedChanges()) changed = true;
+  if (changed) {
+    markStoryvrCheckpointCompletionPending(componentId);
+    if (!refreshed) await refresh(false);
+  }
+  return changed;
+}
+
+function storyvrComponentCanFinish(componentId) {
+  const readiness = state.data?.readiness?.[componentId] || {};
+  if ((readiness.canSave ?? readiness.canGenerate) !== true) return false;
+  if (componentId === "environment-enhancement") return environmentCheckpointAssignmentsReady();
+  if (componentId === "interaction-control") {
+    return interactionBoundaryContextIsComplete(interactionBoundaryContext(selectedInteractionControlBase()));
+  }
+  if ([ATTENTION_GUIDANCE_COMPONENT_ID, "transition-pacing"].includes(componentId)) return true;
+  const component = componentById(componentId);
+  return Boolean(component && selectedOptionIdForComponent(component));
+}
+
+function finalizeActiveStoryvrCanvasGesture() {
+  if (activeStoryvrPointerGestureFinalizer) {
+    const finalize = activeStoryvrPointerGestureFinalizer;
+    activeStoryvrPointerGestureFinalizer = null;
+    finalize();
+  }
+
+  const viewer = state.activeId === "interaction-control"
+    ? interactionViewer
+    : (isSpatialRelationsComponentId(state.activeId) || state.activeId === ATTENTION_GUIDANCE_COMPONENT_ID)
+      ? textViewer
+      : null;
+  const transformControls = viewer?.transformControls;
+  const transformActive = Boolean(
+    transformControls?.dragging
+    || viewer?.destinationHistoryStarted
+    || viewer?.attentionHistoryStarted
+    || viewer?.transformScaleStart
+    || viewer?.transformSelectionStart
+  );
+  if (!transformActive || typeof transformControls?.dispatchEvent !== "function") return;
+  transformControls.dispatchEvent({ type: "mouseUp" });
+  viewer.navigationTransformFinalized = true;
+}
+
+async function synchronizeActiveStoryvrAuthoringControl() {
+  if (state.busy || authorHistory.busy) {
+    throw new Error("Wait for the current authoring change to finish before leaving this page.");
+  }
+  if (state.activeId === "environment-enhancement") {
+    if (state.environmentUi.operationBusy) {
+      throw new Error("Wait for the current environment operation to finish before leaving this page.");
+    }
+  }
+  finalizeActiveStoryvrCanvasGesture();
+  const activeElement = document.activeElement;
+  if (activeElement && activeElement !== document.body && typeof activeElement.blur === "function") {
+    activeElement.blur();
+  }
+  await Promise.resolve();
+  state.editNotes = currentEditNotesValue();
+  await historyFinalizePromise;
+  if (authorHistory.active) commitAuthorHistory();
+}
+
+function storyvrRouteOwnsCheckpointCompletion(route) {
+  return !route?.editorScene || route?.componentId === "transition-pacing";
+}
+
+async function prepareStoryvrRouteExit(fromRoute, toRoute) {
+  if (storyvrNavigationRoutesEqual(fromRoute, toRoute)) return false;
+  await synchronizeActiveStoryvrAuthoringControl();
+  const componentId = fromRoute.componentId;
+  const componentChanged = componentId !== toRoute.componentId;
+  const hasPendingPersistence = storyvrComponentHasPendingPersistence(componentId);
+  const routeOwnsCheckpointCompletion = storyvrRouteOwnsCheckpointCompletion(fromRoute);
+
+  if (componentId === "source-graph") {
+    if (!state.graphDirty) return false;
+    await withAuthorHistory("Save story order", () => saveStoryGraphCore({ silent: true }), {
+      persistent: true,
+      componentId,
+    });
+    return true;
+  }
+
+  const canFinishExistingDraft = componentChanged
+    && routeOwnsCheckpointCompletion
+    && !checkpointIsCurrent(componentId)
+    && storyvrComponentCanFinish(componentId);
+  if (
+    !hasPendingPersistence
+    && !pendingStoryvrCheckpointCompletions.has(componentId)
+    && !canFinishExistingDraft
+  ) return false;
+  if (!componentChanged && !hasPendingPersistence) return false;
+
+  const component = componentById(componentId);
+  await withAuthorHistory(`Save ${component?.label || componentId}`, async () => {
+    await persistStoryvrComponentDraft(componentId);
+    if (
+      componentChanged
+      && routeOwnsCheckpointCompletion
+      && (pendingStoryvrCheckpointCompletions.has(componentId) || canFinishExistingDraft)
+      && storyvrComponentCanFinish(componentId)
+    ) {
+      if (componentId === "environment-enhancement") await saveEnvironmentCheckpointCore();
+      else await saveDecisionCheckpointCore(component);
+      clearStoryvrCheckpointCompletionPending(componentId);
+    }
+  }, {
+    persistent: true,
+    componentId,
+  });
+  return true;
+}
+
+function showStoryvrNavigationError(error) {
+  state.output = { error: error.message, diagnostics: error.diagnostics || [] };
+  render();
+}
+
+async function requestStoryvrBrowserNavigation(route, options = {}) {
+  if (storyvrNavigationRequestPending) return false;
+  storyvrNavigationRequestPending = true;
+  storyvrNavigationRequestPromise = (async () => {
+    const fromRoute = currentStoryvrBrowserNavigation();
+    let navigation = normalizeStoryvrBrowserNavigation(route);
+    if (storyvrNavigationRoutesEqual(fromRoute, navigation)) return false;
+    try {
+      await prepareStoryvrRouteExit(fromRoute, navigation);
+      navigation = normalizeStoryvrBrowserNavigation(route);
+      if (options.mode === "back") {
+        window.history.back();
+        return true;
+      }
+      if (options.mode === "replace") {
+        replaceStoryvrBrowserNavigation(navigation);
+        return true;
+      }
+      return pushStoryvrBrowserNavigation(navigation, options);
+    } catch (error) {
+      showStoryvrNavigationError(error);
+      return false;
+    }
+  })().finally(() => {
+    storyvrNavigationRequestPending = false;
+  });
+  return storyvrNavigationRequestPromise;
+}
+
+async function applyStoryvrPopNavigation(route, targetEntry = null) {
+  if (storyvrNavigationRequestPending) {
+    await storyvrNavigationRequestPromise;
+  }
+  const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
+  if (targetEntry?.entryId && currentEntry?.entryId !== targetEntry.entryId) return false;
+  const navigation = normalizeStoryvrBrowserNavigation(route);
+  const previousNavigation = currentStoryvrBrowserNavigation();
+  const previousEntry = appliedStoryvrBrowserEntry;
+  if (storyvrNavigationRoutesEqual(previousNavigation, navigation)) {
+    appliedStoryvrBrowserEntry = targetEntry || storyvrNavigationFromHistoryState(window.history.state);
+    return true;
+  }
+  try {
+    await prepareStoryvrRouteExit(previousNavigation, navigation);
+    applyStoryvrBrowserNavigation(normalizeStoryvrBrowserNavigation(route));
+    appliedStoryvrBrowserEntry = targetEntry || storyvrNavigationFromHistoryState(window.history.state);
+    return true;
+  } catch (error) {
+    showStoryvrNavigationError(error);
+    const previousIndex = Number(previousEntry?.index);
+    const targetIndex = Number(targetEntry?.index);
+    if (previousEntry?.entryId && Number.isFinite(previousIndex) && Number.isFinite(targetIndex) && previousIndex !== targetIndex) {
+      storyvrPopRollbackEntryId = previousEntry.entryId;
+      window.history.go(previousIndex - targetIndex);
+    } else if (previousEntry) {
+      window.history.replaceState(
+        createStoryvrNavigationHistoryState(window.history.state, previousEntry, previousEntry),
+        "",
+        storyvrNavigationUrl(window.location.href, previousEntry),
+      );
+      appliedStoryvrBrowserEntry = storyvrNavigationFromHistoryState(window.history.state);
+    }
+    return false;
+  }
 }
 
 function applyStoryvrBrowserNavigation(route, options = {}) {
@@ -1120,6 +1421,9 @@ function applyStoryvrBrowserNavigation(route, options = {}) {
     && navigation.componentId === "interaction-control",
   );
 
+  if (previousNavigation.componentId === "environment-enhancement" && previousNavigation.editorScene) {
+    preserveEnvironmentGenerationDraft(previousNavigation.editorScene);
+  }
   state.activeId = navigation.componentId;
   if (navigation.componentId !== "environment-enhancement") {
     state.environmentEditorScene = null;
@@ -1168,12 +1472,11 @@ function applyStoryvrBrowserNavigation(route, options = {}) {
     state.selectedSpatialEntityId = null;
     state.selectedSpatialEntityIds = [];
     state.spatialSelectionAnchorEntityId = null;
-    state.spatialHierarchyQuery = "";
-    state.spatialExpandedAssemblyIds.clear();
+    state.spatialSelectionClearedSceneKey = "";
     state.spatialPropagationSelectionId = null;
     state.spatialPropagationTargetsOpen = false;
     state.spatialPropagationTargetBeatIds = [];
-    state.spatialPropagationStatus = "Select a GLB model to reuse its transform in other scenes.";
+    state.spatialPropagationStatus = "";
     ensureSpatialRelationsDraft(spatialRelationsComponent());
     state.output = null;
   } else if (navigation.editorScene && navigation.componentId === "environment-enhancement") {
@@ -1187,6 +1490,7 @@ function applyStoryvrBrowserNavigation(route, options = {}) {
       };
     }
     state.environmentEditorScene = navigation.editorScene;
+    restoreEnvironmentGenerationDraft(navigation.editorScene);
     resetEnvironmentApplyTargets();
     state.environmentUi.selectionMode = null;
     state.environmentUi.draft = null;
@@ -1303,6 +1607,7 @@ function applyStoryvrBrowserNavigation(route, options = {}) {
     state.selectedSpatialEntityId = null;
     state.selectedSpatialEntityIds = [];
     state.spatialSelectionAnchorEntityId = null;
+    state.spatialSelectionClearedSceneKey = "";
     state.attentionEditorScene = null;
     state.selectedAttentionMarkerId = null;
     state.interactionEditorScene = null;
@@ -1367,60 +1672,54 @@ function returnToSpatialCanvasWithBrowserHistory() {
   const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
   const canvasNavigation = createStoryvrNavigationRoute(spatialRelationsComponentId());
   if (currentEntry?.editorScene && currentEntry.parentEntryId) {
-    window.history.back();
-    return;
+    return requestStoryvrBrowserNavigation(canvasNavigation, { mode: "back" });
   }
-  replaceStoryvrBrowserNavigation(canvasNavigation);
+  return requestStoryvrBrowserNavigation(canvasNavigation, { mode: "replace" });
 }
 
 function returnToEnvironmentCanvasWithBrowserHistory() {
   const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
   const canvasNavigation = createStoryvrNavigationRoute("environment-enhancement");
   if (currentEntry?.editorScene && currentEntry.parentEntryId) {
-    window.history.back();
-    return;
+    return requestStoryvrBrowserNavigation(canvasNavigation, { mode: "back" });
   }
-  replaceStoryvrBrowserNavigation(canvasNavigation);
+  return requestStoryvrBrowserNavigation(canvasNavigation, { mode: "replace" });
 }
 
 function returnToAttentionCanvasWithBrowserHistory() {
   const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
   const canvasNavigation = createStoryvrNavigationRoute(ATTENTION_GUIDANCE_COMPONENT_ID);
   if (currentEntry?.editorScene && currentEntry.parentEntryId) {
-    window.history.back();
-    return;
+    return requestStoryvrBrowserNavigation(canvasNavigation, { mode: "back" });
   }
-  replaceStoryvrBrowserNavigation(canvasNavigation);
+  return requestStoryvrBrowserNavigation(canvasNavigation, { mode: "replace" });
 }
 
 function returnToDynamicCanvasWithBrowserHistory() {
   const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
   const canvasNavigation = createStoryvrNavigationRoute("dynamic-geometry");
   if (currentEntry?.editorScene && currentEntry.parentEntryId) {
-    window.history.back();
-    return;
+    return requestStoryvrBrowserNavigation(canvasNavigation, { mode: "back" });
   }
-  replaceStoryvrBrowserNavigation(canvasNavigation);
+  return requestStoryvrBrowserNavigation(canvasNavigation, { mode: "replace" });
 }
 
 function returnToInterBeatCanvasWithBrowserHistory() {
   const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
   const canvasNavigation = createStoryvrNavigationRoute("inter-beat-dynamics");
   if (currentEntry?.editorScene && currentEntry.parentEntryId) {
-    window.history.back();
-    return;
+    return requestStoryvrBrowserNavigation(canvasNavigation, { mode: "back" });
   }
-  replaceStoryvrBrowserNavigation(canvasNavigation);
+  return requestStoryvrBrowserNavigation(canvasNavigation, { mode: "replace" });
 }
 
 function returnToInteractionCanvasWithBrowserHistory() {
   const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
   const canvasNavigation = createStoryvrNavigationRoute("interaction-control");
   if (currentEntry?.editorScene && currentEntry.parentEntryId) {
-    window.history.back();
-    return;
+    return requestStoryvrBrowserNavigation(canvasNavigation, { mode: "back" });
   }
-  replaceStoryvrBrowserNavigation(canvasNavigation);
+  return requestStoryvrBrowserNavigation(canvasNavigation, { mode: "replace" });
 }
 
 function render() {
@@ -1439,6 +1738,7 @@ function render() {
 
   captureMountedPreviewCameraState();
   disposeModelViewer();
+  disposeSourceGraphSpatialPreviewViewer();
   disposeTopologyViewer();
   disposeDynamicGeometryViewer();
   disposeInterBeatDynamicsViewer();
@@ -1463,7 +1763,8 @@ function render() {
   const layoutClass = isFinalReview ? "final-review-layout" : showSidebar ? "authoring-layout" : "single-workspace-layout";
   const flowComponents = visibleFlowComponents();
   const storyTitle = state.data.project.story.title || state.data.project.story.slug;
-  const storyName = storyShortName(state.data);
+  const storyName = storyHeaderEyebrow(state.data);
+  const environmentGenerationActivity = renderEnvironmentGenerationActivity();
   app.innerHTML = `
     <header class="app-header">
       <div class="product-bar">
@@ -1480,7 +1781,7 @@ function render() {
         ${renderHistoryControls()}
       </div>
       <div class="story-summary">
-        <p class="eyebrow">${escapeHtml(storyName)}</p>
+        ${storyName ? `<p class="eyebrow">${escapeHtml(storyName)}</p>` : ""}
         <h1 class="story-title" title="${escapeHtml(storyTitle)}">${escapeHtml(storyTitle)}</h1>
         <details class="story-project-details">
           <summary>Project files</summary>
@@ -1502,6 +1803,7 @@ function render() {
     <nav class="flow" aria-label="Story steps" style="--flow-step-count: ${Math.max(flowComponents.length, 1)}">
       ${flowComponents.map((component) => renderFlowButton(component)).join("")}
     </nav>
+    <div class="background-task-region" data-environment-generation-activity ${environmentGenerationActivity ? "" : "hidden"}>${environmentGenerationActivity}</div>
     <section class="layout ${layoutClass} ${isSourceGraph && showSidebar ? "source-layout" : ""}">
       ${showSidebar ? `<aside class="sidebar">
         ${renderCodexAuth()}
@@ -1515,7 +1817,7 @@ function render() {
         ${showCompiler ? `<section class="preview inline-preview">${renderPreviewQa()}</section>` : ""}
       </section>
     </section>
-    ${state.busy ? `<div class="busy">Working...</div>` : ""}
+    ${state.busy || authorHistoryInteractionBusy ? `<div class="busy">Working...</div>` : ""}
   `;
 
   bindEvents();
@@ -1523,6 +1825,7 @@ function render() {
   if (!activeBlocked) {
     initializeStoryVariantLinkLayout();
     initializeSourceGraphModelThumbnails(active);
+    initializeSourceGraphSpatialPreview(active);
     initializeDynamicModelThumbnails(active);
     initializeTopologyViewer(active);
     initializeDynamicGeometryViewer(active);
@@ -1536,7 +1839,6 @@ function render() {
     initializeFinalReviewStoryCanvas(active);
     initializeFinalReviewViewer(active);
     initializeSelectedModelViewer();
-    maybeRequestEnvironmentRecommendation(active);
   }
 }
 
@@ -1653,13 +1955,13 @@ function participantStageErrorMessage(error) {
 }
 
 function stageErrorComponentId(componentId, diagnostic) {
+  const fallbackComponentId = componentId || state.activeId;
   const raw = String(diagnostic?.component || "").trim();
   const normalized = raw === "asset-topology" || raw === LEGACY_TEXT_COMFORT_COMPONENT_ID
     ? spatialRelationsComponentId()
     : raw;
-  return visibleFlowComponents().some((component) => component.id === normalized)
-    ? normalized
-    : componentId || state.activeId;
+  if (visibleFlowComponents().some((component) => component.id === normalized)) return normalized;
+  return checkpointBlockingDependency(fallbackComponentId)?.id || fallbackComponentId;
 }
 
 function stageErrorLocation(componentId, output = state.output) {
@@ -1685,7 +1987,8 @@ function stageErrorLocation(componentId, output = state.output) {
     : activeContext;
   if (sceneContext?.beatId) {
     const scene = spatialSceneBeat(sceneContext);
-    parts.push(`Scene: ${scene?.title || sceneContext.beatId}`);
+    if (scene) parts.push(`Scene: ${scene.title || sceneContext.beatId}`);
+    else if (diagnosticBeatId) parts.push(`Removed card: ${diagnosticBeatId}`);
   } else if (locatedComponentId === "source-graph") {
     const beat = selectedBeat();
     if (beat) parts.push(`Card: ${beat.title || beat.id}`);
@@ -1717,21 +2020,35 @@ function stageErrorRecovery(componentId, output = state.output) {
     return "Ask the facilitator to fix the reader build, then select “Build reader” again.";
   }
   const locatedComponentId = stageErrorComponentId(componentId, diagnostic);
+  const requestedComponentId = componentId || state.activeId;
+  const diagnosticBeatId = String(diagnostic?.beatId || "").trim();
+  if (diagnosticBeatId && !spatialSceneBeat(spatialSceneContext(
+    diagnosticBeatId,
+    diagnostic?.variantGroupId,
+    diagnostic?.variantOptionId,
+  ))) {
+    return "This saved work belongs to a card that was removed. Save Story order again so StoryVR can recheck later steps, then try this action again.";
+  }
+  if (locatedComponentId !== requestedComponentId) {
+    const component = componentById(locatedComponentId);
+    const label = participantComponentLabel(locatedComponentId, component?.label);
+    return `Open ${label} and review the issue StoryVR found there. Later steps will be checked again after it is resolved.`;
+  }
   if (locatedComponentId === "source-graph") {
     return selectedBeat()
       ? "Correct the selected card, then select “Save story order” again."
-      : "Correct the highlighted card, then select “Save story order” again.";
+      : "Review the story cards, then select “Save story order” again.";
   }
   if (locatedComponentId === "transition-pacing") {
     return "Open the named step, correct it, then select “Build reader” again.";
   }
   if (locatedComponentId === "interaction-control" && activeStageSceneContext(locatedComponentId)) {
-    return "Correct the highlighted setting in this scene, then try the action again.";
+    return "Review the settings in this scene, then try the action again.";
   }
   if (activeStageSceneContext(locatedComponentId)) {
     return "Correct this scene, then select “Save scene and return” again.";
   }
-  return `Correct the highlighted item, then select “${checkpointSaveActionLabel(locatedComponentId)}” again.`;
+  return `Review this step, then select “${checkpointSaveActionLabel(locatedComponentId)}” again.`;
 }
 
 function renderStageErrorNotice(componentId, output = state.output) {
@@ -1801,6 +2118,7 @@ function renderPreservingScroll() {
     }
     const nextSourceGraphAssetGrid = document.querySelector(".source-graph-asset-grid");
     if (nextSourceGraphAssetGrid) nextSourceGraphAssetGrid.scrollTop = scrollState.sourceGraphAssetTop;
+    revealSourceGraphFocusedAsset();
     const nextMotionTargets = document.querySelector(".motion-target-list");
     if (nextMotionTargets) nextMotionTargets.scrollTop = scrollState.motionTargetsTop;
     const nextInterBeatBeatList = document.querySelector(".inter-beat-beat-list");
@@ -2115,11 +2433,6 @@ function updateCheckpointStatusDom(componentId = state.activeId) {
       pill.classList.add(status);
       pill.textContent = participantStatusLabel(status);
     }
-    const saveState = document.querySelector("[data-environment-save-state]");
-    if (saveState && environmentSourceAwaitingUpload()) {
-      saveState.className = "environment-save-state dirty";
-      saveState.textContent = "Upload required";
-    }
   }
   const compileButton = document.querySelector('[data-action="compile"]');
   if (compileButton) {
@@ -2173,7 +2486,18 @@ function renderSourceGraphStatus() {
   if (state.output.error) return renderStageErrorNotice("source-graph");
   if (state.output.history) return `<p class="source-graph-status">${escapeHtml(state.output.history)}</p>`;
   if (state.output.animationProbeApplied) return `<p class="source-graph-status">${escapeHtml(state.output.animationProbeApplied)}</p>`;
-  if (state.output.saved) return `<p class="source-graph-status">Story order saved.${state.output.inferenceRefreshed ? " Object movement and scene changes were updated." : ""}</p>`;
+  if (state.output.saved) {
+    const revalidation = state.data?.workflowRevalidation;
+    const checked = Number(revalidation?.checked) || 0;
+    const kept = Number(revalidation?.keptCurrent) || 0;
+    const needsReview = Number(revalidation?.needsReview) || 0;
+    const followUp = checked
+      ? needsReview
+        ? ` ${kept} later step${kept === 1 ? " was" : "s were"} kept; ${needsReview} needs review.`
+        : ` ${kept} completed later step${kept === 1 ? " was" : "s were"} checked automatically.`
+      : "";
+    return `<p class="source-graph-status">Story order saved.${escapeHtml(followUp)}</p>`;
+  }
   if (state.output.regenerated) return `<p class="source-graph-status">Regenerated ${escapeHtml(state.output.regenerated)}</p>`;
   return "";
 }
@@ -2307,6 +2631,7 @@ function renderBeatTimeline() {
         }).join("")}
         </ol>
       </div>
+      ${renderSourceGraphSpatialPreview()}
       ${renderSourceGraphFullTextDetail()}
       </div>
     </section>
@@ -2570,6 +2895,63 @@ function sourceGraphTextDetailMatches(beatId, variantGroupId = null, variantOpti
   if (!selected || String(selected.beatId || "") !== String(beatId || "")) return false;
   return String(selected.variantGroupId || "") === String(variantGroupId || "")
     && String(selected.variantOptionId || "") === String(variantOptionId || "");
+}
+
+function sourceGraphSpatialPreviewState() {
+  const preview = state.sourceGraphSpatialPreview;
+  if (!preview?.beatId || !preview?.assetId) return null;
+  const beat = (state.data?.graph?.beats || []).find((candidate) => candidate.id === preview.beatId);
+  if (!beat) return null;
+  const group = preview.variantGroupId ? variantGroupForBeat(beat) : null;
+  const option = group?.id === preview.variantGroupId
+    ? (group.options || []).find((candidate) => candidate.id === preview.variantOptionId) || null
+    : null;
+  if ((preview.variantGroupId || preview.variantOptionId) && !option) return null;
+  const linkedAssetIds = option ? variantOptionAssetIds(option) : beatAssetIds(beat);
+  if (!linkedAssetIds.includes(preview.assetId)) return null;
+  const asset = findAssetById(preview.assetId);
+  if (!asset) return null;
+  return {
+    ...preview,
+    beat,
+    group,
+    option,
+    asset,
+    linkedAssetIds,
+    sceneContext: spatialSceneContext(
+      preview.beatId,
+      preview.variantGroupId,
+      preview.variantOptionId,
+    ),
+  };
+}
+
+function renderSourceGraphSpatialPreview() {
+  const preview = sourceGraphSpatialPreviewState();
+  if (!preview) return "";
+  const title = preview.asset.filename || preview.asset.label || preview.asset.id;
+  const sceneLabel = preview.option?.label || preview.beat.title || preview.beat.id;
+  return `
+    <aside
+      class="source-graph-spatial-preview"
+      data-source-graph-spatial-preview
+      data-source-graph-preview-asset="${escapeHtml(preview.asset.id)}"
+      data-source-graph-preview-beat="${escapeHtml(preview.beat.id)}"
+      aria-label="Read-only spatial preview for ${escapeHtml(title)}"
+    >
+      <div class="source-graph-spatial-preview-head">
+        <span><small>${escapeHtml(sceneLabel)}</small><strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong></span>
+        <em>Preview only</em>
+      </div>
+      <div
+        class="source-graph-spatial-preview-viewer spatial-editor-mouse-controls"
+        data-source-graph-spatial-preview-viewer
+        tabindex="0"
+        role="application"
+        aria-label="Read-only spatial scene preview for ${escapeHtml(title)}"
+      ><div class="source-graph-spatial-preview-status">Loading scene…</div></div>
+    </aside>
+  `;
 }
 
 function sourceGraphFullTextDetail() {
@@ -3074,6 +3456,7 @@ function renderSourceGraphBeatAsset(assetId, beat, options = {}) {
       ${draggable ? "draggable=\"true\"" : ""}
       ${draggable ? `data-source-graph-drag-asset="${escapeHtml(assetId)}"${variant ? "" : ` data-source-beat-id="${escapeHtml(beat.id)}"`}` : ""}
       data-select-beat="${escapeHtml(beat.id)}"
+      data-source-graph-beat-asset="${escapeHtml(assetId)}"
       title="${escapeHtml(title)}"
     >
       ${asset ? renderSpatialStoryAssetPreview(asset) : `<span class="asset-icon">?</span>`}
@@ -3212,14 +3595,16 @@ function renderAssetCard(asset, beat) {
       ? beatAssetIds(beat).includes(asset.id)
       : false;
   const selectedTargetLabel = selectedVariantOption ? "selected choice" : "selected card";
+  const focused = state.sourceGraphFocusedAssetId === asset.id;
   return `
     <article
-      class="source-graph-asset-icon-card ${linked ? "linked" : ""}"
+      class="source-graph-asset-icon-card ${linked ? "linked" : ""} ${focused ? "selected" : ""}"
       role="button"
       tabindex="0"
       draggable="true"
       data-source-graph-drag-asset="${escapeHtml(asset.id)}"
       data-link-asset-id="${escapeHtml(asset.id)}"
+      ${focused ? "data-source-graph-focused-asset" : ""}
       aria-describedby="source-graph-asset-link-help"
       aria-label="${escapeHtml(`${asset.id}. ${isModelAsset(asset) ? "3D model" : "Image"}. ${linked ? `Already linked to ${selectedTargetLabel}` : `Link to ${selectedTargetLabel}`}`)}"
     >
@@ -4487,12 +4872,13 @@ function resetGraphDependentPreviewState() {
   state.selectedSpatialEntityId = null;
   state.selectedSpatialEntityIds = [];
   state.spatialSelectionAnchorEntityId = null;
+  state.spatialSelectionClearedSceneKey = "";
   state.spatialClipboard = null;
   state.spatialClipboardStatus = "Select a GLB model to copy.";
   state.spatialPropagationSelectionId = null;
   state.spatialPropagationTargetsOpen = false;
   state.spatialPropagationTargetBeatIds = [];
-  state.spatialPropagationStatus = "Select a GLB model to reuse its transform in other scenes.";
+  state.spatialPropagationStatus = "";
   state.spatialPendingTransition = null;
 }
 
@@ -5235,14 +5621,12 @@ function renderComponentWorkspace(component) {
         <div class="actions">
           ${renderGenerateOptionsButton(component, ready)}
           <button data-action="save-graph">Save story order</button>
+          ${renderCheckpointActions(component, decision, { canCommit: state.selectedOptionId || decision })}
         </div>
       </div>
       ${ready ? "" : `<p class="blocked-note">Save earlier checkpoints before generating this component.</p>`}
       <div class="option-grid">
         ${(proposalBundle?.proposals || []).map((proposal) => renderOptionCard(component, proposal, decision)).join("") || renderEmptyOptions(component)}
-      </div>
-      <div class="actions checkpoint-actions">
-        ${renderCheckpointActions(component, decision, { canCommit: state.selectedOptionId || decision })}
       </div>
     </section>
   `;
@@ -5281,6 +5665,7 @@ function renderAssetTopologyWorkspace(component) {
         </div>
         <div class="actions">
           ${renderGenerateOptionsButton(component, ready)}
+          ${renderCheckpointActions(component, decision, { canCommit: selectedProposal || decision })}
         </div>
       </div>
       <p class="muted">Choose how the story’s spatial assets are organized.</p>
@@ -5292,9 +5677,6 @@ function renderAssetTopologyWorkspace(component) {
           ${renderTopologyInspector(selectedProposal)}
         </div>
       ` : renderTopologyEmptyState(component)}
-      <div class="actions checkpoint-actions">
-        ${renderCheckpointActions(component, decision, { canCommit: selectedProposal || decision })}
-      </div>
     </section>
   `;
 }
@@ -5400,7 +5782,7 @@ function renderTopologyDiagram(proposal) {
       <div class="topology-viewer-shell" data-topology-viewer="${escapeHtml(proposal.optionId)}" tabindex="0" role="application" aria-label="Interactive 3D topology preview">
         <div class="topology-viewer-status">Loading ${loadingCount || "no"} linked assets...</div>
       </div>
-      <p class="topology-viewer-hint">Drag to orbit. Click scene, then use WASD to move.${swapSequence.applicable ? " Use the controls to inspect source-order swaps." : ""}</p>
+      <p class="topology-viewer-hint">Click scene, then use WASD to move.${swapSequence.applicable ? " Use the controls to inspect source-order swaps." : ""}</p>
       <p class="topology-description">${escapeHtml(proposal.description)}</p>
     </section>
   `;
@@ -5591,7 +5973,10 @@ function renderDynamicGeometryCanvasWorkspace(component, proposal, ready) {
           <h2>${escapeHtml(participantComponentLabel(component.id, component.label))}</h2>
           <p class="story-stage-instruction">${escapeHtml(storyStageInstruction(state.data, component.id))}</p>
         </div>
-        <span class="dynamic-status-pill">${escapeHtml(participantStatusLabel(checkpointFlowStatus(component.id)))}</span>
+        <div class="actions checkpoint-head-actions">
+          <span class="dynamic-status-pill">${escapeHtml(participantStatusLabel(checkpointFlowStatus(component.id)))}</span>
+          ${renderCheckpointActions(component, state.data.decisions[component.id], { canCommit: Boolean(proposal) })}
+        </div>
       </div>
       ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before checking object movement.</p>`}
       ${renderDynamicGeometryStatus()}
@@ -5601,9 +5986,6 @@ function renderDynamicGeometryCanvasWorkspace(component, proposal, ready) {
         <small>${staticSceneCount ? `${staticSceneCount} scene${staticSceneCount === 1 ? "" : "s"} stay${staticSceneCount === 1 ? "s" : ""} still` : "Every scene has movement"}</small>
       </div>
       ${renderDynamicStoryCanvas(proposal)}
-      <div class="actions checkpoint-actions">
-        ${renderCheckpointActions(component, state.data.decisions[component.id], { canCommit: Boolean(proposal) })}
-      </div>
     </section>
   `;
 }
@@ -6323,14 +6705,14 @@ function renderInterBeatDynamicsCanvasWorkspace(component, proposal, ready) {
           <h2>${escapeHtml(participantComponentLabel(component.id, component.label))}</h2>
           <p class="story-stage-instruction">${escapeHtml(storyStageInstruction(state.data, component.id))}</p>
         </div>
-        <span class="dynamic-status-pill">${escapeHtml(participantStatusLabel(checkpointFlowStatus(component.id)))}</span>
+        <div class="actions checkpoint-head-actions">
+          <span class="dynamic-status-pill">${escapeHtml(participantStatusLabel(checkpointFlowStatus(component.id)))}</span>
+          ${renderCheckpointActions(component, state.data.decisions[component.id], { canCommit: Boolean(proposal) })}
+        </div>
       </div>
       ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before checking scene changes.</p>`}
       ${renderInterBeatDynamicsStatus()}
       ${renderInterBeatStoryCanvas(proposal)}
-      <div class="actions checkpoint-actions">
-        ${renderCheckpointActions(component, state.data.decisions[component.id], { canCommit: Boolean(proposal) })}
-      </div>
     </section>
   `;
 }
@@ -6366,18 +6748,8 @@ function renderInterBeatDynamicsEditorWorkspace(component, proposal, ready, scen
       ${proposal ? `
         <div class="asset-topology-workbench dynamic-geometry-workbench source-dynamics-workbench dynamic-editor-workbench transition-editor-workbench">
           ${renderInterBeatPreview(proposal, sceneContext)}
-          <details class="facilitator-details transition-diagnostics">
-            <summary>Scene-change details for facilitator</summary>
-            ${renderInterBeatInspector(proposal)}
-          </details>
         </div>
       ` : renderInterBeatEmptyState(component)}
-      <details class="facilitator-details transition-linking-details">
-        <summary>Advanced: change source animation links</summary>
-        <div class="facilitator-details-content">
-          ${renderSourceMotionLinkingEditor(component.id)}
-        </div>
-      </details>
     </section>
   `;
 }
@@ -6782,56 +7154,6 @@ function renderSourceCameraEvidence(beat) {
         <span><strong>Use in WebXR</strong><small>Spatial evidence and Path text focus only; headset camera remains viewer-controlled.</small></span>
       </div>
     </details>
-  `;
-}
-
-function renderInterBeatInspector(proposal) {
-  if (!proposal) {
-    return `
-      <aside class="topology-inspector dynamic-inspector">
-        <h3>Source classification</h3>
-        <p class="muted">Apply animation-probe classifications to inspect transition rationale and risks.</p>
-      </aside>
-    `;
-  }
-  const selectedModelAsset = selectedModelAssetForTopology(proposal);
-  return `
-    <aside class="topology-inspector dynamic-inspector inter-beat-inspector">
-      ${renderSelectedOptionInspectorHead(proposal)}
-      <section class="topology-inspector-section">
-        <h3>Reader effect</h3>
-        <p>${escapeHtml(proposal.readerImpact || "No reader impact supplied.")}</p>
-      </section>
-      ${renderSourceDynamicsInspector(proposal)}
-      <section class="topology-inspector-section">
-        <h3>Transition assets</h3>
-        <div class="topology-asset-role-list">
-          ${(proposal.assetLinks || []).map((assetLink) => renderTopologyAssetRoleCard(assetLink)).join("") || `<p class="muted">No linked assets supplied for this proposal.</p>`}
-        </div>
-      </section>
-      ${selectedModelAsset ? renderModelPreviewPanel(selectedModelAsset) : ""}
-      <section class="topology-inspector-section">
-        <h3>Evidence beats</h3>
-        <div class="topology-evidence-list">
-          ${(proposal.sourceEvidence || []).map((item) => `
-            <article>
-              <strong>${escapeHtml(item.beatId || "source beat")}</strong>
-              <p>${escapeHtml(shortText(item.quote || item.reason || JSON.stringify(item), 170))}</p>
-              ${item.reason ? `<span>${escapeHtml(item.reason)}</span>` : ""}
-            </article>
-          `).join("") || `<p class="muted">No source evidence supplied.</p>`}
-        </div>
-      </section>
-      <section class="topology-inspector-section">
-        <h3>Risks</h3>
-        <ul>${(proposal.risks || []).map((risk) => `<li>${escapeHtml(risk)}</li>`).join("") || "<li>No risks supplied.</li>"}</ul>
-      </section>
-      <section class="topology-inspector-section">
-        <h3>Implementation hints</h3>
-        <ul>${(proposal.implementationHints || []).map((hint) => `<li>${escapeHtml(hint)}</li>`).join("") || "<li>No implementation hints supplied.</li>"}</ul>
-      </section>
-      ${renderSelectedOptionInspectorFooter()}
-    </aside>
   `;
 }
 
@@ -7824,7 +8146,10 @@ function renderEnvironmentEnhancementCanvasWorkspace(component) {
           <h2>${escapeHtml(participantComponentLabel(component.id, component.label))}</h2>
           <p class="story-stage-instruction">${escapeHtml(storyStageInstruction(state.data, component.id))}</p>
         </div>
-        <span class="environment-status-pill ${checkpointStatus}">${escapeHtml(participantStatusLabel(checkpointStatus))}</span>
+        <div class="actions checkpoint-head-actions">
+          <span class="environment-status-pill ${checkpointStatus}">${escapeHtml(participantStatusLabel(checkpointStatus))}</span>
+          <button class="primary" data-environment-action="save" ${ready && assignmentsReady && !state.environmentUi.operationBusy && !state.environmentUi.generationBusy ? "" : "disabled"}>Finish this step</button>
+        </div>
       </div>
       ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before setting the scene.</p>`}
       ${state.output?.error && state.activeId === component.id ? renderStageErrorNotice(component.id) : ""}
@@ -7835,9 +8160,6 @@ function renderEnvironmentEnhancementCanvasWorkspace(component) {
         <small>${neutralCount ? `${neutralCount} scene${neutralCount === 1 ? "" : "s"} keep${neutralCount === 1 ? "s" : ""} the current setting` : "Every scene has a custom setting"}</small>
       </div>
       ${renderEnvironmentStoryCanvas()}
-      <div class="actions checkpoint-actions environment-checkpoint-actions">
-        <button class="primary" data-environment-action="save" ${ready && assignmentsReady && !state.environmentUi.operationBusy ? "" : "disabled"}>Finish this step</button>
-      </div>
     </section>
   `;
 }
@@ -7925,353 +8247,103 @@ function renderEnvironmentStoryCard(beat, option, context, index, primary) {
 
 function renderEnvironmentEnhancementEditorWorkspace(component, sceneContext) {
   const manifest = environmentManifest(sceneContext);
-  const profileId = storyProfileId(state.data);
-  const neutralStory = profileId === "classroom" || profileId === "transmission";
   const ready = Boolean(state.data.readiness[component.id]?.canGenerate);
   const blockingDependencyLabel = participantBlockingDependencyLabel(component.id);
   const selectedNone = Boolean(manifest.skipped);
-  const storedAssignment = environmentAssignmentForContext(sceneContext);
-  const retainedAsset = Boolean(storedAssignment?.selection?.asset || storedAssignment?.asset);
   const hasAsset = Boolean(manifest.asset);
-  const sourceAwaitingUpload = environmentSourceAwaitingUpload(manifest);
   const draft = environmentDraft();
-  const matchingGroundReady = Boolean(draft.movementCue.texture);
-  const matchingGroundSummary = matchingGroundReady
-    ? draft.movementCue.enabled
-      ? `Generated · ${Math.round(draft.movementCue.opacity * 100)}%`
-      : "Generated · hidden"
-    : draft.movementCue.enabled
-      ? `Legacy sand · ${Math.round(draft.movementCue.opacity * 100)}%`
-      : "Disabled";
   const storyAssetCount = environmentPreviewStoryAssets().length;
   const spatialPreview = environmentSpatialScenePreview(sceneContext);
-  const spatialPreviewCurrent = spatialPreview.state === "saved";
   const spatialSceneDescriptor = spatialPreview.state === "saved"
     ? "saved Spatial Relations"
     : spatialPreview.state === "draft" ? "available draft Spatial Relations" : "source-linked fallback";
   const spatialAssetDescriptor = spatialPreview.state === "saved" ? "saved" : spatialPreview.state === "draft" ? "draft" : "source-linked";
-  const selectedSource = manifest.selectedSource || null;
-  const controlsDisabled = !ready || !hasAsset || state.environmentUi.operationBusy;
+  const controlsDisabled = !ready || !hasAsset || state.environmentUi.operationBusy || state.environmentUi.generationBusy;
   const checkpointStatus = checkpointFlowStatus(component.id);
   const beat = spatialSceneBeat(sceneContext);
-  const acquisitionMode = state.environmentUi.acquisitionMode === "generate" ? "generate" : "search";
   const generationPrompt = environmentGenerationPrompt();
-  const currentAssetMediaType = environmentNormalizeMediaType(
-    manifest.asset?.mediaType || manifest.asset?.format,
-    manifest.asset?.localUrl || manifest.asset?.publicPath || "",
-  );
-  const generationResult = ENVIRONMENT_PNG_MEDIA_TYPES.has(currentAssetMediaType)
-    ? state.environmentUi.generationResult || {
-      title: environmentSelectionTitle(manifest),
-      description: manifest.description || "This Codex-generated panorama is installed as the current Environment Enhancement draft.",
-    }
-    : null;
-  const optionalSettingSummary = neutralStory
-    ? "Optional: change the neutral setting"
-    : selectedNone
-      ? "Optional: add a setting"
-      : "Optional: replace this setting";
   return `
-    <section class="panel asset-topology-panel environment-enhancement-panel environment-editor-mode" data-environment-workspace-mode="editor">
+    <section class="panel asset-topology-panel spatial-relations-panel spatial-editor-mode environment-enhancement-panel environment-editor-mode" data-environment-workspace-mode="editor">
+      ${renderEnvironmentBeatEdgeNavigation(sceneContext)}
       <div class="panel-head">
         <div>
           <p class="eyebrow">${escapeHtml(participantComponentLabel(component.id, component.label))} · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
           <h2>${escapeHtml(beat?.title || sceneContext.beatId)}</h2>
         </div>
-        <div class="actions environment-editor-head-actions">
-          <span class="environment-status-pill ${checkpointStatus}">${escapeHtml(participantStatusLabel(checkpointStatus))}</span>
+        <div class="actions spatial-editor-head-actions environment-editor-head-actions">
           <button class="primary" type="button" data-environment-close-save>Save scene and return</button>
         </div>
       </div>
-      <p class="muted">Check how this scene looks around the reader.</p>
       ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before setting the scene.</p>`}
-      ${selectedNone ? `<p class="source-graph-status">${checkpointStatus === "saved" ? "The story uses its neutral setting." : "The neutral setting is selected. Save this scene to keep it."}${retainedAsset ? " A previous setting is still available under the optional controls." : ""}</p>` : ""}
+      ${selectedNone ? `<p class="source-graph-status">${checkpointStatus === "saved" ? "The story uses its neutral setting." : "The neutral setting is selected. Save this scene to keep it."}</p>` : ""}
       ${state.output?.error && state.activeId === component.id ? renderStageErrorNotice(component.id) : ""}
-      <section class="environment-skip-card ${selectedNone ? "selected" : ""}">
-        <div>
-          <span class="environment-field-kicker">${neutralStory ? "Recommended for this story" : "Current choice"}</span>
-          <strong>Keep the current setting</strong>
-          <p>Use the story's existing scene without adding a new background.</p>
+      <div class="spatial-relations-workbench environment-enhancement-workbench">
+        <div class="spatial-workbench-sidebar environment-workbench-sidebar">
+          <form
+            id="environment-generation-form"
+            class="environment-scene-description-form"
+            data-environment-generation-form
+          >
+            <div class="visual-card-head environment-scene-description-head">
+              <h3>Scene description</h3>
+            </div>
+            <textarea
+              id="environment-generation-prompt"
+              class="environment-scene-description-input"
+              rows="8"
+              maxlength="1000"
+              aria-label="Scene description"
+              placeholder="Describe the full 360° place, lighting, weather, and mood"
+              required
+              ${!ready || state.environmentUi.generationBusy ? "disabled" : ""}
+            >${escapeHtml(generationPrompt)}</textarea>
+            ${renderEnvironmentRangeControl(
+              "movement-cue-opacity",
+              "Ground opacity",
+              draft.movementCue.opacity,
+              0,
+              1,
+              0.05,
+              `${Math.round(draft.movementCue.opacity * 100)}%`,
+              controlsDisabled || !draft.movementCue.enabled,
+            )}
+            <button
+              class="primary environment-generate-button"
+              type="submit"
+              data-environment-generate-button
+              ${!ready || state.environmentUi.generationBusy || !generationPrompt ? "disabled" : ""}
+            >${state.environmentUi.generationBusy ? "Generating…" : "Generate environment"}</button>
+          </form>
         </div>
-        <button type="button" data-environment-selection="${selectedNone ? "asset" : "none"}" ${!ready || state.environmentUi.operationBusy || (selectedNone && !retainedAsset) ? "disabled" : ""}>${selectedNone ? (retainedAsset ? "Use previous setting" : "Selected") : "Keep current setting"}</button>
-      </section>
-      <div class="environment-enhancement-workbench">
-        <details class="facilitator-details environment-change-details">
-          <summary>${escapeHtml(optionalSettingSummary)}</summary>
-          <section class="topology-option-rail environment-catalog" aria-label="Optional setting controls">
-          <div class="visual-card-head">
-            <div>
-              <p class="eyebrow">Find or create a setting</p>
-              <h3>360° environments</h3>
-            </div>
-            <span data-environment-result-count>${acquisitionMode === "generate" ? "AI" : state.environmentUi.candidates.length}</span>
-          </div>
-          <div class="environment-acquisition-tabs" role="tablist" aria-label="Environment image source">
-            <button
-              type="button"
-              role="tab"
-              id="environment-search-tab"
-              data-environment-acquisition-tab="search"
-              aria-controls="environment-search-panel"
-              aria-selected="${acquisitionMode === "search"}"
-              tabindex="${acquisitionMode === "search" ? "0" : "-1"}"
-            >Search</button>
-            <button
-              type="button"
-              role="tab"
-              id="environment-generate-tab"
-              data-environment-acquisition-tab="generate"
-              aria-controls="environment-generate-panel"
-              aria-selected="${acquisitionMode === "generate"}"
-              tabindex="${acquisitionMode === "generate" ? "0" : "-1"}"
-            >Generate</button>
-          </div>
-          <div
-            class="environment-acquisition-panel environment-search-panel"
-            id="environment-search-panel"
-            role="tabpanel"
-            aria-labelledby="environment-search-tab"
-            data-environment-acquisition-panel="search"
-            ${acquisitionMode === "search" ? "" : "hidden"}
-          >
-            <div class="environment-ai-recommendation" data-environment-recommendation>
-              ${renderEnvironmentRecommendationCallout(ready)}
-            </div>
-            <p class="muted environment-brief" data-environment-brief>${escapeHtml(environmentBriefDescription())}</p>
-            <form class="environment-search-form" data-environment-search-form>
-              <label for="environment-search-query">Search keywords</label>
-              <div class="environment-search-row">
-                <input id="environment-search-query" type="search" value="${escapeHtml(environmentSearchQuery())}" placeholder="AI recommendation or your own search terms" autocomplete="off" required ${!ready || state.environmentUi.searchBusy ? "disabled" : ""}>
-                <button type="submit" ${!ready || state.environmentUi.searchBusy ? "disabled" : ""}>${state.environmentUi.searchBusy ? "Searching…" : "Search"}</button>
-              </div>
-              <small>Review or edit the AI recommendation, then search explicitly. Results are limited to equirectangular HDRIs; StoryVR links to source pages but does not download them.</small>
-            </form>
-            <div class="environment-provider-status" data-environment-provider-status>${renderEnvironmentProviderStatus()}</div>
-            <p class="environment-search-status" data-environment-search-status>${escapeHtml(state.environmentUi.searchStatus || "Search Poly Haven and ambientCG for 360° HDRI source pages.")}</p>
-            <div class="environment-candidate-results" data-environment-candidate-results>
-              ${renderEnvironmentCandidates()}
-            </div>
-            <section class="environment-upload-section">
-              <div class="visual-card-head">
-                <div>
-                  <p class="eyebrow">Upload the downloaded 360° image</p>
-                  <h3>Add it to StoryVR</h3>
-                </div>
-                <span class="environment-format-pill">360° HDR · EXR</span>
-              </div>
-              <div class="environment-source-context" data-environment-source-context>
-                ${renderEnvironmentSelectedSource(selectedSource)}
-              </div>
-              <form class="environment-upload-form" data-environment-upload-form>
-                <label for="environment-upload-file">360° environment image</label>
-                <input id="environment-upload-file" type="file" accept=".hdr,.exr,image/vnd.radiance,image/x-hdr,image/x-exr" ${ready ? "" : "disabled"} required>
-                <button class="primary" type="submit" data-environment-upload-button disabled>Upload, generate ground &amp; preview</button>
-                <small>Choose a 2:1 equirectangular .hdr or .exr image. StoryVR sends the uploaded panorama to your signed-in Codex CLI as a visual reference for its matching near-ground texture. Extract provider ZIPs first. Maximum size: 120 MiB.</small>
-                <p class="environment-upload-status" data-environment-upload-status>${escapeHtml(state.environmentUi.uploadStatus || "Choose a 360° HDR or EXR image; its matching ground will be generated automatically.")}</p>
-              </form>
-            </section>
-          </div>
 
-          <div
-            class="environment-acquisition-panel environment-generate-panel"
-            id="environment-generate-panel"
-            role="tabpanel"
-            aria-labelledby="environment-generate-tab"
-            data-environment-acquisition-panel="generate"
-            ${acquisitionMode === "generate" ? "" : "hidden"}
-          >
-            <div class="environment-generation-intro">
-              <span class="environment-field-kicker">Codex image generation</span>
-              <strong>Create a new 360° surrounding and matching ground</strong>
-              <p>StoryVR sends this scene description and any attached visual references through your signed-in Codex CLI session and its built-in image generation tool. It generates the panorama and a coordinated world-fixed ground texture; no separate API key is required.</p>
-            </div>
-            <form class="environment-generation-form" data-environment-generation-form>
-              <label for="environment-generation-prompt">Scene description and visual references</label>
-              <div class="environment-generation-prompt-dropzone" data-environment-generation-dropzone>
-                <textarea
-                  id="environment-generation-prompt"
-                  rows="5"
-                  maxlength="1000"
-                  placeholder="Describe the full 360° place, lighting, weather, and mood"
-                  required
-                  ${!ready || state.environmentUi.generationBusy ? "disabled" : ""}
-                >${escapeHtml(generationPrompt)}</textarea>
-                <div class="environment-generation-reference-actions">
-                  <label class="environment-generation-reference-picker">
-                    <span>Add reference images</span>
-                    <input
-                      id="environment-generation-reference-files"
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
-                      multiple
-                      ${!ready || state.environmentUi.generationBusy ? "disabled" : ""}
-                    >
-                  </label>
-                  <span>Paste a screenshot with ⌘V, drop images here, or choose files.</span>
-                </div>
-              </div>
-              <div class="environment-generation-references" data-environment-generation-references>
-                ${renderEnvironmentGenerationReferenceImages()}
-              </div>
-              <button class="primary" type="submit" data-environment-generate-button ${!ready || state.environmentUi.generationBusy || !generationPrompt ? "disabled" : ""}>${state.environmentUi.generationBusy ? "Generating panorama + ground…" : "Generate panorama + ground"}</button>
-              <small>Optional PNG, JPEG, or WebP references guide the setting, layout, materials, lighting, and mood. StoryVR extrapolates them into a full sphere rather than placing a flat screenshot in VR. Generation can take a few minutes; StoryVR validates and installs a 2:1 equirectangular LDR PNG plus its matching ground texture as the current draft.</small>
-            </form>
-            <p
-              class="environment-generation-status ${state.environmentUi.generationError ? "error" : ""}"
-              data-environment-generation-status
-              aria-live="polite"
-            >${escapeHtml(state.environmentUi.generationStatus || "Describe the surrounding, then generate its panorama and matching ground.")}</p>
-            <div class="environment-generation-result ${generationResult ? "ready" : ""}" data-environment-generation-result>
-              ${generationResult
-                ? `<span class="environment-format-pill">Generated PNG · 360° + ground</span><strong>${escapeHtml(generationResult.title || "Generated panorama and ground ready")}</strong><p>${escapeHtml(generationResult.description || "The generated panorama and matching ground are installed as the current Environment Enhancement draft and shown in the spatial editor.")}</p>`
-                : `<strong>No generated environment yet</strong><p>The validated panorama and matching ground will appear together in the spatial editor without replacing source-story assets.</p>`}
-            </div>
-          </div>
-          </section>
-        </details>
-
-        <section class="topology-diagram-card topology-3d-card environment-preview-card">
+        <section class="topology-diagram-card topology-3d-card spatial-preview-card environment-preview-card">
           <div class="visual-card-head environment-preview-head">
             <div>
-              <p class="eyebrow">${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
-              <h3>Scene preview</h3>
-              <p class="muted">${storyAssetCount} story object${storyAssetCount === 1 ? "" : "s"} stay visible while you check the setting.</p>
+              <h3>Set the scene</h3>
+              <p class="muted">Review the generated surrounding with the story's saved spatial scene.</p>
             </div>
-            <div class="actions environment-preview-actions">
-              <span data-environment-xr-slot></span>
-              <button type="button" data-environment-reset-view ${hasAsset ? "" : "disabled"}>Reset view</button>
-            </div>
+            <span class="topology-kind-pill object-attached">${selectedNone ? "Current setting" : "360° environment"}</span>
           </div>
-          <div class="topology-viewer-shell environment-viewer-shell" data-environment-viewer tabindex="0" role="application" aria-label="Environment Enhancement spatial editor for ${escapeHtml(beat?.title || sceneContext.beatId)}">
+          <div class="spatial-scene-context-bar environment-scene-context-bar">
+            <div><span>${escapeHtml(spatialSceneContextLabel(sceneContext))}</span><strong>${escapeHtml(beat?.title || sceneContext.beatId)}</strong></div>
+            <span>${storyAssetCount} story object${storyAssetCount === 1 ? "" : "s"}</span>
+          </div>
+          <div class="spatial-transform-toolbar environment-preview-toolbar" role="toolbar" aria-label="Environment tools">
+            <span data-environment-xr-slot></span>
+            <button type="button" data-environment-reset-view ${hasAsset ? "" : "disabled"}>Reset view</button>
+            <span class="spatial-toolbar-divider" aria-hidden="true"></span>
+            ${renderEnvironmentApplyTargets(sceneContext, manifest, controlsDisabled)}
+          </div>
+          <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell environment-viewer-shell" data-environment-viewer tabindex="0" role="application" aria-label="Environment Enhancement spatial editor for ${escapeHtml(beat?.title || sceneContext.beatId)}">
             <div class="environment-viewer-empty" data-environment-viewer-empty>
               <strong>${selectedNone ? "No added environment" : hasAsset ? "Loading 360° environment…" : "Choose a 360° environment"}</strong>
-              <span>${selectedNone ? "StoryVR's standard neutral scene remains active around the authored story assets." : hasAsset ? `${spatialAssetDescriptor[0].toUpperCase()}${spatialAssetDescriptor.slice(1)} story assets will remain visible inside it.` : `The ${spatialSceneDescriptor} scene will stay visible while you inspect and tune the surrounding.`}</span>
+              <span>${selectedNone ? "StoryVR's standard neutral scene remains active around the authored story assets." : hasAsset ? `${spatialAssetDescriptor[0].toUpperCase()}${spatialAssetDescriptor.slice(1)} story assets will remain visible inside it.` : `The ${spatialSceneDescriptor} scene will stay visible while you inspect the surrounding.`}</span>
             </div>
             <div class="topology-viewer-status overlay" data-environment-viewer-status>${selectedNone ? "Using StoryVR's standard neutral scene." : hasAsset ? "Loading environment preview…" : `Loading ${storyAssetCount} upstream story asset${storyAssetCount === 1 ? "" : "s"}…`}</div>
           </div>
-          <p class="topology-viewer-hint">Drag to look around. Scroll to zoom.</p>
-          <div class="environment-selection-bar">
-            <div>
-              <span class="environment-field-kicker">Selected setting</span>
-              <strong>${escapeHtml(selectedNone ? "No added environment" : environmentSelectionTitle(manifest))}</strong>
-              <small>${escapeHtml(selectedNone ? "The standard StoryVR neutral scene will be used in author previews and the compiled reader." : environmentSelectionSubtitle(manifest))}</small>
-            </div>
-            <span class="environment-save-state ${state.environmentUi.draftDirty || environmentSelectionIsDirty() ? "dirty" : checkpointStatus === "saved" ? "saved" : ""}" data-environment-save-state>${state.environmentUi.draftDirty || environmentSelectionIsDirty() ? "Changes not saved" : checkpointStatus === "saved" ? "Saved" : hasAsset || selectedNone ? "Ready to save" : "Not set"}</span>
-          </div>
-          ${renderEnvironmentApplyTargets(sceneContext, manifest, controlsDisabled)}
-          <form class="environment-tuning-form" data-environment-tuning-form>
-            <details class="environment-adjustment-panel environment-surrounding-tuning-panel">
-              <summary class="environment-adjustment-summary">
-                <span class="environment-adjustment-summary-copy">
-                  <span class="eyebrow">Tune the surrounding</span>
-                  <strong class="environment-adjustment-summary-title">Placement and atmosphere</strong>
-                </span>
-                <span class="environment-adjustment-summary-meta">Adjust</span>
-              </summary>
-              <div class="environment-tuning-groups">
-                ${renderEnvironmentRangeControl("position-x", "X position", draft.transform.position[0], -20, 20, 0.05, `${draft.transform.position[0].toFixed(2)} m`, controlsDisabled)}
-                ${renderEnvironmentRangeControl("position-y", "Y position", draft.transform.position[1], -20, 20, 0.05, `${draft.transform.position[1].toFixed(2)} m`, controlsDisabled)}
-                ${renderEnvironmentRangeControl("position-z", "Z position", draft.transform.position[2], -20, 20, 0.05, `${draft.transform.position[2].toFixed(2)} m`, controlsDisabled)}
-                ${renderEnvironmentRangeControl("rotation-y", "Yaw", THREE.MathUtils.radToDeg(draft.transform.rotationY), -180, 180, 1, `${Math.round(THREE.MathUtils.radToDeg(draft.transform.rotationY))}°`, controlsDisabled)}
-                ${renderEnvironmentRangeControl("scale", "Environment scale", draft.transform.scale, 0.05, 12, 0.05, `${draft.transform.scale.toFixed(2)}×`, controlsDisabled)}
-                ${renderEnvironmentRangeControl("exposure", "Exposure", draft.rendering.exposure, 0.1, 3, 0.05, draft.rendering.exposure.toFixed(2), controlsDisabled)}
-                ${renderEnvironmentRangeControl("fog-density", "Fog density", draft.rendering.fogDensity, 0, 0.25, 0.001, draft.rendering.fogDensity.toFixed(3), controlsDisabled)}
-                <label class="environment-compact-control">
-                  <span>Fog color</span>
-                  <input type="color" data-environment-draft-control="fog-color" value="${escapeHtml(draft.rendering.fogColor)}" ${controlsDisabled ? "disabled" : ""}>
-                </label>
-                <label class="environment-compact-control environment-background-control">
-                  <span>Background</span>
-                  <select data-environment-draft-control="background-mode" ${controlsDisabled ? "disabled" : ""}>
-                    ${["asset", "fog-color", "transparent"].map((mode) => `<option value="${mode}" ${draft.rendering.backgroundMode === mode ? "selected" : ""}>${mode === "asset" ? "Environment asset" : mode === "fog-color" ? "Fog color" : "Transparent"}</option>`).join("")}
-                  </select>
-                </label>
-              </div>
-            </details>
-            <details class="environment-adjustment-panel environment-ground-cue-controls" aria-labelledby="environment-ground-cue-title">
-              <summary class="environment-adjustment-summary environment-ground-cue-summary">
-                <span class="environment-adjustment-summary-copy">
-                  <span class="environment-field-kicker">Auto-generated near-ground geometry</span>
-                  <strong id="environment-ground-cue-title">Matching ground</strong>
-                  <span class="environment-adjustment-summary-description">The generated texture matches the selected 360° setting while the compact world-fixed patch makes leaning and stepping visible. The original panorama remains unchanged.</span>
-                </span>
-                <span class="environment-adjustment-summary-meta" data-environment-ground-cue-summary>${matchingGroundSummary}</span>
-              </summary>
-              <div class="environment-ground-cue-content">
-                <div class="environment-ground-cue-head">
-                  <p>${matchingGroundReady ? "Lower opacity blends more of the panorama ground through the matching generated texture." : "This legacy draft uses StoryVR's neutral sand fallback until a matching ground is generated."}</p>
-                  <label class="environment-ground-cue-toggle">
-                    <input type="checkbox" data-environment-draft-control="movement-cue-enabled" ${draft.movementCue.enabled ? "checked" : ""} ${controlsDisabled ? "disabled" : ""}>
-                    <span>Visible</span>
-                  </label>
-                </div>
-                <div class="environment-ground-cue-grid">
-                  ${renderEnvironmentRangeControl("movement-cue-opacity", "Ground opacity", draft.movementCue.opacity, 0, 1, 0.05, `${Math.round(draft.movementCue.opacity * 100)}%`, controlsDisabled || !draft.movementCue.enabled)}
-                  ${renderEnvironmentRangeControl("movement-cue-position-x", "Ground X", draft.movementCue.position[0], -100, 100, 0.05, `${draft.movementCue.position[0].toFixed(2)} m`, controlsDisabled || !draft.movementCue.enabled)}
-                  ${renderEnvironmentRangeControl("movement-cue-position-z", "Ground Z", draft.movementCue.position[2], -100, 100, 0.05, `${draft.movementCue.position[2].toFixed(2)} m`, controlsDisabled || !draft.movementCue.enabled)}
-                  ${renderEnvironmentRangeControl("movement-cue-width", "Width", draft.movementCue.widthMeters, 0.1, 200, 0.1, `${draft.movementCue.widthMeters.toFixed(1)} m`, controlsDisabled || !draft.movementCue.enabled)}
-                  ${renderEnvironmentRangeControl("movement-cue-depth", "Depth", draft.movementCue.depthMeters, 0.1, 200, 0.1, `${draft.movementCue.depthMeters.toFixed(1)} m`, controlsDisabled || !draft.movementCue.enabled)}
-                </div>
-              </div>
-            </details>
-          </form>
         </section>
-
-        <details class="facilitator-details environment-diagnostics">
-          <summary>Setting details for facilitator</summary>
-          <aside class="topology-inspector environment-inspector">
-            <div class="visual-card-head">
-              <div>
-                <p class="eyebrow">Supporting evidence</p>
-                <h3>Source and performance</h3>
-              </div>
-            </div>
-            ${renderEnvironmentInspector(manifest)}
-          </aside>
-        </details>
-      </div>
-      <div class="actions checkpoint-actions environment-checkpoint-actions">
-        <button class="primary" data-environment-action="save" ${ready && environmentCheckpointAssignmentsReady() && !state.environmentUi.operationBusy ? "" : "disabled"}>Finish this step</button>
       </div>
     </section>
-  `;
-}
-
-function renderEnvironmentRecommendationCallout(ready) {
-  const raw = environmentRawState();
-  const brief = environmentManifest().brief;
-  const beatCount = Number(raw.storyBeatCount) || (Array.isArray(state.data?.graph?.beats) ? state.data.graph.beats.length : 0);
-  const busy = state.environmentUi.recommendationBusy;
-  const pendingQuery = state.environmentUi.pendingRecommendedQuery;
-  const disabled = !ready || busy || state.environmentUi.operationBusy || state.environmentUi.searchBusy;
-  const actionLabel = busy
-    ? "Recommending…"
-    : brief?.query
-      ? "Refresh recommendation"
-      : state.environmentUi.recommendationError
-        ? "Retry"
-        : "Recommend with AI";
-  const detail = busy
-    ? `AI is analyzing all ${beatCount} saved story beat${beatCount === 1 ? "" : "s"}. Manual search remains available.`
-    : state.environmentUi.recommendationError
-      ? state.environmentUi.recommendationError
-      : brief?.query
-        ? `Based on all ${brief.beatCount ?? beatCount} saved story beat${Number(brief.beatCount ?? beatCount) === 1 ? "" : "s"}.${brief.rationale ? ` ${brief.rationale}` : ""}`
-        : ready
-          ? "AI will read the complete saved story graph and recommend public-library search terms for the surrounding place."
-          : "The recommendation becomes available after the upstream checkpoints are saved.";
-  const alternatives = Array.isArray(brief?.suggestions) ? brief.suggestions.filter(Boolean) : [];
-  return `
-    <div class="environment-ai-recommendation-head">
-      <div>
-        <span class="environment-field-kicker">AI search recommendation</span>
-        ${brief?.query ? `<strong>${escapeHtml(brief.query)}</strong>` : ""}
-      </div>
-      <button type="button" data-environment-recommendation-action="refresh" ${disabled ? "disabled" : ""}>${escapeHtml(actionLabel)}</button>
-    </div>
-    <p class="${state.environmentUi.recommendationError ? "environment-ai-error" : ""}">${escapeHtml(detail)}</p>
-    ${alternatives.length ? `<div class="environment-recommendation-alternatives"><span>Alternatives</span>${alternatives.map((item) => `<small>${escapeHtml(item)}</small>`).join("")}</div>` : ""}
-    ${pendingQuery ? `<div class="environment-pending-recommendation"><span>New recommendation: <strong>${escapeHtml(pendingQuery)}</strong></span><button type="button" data-environment-recommendation-action="use">Use recommendation</button></div>` : ""}
   `;
 }
 
@@ -8280,7 +8352,7 @@ function renderEnvironmentRangeControl(id, label, value, min, max, step, output,
     <label class="environment-range-control">
       <span>${escapeHtml(label)}</span>
       <output data-environment-output="${id}">${escapeHtml(output)}</output>
-      <input type="range" data-environment-draft-control="${id}" min="${min}" max="${max}" step="${step}" value="${value}" ${disabled ? "disabled" : ""}>
+      <input type="range" data-environment-draft-control="${id}" aria-label="${escapeHtml(label)}" min="${min}" max="${max}" step="${step}" value="${value}" ${disabled ? "disabled" : ""}>
     </label>
   `;
 }
@@ -8293,33 +8365,32 @@ function renderEnvironmentApplyTargets(sceneContext, manifest, controlsDisabled)
   const unavailable = controlsDisabled
     || manifest.skipped
     || !manifest.asset
-    || environmentSourceAwaitingUpload(manifest)
     || !otherBeats.length;
   const panelId = "environment-apply-targets-panel";
   return `
-    <section class="environment-apply-scope ${state.environmentUi.applyTargetsOpen ? "open" : ""}">
+    <section class="spatial-apply-scope environment-apply-scope ${state.environmentUi.applyTargetsOpen ? "open" : ""}">
       <button
         type="button"
-        class="environment-apply-toggle"
+        class="spatial-apply-scenes-button environment-apply-toggle"
         data-environment-apply-toggle
         aria-controls="${panelId}"
         aria-expanded="${state.environmentUi.applyTargetsOpen}"
         ${unavailable ? "disabled" : ""}
       >Apply to other beats…</button>
       <div
-        class="environment-apply-target-panel"
+        class="spatial-apply-target-panel environment-apply-target-panel"
         id="${panelId}"
         data-environment-apply-target-panel
         ${state.environmentUi.applyTargetsOpen ? "" : "hidden"}
       >
-        <div class="environment-apply-target-head">
+        <div class="spatial-apply-target-head environment-apply-target-head">
           <div>
             <strong>Apply this environment to other beats</strong>
             <p>Reuse this panorama and matching ground without generating new images.</p>
           </div>
           <span data-environment-apply-count>${selectedIds.size} selected</span>
         </div>
-        <label class="environment-apply-select-all">
+        <label class="spatial-apply-select-all environment-apply-select-all">
           <input
             type="checkbox"
             data-environment-apply-select-all
@@ -8328,22 +8399,22 @@ function renderEnvironmentApplyTargets(sceneContext, manifest, controlsDisabled)
           >
           <span>Select all other beats</span>
         </label>
-        <div class="environment-apply-target-list">
+        <div class="spatial-apply-target-list environment-apply-target-list">
           ${otherBeats.map((beat) => `
-            <label class="environment-apply-target-row ${selectedIds.has(beat.id) ? "selected" : ""}">
+            <label class="spatial-apply-target-row environment-apply-target-row ${selectedIds.has(beat.id) ? "selected" : ""}">
               <input
                 type="checkbox"
                 data-environment-apply-target="${escapeHtml(beat.id)}"
                 ${selectedIds.has(beat.id) ? "checked" : ""}
                 ${unavailable ? "disabled" : ""}
               >
-              <span class="environment-apply-target-index">${String(beat.index + 1).padStart(2, "0")}</span>
+              <span class="spatial-apply-target-index environment-apply-target-index">${String(beat.index + 1).padStart(2, "0")}</span>
               <span><strong>${escapeHtml(beat.title)}</strong><small>${escapeHtml(shortText(beat.text || beat.id, 120))}</small></span>
             </label>
           `).join("")}
         </div>
-        <div class="environment-apply-target-actions">
-          <p class="environment-apply-status ${state.environmentUi.applyError ? "error" : ""}" data-environment-apply-status aria-live="polite">${escapeHtml(state.environmentUi.applyStatus || "Select one or more other beats.")}</p>
+        <div class="spatial-apply-target-actions environment-apply-target-actions">
+          <p class="spatial-apply-status environment-apply-status ${state.environmentUi.applyError ? "error" : ""}" data-environment-apply-status aria-live="polite">${escapeHtml(state.environmentUi.applyStatus || "Select one or more other beats.")}</p>
           <button
             type="button"
             class="primary"
@@ -8356,84 +8427,30 @@ function renderEnvironmentApplyTargets(sceneContext, manifest, controlsDisabled)
   `;
 }
 
-function renderEnvironmentCandidates() {
-  const candidates = state.environmentUi.candidates || [];
-  const ready = Boolean(state.data?.readiness?.["environment-enhancement"]?.canGenerate);
-  if (!candidates.length) {
-    return `<div class="environment-empty-state"><strong>${state.environmentUi.searched ? "No matching 360° images" : "No search yet"}</strong><p>${state.environmentUi.searched ? "Try a broader place description or check provider availability." : "HDRI results will show source, license, format, and download evidence."}</p></div>`;
-  }
-  const selectedId = environmentSourceId(environmentManifest().selectedSource);
-  return candidates.map((candidate) => {
-    const id = environmentSourceId(candidate);
-    const selected = id && selectedId === id;
-    const sourceUrl = environmentSafeExternalUrl(candidate.sourceUrl || candidate.pageUrl || candidate.url);
-    const thumbnail = environmentSafeExternalUrl(candidate.previewUrl || candidate.thumbnailUrl || candidate.thumbnail || candidate.previewImage || candidate.images?.[0]?.url);
-    const license = environmentLicense(candidate);
-    return `
-      <article class="environment-candidate-card ${selected ? "selected" : ""}" data-environment-candidate-card="${escapeHtml(id)}">
-        <button type="button" class="environment-candidate-select" data-environment-select-source="${escapeHtml(id)}" aria-pressed="${selected}" ${ready ? "" : "disabled"}>
-          <span class="environment-candidate-thumb ${thumbnail ? "" : "placeholder"}">
-            ${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span aria-hidden="true">ENV</span>`}
-            <span>${escapeHtml(environmentProviderName(candidate))}</span>
-          </span>
-          <span class="environment-candidate-copy">
-            <strong>${escapeHtml(environmentCandidateTitle(candidate))}</strong>
-            <small>${escapeHtml(shortText(candidate.description || candidate.summary || "Public environment candidate.", 120))}</small>
-            <span class="environment-candidate-meta"><span>${escapeHtml(license.label)}</span><span>${escapeHtml(environmentCandidateFormat(candidate))}</span></span>
-          </span>
-        </button>
-        <div class="environment-candidate-actions">
-          ${sourceUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer">Open original asset page ↗</a>` : `<span>Original page unavailable</span>`}
-          <small>${selected ? "Linked to upload" : "Select to preserve source details"}</small>
-        </div>
-      </article>
-    `;
-  }).join("");
-}
-
-function renderEnvironmentSelectedSource(source) {
-  if (!source) {
-    return `<span class="environment-field-kicker">Source metadata</span><strong>No search result linked</strong><p>Upload your own 360° HDR/EXR image, or select a result above to preserve its source and rights information.</p>`;
-  }
-  const url = environmentSafeExternalUrl(source.sourceUrl || source.pageUrl || source.url);
-  return `<span class="environment-field-kicker">Source metadata linked</span><strong>${escapeHtml(environmentCandidateTitle(source))}</strong><p>${escapeHtml(environmentProviderName(source))} · ${escapeHtml(environmentLicense(source).label)}${url ? ` · <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">open source page ↗</a>` : ""}</p>`;
-}
-
-function renderEnvironmentProviderStatus() {
-  const entries = environmentProviderEntries(state.environmentUi.providerStatus);
-  if (!entries.length) return `<span class="pill">Providers pending</span>`;
-  return entries.map((entry) => {
-    const status = String(entry.status || entry.state || "pending").toLowerCase();
-    const className = /ok|ready|success|available/.test(status) ? "good" : /error|fail|unavailable/.test(status) ? "bad" : "";
-    const label = entry.label || entry.name || entry.provider || entry.id || "Provider";
-    return `<span class="pill ${className}" title="${escapeHtml(entry.message || entry.detail || status)}">${escapeHtml(label)} · ${escapeHtml(status)}</span>`;
-  }).join("");
-}
-
 function renderEnvironmentInspector(manifest) {
   const asset = manifest.asset;
   if (!asset) {
-    return `<div class="environment-empty-state environment-inspector-empty"><strong>No 360° image selected</strong><p>Upload an HDR/EXR panorama or generate a PNG to review its source, rights, local artifact, and headset-readiness evidence.</p></div>`;
+    return `<div class="environment-empty-state environment-inspector-empty"><strong>No generated environment yet</strong><p>Generate a 360° panorama and matching ground to review its provenance, local artifact, and headset-readiness evidence.</p></div>`;
   }
   const source = manifest.assetSource || manifest.selectedSource || manifest.provenance || {};
-  const license = environmentLicense(source);
-  const sourceUrl = environmentSafeExternalUrl(source.sourceUrl || source.pageUrl || manifest.provenance?.sourceUrl || asset.sourceUrl);
+  const generation = source.provenance || manifest.provenance || {};
+  const generatedWithCodex = generation.generated === true
+    || generation.source === "codex-cli-image-generation"
+    || Boolean(asset.generationSource);
   const performance = manifest.performance || {};
   const warnings = uniqueStrings([...(performance.warnings || []), ...(manifest.warnings || []), ...(asset.warnings || [])]);
   return `
     <section class="topology-inspector-section environment-inspector-hero">
       <span class="environment-format-pill">${escapeHtml(environmentHumanMediaType(asset.mediaType || asset.format))}</span>
       <h3>${escapeHtml(environmentSelectionTitle(manifest))}</h3>
-      <p>${escapeHtml(shortText(source.description || manifest.description || "Uploaded environment asset.", 210))}</p>
+      <p>${escapeHtml(shortText(source.description || manifest.description || "Generated environment asset.", 210))}</p>
     </section>
     <section class="topology-inspector-section">
-      <h3>Source and rights</h3>
+      <h3>Generation</h3>
       <dl class="environment-evidence-list">
-        ${environmentEvidenceRow("Provider", environmentProviderName(source))}
-        ${environmentEvidenceRow("Asset ID", environmentSourceId(source) || "Not reported")}
-        ${environmentEvidenceLinkRow("Original page", sourceUrl, sourceUrl ? "Open source" : "Not reported")}
-        ${environmentEvidenceLinkRow("License", environmentSafeExternalUrl(license.url), license.label)}
-        ${environmentEvidenceRow("Attribution", license.attribution || source.attribution || manifest.attribution || "Not reported")}
+        ${environmentEvidenceRow("Method", generatedWithCodex ? "Codex image generation" : "Legacy saved environment")}
+        ${environmentEvidenceRow("Generation ID", environmentSourceId(source) || asset.providerAssetId || "Not reported")}
+        ${environmentEvidenceRow("Prompt", generation.prompt || source.prompt || "Not recorded")}
       </dl>
     </section>
     <section class="topology-inspector-section">
@@ -8441,7 +8458,7 @@ function renderEnvironmentInspector(manifest) {
       <dl class="environment-evidence-list">
         ${environmentEvidenceRow("Media type", asset.mediaType || environmentHumanMediaType(asset.format))}
         ${environmentEvidenceRow("Runtime path", asset.publicPath || asset.localUrl || asset.entryPath || "Not reported", "path")}
-        ${environmentEvidenceRow("Uploaded size", environmentFormatBytes(asset.bytes || asset.sourceUpload?.bytes || performance.uploadBytes))}
+        ${environmentEvidenceRow("Asset size", environmentFormatBytes(asset.bytes || asset.generationSource?.bytes || asset.sourceUpload?.bytes || performance.generatedBytes || performance.uploadBytes))}
         ${environmentEvidenceRow("SHA-256", asset.sha256 || "Not reported", "path")}
       </dl>
     </section>
@@ -8451,7 +8468,7 @@ function renderEnvironmentInspector(manifest) {
         ${environmentPerformanceMetric("Triangles", environmentFormatCount(performance.triangles || performance.triangleCount || performance.polygons))}
         ${environmentPerformanceMetric("Draw calls", environmentFormatCount(performance.drawCalls))}
         ${environmentPerformanceMetric("Textures", environmentFormatCount(performance.textures || performance.textureCount))}
-        ${environmentPerformanceMetric("Package", environmentFormatBytes(performance.packagedBytes || performance.uploadBytes))}
+        ${environmentPerformanceMetric("Package", environmentFormatBytes(performance.packagedBytes || performance.generatedBytes || performance.uploadBytes))}
       </div>
       ${warnings.length ? `<ul class="warning-list">${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>` : `<p class="muted">No performance warnings are recorded. Verify the saved result on the target headset before publishing.</p>`}
     </section>
@@ -8533,7 +8550,6 @@ function environmentManifest(context = activeEnvironmentSceneContext()) {
     ...selection,
     schemaVersion: raw.schemaVersion || source.schemaVersion || selection.schemaVersion || "storyvr-environment-enhancement/v1",
     revision: raw.revision ?? source.revision ?? selection.revision ?? 0,
-    brief: raw.brief || null,
     beatId: String(context?.beatId || "").trim() || null,
     assigned: Boolean(assignment),
     skipped,
@@ -8571,24 +8587,13 @@ function environmentCheckpointAssignmentsReady() {
     const context = spatialSceneContext(beat.id);
     const manifest = environmentManifest(context);
     if (manifest.skipped || !manifest.assigned) return true;
-    return Boolean(manifest.asset) && !environmentSourceAwaitingUpload(manifest);
+    return Boolean(manifest.asset);
   });
 }
 
 function syncEnvironmentUiFromState(options = {}) {
   if (!state.data) return;
-  const raw = environmentRawState();
   const manifest = environmentManifest();
-  state.environmentUi.providerStatus = raw.providerStatus || state.environmentUi.providerStatus;
-  if (!state.environmentUi.queryInitialized) {
-    state.environmentUi.query = String(raw.brief?.query || "");
-    state.environmentUi.queryOrigin = raw.brief?.query ? "ai" : "empty";
-    state.environmentUi.queryInitialized = true;
-  }
-  if (state.environmentUi.generationPromptOrigin === "empty" && raw.brief?.query) {
-    state.environmentUi.generationPrompt = String(raw.brief.query);
-    state.environmentUi.generationPromptOrigin = "ai";
-  }
   if (options.resetDraft || !state.environmentUi.draft) {
     state.environmentUi.draft = environmentDraftFromManifest(manifest);
     state.environmentUi.draftDirty = false;
@@ -8596,7 +8601,6 @@ function syncEnvironmentUiFromState(options = {}) {
   if (options.resetDraft || !state.environmentUi.selectionMode) {
     state.environmentUi.selectionMode = manifest.skipped ? "none" : "asset";
   }
-  state.environmentUi.selectedSourceId = environmentSourceId(manifest.selectedSource);
 }
 
 function applyEnvironmentEnhancementPayload(payload, options = {}) {
@@ -8604,9 +8608,12 @@ function applyEnvironmentEnhancementPayload(payload, options = {}) {
   if (environmentEnhancement && typeof environmentEnhancement === "object") {
     state.data.environmentEnhancement = environmentEnhancement;
   }
-  if (payload?.decision) state.data.decisions["environment-enhancement"] = payload.decision;
+  if (payload?.decisions && typeof payload.decisions === "object") state.data.decisions = payload.decisions;
+  else if (payload?.decision) state.data.decisions["environment-enhancement"] = payload.decision;
   if (payload?.readiness) state.data.readiness = payload.readiness;
-  syncEnvironmentUiFromState({ resetDraft: options.resetDraft !== false });
+  if (options.syncUi !== false) {
+    syncEnvironmentUiFromState({ resetDraft: options.resetDraft !== false });
+  }
 }
 
 function environmentDraft() {
@@ -8636,44 +8643,101 @@ function environmentDraftFromManifest(manifest) {
   };
 }
 
-function environmentSearchQuery() {
-  return state.environmentUi.query;
-}
-
 function environmentGenerationPrompt() {
-  if (state.environmentUi.generationPromptOrigin !== "empty") {
-    return state.environmentUi.generationPrompt;
-  }
-  return String(
-    state.environmentUi.pendingRecommendedQuery
-    || environmentManifest().brief?.query
-    || state.environmentUi.query
-    || "",
-  );
+  return state.environmentUi.generationPrompt;
 }
 
-function environmentBriefDescription() {
-  return environmentManifest().brief?.query
-    ? "Use the recommendation as a starting point, or edit it to better describe the surrounding place you want."
-    : "You can enter your own search terms while the AI recommendation is unavailable or still running.";
+function environmentGenerationDraftKey(context = activeEnvironmentSceneContext()) {
+  return String(context?.beatId || "").trim();
+}
+
+function preserveEnvironmentGenerationDraft(context = activeEnvironmentSceneContext()) {
+  const key = environmentGenerationDraftKey(context);
+  if (!key) return;
+  state.environmentUi.generationDraftsByBeat[key] = {
+    prompt: state.environmentUi.generationPrompt,
+  };
+}
+
+function restoreEnvironmentGenerationDraft(context = activeEnvironmentSceneContext()) {
+  const key = environmentGenerationDraftKey(context);
+  const draft = key ? state.environmentUi.generationDraftsByBeat[key] : null;
+  state.environmentUi.generationPrompt = String(draft?.prompt || "");
+}
+
+function environmentGenerationActivityTitle() {
+  if (state.environmentUi.generationPhase === "generating") return "Creating background environment";
+  if (state.environmentUi.generationPhase === "waiting") return "Background environment is ready to install";
+  if (state.environmentUi.generationPhase === "installing") return "Installing background environment";
+  if (state.environmentUi.generationPhase === "ready") return "Background environment ready";
+  if (state.environmentUi.generationPhase === "error") return "Background environment needs attention";
+  return "Background environment";
+}
+
+function renderEnvironmentGenerationActivity() {
+  if (!state.environmentUi.generationNoticeVisible || state.environmentUi.generationPhase === "idle") return "";
+  const context = state.environmentUi.generationSceneContext;
+  const beat = context?.beatId ? spatialSceneBeat(context) : null;
+  const sceneLabel = beat?.title || context?.beatId || "the requested scene";
+  const busy = Boolean(state.environmentUi.generationBusy);
+  const error = state.environmentUi.generationPhase === "error";
+  return `
+    <section
+      class="background-task-banner ${error ? "error" : busy ? "running" : "ready"}"
+      role="${error ? "alert" : "status"}"
+      aria-live="polite"
+      aria-busy="${busy ? "true" : "false"}"
+    >
+      <span class="background-task-indicator" aria-hidden="true"></span>
+      <div class="background-task-copy">
+        <strong>${escapeHtml(environmentGenerationActivityTitle())}</strong>
+        <span>${escapeHtml(sceneLabel)} · ${escapeHtml(state.environmentUi.generationStatus || "StoryVR is preparing the environment in the background.")}</span>
+      </div>
+      <div class="background-task-actions">
+        ${context?.beatId && spatialSceneBeat(context)
+          ? `<button type="button" data-environment-generation-open-scene>${busy ? "View source scene" : "View scene"}</button>`
+          : ""}
+        ${busy ? "" : `<button type="button" data-environment-generation-dismiss>Dismiss</button>`}
+      </div>
+    </section>
+  `;
+}
+
+function updateEnvironmentGenerationActivityDom() {
+  const region = document.querySelector("[data-environment-generation-activity]");
+  if (!region) return;
+  const activity = renderEnvironmentGenerationActivity();
+  region.hidden = !activity;
+  region.innerHTML = activity;
+  bindEnvironmentGenerationActivityEvents();
+}
+
+function bindEnvironmentGenerationActivityEvents() {
+  document.querySelector("[data-environment-generation-open-scene]")?.addEventListener("click", () => {
+    const context = state.environmentUi.generationSceneContext;
+    if (!context?.beatId || !spatialSceneBeat(context)) return;
+    requestStoryvrBrowserNavigation(createStoryvrNavigationRoute("environment-enhancement", context));
+  });
+  document.querySelector("[data-environment-generation-dismiss]")?.addEventListener("click", () => {
+    state.environmentUi.generationNoticeVisible = false;
+    updateEnvironmentGenerationActivityDom();
+  });
 }
 
 function environmentSelectionTitle(manifest) {
   const source = manifest.assetSource || manifest.selectedSource || {};
-  return source.title || source.name || manifest.asset?.title || manifest.asset?.sourceUpload?.filename || "Nothing uploaded";
+  return source.title || source.name || manifest.asset?.title || manifest.asset?.generationSource?.filename || manifest.asset?.sourceUpload?.filename || "No generated environment";
 }
 
 function environmentSelectionSubtitle(manifest) {
-  if (!manifest.asset) return "Download an asset from its original page, then upload it here.";
-  return [environmentProviderName(manifest.assetSource || manifest.selectedSource || manifest.provenance), environmentHumanMediaType(manifest.asset.mediaType || manifest.asset.format), checkpointIsCurrent("environment-enhancement") ? "Saved checkpoint" : "Draft upload"]
+  if (!manifest.asset) return "Generate a 360° panorama and matching ground.";
+  const provenance = manifest.selectedSource?.provenance || manifest.provenance || {};
+  const origin = provenance.generated === true || provenance.source === "codex-cli-image-generation" || manifest.asset.generationSource
+    ? "Codex generation"
+    : "Legacy saved asset";
+  return [origin, environmentHumanMediaType(manifest.asset.mediaType || manifest.asset.format), checkpointIsCurrent("environment-enhancement") ? "Saved checkpoint" : "Generated draft"]
     .filter(Boolean)
     .join(" · ");
-}
-
-function environmentSourceAwaitingUpload(manifest = environmentManifest()) {
-  const pendingId = environmentSourceId(manifest.selectedSource);
-  const assetSourceId = environmentSourceId(manifest.assetSource);
-  return Boolean(manifest.asset && pendingId && assetSourceId && pendingId !== assetSourceId);
 }
 
 function environmentSourceId(value) {
@@ -8684,60 +8748,12 @@ function environmentCandidateTitle(value) {
   return String(value?.title || value?.name || value?.label || environmentSourceId(value) || "Untitled environment");
 }
 
-function environmentProviderName(value) {
-  const provider = String(value?.provider?.label || value?.provider?.name || value?.provider || value?.provenance?.provider || "Manual upload");
-  if (!provider) return "Manual upload";
-  if (provider.toLowerCase() === "polyhaven") return "Poly Haven";
-  if (provider.toLowerCase() === "ambientcg") return "ambientCG";
-  if (provider.toLowerCase() === "sketchfab") return "Sketchfab";
-  return provider;
-}
-
-function environmentCandidateFormat(value) {
-  const formats = Array.isArray(value?.formats) ? value.formats : [];
-  return String(value?.formatLabel || value?.format || formats.join(" · ") || value?.assetType || "Source page");
-}
-
-function environmentLicense(value) {
-  const raw = value?.license || value?.rights || value?.provenance?.license || {};
-  if (typeof raw === "string") return { label: raw || "License not reported", url: "", attribution: value?.attribution || "" };
-  return {
-    label: String(raw.label || raw.name || raw.title || raw.slug || "License not reported"),
-    url: String(raw.url || raw.uri || ""),
-    attribution: String(raw.attribution || value?.attribution || ""),
-  };
-}
-
-function environmentProviderEntries(status) {
-  if (Array.isArray(status)) return status;
-  if (!status || typeof status !== "object") return [];
-  return Object.entries(status).map(([id, value]) => ({
-    id,
-    ...(typeof value === "object" ? value : { status: value }),
-    label: value?.label || value?.name || id,
-  }));
-}
-
 function environmentEvidenceRow(label, value, className = "") {
   return `<dt>${escapeHtml(label)}</dt><dd class="${escapeHtml(className)}">${escapeHtml(value || "Not reported")}</dd>`;
 }
 
-function environmentEvidenceLinkRow(label, url, value) {
-  return `<dt>${escapeHtml(label)}</dt><dd>${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(value)} ↗</a>` : escapeHtml(value || "Not reported")}</dd>`;
-}
-
 function environmentPerformanceMetric(label, value) {
   return `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
-}
-
-function environmentSafeExternalUrl(value) {
-  if (!value) return "";
-  try {
-    const url = new URL(String(value));
-    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
-  } catch {
-    return "";
-  }
 }
 
 function environmentFormatBytes(value) {
@@ -8814,10 +8830,9 @@ function renderSpatialRelationsWorkspace(component) {
   const visibleEntities = spatialEditorSceneEntities(draft, sceneContext);
   ensureSpatialSelection(draft, beat, sceneContext);
   const entity = selectedSpatialRelationEntity(draft);
-  const manualCount = visibleEntities.filter((item) => item.manual).length;
-  const sourceLocked = scene?.placementPolicy === "source-locked";
   return `
     <section class="panel asset-topology-panel spatial-relations-panel spatial-editor-mode" data-spatial-workspace-mode="editor">
+      ${renderSpatialBeatEdgeNavigation(sceneContext)}
       <div class="panel-head">
         <div>
           <p class="eyebrow">${escapeHtml(participantComponentLabel(component.id, component.label))} · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
@@ -8828,25 +8843,134 @@ function renderSpatialRelationsWorkspace(component) {
         </div>
       </div>
       ${renderSpatialStatus()}
-      <div class="spatial-inference-summary">
-        <div>
-          <strong>${scene?.linkedAssetIds?.length || 0} story object${scene?.linkedAssetIds?.length === 1 ? "" : "s"} in this scene</strong>
-          <p>${sourceLocked
-            ? "The captured composition is the starting placement. Adjust the whole assembly or any object inside it."
-            : "Select an object, then move, rotate, or resize it."}</p>
-        </div>
-        <span class="text-comfort-badge ${manualCount ? "warning" : "good"}">${manualCount ? `${manualCount} changed` : "No changes"}</span>
-      </div>
       ${ready ? "" : `<p class="blocked-note">Finish Story order before placing objects.</p>`}
       <div class="spatial-relations-workbench">
-        ${renderSpatialHierarchy(visibleEntities, beat)}
+        <div class="spatial-workbench-sidebar">
+          ${renderSpatialHierarchy(visibleEntities, beat)}
+          ${renderSpatialRelationsInspector(entity)}
+        </div>
         ${renderSpatialRelationsViewport(proposal, beat, entity, sceneContext, scene)}
-        ${renderSpatialRelationsInspector(entity)}
-      </div>
-      <div class="actions checkpoint-actions">
-        ${renderCheckpointActions(component, decision, { canCommit: proposal || decision || draft })}
       </div>
     </section>
+  `;
+}
+
+function spatialAdjacentBeatNavigationTargets(beats, currentBeatId) {
+  const orderedBeats = Array.isArray(beats) ? beats.filter((beat) => beat?.id) : [];
+  const currentIndex = orderedBeats.findIndex((beat) => beat.id === currentBeatId);
+  return {
+    currentIndex,
+    total: orderedBeats.length,
+    previousBeat: currentIndex > 0 ? orderedBeats[currentIndex - 1] : null,
+    nextBeat: currentIndex >= 0 && currentIndex < orderedBeats.length - 1
+      ? orderedBeats[currentIndex + 1]
+      : null,
+  };
+}
+
+function spatialPrimarySceneContextForBeat(beat) {
+  if (!beat?.id) return null;
+  const group = variantGroupForBeat(beat);
+  const defaultOption = sourceGraphDefaultVariantOption(group);
+  return spatialSceneContext(beat.id, group?.id, defaultOption?.id);
+}
+
+function spatialBeatNavigationState(sceneContext = activeSpatialSceneContext()) {
+  const targets = spatialAdjacentBeatNavigationTargets(spatialPreviewBeats(), sceneContext?.beatId);
+  return {
+    ...targets,
+    previousContext: spatialPrimarySceneContextForBeat(targets.previousBeat),
+    nextContext: spatialPrimarySceneContextForBeat(targets.nextBeat),
+  };
+}
+
+function renderSpatialBeatEdgeNavigation(sceneContext) {
+  const navigation = spatialBeatNavigationState(sceneContext);
+  const button = (direction, beat, context) => {
+    const isPrevious = direction === "previous";
+    const label = context
+      ? `${isPrevious ? "Previous" : "Next"} beat, Card ${navigation.currentIndex + (isPrevious ? 0 : 2)}: ${beat.title || beat.id}`
+      : `No ${isPrevious ? "previous" : "next"} beat`;
+    return `
+      <button
+        type="button"
+        class="spatial-beat-edge-button ${direction}"
+        data-spatial-beat-navigation="${direction}"
+        aria-label="${escapeHtml(label)}"
+        title="${escapeHtml(label)}"
+        ${context ? "" : "disabled"}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="${isPrevious ? "M14.5 5 7.5 12l7 7" : "M9.5 5 16.5 12l-7 7"}"></path>
+        </svg>
+      </button>
+    `;
+  };
+  return `
+    <nav class="spatial-beat-edge-navigation" aria-label="Move between beat scenes">
+      ${button("previous", navigation.previousBeat, navigation.previousContext)}
+      ${button("next", navigation.nextBeat, navigation.nextContext)}
+    </nav>
+  `;
+}
+
+function renderEnvironmentBeatEdgeNavigation(sceneContext) {
+  const navigation = spatialBeatNavigationState(sceneContext);
+  const button = (direction, beat, context) => {
+    const isPrevious = direction === "previous";
+    const label = context
+      ? `${isPrevious ? "Previous" : "Next"} beat, Card ${navigation.currentIndex + (isPrevious ? 0 : 2)}: ${beat.title || beat.id}`
+      : `No ${isPrevious ? "previous" : "next"} beat`;
+    return `
+      <button
+        type="button"
+        class="spatial-beat-edge-button environment-beat-edge-button ${direction}"
+        data-environment-beat-navigation="${direction}"
+        aria-label="${escapeHtml(label)}"
+        title="${escapeHtml(label)}"
+        ${context ? "" : "disabled"}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="${isPrevious ? "M14.5 5 7.5 12l7 7" : "M9.5 5 16.5 12l-7 7"}"></path>
+        </svg>
+      </button>
+    `;
+  };
+  return `
+    <nav class="spatial-beat-edge-navigation environment-beat-edge-navigation" aria-label="Move between beat scenes">
+      ${button("previous", navigation.previousBeat, navigation.previousContext)}
+      ${button("next", navigation.nextBeat, navigation.nextContext)}
+    </nav>
+  `;
+}
+
+function renderAttentionBeatEdgeNavigation(sceneContext) {
+  const navigation = spatialBeatNavigationState(sceneContext);
+  const button = (direction, beat, context) => {
+    const isPrevious = direction === "previous";
+    const label = context
+      ? `${isPrevious ? "Previous" : "Next"} beat, Card ${navigation.currentIndex + (isPrevious ? 0 : 2)}: ${beat.title || beat.id}`
+      : `No ${isPrevious ? "previous" : "next"} beat`;
+    return `
+      <button
+        type="button"
+        class="spatial-beat-edge-button attention-beat-edge-button ${direction}"
+        data-attention-beat-navigation="${direction}"
+        aria-label="${escapeHtml(label)}"
+        title="${escapeHtml(label)}"
+        ${context ? "" : "disabled"}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="${isPrevious ? "M14.5 5 7.5 12l7 7" : "M9.5 5 16.5 12l-7 7"}"></path>
+        </svg>
+      </button>
+    `;
+  };
+  return `
+    <nav class="spatial-beat-edge-navigation attention-beat-edge-navigation" aria-label="Move between beat scenes">
+      ${button("previous", navigation.previousBeat, navigation.previousContext)}
+      ${button("next", navigation.nextBeat, navigation.nextContext)}
+    </nav>
   `;
 }
 
@@ -8859,13 +8983,13 @@ function renderSpatialRelationsCanvasWorkspace(component, proposal, draft, decis
           <h2>${escapeHtml(participantComponentLabel(component.id, component.label))}</h2>
           <p class="story-stage-instruction">${escapeHtml(storyStageInstruction(state.data, component.id))}</p>
         </div>
+        <div class="actions checkpoint-head-actions">
+          ${renderCheckpointActions(component, decision, { canCommit: proposal || decision || draft })}
+        </div>
       </div>
       ${renderSpatialStatus()}
       ${ready ? "" : `<p class="blocked-note">Finish Story order before placing objects.</p>`}
       ${renderSpatialStoryCanvas(draft)}
-      <div class="actions checkpoint-actions">
-        ${renderCheckpointActions(component, decision, { canCommit: proposal || decision || draft })}
-      </div>
     </section>
   `;
 }
@@ -8964,115 +9088,36 @@ function renderSpatialStoryAssetPreview(value) {
   return renderSourceGraphAssetPreview(value);
 }
 
-function spatialHierarchyAssemblyMembers(root, entities) {
-  const rootId = String(root?.id || "").trim();
-  if (!rootId) return [];
-  return entities.filter((entity) => (
-    spatialEntityType(entity) === "glb"
-    && String(entity?.compositionRootId || "").trim() === rootId
-  ));
-}
-
-function renderSpatialHierarchy(visibleEntities, beat) {
-  const query = state.spatialHierarchyQuery.trim().toLowerCase();
-  const matchesQuery = (entity) => (
-    !query || spatialRelationEntityLabel(entity).toLowerCase().includes(query)
-  );
+function renderSpatialHierarchy(visibleEntities) {
   const selectedIds = new Set(selectedSpatialRelationEntityIds());
   const readerEntities = visibleEntities.filter((entity) => (
-    spatialEntityType(entity) === "reader" && matchesQuery(entity)
+    spatialEntityType(entity) === "reader"
   ));
-  const compositionRoots = visibleEntities.filter((entity) => spatialEntityType(entity) === "composition-root");
-  const allGlbEntities = visibleEntities.filter((entity) => spatialEntityType(entity) === "glb");
-  const assemblyMemberIds = new Set(compositionRoots.flatMap((root) => (
-    spatialHierarchyAssemblyMembers(root, allGlbEntities).map((entity) => entity.id)
-  )));
-  const standaloneGlbEntities = allGlbEntities.filter((entity) => (
-    !assemblyMemberIds.has(entity.id) && matchesQuery(entity)
+  const glbEntities = visibleEntities.filter((entity) => (
+    spatialEntityType(entity) === "glb"
   ));
   const imageEntities = visibleEntities.filter((entity) => (
-    spatialEntityType(entity) === "image-plane" && matchesQuery(entity)
+    spatialEntityType(entity) === "image-plane"
   ));
-  const renderEntityItem = (entity, options = {}) => {
-    const tagName = options.summary ? "summary" : "button";
-    const members = Array.isArray(options.members) ? options.members : [];
-    const scope = spatialEntityScopeLabel(entity);
-    const memberCount = members.length
-      ? ` · ${members.length} object${members.length === 1 ? "" : "s"}`
-      : "";
-    return `
-      <${tagName}
-        ${options.summary ? "" : `type="button"`}
-        class="spatial-hierarchy-item ${options.member ? "spatial-hierarchy-assembly-member" : ""} ${selectedIds.has(entity.id) ? "selected" : ""} ${entity.id === state.selectedSpatialEntityId ? "selection-primary" : ""}"
-        data-spatial-select-entity="${escapeHtml(entity.id)}"
-        data-spatial-search-text="${escapeHtml(spatialRelationEntityLabel(entity).toLowerCase())}"
-        ${options.summary ? `role="button" aria-expanded="${options.expanded === true}" aria-label="Select ${escapeHtml(spatialRelationEntityLabel(entity))} and show or hide its ${members.length} member object${members.length === 1 ? "" : "s"}"` : ""}
-        aria-pressed="${selectedIds.has(entity.id)}"
-      >
-        <span class="spatial-entity-icon">${spatialEntityType(entity) === "reader" ? "RDR" : spatialEntityType(entity) === "composition-root" ? "ROOT" : spatialEntityType(entity) === "glb" ? "3D" : spatialEntityType(entity) === "image-plane" ? "IMG" : "T"}</span>
-        <span><strong>${escapeHtml(spatialRelationEntityLabel(entity))}</strong><small>${escapeHtml(`${scope}${memberCount}`)}</small></span>
-        ${entity.manual
-          ? `<em>changed</em>`
-          : spatialEntityIsSourceLockedMember(entity)
-            ? `<em class="inferred">source placed</em>`
-            : `<em class="inferred">suggested</em>`}
-      </${tagName}>
-    `;
-  };
-  const renderGroup = (label, entities) => `
-    <section class="spatial-hierarchy-group">
-      <div class="spatial-hierarchy-group-head"><strong>${label}</strong><span>${entities.length}</span></div>
-      <div class="spatial-hierarchy-items">
-        ${entities.map((entity) => renderEntityItem(entity)).join("") || `<p class="muted spatial-empty-group">No matching ${label.toLowerCase()}.</p>`}
-      </div>
-    </section>
-  `;
-  const assemblyGroups = compositionRoots.map((root) => {
-    const allMembers = spatialHierarchyAssemblyMembers(root, allGlbEntities);
-    const rootMatches = matchesQuery(root);
-    const members = rootMatches ? allMembers : allMembers.filter(matchesQuery);
-    if (!rootMatches && !members.length) return null;
-    const memberSelected = allMembers.some((member) => selectedIds.has(member.id));
-    const open = state.spatialExpandedAssemblyIds.has(root.id) || memberSelected || Boolean(query);
-    return { root, members, allMembers, open };
-  }).filter(Boolean);
-  const renderAssemblyGroup = () => `
-    <section class="spatial-hierarchy-group spatial-hierarchy-assembly-group">
-      <div class="spatial-hierarchy-group-head"><strong>Assembly</strong><span>${assemblyGroups.length}</span></div>
-      <div class="spatial-hierarchy-items">
-        ${assemblyGroups.map(({ root, members, allMembers, open }) => `
-          <details
-            class="spatial-hierarchy-assembly"
-            data-spatial-assembly-id="${escapeHtml(root.id)}"
-            ${open ? "open" : ""}
-          >
-            ${renderEntityItem(root, { summary: true, members: allMembers, expanded: open })}
-            <div
-              class="spatial-hierarchy-assembly-members"
-              role="group"
-              aria-label="Objects in ${escapeHtml(spatialRelationEntityLabel(root))}"
-            >
-              ${members.map((member) => renderEntityItem(member, { member: true })).join("")}
-            </div>
-          </details>
-        `).join("") || `<p class="muted spatial-empty-group">No matching assembly.</p>`}
-      </div>
-    </section>
+  const orderedEntities = [...readerEntities, ...glbEntities, ...imageEntities];
+  const renderEntityItem = (entity) => `
+    <button
+      type="button"
+      class="spatial-hierarchy-item spatial-object-hierarchy-item ${selectedIds.has(entity.id) ? "selected" : ""} ${entity.id === state.selectedSpatialEntityId ? "selection-primary" : ""}"
+      data-spatial-select-entity="${escapeHtml(entity.id)}"
+      aria-pressed="${selectedIds.has(entity.id)}"
+    >
+      <strong>${escapeHtml(spatialRelationEntityLabel(entity))}</strong>
+      ${entity.manual ? `<em>edited</em>` : ""}
+    </button>
   `;
   return `
     <aside class="spatial-hierarchy" aria-label="Spatial object hierarchy">
-      <div class="visual-card-head"><h3>Scene objects</h3><span>${visibleEntities.length}</span></div>
-      <label class="spatial-search-label">
-        <span>Search objects</span>
-        <input type="search" value="${escapeHtml(state.spatialHierarchyQuery)}" placeholder="Reader or object name" data-spatial-hierarchy-search>
-      </label>
-      <p class="spatial-selection-hint">Shift-click a range · Command-click to add or remove</p>
-      <p class="spatial-current-beat">${escapeHtml(beat?.title || "No readable beat")}</p>
+      <div class="visual-card-head"><h3>Scene objects</h3></div>
       <div class="spatial-hierarchy-scroll">
-        ${renderGroup("Reader", readerEntities)}
-        ${renderAssemblyGroup()}
-        ${standaloneGlbEntities.length || !assemblyMemberIds.size ? renderGroup("3D objects", standaloneGlbEntities) : ""}
-        ${renderGroup("Images", imageEntities)}
+        <div class="spatial-hierarchy-items">
+          ${orderedEntities.map(renderEntityItem).join("")}
+        </div>
       </div>
     </aside>
   `;
@@ -9170,14 +9215,9 @@ function renderSpatialRelationsViewport(proposal, beat, entity, sceneContext, sc
   const selectedEntities = selectedSpatialRelationEntities();
   const multipleSelected = selectedEntities.length > 1;
   const readerSelected = selectedEntities.some((selected) => spatialEntityType(selected) === "reader");
-  const ancestorConflict = spatialSelectionHasAncestorConflict(selectedEntities);
-  const transformBlocked = ancestorConflict
-    || selectedEntities.some((selected) => !spatialEntityTransformEditable(selected));
-  const transformBlockReason = ancestorConflict
-    ? "Select the Assembly root or its member objects, not both"
-    : "This selection cannot be transformed";
+  const transformBlocked = selectedEntities.some((selected) => !spatialEntityTransformEditable(selected));
+  const transformBlockReason = "This selection cannot be transformed";
   const glbSelected = selectedEntities.length === 1 && spatialEntityType(entity) === "glb";
-  const assemblyMemberSelected = glbSelected && spatialEntityIsSourceLockedMember(entity);
   const pasteReady = canPasteSpatialGlbInstance(sceneContext);
   const linkedAssetCount = scene?.linkedAssetIds?.length || 0;
   return `
@@ -9197,34 +9237,25 @@ function renderSpatialRelationsViewport(proposal, beat, entity, sceneContext, sc
         <button class="${mode === "translate" ? "selected" : ""}" data-spatial-transform-mode="translate" ${transformBlocked || !selectedEntities.length ? `disabled title="${transformBlocked ? transformBlockReason : "Select an object"}"` : ""}>Move <kbd>W</kbd></button>
         <button class="${mode === "rotate" ? "selected" : ""}" data-spatial-transform-mode="rotate" ${transformBlocked || !selectedEntities.length ? `disabled title="${transformBlocked ? transformBlockReason : "Select an object"}"` : ""}>Rotate <kbd>E</kbd></button>
         <button class="${mode === "scale" ? "selected" : ""}" data-spatial-transform-mode="scale" ${readerSelected || transformBlocked || !selectedEntities.length ? `disabled title="${transformBlocked ? transformBlockReason : readerSelected ? "Reader scale is fixed" : "Select an object"}"` : ""}>Scale <kbd>R</kbd></button>
-        <button data-spatial-frame-overview>Overview</button>
-        <button data-spatial-frame-selected>Frame selected</button>
         <button data-spatial-undo ${authorHistory.canUndo ? "" : "disabled"}>Undo</button>
         <button data-spatial-redo ${authorHistory.canRedo ? "" : "disabled"}>Redo</button>
         <details class="facilitator-details spatial-advanced-tools">
           <summary>More placement tools</summary>
           <div class="spatial-advanced-tools-content">
-            <button data-spatial-toggle-space>${state.spatialTransformSpace === "local" ? "Local" : "World"}</button>
-            <button data-spatial-copy-model ${glbSelected && !assemblyMemberSelected ? "" : "disabled"} title="${multipleSelected ? "Copy supports one selected 3D model at a time" : assemblyMemberSelected ? "Assembly objects can be adjusted but not duplicated independently" : "Copy selected 3D model (Command or Ctrl+C)"}">Copy model <kbd>⌘C</kbd></button>
+            <button data-spatial-copy-model ${glbSelected ? "" : "disabled"} title="${multipleSelected ? "Copy supports one selected 3D model at a time" : "Copy selected 3D model (Command or Ctrl+C)"}">Copy model <kbd>⌘C</kbd></button>
             <button data-spatial-paste-model ${pasteReady ? "" : "disabled"} title="Paste another model instance (Command or Ctrl+V)">Paste instance <kbd>⌘V</kbd></button>
             <span class="spatial-clipboard-status" data-spatial-clipboard-status aria-live="polite">${escapeHtml(state.spatialClipboardStatus)}</span>
-            ${renderSpatialPropagationTargets(glbSelected ? entity : null, sceneContext)}
             <span class="spatial-propagation-status" data-spatial-propagation-status aria-live="polite">${escapeHtml(state.spatialPropagationStatus)}</span>
+            ${renderSpatialPropagationTargets(glbSelected ? entity : null, sceneContext)}
           </div>
         </details>
       </div>
       <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell" data-spatial-viewer="${escapeHtml(proposal?.optionId || "inferred-layout")}" tabindex="0" role="application" aria-label="Interactive Spatial Relations editor">
         <div class="topology-viewer-status">Loading Spatial Relations editor...</div>
       </div>
-      <p class="topology-viewer-hint">${ancestorConflict
-        ? "Select the Assembly root or its member objects, not both."
-        : multipleSelected
-          ? "Move, rotate, or scale the selection around its shared center. Left-drag empty space to look around. Right-drag to move the view."
-        : "Select an object to edit it. Left-drag empty space to look around. Right-drag to move the view."}</p>
-      <details class="facilitator-details preview-diagnostics">
-        <summary>Reader display detail</summary>
-        <p>Reader text stays attached to a hand at runtime.</p>
-      </details>
+      <p class="topology-viewer-hint">${multipleSelected
+          ? "Move, rotate, or scale the selection around its shared center."
+        : "Select an object to edit it."}</p>
     </section>
   `;
 }
@@ -9237,28 +9268,19 @@ function renderSpatialRelationsInspector(entity) {
   const multipleSelected = selectedEntities.length > 1;
   const transform = multipleSelected
     ? spatialSelectionTransformSummary(selectedEntities)
-    : sourceLockedSpatialTransform(entity)
-      || normalizeSpatialTransform(entity.transform, entity.inferredTransform);
+    : normalizeSpatialTransform(entity.transform, entity.inferredTransform);
   const rotation = spatialEulerDegrees(transform.quaternion);
-  const transformBlocked = spatialSelectionHasAncestorConflict(selectedEntities)
-    || selectedEntities.some((selected) => !spatialEntityTransformEditable(selected));
+  const transformBlocked = selectedEntities.some((selected) => !spatialEntityTransformEditable(selected));
   const disabled = transformBlocked ? "disabled" : "";
   const vectorInputs = (group, values, step) => ["X", "Y", "Z"].map((axis, index) => `
     <label><span>${axis}</span><input type="number" step="${step}" value="${formatSpatialNumber(values[index])}" data-spatial-transform-field="${group}.${index}" ${disabled}></label>
   `).join("");
-  const confidence = Number(entity.inference?.confidence);
-  const anchor = normalizeSpatialAnchor(entity.anchor, entity);
-  const isText = spatialEntityType(entity) === "text-panel";
   const isReader = selectedEntities.some((selected) => spatialEntityType(selected) === "reader");
-  const modelAssets = spatialAnchorModelAssets(entity);
-  const anchorTypes = modelAssets.length
-    ? ["world", "reader", "asset", "source-focus"]
-    : ["world", "reader"];
   return `
     <aside class="topology-inspector spatial-inspector">
       <div class="spatial-inspector-head">
-        <div><p class="eyebrow" data-spatial-inspector-scope>${escapeHtml(multipleSelected ? "Group transform" : spatialEntityScopeLabel(entity))}</p><h3 data-spatial-inspector-title>${escapeHtml(spatialSelectionLabel(selectedEntities))}</h3></div>
-        <span class="text-comfort-badge ${selectedEntities.some((selected) => selected.manual) ? "warning" : "good"}">${multipleSelected ? `${selectedEntities.length} selected` : entity.manual ? "Changed" : spatialEntityIsSourceLockedMember(entity) ? "Source placed" : "Suggested"}</span>
+        <div><h3 data-spatial-inspector-scope>Transform</h3><h3 data-spatial-inspector-title>${escapeHtml(spatialSelectionLabel(selectedEntities))}</h3></div>
+        <span class="text-comfort-badge ${selectedEntities.some((selected) => selected.manual) ? "warning" : "good"}">${multipleSelected ? `${selectedEntities.length} selected` : entity.manual ? "Changed" : "Suggested"}</span>
       </div>
       <p class="spatial-multi-selection-note" data-spatial-multi-selection-note ${multipleSelected ? "" : "hidden"}>Position moves the shared center. Rotation values are degree changes; scale values are multipliers.</p>
       <section class="topology-inspector-section">
@@ -9273,28 +9295,6 @@ function renderSpatialRelationsInspector(entity) {
         <div class="spatial-inspector-section-head"><h3>Scale</h3><label class="spatial-ratio-lock"><input type="checkbox" data-spatial-ratio-lock ${state.spatialScaleRatioLocked ? "checked" : ""} ${disabled}> lock ratio</label></div>
         <div class="spatial-vector-inputs">${vectorInputs("scale", transform.scale, "0.01")}</div>
       </section>
-      <details class="facilitator-details spatial-diagnostics" data-spatial-individual-details ${multipleSelected ? "hidden" : ""}>
-        <summary>Placement details for facilitator</summary>
-        ${isText ? `
-          <section class="topology-inspector-section spatial-policy-controls" data-spatial-text-policies>
-            <label><span>Anchor</span><select data-spatial-anchor-type ${disabled}>
-              ${anchorTypes.map((type) => `<option value="${type}" ${anchor.type === type ? "selected" : ""}>${spatialAnchorLabel(type)}</option>`).join("")}
-            </select></label>
-            <label><span>Anchor object</span><select data-spatial-anchor-asset ${disabled} ${["asset", "source-focus"].includes(anchor.type) ? "" : "disabled"}>
-              <option value="">Automatic / active object</option>
-              ${modelAssets.map((asset) => `<option value="${escapeHtml(asset.id)}" ${anchor.assetId === asset.id ? "selected" : ""}>${escapeHtml(asset.filename || asset.id)}</option>`).join("")}
-            </select></label>
-            <label><span>Orientation</span><select data-spatial-orientation-policy ${disabled}>
-              ${["fixed", "reader-facing-yaw", "reader-facing"].map((policy) => `<option value="${policy}" ${entity.orientationPolicy === policy ? "selected" : ""}>${spatialOrientationLabel(policy)}</option>`).join("")}
-            </select></label>
-          </section>
-        ` : ""}
-        <section class="topology-inspector-section spatial-inference-detail">
-          <h3>Automatic placement source</h3>
-          <p data-spatial-inference-copy>${Number.isFinite(confidence) ? `${Math.round(confidence * 100)}% confidence. ` : ""}${escapeHtml((entity.inference?.reasons || entity.inference?.reason || [])[0] || (isText ? "Geometric readability and semantic anchor candidate." : "Inherited from Asset Topology."))}</p>
-        </section>
-        <p class="muted">Draft revision ${state.spatialDraftRevision}</p>
-      </details>
       <div class="spatial-inspector-actions">
         <button data-spatial-reset-selected ${disabled}>${multipleSelected ? `Reset ${selectedEntities.length} selected objects` : "Reset to suggested placement"}</button>
         <span data-spatial-autosave-status>${escapeHtml(state.spatialAutosaveStatus)}</span>
@@ -9314,56 +9314,26 @@ function renderAttentionGuidanceWorkspace(component) {
   const markers = attentionSceneMarkers(scene);
   ensureAttentionMarkerSelection(scene);
   const marker = selectedAttentionMarker(scene);
-  const evaluated = scene?.evaluated === true;
-  const reconciliation = attentionSceneReconciliation(scene);
-  const rejectedCount = Number(scene?.evaluation?.rejectedCandidateCount) || 0;
-  const inferenceHeading = !evaluated
-    ? "Checking the suggested focus"
-    : markers.length
-      ? `${markers.length} visible focus marker${markers.length === 1 ? "" : "s"}`
-      : reconciliation.status === "conflict"
-        ? "No visible focus marker"
-        : rejectedCount > 0
-          ? "The suggested focus is not visible"
-          : "No focus marker is needed";
-  const inferenceCopy = !evaluated
-    ? "Checking whether the suggestion matches a visible object."
-    : markers.length
-      ? "Move a marker if readers should look somewhere else."
-      : reconciliation.status === "conflict"
-        ? "The suggestion does not match a visible object in this scene."
-        : rejectedCount > 0
-          ? "The suggestion could not be placed on a visible object."
-          : "Readers can explore this scene without a focus marker.";
   return `
     <section class="panel spatial-relations-panel spatial-editor-mode attention-guidance-panel attention-editor-mode" data-attention-workspace-mode="editor">
+      ${renderAttentionBeatEdgeNavigation(sceneContext)}
       <div class="panel-head">
         <div>
           <p class="eyebrow">${escapeHtml(participantComponentLabel(component.id, component.label))} · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
           <h2>${escapeHtml(beat?.title || sceneContext.beatId)}</h2>
         </div>
         <div class="actions spatial-editor-head-actions">
-          <span class="attention-authoring-only-badge">Setup marker only</span>
           <button class="primary" data-attention-close-save>Save scene and return</button>
         </div>
       </div>
       ${renderAttentionGuidanceStatus()}
-      <div class="spatial-inference-summary attention-inference-summary">
-        <div>
-          <strong>${escapeHtml(inferenceHeading)}</strong>
-          <p>${escapeHtml(inferenceCopy)}</p>
-        </div>
-        <span class="text-comfort-badge ${evaluated ? "good" : "warning"}">${evaluated ? "checked" : "checking"}</span>
-        <span class="text-comfort-badge ${markers.some((item) => item.manual) ? "warning" : "good"}">${markers.filter((item) => item.manual).length} edited</span>
-      </div>
       ${ready ? "" : `<p class="blocked-note">Finish Set the scene before adding focus markers.</p>`}
       <div class="spatial-relations-workbench attention-guidance-workbench">
-        ${renderAttentionMarkerHierarchy(markers, beat, scene)}
+        <div class="spatial-workbench-sidebar attention-workbench-sidebar">
+          ${renderAttentionMarkerHierarchy(markers, beat, scene)}
+          ${renderAttentionGuidanceInspector(marker, scene)}
+        </div>
         ${renderAttentionGuidanceViewport(beat, marker, sceneContext, scene)}
-        ${renderAttentionGuidanceInspector(marker, scene)}
-      </div>
-      <div class="actions checkpoint-actions">
-        ${renderCheckpointActions(component, decision, { canCommit: ready })}
       </div>
     </section>
   `;
@@ -9378,13 +9348,13 @@ function renderAttentionGuidanceCanvasWorkspace(component, decision, ready) {
           <h2>${escapeHtml(participantComponentLabel(component.id, component.label))}</h2>
           <p class="story-stage-instruction">${escapeHtml(storyStageInstruction(state.data, component.id))}</p>
         </div>
+        <div class="actions checkpoint-head-actions">
+          ${renderCheckpointActions(component, decision, { canCommit: ready })}
+        </div>
       </div>
       ${renderAttentionGuidanceStatus()}
       ${ready ? "" : `<p class="blocked-note">Finish Place objects and Set the scene first.</p>`}
       ${renderAttentionStoryCanvas()}
-      <div class="actions checkpoint-actions">
-        ${renderCheckpointActions(component, decision, { canCommit: ready })}
-      </div>
     </section>
   `;
 }
@@ -9462,6 +9432,7 @@ function renderAttentionStoryCard(beat, option, context, index, primary) {
       <span class="source-graph-beat-assets spatial-story-beat-assets" aria-label="${linkedAssetIds.length} linked assets">
         ${linkedAssetIds.map((assetId) => renderSpatialStoryAsset(assetId)).join("") || `<span class="muted">No linked visual</span>`}
       </span>
+      <span class="spatial-scene-card-footer"><span>${linkedAssetIds.length} linked</span><em>Open scene</em></span>
     </button>
   `;
 }
@@ -9484,20 +9455,22 @@ function renderAttentionEmptyTargets(scene) {
 
 function renderAttentionMarkerHierarchy(markers, beat, scene) {
   const manualTargetOptions = attentionAvailableManualTargetOptions(scene);
+  const manualPositionOption = attentionAvailableManualPositionTarget(scene);
   return `
     <aside class="spatial-hierarchy attention-marker-hierarchy" aria-label="Attention markers">
-      <div class="visual-card-head"><h3>Attention spheres</h3><span>${markers.length}</span></div>
+      <div class="visual-card-head"><h3>Attention targets</h3><span>${markers.length}</span></div>
       <p class="spatial-current-beat">${escapeHtml(beat?.title || "No readable beat")}</p>
       <div class="attention-manual-target-controls">
         <label>
-          <span>Target model</span>
+          <span>Target object</span>
           <select data-attention-manual-target ${manualTargetOptions.length ? "" : "disabled"}>
             ${manualTargetOptions.length
               ? manualTargetOptions.map((candidate) => `<option value="${escapeHtml(candidate.id)}">${escapeHtml(attentionManualTargetLabel(candidate))}</option>`).join("")
-              : `<option value="">No available GLB target</option>`}
+              : `<option value="">No available scene object</option>`}
           </select>
         </label>
-        <button type="button" data-attention-add-manual disabled>Add target sphere</button>
+        <button type="button" data-attention-add-manual disabled>Add object as target</button>
+        <button type="button" data-attention-place-manual aria-pressed="false" ${manualPositionOption ? "" : "disabled"}>Place target manually</button>
       </div>
       <div class="spatial-hierarchy-scroll">
         <section class="spatial-hierarchy-group">
@@ -9508,7 +9481,7 @@ function renderAttentionMarkerHierarchy(markers, beat, scene) {
                   <span class="spatial-entity-icon attention-marker-icon" aria-hidden="true"></span>
                   <span>
                     <strong>${escapeHtml(attentionMarkerLabel(marker))}</strong>
-                    <small>${escapeHtml(marker.partSelector ? "Visible GLB part" : "Visible standalone GLB")}</small>
+                    <small>${escapeHtml(attentionTargetKindLabel(marker))}</small>
                   </span>
                   ${marker.manual ? `<em>${escapeHtml(attentionMarkerEditLabel(marker))}</em>` : `<em class="inferred">inferred</em>`}
                 </button>
@@ -9526,10 +9499,10 @@ function renderAttentionGuidanceViewport(beat, marker, sceneContext, scene) {
     <section class="topology-diagram-card topology-3d-card spatial-preview-card attention-preview-card">
       <div class="visual-card-head">
         <div>
-          <h3>Attention editor</h3>
-          <p class="muted">Story objects and the environment stay fixed. Select a sphere and move only its position.</p>
+          <h3>Guide attention</h3>
+          <p class="muted">Story objects and the environment stay fixed. Select a target and move only its position.</p>
         </div>
-        <span class="topology-kind-pill attention-kind-pill">${escapeHtml(marker ? attentionMarkerLabel(marker) : "No sphere")}</span>
+        <span class="topology-kind-pill attention-kind-pill">${escapeHtml(marker ? attentionMarkerLabel(marker) : "No target")}</span>
       </div>
       <div class="spatial-scene-context-bar">
         <div><span>${escapeHtml(spatialSceneContextLabel(sceneContext))}</span><strong>${escapeHtml(beat?.title || sceneContext.beatId)}</strong></div>
@@ -9537,15 +9510,13 @@ function renderAttentionGuidanceViewport(beat, marker, sceneContext, scene) {
       </div>
       <div class="spatial-transform-toolbar attention-transform-toolbar" role="toolbar" aria-label="Attention position tools">
         <button class="selected" disabled>Move only <kbd>W</kbd></button>
-        <button data-attention-frame-overview>Overview</button>
-        <button data-attention-frame-selected ${marker ? "" : "disabled"}>Frame selected</button>
         <button data-attention-undo ${authorHistory.canUndo ? "" : "disabled"}>Undo</button>
         <button data-attention-redo ${authorHistory.canRedo ? "" : "disabled"}>Redo</button>
       </div>
       <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell attention-viewer-shell" data-attention-viewer tabindex="0" role="application" aria-label="Interactive Attention Guidance editor">
-        <div class="topology-viewer-status">Loading the saved scene and checking visible GLB targets...</div>
+        <div class="topology-viewer-status">Loading the saved scene and checking visible story targets...</div>
       </div>
-      <p class="topology-viewer-hint">Drag empty space to orbit. Orange spheres are authoring indicators only. There are no controls to rotate, scale, add, delete, or move story objects.</p>
+      <p class="topology-viewer-hint">Orange target markers are authoring indicators only. There are no controls to rotate, scale, add, delete, or move story objects.</p>
     </section>
   `;
 }
@@ -9569,7 +9540,7 @@ function renderAttentionGuidanceInspector(marker, scene) {
   return `
     <aside class="topology-inspector spatial-inspector attention-inspector">
       <div class="spatial-inspector-head">
-        <div><p class="eyebrow">${escapeHtml(marker.partSelector ? "Visible GLB part" : "Visible standalone GLB")}</p><h3 data-attention-inspector-title>${escapeHtml(attentionMarkerLabel(marker))}</h3></div>
+        <div><p class="eyebrow">${escapeHtml(attentionTargetKindLabel(marker))}</p><h3 data-attention-inspector-title>${escapeHtml(attentionMarkerLabel(marker))}</h3></div>
         <div class="attention-inspector-badges">
           <span class="text-comfort-badge ${marker.manual ? "warning" : "good"}" data-attention-manual-badge>${escapeHtml(marker.manual ? attentionMarkerEditLabel(marker) : "inferred")}</span>
         </div>
@@ -9579,7 +9550,7 @@ function renderAttentionGuidanceInspector(marker, scene) {
         <div class="spatial-vector-inputs">${vectorInputs}</div>
       </section>
       <div class="spatial-inspector-actions">
-        <button data-attention-reset-selected ${disabled}>Reset sphere to inferred position</button>
+        <button data-attention-reset-selected ${disabled}>${escapeHtml(attentionMarkerResetLabel(marker))}</button>
         <span data-attention-autosave-status>${escapeHtml(state.attentionAutosaveStatus)} · revision ${state.attentionDraftRevision}</span>
       </div>
     </aside>
@@ -9614,6 +9585,7 @@ function renderTextComfortWorkspace(component) {
         </div>
         <div class="actions">
           ${renderGenerateOptionsButton(component, ready)}
+          ${renderCheckpointActions(component, decision, { canCommit: selectedProposal || decision })}
         </div>
       </div>
       <p class="muted">Choose where readable story text lives in the VR scene. Move the panel in the preview; its placement is stored when you save the checkpoint.</p>
@@ -9625,9 +9597,6 @@ function renderTextComfortWorkspace(component) {
           ${renderTextComfortInspector(selectedProposal)}
         </div>
       ` : renderTextComfortEmptyState(component)}
-      <div class="actions checkpoint-actions">
-        ${renderCheckpointActions(component, decision, { canCommit: selectedProposal || decision })}
-      </div>
     </section>
   `;
 }
@@ -9732,7 +9701,7 @@ function renderTextComfortPreview(proposal) {
         ${kind === "object-attached" && sourceCue ? `<span class="text-comfort-badge good">source camera focus · ${Math.round((Number(sourceCue.confidence) || 0) * 100)}%</span>` : ""}
         ${warnings.map((warning) => `<span class="text-comfort-badge ${warning.severity}">${escapeHtml(warning.label)}</span>`).join("") || `<span class="text-comfort-badge good">comfortable draft</span>`}
       </div>
-      <p class="topology-viewer-hint">Drag the text panel to move it. Drag elsewhere to orbit. Click scene, then use WASD to move the editor camera.</p>
+      <p class="topology-viewer-hint">Drag the text panel to move it. Click scene, then use WASD to move the editor camera.</p>
       <p class="topology-description">${escapeHtml(proposal.description)}</p>
     </section>
   `;
@@ -9836,6 +9805,7 @@ function renderInteractionControlCanvasWorkspace(component, baseProposal, decisi
         </div>
         <div class="actions interaction-canvas-head-actions">
           <span class="dynamic-status-pill interaction-status-pill ${escapeHtml(checkpointFlowStatus(component.id))}">${escapeHtml(participantStatusLabel(checkpointFlowStatus(component.id)))}</span>
+          ${renderCheckpointActions(component, decision, { canCommit: ready && assignmentsComplete })}
         </div>
       </div>
       ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before choosing reader actions.</p>`}
@@ -9849,9 +9819,6 @@ function renderInteractionControlCanvasWorkspace(component, baseProposal, decisi
         <small>${controllerButtonCount} button step${controllerButtonCount === 1 ? "" : "s"} · ${variantCount} choice section${variantCount === 1 ? "" : "s"}</small>
       </div>
       ${renderInteractionStoryCanvas(baseProposal, boundaryContext)}
-      <div class="actions checkpoint-actions">
-        ${renderCheckpointActions(component, decision, { canCommit: ready && assignmentsComplete })}
-      </div>
     </section>
   `;
 }
@@ -10312,7 +10279,7 @@ function renderInteractionSpatialScene(editorContext, heading, hint) {
         ${[["translate", "Move"], ["rotate", "Rotate"], ["scale", "Scale"]].map(([mode, label]) => `<button type="button" data-interaction-destination-transform-mode="${mode}" class="${state.interactionDestinationTransformMode === mode ? "selected" : ""}" aria-pressed="${state.interactionDestinationTransformMode === mode}" ${allowedModes.includes(mode) ? "" : "disabled"}>${label}</button>`).join("")}
       </div>
       <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell interaction-viewer-shell" data-interaction-viewer="${escapeHtml(editorContext.targetId)}" tabindex="0" role="application" aria-label="${escapeHtml(heading)}"><div class="topology-viewer-status">Loading previous-beat spatial scene...</div></div>
-      <p class="topology-viewer-hint">${escapeHtml(hint)} Drag elsewhere to orbit; use WASD after focusing the scene.</p>
+      <p class="topology-viewer-hint">${escapeHtml(hint)} Use WASD after focusing the scene.</p>
     </section>`;
 }
 
@@ -10822,6 +10789,12 @@ function renderFinalReviewWorkspace(component) {
           <p class="eyebrow">${escapeHtml(participantStepEyebrow(component.id))}</p>
           <h2>${escapeHtml(participantComponentLabel(component.id, component.label))}</h2>
         </div>
+        <div class="actions checkpoint-head-actions">
+          ${renderCheckpointActions(component, decision, {
+            canCommit: ready,
+            label: "Finish review",
+          })}
+        </div>
       </div>
       <p class="story-stage-instruction">${escapeHtml(storyStageInstruction(state.data, component.id))}</p>
       ${ready ? "" : `<p class="blocked-note">Finish Reader actions before reviewing the story.</p>`}
@@ -10833,12 +10806,6 @@ function renderFinalReviewWorkspace(component) {
       <div class="editor-strip">
         <label for="author-edits">Optional cleanup</label>
         <textarea id="author-edits" data-edit-notes placeholder="Supported examples: hide ground circles; hide decorative particles.">${escapeHtml(tuningPrompt)}</textarea>
-      </div>
-      <div class="actions checkpoint-actions">
-        ${renderCheckpointActions(component, decision, {
-          canCommit: ready,
-          label: "Finish review",
-        })}
       </div>
     </section>
   `;
@@ -10947,7 +10914,7 @@ function renderFinalReviewSpatialEditor(beat, index, beats, sceneContext) {
       </div>
       <div class="final-review-controls">
         <div class="final-review-view-rotation" role="group" aria-label="Drag view behavior">
-          <span>Drag view</span>
+          <span>View</span>
           <button type="button" data-final-review-view-rotation="scene" aria-pressed="${viewRotationMode === "scene"}">Orbit scene</button>
           <button type="button" data-final-review-view-rotation="reader" aria-pressed="${viewRotationMode === "reader"}">Reader look</button>
         </div>
@@ -11404,43 +11371,24 @@ function bindEnvironmentEnhancementEvents() {
     }));
   }
   document.querySelector("[data-environment-close-save]")?.addEventListener("click", () => closeEnvironmentSceneEditor());
-  bindEnvironmentAcquisitionTabs();
-  bindEnvironmentRecommendationButtons();
-  const searchForm = document.querySelector("[data-environment-search-form]");
-  const searchInput = document.querySelector("#environment-search-query");
-  searchInput?.addEventListener("input", () => {
-    state.environmentUi.query = searchInput.value;
-    state.environmentUi.queryOrigin = "author";
-    state.environmentUi.queryInteractionRevision += 1;
-  });
-  searchForm?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    searchEnvironmentCandidatesFromUi();
-  });
-
-  bindEnvironmentCandidateButtons();
-
-  const uploadForm = document.querySelector("[data-environment-upload-form]");
-  const uploadInput = document.querySelector("#environment-upload-file");
-  uploadInput?.addEventListener("change", updateEnvironmentUploadSelection);
-  uploadForm?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    uploadEnvironmentFromUi();
-  });
-
+  for (const button of document.querySelectorAll("[data-environment-beat-navigation]")) {
+    button.addEventListener("click", () => navigateEnvironmentSceneEditor(button.dataset.environmentBeatNavigation));
+  }
   const generationForm = document.querySelector("[data-environment-generation-form]");
   const generationInput = document.querySelector("#environment-generation-prompt");
   generationInput?.addEventListener("input", () => {
     state.environmentUi.generationPrompt = generationInput.value;
-    state.environmentUi.generationPromptOrigin = "author";
     if (state.environmentUi.generationError) {
       state.environmentUi.generationError = false;
       state.environmentUi.generationStatus = "Prompt updated. Generate when the description is ready.";
+      if (!state.environmentUi.generationBusy) {
+        state.environmentUi.generationPhase = "idle";
+        state.environmentUi.generationNoticeVisible = false;
+      }
     }
     updateEnvironmentActionAvailability();
     updateEnvironmentGenerationDom();
   });
-  bindEnvironmentGenerationReferenceEvents();
   generationForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     generateEnvironmentFromUi();
@@ -11718,6 +11666,7 @@ async function applyProceduralDynamicsCandidate(sceneContext) {
       persistent: true,
       componentId: "dynamic-geometry",
     });
+    markStoryvrCheckpointCompletionPending("dynamic-geometry");
     state.proceduralDynamicsUi.statusByScene[sceneKey] = "Generated motion applied. Linked assets, saved transforms, and instance counts remain unchanged.";
   } catch (error) {
     state.proceduralDynamicsUi.errorsByScene[sceneKey] = `Could not apply motion: ${error.message}`;
@@ -11751,6 +11700,7 @@ async function removeProceduralDynamicsPlan(sceneContext) {
       persistent: true,
       componentId: "dynamic-geometry",
     });
+    markStoryvrCheckpointCompletionPending("dynamic-geometry");
     state.proceduralDynamicsUi.statusByScene[sceneKey] = "Generated motion removed. Source GLB animation mappings are unchanged.";
   } catch (error) {
     state.proceduralDynamicsUi.errorsByScene[sceneKey] = `Could not remove motion: ${error.message}`;
@@ -12289,6 +12239,7 @@ function bindInteractionUiButtonDrag(root) {
       preview.style.top = `${button.position[1] * 100}%`;
     };
     const finish = () => {
+      if (activeStoryvrPointerGestureFinalizer === finish) activeStoryvrPointerGestureFinalizer = null;
       preview.removeEventListener("pointermove", move);
       preview.removeEventListener("pointerup", finish);
       preview.removeEventListener("pointercancel", finish);
@@ -12298,6 +12249,7 @@ function bindInteractionUiButtonDrag(root) {
       if (historyStarted) commitAuthorHistory();
       renderPreservingScroll();
     };
+    activeStoryvrPointerGestureFinalizer = finish;
     preview.addEventListener("pointermove", move);
     preview.addEventListener("pointerup", finish);
     preview.addEventListener("pointercancel", finish);
@@ -12356,10 +12308,10 @@ function syncEnvironmentApplyTargetControls() {
   if (submit) {
     const manifest = environmentManifest();
     submit.disabled = state.environmentUi.operationBusy
+      || state.environmentUi.generationBusy
       || selectedIds.size === 0
       || manifest.skipped
-      || !manifest.asset
-      || environmentSourceAwaitingUpload(manifest);
+      || !manifest.asset;
     submit.textContent = state.environmentUi.operationBusy ? "Applying…" : "Apply to selected beats";
   }
 }
@@ -12368,7 +12320,7 @@ async function applyEnvironmentToSelectedBeats(options = {}) {
   const sceneContext = activeEnvironmentSceneContext();
   const validIds = new Set(environmentApplyTargetBeats(sceneContext).map((beat) => beat.id));
   const targetBeatIds = (state.environmentUi.applyTargetBeatIds || []).filter((beatId) => validIds.has(beatId));
-  if (!sceneContext?.beatId || !targetBeatIds.length || state.environmentUi.operationBusy) return;
+  if (!sceneContext?.beatId || !targetBeatIds.length || state.environmentUi.operationBusy || state.environmentUi.generationBusy) return;
   if (!options.skipHistory) {
     return withAuthorHistory("Apply environment to selected beats", () => (
       applyEnvironmentToSelectedBeats({ skipHistory: true })
@@ -12396,6 +12348,7 @@ async function applyEnvironmentToSelectedBeats(options = {}) {
       expectedRevision: Number(environmentRawState().revision) || 0,
     });
     applyEnvironmentEnhancementPayload(response, { resetDraft: true });
+    markStoryvrCheckpointCompletionPending("environment-enhancement");
     state.environmentUi.applyTargetBeatIds = [];
     state.environmentUi.applyStatus = `Applied to ${targetBeatIds.length} beat${targetBeatIds.length === 1 ? "" : "s"} without generating new images.`;
     state.output = null;
@@ -12409,50 +12362,12 @@ async function applyEnvironmentToSelectedBeats(options = {}) {
   }
 }
 
-function bindEnvironmentAcquisitionTabs() {
-  const tabs = [...document.querySelectorAll("[data-environment-acquisition-tab]")];
-  for (const tab of tabs) {
-    tab.addEventListener("click", () => setEnvironmentAcquisitionMode(tab.dataset.environmentAcquisitionTab));
-    tab.addEventListener("keydown", (event) => {
-      const currentIndex = tabs.indexOf(tab);
-      let nextIndex = null;
-      if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % tabs.length;
-      if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
-      if (event.key === "Home") nextIndex = 0;
-      if (event.key === "End") nextIndex = tabs.length - 1;
-      if (nextIndex == null) return;
-      event.preventDefault();
-      setEnvironmentAcquisitionMode(tabs[nextIndex].dataset.environmentAcquisitionTab, { focus: true });
-    });
-  }
-}
-
-function setEnvironmentAcquisitionMode(mode, { focus = false } = {}) {
-  if (!["search", "generate"].includes(mode)) return;
-  state.environmentUi.acquisitionMode = mode;
-  const resultCount = document.querySelector("[data-environment-result-count]");
-  if (resultCount) {
-    resultCount.textContent = mode === "generate"
-      ? "AI"
-      : String(state.environmentUi.candidates.length);
-  }
-  for (const tab of document.querySelectorAll("[data-environment-acquisition-tab]")) {
-    const selected = tab.dataset.environmentAcquisitionTab === mode;
-    tab.setAttribute("aria-selected", String(selected));
-    tab.tabIndex = selected ? 0 : -1;
-    if (selected && focus) tab.focus();
-  }
-  for (const panel of document.querySelectorAll("[data-environment-acquisition-panel]")) {
-    panel.hidden = panel.dataset.environmentAcquisitionPanel !== mode;
-  }
-}
-
 function openEnvironmentSceneEditor(context) {
   const normalized = spatialSceneContext(context?.beatId, context?.variantGroupId, context?.variantOptionId);
   if (!normalized.beatId || !spatialSceneBeat(normalized)) return;
   state.output = null;
   const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
-  pushStoryvrBrowserNavigation(
+  requestStoryvrBrowserNavigation(
     createStoryvrNavigationRoute("environment-enhancement", normalized),
     { parentEntryId: currentEntry?.entryId },
   );
@@ -12463,7 +12378,7 @@ function openDynamicSceneEditor(context) {
   if (!normalized.beatId || !spatialSceneBeat(normalized)) return;
   state.output = null;
   const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
-  pushStoryvrBrowserNavigation(
+  requestStoryvrBrowserNavigation(
     createStoryvrNavigationRoute("dynamic-geometry", normalized),
     { parentEntryId: currentEntry?.entryId },
   );
@@ -12475,7 +12390,7 @@ function openInterBeatSceneEditor(context) {
   if (!normalized.beatId || !spatialSceneBeat(normalized)) return;
   state.output = null;
   const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
-  pushStoryvrBrowserNavigation(
+  requestStoryvrBrowserNavigation(
     createStoryvrNavigationRoute("inter-beat-dynamics", normalized),
     { parentEntryId: currentEntry?.entryId },
   );
@@ -12486,7 +12401,7 @@ function openInteractionSceneEditor(context) {
   if (!normalized.beatId || !spatialSceneBeat(normalized)) return;
   state.output = null;
   const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
-  pushStoryvrBrowserNavigation(
+  requestStoryvrBrowserNavigation(
     createStoryvrNavigationRoute("interaction-control", normalized),
     { parentEntryId: currentEntry?.entryId },
   );
@@ -12517,7 +12432,7 @@ function openInteractionOptionEditor(context) {
   ) return;
   state.output = null;
   const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
-  pushStoryvrBrowserNavigation(
+  requestStoryvrBrowserNavigation(
     createStoryvrNavigationRoute("interaction-control", {
       ...normalized,
       interactionTargetType: targetType,
@@ -12530,101 +12445,55 @@ function openInteractionOptionEditor(context) {
 
 async function closeInteractionSceneEditor() {
   if (!state.interactionEditorScene || state.busy) return;
-  const button = document.querySelector("[data-interaction-close-editor]");
-  if (button) {
-    button.disabled = true;
-    button.textContent = "Closing…";
-  }
-  await historyFinalizePromise;
-  state.editNotes = currentEditNotesValue();
-  state.output = { interaction: "Interaction draft kept. Save the checkpoint from the story canvas when the controls are ready." };
-  returnToInteractionCanvasWithBrowserHistory();
+  await returnToInteractionCanvasWithBrowserHistory();
 }
 
 async function closeInterBeatSceneEditor() {
   if (!state.interBeatEditorScene || state.busy) return;
-  const button = document.querySelector("[data-inter-beat-close-save]");
-  if (button) {
-    button.disabled = true;
-    button.textContent = sourceMotionHasUnsavedChanges() ? "Saving…" : "Closing…";
-  }
-  try {
-    await historyFinalizePromise;
-    const savedChanges = sourceMotionHasUnsavedChanges();
-    if (savedChanges) {
-      await withAuthorHistory("Save Transition motion links", () => persistSourceMotionLinks(), {
-        persistent: true,
-        componentId: "inter-beat-dynamics",
-      });
-    }
-    state.output = {
-      transition: savedChanges
-        ? "Transition motion links saved. Select another beat or variant to continue."
-        : "Transition scene closed. Select another beat or variant to continue.",
-    };
-    returnToInterBeatCanvasWithBrowserHistory();
-  } catch (error) {
-    state.output = { error: `Transition save failed: ${error.message}`, diagnostics: error.diagnostics || [] };
-    render();
-  }
+  await returnToInterBeatCanvasWithBrowserHistory();
 }
 
 async function closeDynamicSceneEditor() {
   if (!state.dynamicEditorScene || state.busy) return;
-  const button = document.querySelector("[data-dynamic-close-save]");
-  if (button) {
-    button.disabled = true;
-    button.textContent = sourceMotionHasUnsavedChanges() ? "Saving…" : "Closing…";
-  }
-  try {
-    await historyFinalizePromise;
-    const generatedMotionChanged = proceduralDynamicsCheckpointHasUnsavedChanges();
-    const savedChanges = sourceMotionHasUnsavedChanges();
-    if (savedChanges) {
-      await withAuthorHistory("Save Dynamics motion links", () => persistSourceMotionLinks(), {
-        persistent: true,
-        componentId: "dynamic-geometry",
-      });
-    }
-    await refresh(false);
-    state.output = {
-      dynamic: generatedMotionChanged
-        ? "Generated motion applied. Save the Dynamics checkpoint on the Story Canvas when all scenes are ready."
-        : savedChanges
-          ? "Dynamics motion links saved. Select another beat or variant to continue."
-        : "Dynamics scene closed. Select another beat or variant to continue.",
-    };
-    returnToDynamicCanvasWithBrowserHistory();
-  } catch (error) {
-    state.output = { error: `Dynamics save failed: ${error.message}`, diagnostics: error.diagnostics || [] };
-    render();
-  }
+  await returnToDynamicCanvasWithBrowserHistory();
 }
 
 async function closeEnvironmentSceneEditor() {
   if (!state.environmentEditorScene || state.busy) return;
-  const button = document.querySelector("[data-environment-close-save]");
-  if (button) {
+  await returnToEnvironmentCanvasWithBrowserHistory();
+}
+
+async function navigateEnvironmentSceneEditor(direction) {
+  if (!state.environmentEditorScene || state.busy || environmentBeatNavigationPending) return;
+  const navigation = spatialBeatNavigationState(activeEnvironmentSceneContext());
+  const targetContext = direction === "previous" ? navigation.previousContext : navigation.nextContext;
+  if (!targetContext) return;
+  environmentBeatNavigationPending = true;
+  for (const button of document.querySelectorAll("[data-environment-beat-navigation]")) {
     button.disabled = true;
-    button.textContent = "Saving…";
+    button.classList.add("is-saving");
+    button.setAttribute("aria-busy", "true");
   }
   try {
-    await historyFinalizePromise;
-    await flushEnvironmentDraft();
-    resetEnvironmentApplyTargets();
-    state.environmentUi.selectionMode = null;
-    state.environmentUi.draft = null;
-    state.output = { environment: "Environment draft saved. Select another beat or variant to continue." };
-    returnToEnvironmentCanvasWithBrowserHistory();
+    await requestStoryvrBrowserNavigation(
+      createStoryvrNavigationRoute("environment-enhancement", targetContext),
+      { mode: "replace" },
+    );
   } catch (error) {
-    state.output = { error: `Environment save failed: ${error.message}`, diagnostics: error.diagnostics || [] };
+    state.output = {
+      error: `Current scene could not be saved. You are still on this beat: ${error.message}`,
+      diagnostics: error.diagnostics || [],
+    };
     render();
+  } finally {
+    environmentBeatNavigationPending = false;
   }
 }
 
 function selectEnvironmentMode(mode) {
   if (!["asset", "none"].includes(mode)
     || state.environmentUi.operationBusy
+    || state.environmentUi.generationBusy
     || !state.data?.readiness?.["environment-enhancement"]?.canGenerate) return;
   const assignment = environmentAssignmentForContext(activeEnvironmentSceneContext());
   if (mode === "asset" && !(assignment?.selection?.asset || assignment?.asset)) return;
@@ -12635,323 +12504,7 @@ function selectEnvironmentMode(mode) {
   renderPreservingScroll();
 }
 
-function bindEnvironmentRecommendationButtons() {
-  for (const button of document.querySelectorAll("[data-environment-recommendation-action]")) {
-    button.addEventListener("click", () => {
-      if (button.dataset.environmentRecommendationAction === "use") {
-        usePendingEnvironmentRecommendation();
-      } else {
-        requestEnvironmentRecommendation({ force: true });
-      }
-    });
-  }
-}
-
-function maybeRequestEnvironmentRecommendation(active) {
-  if (active?.id !== "environment-enhancement" || !state.data) return;
-  if (!activeEnvironmentSceneContext()) return;
-  const raw = environmentRawState();
-  const ready = Boolean(state.data.readiness?.["environment-enhancement"]?.canGenerate);
-  const storySignature = String(raw.storySignature || "");
-  if (
-    !ready
-    || raw.brief?.query
-    || state.environmentUi.recommendationBusy
-    || state.environmentUi.recommendationAttemptedSignature === storySignature
-  ) return;
-  requestEnvironmentRecommendation({ force: false });
-}
-
-async function requestEnvironmentRecommendation({ force = false } = {}) {
-  const raw = environmentRawState();
-  const ready = Boolean(state.data?.readiness?.["environment-enhancement"]?.canGenerate);
-  if (!ready || state.environmentUi.recommendationBusy) return;
-
-  const requestId = state.environmentUi.recommendationRequestId + 1;
-  const storySignature = String(raw.storySignature || "");
-  const queryRevision = state.environmentUi.queryInteractionRevision;
-  const queryOrigin = state.environmentUi.queryOrigin;
-  state.environmentUi.recommendationRequestId = requestId;
-  state.environmentUi.recommendationAttemptedSignature = storySignature;
-  state.environmentUi.recommendationBusy = true;
-  state.environmentUi.recommendationError = "";
-  updateEnvironmentRecommendationDom();
-  updateEnvironmentActionAvailability();
-
-  try {
-    const response = await api.post("/api/environment-enhancement/recommend-search", { force });
-    if (requestId !== state.environmentUi.recommendationRequestId) return;
-    const incoming = response.environmentEnhancement || {};
-    if (storySignature && incoming.storySignature && incoming.storySignature !== storySignature) return;
-    const recommendation = response.recommendation || incoming.brief;
-    const recommendedQuery = String(recommendation?.query || "").trim();
-    if (!recommendedQuery) throw new Error("AI returned an empty search recommendation.");
-
-    state.data.environmentEnhancement = {
-      ...environmentRawState(),
-      brief: recommendation,
-      storySignature: incoming.storySignature || storySignature,
-      storyBeatCount: incoming.storyBeatCount ?? raw.storyBeatCount,
-    };
-    adoptEnvironmentGenerationRecommendation(recommendedQuery);
-    const authorChangedQuery = state.environmentUi.queryInteractionRevision !== queryRevision
-      || queryOrigin === "author"
-      || state.environmentUi.queryOrigin === "author";
-    if (!authorChangedQuery) {
-      const changed = recommendedQuery !== state.environmentUi.query;
-      state.environmentUi.query = recommendedQuery;
-      state.environmentUi.queryOrigin = "ai";
-      state.environmentUi.pendingRecommendedQuery = "";
-      if (changed) clearEnvironmentSearchResultsForNewQuery();
-      const input = document.querySelector("#environment-search-query");
-      if (input) input.value = recommendedQuery;
-    } else if (recommendedQuery !== state.environmentUi.query) {
-      state.environmentUi.pendingRecommendedQuery = recommendedQuery;
-    } else {
-      state.environmentUi.pendingRecommendedQuery = "";
-    }
-  } catch (error) {
-    if (requestId !== state.environmentUi.recommendationRequestId) return;
-    state.environmentUi.recommendationError = `Recommendation failed: ${error.message}`;
-  } finally {
-    if (requestId !== state.environmentUi.recommendationRequestId) return;
-    state.environmentUi.recommendationBusy = false;
-    updateEnvironmentRecommendationDom();
-    updateEnvironmentCatalogDom();
-    updateEnvironmentActionAvailability();
-  }
-}
-
-function usePendingEnvironmentRecommendation() {
-  const query = String(state.environmentUi.pendingRecommendedQuery || environmentManifest().brief?.query || "").trim();
-  if (!query) return;
-  const changed = query !== state.environmentUi.query;
-  state.environmentUi.query = query;
-  state.environmentUi.queryOrigin = "ai";
-  state.environmentUi.queryInteractionRevision += 1;
-  state.environmentUi.pendingRecommendedQuery = "";
-  adoptEnvironmentGenerationRecommendation(query);
-  if (changed) clearEnvironmentSearchResultsForNewQuery();
-  const input = document.querySelector("#environment-search-query");
-  if (input) input.value = query;
-  updateEnvironmentRecommendationDom();
-  updateEnvironmentCatalogDom();
-  updateEnvironmentActionAvailability();
-}
-
-function adoptEnvironmentGenerationRecommendation(query) {
-  if (state.environmentUi.generationPromptOrigin === "author") return;
-  const prompt = String(query || "").trim();
-  if (!prompt) return;
-  state.environmentUi.generationPrompt = prompt;
-  state.environmentUi.generationPromptOrigin = "ai";
-  const input = document.querySelector("#environment-generation-prompt");
-  if (input) input.value = prompt;
-}
-
-function clearEnvironmentSearchResultsForNewQuery() {
-  state.environmentUi.candidates = [];
-  state.environmentUi.searched = false;
-  state.environmentUi.searchStatus = "Recommendation updated. Search when the keywords look right.";
-}
-
-function updateEnvironmentRecommendationDom() {
-  const container = document.querySelector("[data-environment-recommendation]");
-  if (container) {
-    const ready = Boolean(state.data?.readiness?.["environment-enhancement"]?.canGenerate);
-    container.innerHTML = renderEnvironmentRecommendationCallout(ready);
-    bindEnvironmentRecommendationButtons();
-  }
-  const brief = document.querySelector("[data-environment-brief]");
-  if (brief) brief.textContent = environmentBriefDescription();
-}
-
-function bindEnvironmentCandidateButtons() {
-  for (const button of document.querySelectorAll("[data-environment-select-source]")) {
-    button.addEventListener("click", () => selectEnvironmentSource(button.dataset.environmentSelectSource));
-  }
-}
-
-function renderEnvironmentGenerationReferenceImages() {
-  const references = state.environmentUi.generationReferences || [];
-  if (!references.length) {
-    return `<p class="environment-generation-reference-empty">No visual references attached. Text-only generation remains available.</p>`;
-  }
-  return references.map((reference) => `
-    <article class="environment-generation-reference">
-      <img src="${escapeHtml(reference.dataUrl)}" alt="">
-      <div>
-        <strong title="${escapeHtml(reference.filename)}">${escapeHtml(reference.filename)}</strong>
-        <span>${escapeHtml(environmentFormatBytes(reference.size))}</span>
-      </div>
-      <button
-        type="button"
-        data-environment-generation-reference-remove="${escapeHtml(reference.id)}"
-        aria-label="Remove ${escapeHtml(reference.filename)}"
-        ${state.environmentUi.generationBusy || state.environmentUi.generationReferenceLoading ? "disabled" : ""}
-      >Remove</button>
-    </article>
-  `).join("");
-}
-
-function bindEnvironmentGenerationReferenceEvents() {
-  const dropzone = document.querySelector("[data-environment-generation-dropzone]");
-  const fileInput = document.querySelector("#environment-generation-reference-files");
-  if (!dropzone || !fileInput) return;
-
-  fileInput.addEventListener("change", () => {
-    const files = Array.from(fileInput.files || []);
-    fileInput.value = "";
-    if (files.length) addEnvironmentGenerationReferenceFiles(files);
-  });
-  dropzone.addEventListener("paste", (event) => {
-    const files = Array.from(event.clipboardData?.items || [])
-      .filter((item) => item.kind === "file")
-      .map((item) => item.getAsFile())
-      .filter(Boolean);
-    if (!files.length) return;
-    event.preventDefault();
-    addEnvironmentGenerationReferenceFiles(files);
-  });
-  dropzone.addEventListener("dragenter", (event) => {
-    if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
-    event.preventDefault();
-    dropzone.classList.add("drag-active");
-  });
-  dropzone.addEventListener("dragover", (event) => {
-    if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
-    event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
-    dropzone.classList.add("drag-active");
-  });
-  dropzone.addEventListener("dragleave", (event) => {
-    if (event.relatedTarget && dropzone.contains(event.relatedTarget)) return;
-    dropzone.classList.remove("drag-active");
-  });
-  dropzone.addEventListener("drop", (event) => {
-    dropzone.classList.remove("drag-active");
-    const files = Array.from(event.dataTransfer?.files || []);
-    if (!files.length) return;
-    event.preventDefault();
-    addEnvironmentGenerationReferenceFiles(files);
-  });
-  bindEnvironmentGenerationReferenceRemovalEvents();
-}
-
-function bindEnvironmentGenerationReferenceRemovalEvents() {
-  for (const button of document.querySelectorAll("[data-environment-generation-reference-remove]")) {
-    button.addEventListener("click", () => {
-      if (state.environmentUi.generationBusy || state.environmentUi.generationReferenceLoading) return;
-      const id = button.dataset.environmentGenerationReferenceRemove;
-      state.environmentUi.generationReferences = state.environmentUi.generationReferences
-        .filter((reference) => reference.id !== id);
-      state.environmentUi.generationError = false;
-      state.environmentUi.generationStatus = state.environmentUi.generationReferences.length
-        ? `${state.environmentUi.generationReferences.length} visual reference image${state.environmentUi.generationReferences.length === 1 ? "" : "s"} attached.`
-        : "Visual references cleared. Text-only generation remains available.";
-      updateEnvironmentGenerationDom();
-      updateEnvironmentActionAvailability();
-    });
-  }
-}
-
-async function addEnvironmentGenerationReferenceFiles(files) {
-  if (
-    state.environmentUi.generationBusy
-    || state.environmentUi.operationBusy
-    || state.environmentUi.generationReferenceLoading
-  ) return;
-  const incoming = Array.from(files || []);
-  if (!incoming.length) return;
-  const current = state.environmentUi.generationReferences || [];
-  if (current.length + incoming.length > MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGES) {
-    setEnvironmentGenerationReferenceError(
-      `Attach no more than ${MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGES} reference images.`,
-    );
-    return;
-  }
-
-  state.environmentUi.generationReferenceLoading = true;
-  updateEnvironmentActionAvailability();
-  try {
-    const prepared = [];
-    let totalBytes = current.reduce((sum, reference) => sum + Number(reference.size || 0), 0);
-    for (const file of incoming) {
-      const mediaType = environmentGenerationReferenceMediaType(file);
-      if (!mediaType) throw new Error("Reference images must be PNG, JPEG, or WebP files.");
-      if (!file.size) throw new Error(`${file.name || "A reference image"} is empty.`);
-      if (file.size > MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGE_BYTES) {
-        throw new Error(`Each reference image must be ${MAX_ENVIRONMENT_GENERATION_REFERENCE_IMAGE_BYTES / (1024 * 1024)} MiB or smaller.`);
-      }
-      totalBytes += file.size;
-      if (totalBytes > MAX_ENVIRONMENT_GENERATION_REFERENCE_TOTAL_BYTES) {
-        throw new Error(`Reference images must total ${MAX_ENVIRONMENT_GENERATION_REFERENCE_TOTAL_BYTES / (1024 * 1024)} MiB or less.`);
-      }
-      const dataUrl = await readEnvironmentGenerationReferenceFile(file, mediaType);
-      state.environmentUi.generationReferenceCounter += 1;
-      prepared.push({
-        id: `environment-reference-${state.environmentUi.generationReferenceCounter}`,
-        filename: String(file.name || `pasted-image-${state.environmentUi.generationReferenceCounter}`).slice(0, 160),
-        mediaType,
-        size: file.size,
-        dataUrl,
-      });
-    }
-    state.environmentUi.generationReferences = [...current, ...prepared];
-    state.environmentUi.generationError = false;
-    state.environmentUi.generationStatus = `${state.environmentUi.generationReferences.length} visual reference image${state.environmentUi.generationReferences.length === 1 ? "" : "s"} attached. Add a scene description, then generate.`;
-    updateEnvironmentGenerationDom();
-  } catch (error) {
-    setEnvironmentGenerationReferenceError(error.message);
-  } finally {
-    state.environmentUi.generationReferenceLoading = false;
-    updateEnvironmentActionAvailability();
-  }
-}
-
-function environmentGenerationReferenceMediaType(file) {
-  const declared = String(file?.type || "").toLowerCase();
-  if (ENVIRONMENT_GENERATION_REFERENCE_MEDIA_TYPES.has(declared)) return declared;
-  const extension = String(file?.name || "").toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
-  if (extension === "png") return "image/png";
-  if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
-  if (extension === "webp") return "image/webp";
-  return "";
-}
-
-function readEnvironmentGenerationReferenceFile(file, mediaType) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.addEventListener("error", () => reject(new Error(`Could not read ${file.name || "the reference image"}.`)));
-    reader.addEventListener("load", () => {
-      const result = String(reader.result || "");
-      const separator = result.indexOf(",");
-      if (separator < 0 || !result.slice(separator + 1)) {
-        reject(new Error(`Could not read ${file.name || "the reference image"}.`));
-        return;
-      }
-      resolve(`data:${mediaType};base64,${result.slice(separator + 1)}`);
-    });
-    reader.readAsDataURL(file);
-  });
-}
-
-function setEnvironmentGenerationReferenceError(message) {
-  state.environmentUi.generationError = true;
-  state.environmentUi.generationStatus = message;
-  updateEnvironmentGenerationDom();
-  updateEnvironmentActionAvailability();
-}
-
-function environmentGenerationReferencePayload() {
-  return (state.environmentUi.generationReferences || []).map((reference) => ({
-    filename: reference.filename,
-    mediaType: reference.mediaType,
-    base64: String(reference.dataUrl || "").split(",", 2)[1] || "",
-  }));
-}
-
-async function generateEnvironmentFromUi(options = {}) {
+async function generateEnvironmentFromUi() {
   const input = document.querySelector("#environment-generation-prompt");
   const prompt = String(input?.value ?? environmentGenerationPrompt()).trim();
   if (!prompt) {
@@ -12961,20 +12514,6 @@ async function generateEnvironmentFromUi(options = {}) {
     updateEnvironmentActionAvailability();
     return;
   }
-  if (!options.skipHistory) {
-    return withAuthorHistory("Generate environment image", () => generateEnvironmentFromUi({ skipHistory: true }), {
-      persistent: true,
-      componentId: "environment-enhancement",
-    }).catch((error) => {
-      state.environmentUi.acquisitionMode = "generate";
-      state.environmentUi.generationError = true;
-      state.environmentUi.generationStatus = `Generation failed: ${error.message}`;
-      state.output = { error: error.message, diagnostics: error.diagnostics || [] };
-      setEnvironmentAcquisitionMode("generate");
-      updateEnvironmentGenerationDom();
-      updateEnvironmentActionAvailability();
-    });
-  }
   if (
     state.environmentUi.generationBusy
     || state.environmentUi.operationBusy
@@ -12982,66 +12521,122 @@ async function generateEnvironmentFromUi(options = {}) {
   ) return;
   const sceneContext = activeEnvironmentSceneContext();
   if (!sceneContext?.beatId) return;
+  const generationSceneContext = cloneJson(sceneContext);
 
   const requestId = state.environmentUi.generationRequestId + 1;
   state.environmentUi.generationRequestId = requestId;
   state.environmentUi.generationPrompt = prompt;
-  if (state.environmentUi.generationPromptOrigin === "empty") {
-    state.environmentUi.generationPromptOrigin = "author";
-  }
   state.environmentUi.generationBusy = true;
-  state.environmentUi.operationBusy = true;
+  state.environmentUi.generationPhase = "generating";
+  state.environmentUi.generationSceneContext = generationSceneContext;
+  state.environmentUi.generationNoticeVisible = true;
+  state.environmentUi.generationResult = null;
   state.environmentUi.generationError = false;
-  state.environmentUi.generationStatus = "Codex is generating and validating the 360° panorama and matching ground. This can take a few minutes…";
-  state.output = null;
+  state.environmentUi.generationStatus = "Codex is generating and validating the 360° panorama and matching ground in the background. You can keep working while this runs.";
   updateEnvironmentGenerationDom();
   updateEnvironmentActionAvailability();
 
-  let shouldRender = false;
+  let shouldRenderAfterInstall = false;
   try {
-    const response = await api.post("/api/environment-enhancement/generate", {
+    await flushEnvironmentDraft();
+    const staged = await api.post("/api/environment-enhancement/generate", {
       prompt,
-      beatId: sceneContext.beatId,
-      referenceImages: environmentGenerationReferencePayload(),
+      beatId: generationSceneContext.beatId,
     });
     if (requestId !== state.environmentUi.generationRequestId) return;
-    applyEnvironmentEnhancementPayload(response, { resetDraft: true });
-    state.environmentUi.selectionMode = "asset";
-    resetEnvironmentApplyTargets();
-    const manifest = environmentManifest();
-    const source = manifest.assetSource || manifest.selectedSource || {};
-    state.environmentUi.generationResult = {
-      ...(response.generation || {}),
-      title: response.generation?.title || environmentCandidateTitle(source) || "Generated panorama and ground ready",
-      description: response.generation?.description
-        || "The generated panorama and matching ground are installed as the current Environment Enhancement draft and shown in the spatial editor.",
-    };
-    const referenceCount = Number(response.generation?.referenceImages?.length || 0);
-    state.environmentUi.generationStatus = `Generated panorama and matching ground installed as the current draft${referenceCount ? ` using ${referenceCount} visual reference image${referenceCount === 1 ? "" : "s"}` : ""}. Inspect their alignment in the spatial editor, then save the checkpoint.`;
-    state.environmentUi.generationError = false;
-    state.output = null;
-    shouldRender = true;
+    if (!staged?.generationToken) throw new Error("Environment generation did not return an installable result.");
+    state.environmentUi.generationPhase = "waiting";
+    state.environmentUi.generationStatus = "The panorama and matching ground are ready. StoryVR will install them as soon as the current edit is finished.";
+    updateEnvironmentGenerationDom();
+
+    const canInstall = await waitForBackgroundEnvironmentInstallTurn(requestId);
+    if (!canInstall) return;
+    state.environmentUi.generationPhase = "installing";
+    state.environmentUi.generationStatus = "The generated panorama and matching ground are ready. StoryVR is installing them now…";
+    updateEnvironmentGenerationDom();
+
+    await withAuthorHistory("Generate environment image", async () => {
+      const installed = await api.post("/api/environment-enhancement/install-generated", {
+        generationToken: staged.generationToken,
+      });
+      if (requestId !== state.environmentUi.generationRequestId) return installed;
+      const previousActiveCheckpointStatus = checkpointFlowStatus(state.activeId);
+      const requestedSceneIsActive = environmentContextMatchesActive(generationSceneContext);
+      const environmentCanvasIsActive = state.activeId === "environment-enhancement" && !activeEnvironmentSceneContext();
+      applyEnvironmentEnhancementPayload(installed, {
+        resetDraft: requestedSceneIsActive,
+        syncUi: requestedSceneIsActive,
+      });
+      environmentStoryCardPreviewRequestId += 1;
+      environmentStoryCardPreviewCache.clear();
+      markStoryvrCheckpointCompletionPending("environment-enhancement");
+      if (requestedSceneIsActive) {
+        state.environmentUi.selectionMode = "asset";
+        resetEnvironmentApplyTargets();
+      }
+      const manifest = environmentManifest(generationSceneContext);
+      const source = manifest.assetSource || manifest.selectedSource || {};
+      state.environmentUi.generationResult = {
+        ...(installed.generation || {}),
+        title: installed.generation?.title || environmentCandidateTitle(source) || "Generated panorama and ground ready",
+        description: installed.generation?.description
+          || "The generated panorama and matching ground are installed as the requested Environment Enhancement draft.",
+      };
+      state.environmentUi.generationStatus = `Generated panorama and matching ground installed for ${spatialSceneBeat(generationSceneContext)?.title || generationSceneContext.beatId}. Open that scene to inspect the alignment, then save the checkpoint.`;
+      state.environmentUi.generationError = false;
+      state.environmentUi.generationPhase = "ready";
+      state.environmentUi.generationNoticeVisible = true;
+      for (const component of visibleFlowComponents()) updateCheckpointStatusDom(component.id);
+      shouldRenderAfterInstall = requestedSceneIsActive
+        || environmentCanvasIsActive
+        || previousActiveCheckpointStatus !== checkpointFlowStatus(state.activeId);
+      return installed;
+    }, {
+      persistent: true,
+      componentId: "environment-enhancement",
+    });
+    if (requestId !== state.environmentUi.generationRequestId) return;
   } catch (error) {
     if (requestId === state.environmentUi.generationRequestId) {
       state.environmentUi.generationError = true;
+      state.environmentUi.generationPhase = "error";
       state.environmentUi.generationStatus = `Generation failed: ${error.message}`;
     }
-    throw error;
   } finally {
     if (requestId === state.environmentUi.generationRequestId) {
       state.environmentUi.generationBusy = false;
-      state.environmentUi.operationBusy = false;
       updateEnvironmentGenerationDom();
       updateEnvironmentActionAvailability();
     }
   }
-  if (shouldRender) renderPreservingScroll();
+  if (shouldRenderAfterInstall) renderPreservingScroll();
+}
+
+function backgroundEnvironmentInstallBlocked() {
+  return Boolean(
+    state.busy
+    || authorHistory.busy
+    || authorHistoryInteractionBusy
+    || authorHistory.active
+    || storyvrNavigationRequestPending
+  );
+}
+
+async function waitForBackgroundEnvironmentInstallTurn(requestId) {
+  while (requestId === state.environmentUi.generationRequestId) {
+    await historyFinalizePromise;
+    if (!backgroundEnvironmentInstallBlocked()) return true;
+    state.environmentUi.generationPhase = "waiting";
+    state.environmentUi.generationStatus = "The generated images are ready. StoryVR is waiting for your current edit to finish before installing them.";
+    updateEnvironmentGenerationDom();
+    await new Promise((resolve) => window.setTimeout(resolve, 120));
+  }
+  return false;
 }
 
 function updateEnvironmentGenerationDom() {
   const input = document.querySelector("#environment-generation-prompt");
   if (input && document.activeElement !== input) input.value = environmentGenerationPrompt();
-  updateEnvironmentGenerationReferencesDom();
   const status = document.querySelector("[data-environment-generation-status]");
   if (status) {
     status.textContent = state.environmentUi.generationStatus || "Describe the surrounding, then generate its panorama and matching ground.";
@@ -13050,209 +12645,10 @@ function updateEnvironmentGenerationDom() {
   const button = document.querySelector("[data-environment-generate-button]");
   if (button) {
     button.textContent = state.environmentUi.generationBusy
-      ? "Generating panorama + ground…"
-      : "Generate panorama + ground";
+      ? "Generating…"
+      : "Generate environment";
   }
-}
-
-function updateEnvironmentGenerationReferencesDom() {
-  const container = document.querySelector("[data-environment-generation-references]");
-  if (!container) return;
-  const signature = JSON.stringify({
-    ids: (state.environmentUi.generationReferences || []).map((reference) => reference.id),
-    busy: Boolean(state.environmentUi.generationBusy),
-  });
-  if (container.dataset.referenceSignature === signature) return;
-  container.dataset.referenceSignature = signature;
-  container.innerHTML = renderEnvironmentGenerationReferenceImages();
-  bindEnvironmentGenerationReferenceRemovalEvents();
-}
-
-async function searchEnvironmentCandidatesFromUi() {
-  const input = document.querySelector("#environment-search-query");
-  const query = String(input?.value || "").trim();
-  if (!query || state.environmentUi.searchBusy) return;
-  state.environmentUi.query = query;
-  state.environmentUi.queryInteractionRevision += 1;
-  state.environmentUi.searchBusy = true;
-  state.environmentUi.searchStatus = `Searching public 360° image libraries for “${query}”…`;
-  updateEnvironmentCatalogDom();
-  updateEnvironmentActionAvailability();
-  try {
-    const response = await api.get(`/api/environment-enhancement/search?q=${encodeURIComponent(query)}`);
-    state.environmentUi.candidates = Array.isArray(response.candidates) ? response.candidates : [];
-    state.environmentUi.providerStatus = response.providerStatus || null;
-    state.environmentUi.searched = true;
-    state.environmentUi.searchStatus = state.environmentUi.candidates.length
-      ? `${state.environmentUi.candidates.length} 360° image result${state.environmentUi.candidates.length === 1 ? "" : "s"} found. Open the original page, download the HDRI, then upload its HDR or EXR file below.`
-      : `No 360° images found for “${query}”.`;
-  } catch (error) {
-    state.environmentUi.candidates = [];
-    state.environmentUi.searched = true;
-    state.environmentUi.searchStatus = `Search failed: ${error.message}`;
-  } finally {
-    state.environmentUi.searchBusy = false;
-    updateEnvironmentCatalogDom();
-    updateEnvironmentActionAvailability();
-  }
-}
-
-async function selectEnvironmentSource(candidateId, options = {}) {
-  if (!options.skipHistory) {
-    return withAuthorHistory("Select environment source", () => selectEnvironmentSource(candidateId, { skipHistory: true }), {
-      persistent: true,
-      componentId: "environment-enhancement",
-    }).catch((error) => {
-      state.environmentUi.searchStatus = `Could not link this source: ${error.message}`;
-      updateEnvironmentCatalogDom();
-      updateEnvironmentActionAvailability();
-    });
-  }
-  if (!candidateId
-    || state.environmentUi.operationBusy
-    || !state.data?.readiness?.["environment-enhancement"]?.canGenerate) return;
-  const sceneContext = activeEnvironmentSceneContext();
-  if (!sceneContext?.beatId) return;
-  state.environmentUi.selectionMode = "asset";
-  state.environmentUi.operationBusy = true;
-  updateEnvironmentActionAvailability();
-  try {
-    const response = await api.post("/api/environment-enhancement/source", {
-      candidateId,
-      beatId: sceneContext.beatId,
-    });
-    applyEnvironmentEnhancementPayload(response, { resetDraft: true });
-    resetEnvironmentApplyTargets();
-    state.environmentUi.selectedSourceId = candidateId;
-    state.output = null;
-    renderPreservingScroll();
-  } catch (error) {
-    state.environmentUi.searchStatus = `Could not link this source: ${error.message}`;
-  } finally {
-    state.environmentUi.operationBusy = false;
-    updateEnvironmentCatalogDom();
-    updateEnvironmentActionAvailability();
-  }
-}
-
-function updateEnvironmentCatalogDom() {
-  const count = document.querySelector("[data-environment-result-count]");
-  if (count && state.environmentUi.acquisitionMode === "search") {
-    count.textContent = String(state.environmentUi.candidates.length);
-  }
-  const status = document.querySelector("[data-environment-search-status]");
-  if (status) status.textContent = state.environmentUi.searchStatus || "Search Poly Haven and ambientCG for 360° HDRI source pages.";
-  const providerStatus = document.querySelector("[data-environment-provider-status]");
-  if (providerStatus) providerStatus.innerHTML = renderEnvironmentProviderStatus();
-  const results = document.querySelector("[data-environment-candidate-results]");
-  if (results) {
-    results.innerHTML = renderEnvironmentCandidates();
-    bindEnvironmentCandidateButtons();
-  }
-  const source = document.querySelector("[data-environment-source-context]");
-  if (source) source.innerHTML = renderEnvironmentSelectedSource(environmentManifest().selectedSource);
-}
-
-function updateEnvironmentUploadSelection() {
-  const input = document.querySelector("#environment-upload-file");
-  const file = input?.files?.[0];
-  const status = document.querySelector("[data-environment-upload-status]");
-  const button = document.querySelector("[data-environment-upload-button]");
-  if (!file) {
-    state.environmentUi.uploadStatus = "Choose a 360° HDR or EXR image; its matching ground will be generated automatically.";
-    if (status) status.textContent = state.environmentUi.uploadStatus;
-    if (button) button.disabled = true;
-    return;
-  }
-  const validation = validateEnvironmentUploadFile(file);
-  state.environmentUi.uploadStatus = validation.valid
-    ? `${file.name} · ${environmentFormatBytes(file.size)} ready to upload and generate its matching ground.`
-    : validation.reason;
-  if (status) {
-    status.textContent = state.environmentUi.uploadStatus;
-    status.classList.toggle("error", !validation.valid);
-  }
-  if (button) button.disabled = !validation.valid || state.environmentUi.operationBusy;
-}
-
-function validateEnvironmentUploadFile(file) {
-  const extension = String(file?.name || "").toLowerCase().match(/\.[^.]+$/)?.[0] || "";
-  if (![".hdr", ".exr"].includes(extension)) {
-    return { valid: false, reason: "Choose a 2:1 equirectangular .hdr or .exr 360° image." };
-  }
-  if (!Number.isFinite(file.size) || file.size <= 0) return { valid: false, reason: "The selected file is empty." };
-  if (file.size > MAX_ENVIRONMENT_UPLOAD_BYTES) return { valid: false, reason: "Choose a file no larger than 120 MiB." };
-  return { valid: true, reason: "" };
-}
-
-async function uploadEnvironmentFromUi(options = {}) {
-  if (!options.skipHistory) {
-    return withAuthorHistory("Upload environment image", async () => {
-      state.output = null;
-      await uploadEnvironmentFromUi({ skipHistory: true });
-      if (state.output?.error) {
-        const error = new Error(state.output.error);
-        error.diagnostics = state.output.diagnostics || [];
-        throw error;
-      }
-    }, {
-      persistent: true,
-      componentId: "environment-enhancement",
-    }).catch((error) => {
-      state.environmentUi.uploadStatus = `Upload or matching-ground generation failed: ${error.message}`;
-      state.output = { error: error.message, diagnostics: error.diagnostics || [] };
-      render();
-    });
-  }
-  const input = document.querySelector("#environment-upload-file");
-  const file = input?.files?.[0];
-  if (!file || state.environmentUi.operationBusy) return;
-  const sceneContext = activeEnvironmentSceneContext();
-  if (!sceneContext?.beatId) return;
-  state.environmentUi.selectionMode = "asset";
-  const validation = validateEnvironmentUploadFile(file);
-  if (!validation.valid) {
-    state.environmentUi.uploadStatus = validation.reason;
-    updateEnvironmentUploadSelection();
-    return;
-  }
-  state.environmentUi.operationBusy = true;
-  state.environmentUi.uploadStatus = `Uploading ${file.name} and generating its matching ground…`;
-  updateEnvironmentActionAvailability();
-  const status = document.querySelector("[data-environment-upload-status]");
-  if (status) status.textContent = state.environmentUi.uploadStatus;
-  const uploadButton = document.querySelector("[data-environment-upload-button]");
-  if (uploadButton) {
-    uploadButton.disabled = true;
-    uploadButton.textContent = "Uploading + generating ground…";
-  }
-  const viewerStatus = document.querySelector("[data-environment-viewer-status]");
-  if (viewerStatus) viewerStatus.textContent = `Uploading ${file.name} and generating its matching ground…`;
-  try {
-    const params = new URLSearchParams({
-      filename: file.name,
-      beatId: sceneContext.beatId,
-    });
-    if (!environmentManifest().selectedSource) params.set("manual", "true");
-    const response = await api.upload(`/api/environment-enhancement/upload?${params}`, file);
-    applyEnvironmentEnhancementPayload(response, { resetDraft: true });
-    state.environmentUi.selectionMode = "asset";
-    resetEnvironmentApplyTargets();
-    if (response?.decision) state.data.decisions["environment-enhancement"] = response.decision;
-    state.environmentUi.uploadStatus = `${file.name} and its matching generated ground are ready for inspection.`;
-    state.output = null;
-    render();
-  } catch (error) {
-    state.environmentUi.uploadStatus = `Upload or matching-ground generation failed: ${error.message}`;
-    state.output = { error: error.message, diagnostics: error.diagnostics || [] };
-    if (status) status.textContent = state.environmentUi.uploadStatus;
-  } finally {
-    state.environmentUi.operationBusy = false;
-    if (uploadButton?.isConnected) {
-      uploadButton.textContent = "Upload, generate ground & preview";
-    }
-    updateEnvironmentActionAvailability();
-  }
+  updateEnvironmentGenerationActivityDom();
 }
 
 function handleEnvironmentDraftInput() {
@@ -13266,6 +12662,7 @@ function handleEnvironmentDraftInput() {
 
 function markEnvironmentDraftDirty() {
   state.environmentUi.draftDirty = true;
+  markStoryvrCheckpointCompletionPending("environment-enhancement");
   state.environmentUi.draftRevision += 1;
   updateCheckpointStatusDom("environment-enhancement");
   const status = document.querySelector("[data-environment-save-state]");
@@ -13279,23 +12676,32 @@ function markEnvironmentDraftDirty() {
 }
 
 function environmentDraftFromControls() {
+  const currentDraft = environmentDraft();
   const value = (name, fallback) => environmentFiniteNumber(document.querySelector(`[data-environment-draft-control="${name}"]`)?.value, fallback);
-  const currentMovementCue = normalizeGroundMovementCue(environmentDraft().movementCue);
+  const currentMovementCue = normalizeGroundMovementCue(currentDraft.movementCue);
+  const movementCueEnabled = document.querySelector('[data-environment-draft-control="movement-cue-enabled"]');
   return {
     transform: {
-      position: [value("position-x", 0), value("position-y", 0), value("position-z", 0)],
-      rotationY: THREE.MathUtils.degToRad(value("rotation-y", 0)),
-      scale: Math.max(0.001, value("scale", 1)),
+      position: [
+        value("position-x", currentDraft.transform.position[0]),
+        value("position-y", currentDraft.transform.position[1]),
+        value("position-z", currentDraft.transform.position[2]),
+      ],
+      rotationY: THREE.MathUtils.degToRad(value("rotation-y", THREE.MathUtils.radToDeg(currentDraft.transform.rotationY))),
+      scale: Math.max(0.001, value("scale", currentDraft.transform.scale)),
     },
     rendering: {
-      exposure: Math.max(0.01, value("exposure", 1)),
-      fogColor: environmentNormalizeHex(document.querySelector('[data-environment-draft-control="fog-color"]')?.value, DEFAULT_ENVIRONMENT_RENDERING.fogColor),
-      fogDensity: Math.max(0, value("fog-density", 0)),
-      backgroundMode: environmentNormalizeBackground(document.querySelector('[data-environment-draft-control="background-mode"]')?.value),
+      exposure: Math.max(0.01, value("exposure", currentDraft.rendering.exposure)),
+      fogColor: environmentNormalizeHex(document.querySelector('[data-environment-draft-control="fog-color"]')?.value, currentDraft.rendering.fogColor),
+      fogDensity: Math.max(0, value("fog-density", currentDraft.rendering.fogDensity)),
+      backgroundMode: environmentNormalizeBackground(
+        document.querySelector('[data-environment-draft-control="background-mode"]')?.value
+          || currentDraft.rendering.backgroundMode,
+      ),
     },
     movementCue: normalizeGroundMovementCue({
       ...currentMovementCue,
-      enabled: Boolean(document.querySelector('[data-environment-draft-control="movement-cue-enabled"]')?.checked),
+      enabled: movementCueEnabled ? movementCueEnabled.checked : currentMovementCue.enabled,
       position: [
         value("movement-cue-position-x", currentMovementCue.position[0]),
         currentMovementCue.position[1],
@@ -13341,8 +12747,14 @@ function updateEnvironmentTuningOutputs() {
 }
 
 async function saveEnvironmentDraft(revision = state.environmentUi.draftRevision) {
+  const pending = state.environmentUi.draftPromise;
+  if (pending) {
+    await pending;
+    if (!state.environmentUi.draftDirty) return false;
+    return saveEnvironmentDraft(state.environmentUi.draftRevision);
+  }
   const sceneContext = activeEnvironmentSceneContext();
-  if (!state.environmentUi.draftDirty || !sceneContext?.beatId) return;
+  if (!state.environmentUi.draftDirty || !sceneContext?.beatId) return false;
   clearTimeout(state.environmentUi.draftTimer);
   state.environmentUi.draftTimer = null;
   const status = document.querySelector("[data-environment-save-state]");
@@ -13350,20 +12762,30 @@ async function saveEnvironmentDraft(revision = state.environmentUi.draftRevision
     status.textContent = "Saving…";
     status.className = "environment-save-state saving";
   }
-  try {
+  const promise = (async () => {
     const response = await api.patch("/api/environment-enhancement/draft", {
       ...cloneJson(environmentDraft()),
       beatId: sceneContext.beatId,
       skipped: state.environmentUi.selectionMode === "none",
     });
-    if (revision !== state.environmentUi.draftRevision) return;
+    if (revision !== state.environmentUi.draftRevision) return false;
     applyEnvironmentEnhancementPayload(response, { resetDraft: true });
     state.environmentUi.draftDirty = false;
+    if (response?.decision?.current === true && response?.decision?.stale !== true) {
+      clearStoryvrCheckpointCompletionPending("environment-enhancement");
+    } else {
+      markStoryvrCheckpointCompletionPending("environment-enhancement");
+    }
     updateCheckpointStatusDom("environment-enhancement");
     if (status) {
       status.textContent = "Saved locally";
       status.className = "environment-save-state saved";
     }
+    return true;
+  })();
+  state.environmentUi.draftPromise = promise;
+  try {
+    return await promise;
   } catch (error) {
     if (revision !== state.environmentUi.draftRevision) return;
     if (status) {
@@ -13371,13 +12793,17 @@ async function saveEnvironmentDraft(revision = state.environmentUi.draftRevision
       status.className = "environment-save-state error";
     }
     state.output = { error: error.message, diagnostics: error.diagnostics || [] };
+    return false;
+  } finally {
+    if (state.environmentUi.draftPromise === promise) state.environmentUi.draftPromise = null;
   }
 }
 
 async function flushEnvironmentDraft() {
-  if (!state.environmentUi.draftDirty) return;
-  await saveEnvironmentDraft(state.environmentUi.draftRevision);
+  if (!state.environmentUi.draftDirty && !state.environmentUi.draftPromise) return false;
+  const saved = await saveEnvironmentDraft(state.environmentUi.draftRevision);
   if (state.environmentUi.draftDirty) throw new Error("Save the environment tuning before saving the checkpoint.");
+  return saved;
 }
 
 async function handleEnvironmentCheckpointAction(action, options = {}) {
@@ -13398,23 +12824,13 @@ async function handleEnvironmentCheckpointAction(action, options = {}) {
       render();
     });
   }
-  if (state.environmentUi.operationBusy) return;
+  if (state.environmentUi.operationBusy || state.environmentUi.generationBusy) return;
   state.environmentUi.operationBusy = true;
   updateEnvironmentActionAvailability();
   try {
     if (action === "save") {
-      state.environmentUi.recommendationRequestId += 1;
-      state.environmentUi.recommendationBusy = false;
-      state.environmentUi.pendingRecommendedQuery = "";
-      state.environmentUi.recommendationError = "";
-      await flushEnvironmentDraft();
-      if (!environmentCheckpointAssignmentsReady()) {
-        throw new Error("Finish uploading every selected beat environment before saving.");
-      }
-      const response = await api.post("/api/environment-enhancement/save");
-      applyEnvironmentEnhancementPayload(response, { resetDraft: true });
+      await saveEnvironmentCheckpointCore();
       state.output = null;
-      await refresh(false);
     }
   } catch (error) {
     state.output = { error: error.message, diagnostics: error.diagnostics || [] };
@@ -13427,51 +12843,38 @@ async function handleEnvironmentCheckpointAction(action, options = {}) {
 function updateEnvironmentActionAvailability() {
   const manifest = environmentManifest();
   const ready = Boolean(state.data?.readiness?.["environment-enhancement"]?.canGenerate);
-  const busy = state.environmentUi.operationBusy;
+  const busy = state.environmentUi.operationBusy || state.environmentUi.generationBusy;
   const save = document.querySelector('[data-environment-action="save"]');
   if (save) save.disabled = !ready || busy || !environmentCheckpointAssignmentsReady();
-  const search = document.querySelector("[data-environment-search-form] button");
-  if (search) search.disabled = !ready || busy || state.environmentUi.searchBusy;
-  const query = document.querySelector("#environment-search-query");
-  if (query) query.disabled = !ready || busy || state.environmentUi.searchBusy;
   const generationInput = document.querySelector("#environment-generation-prompt");
   if (generationInput) generationInput.disabled = !ready || busy || state.environmentUi.generationBusy;
-  const generationReferenceInput = document.querySelector("#environment-generation-reference-files");
-  if (generationReferenceInput) {
-    generationReferenceInput.disabled = !ready
-      || busy
-      || state.environmentUi.generationBusy
-      || state.environmentUi.generationReferenceLoading;
-  }
-  for (const removeReference of document.querySelectorAll("[data-environment-generation-reference-remove]")) {
-    removeReference.disabled = !ready
-      || busy
-      || state.environmentUi.generationBusy
-      || state.environmentUi.generationReferenceLoading;
-  }
   const generate = document.querySelector("[data-environment-generate-button]");
   if (generate) {
     generate.disabled = !ready
       || busy
       || state.environmentUi.generationBusy
-      || state.environmentUi.generationReferenceLoading
       || !String(generationInput?.value ?? environmentGenerationPrompt()).trim();
   }
-  const upload = document.querySelector("#environment-upload-file");
-  if (upload) upload.disabled = !ready || busy;
+  const selectedNone = Boolean(manifest.skipped);
+  const storedAssignment = environmentAssignmentForContext();
+  const retainedAsset = Boolean(storedAssignment?.selection?.asset || storedAssignment?.asset);
+  const hasAsset = Boolean(manifest.asset);
+  for (const selection of document.querySelectorAll("[data-environment-selection]")) {
+    selection.disabled = !ready
+      || busy
+      || (selection.dataset.environmentSelection === "none"
+        ? selectedNone
+        : !retainedAsset || (!selectedNone && hasAsset));
+  }
   for (const control of document.querySelectorAll("[data-environment-draft-control]")) {
     control.disabled = !ready || busy || !manifest.asset;
   }
   updateEnvironmentMovementCueControlAvailability();
-  for (const candidate of document.querySelectorAll("[data-environment-select-source]")) {
-    candidate.disabled = !ready || busy;
-  }
   const otherBeats = environmentApplyTargetBeats();
   const applyUnavailable = !ready
     || busy
     || manifest.skipped
     || !manifest.asset
-    || environmentSourceAwaitingUpload(manifest)
     || !otherBeats.length;
   const applyToggle = document.querySelector("[data-environment-apply-toggle]");
   if (applyToggle) applyToggle.disabled = applyUnavailable;
@@ -13494,10 +12897,11 @@ function bindEvents() {
   for (const button of document.querySelectorAll("[data-history-action]")) {
     button.addEventListener("click", () => performHistoryAction(button.dataset.historyAction));
   }
+  bindEnvironmentGenerationActivityEvents();
 
   for (const button of document.querySelectorAll("[data-select-component]")) {
     button.addEventListener("click", () => {
-      pushStoryvrBrowserNavigation(createStoryvrNavigationRoute(button.dataset.selectComponent));
+      requestStoryvrBrowserNavigation(createStoryvrNavigationRoute(button.dataset.selectComponent));
     });
   }
 
@@ -13552,7 +12956,22 @@ function bindEvents() {
 
   for (const beatButton of document.querySelectorAll("[data-select-beat]")) {
     beatButton.addEventListener("click", () => {
-      state.selectedBeatId = beatButton.dataset.selectBeat;
+      const beatId = beatButton.dataset.selectBeat;
+      state.selectedBeatId = beatId;
+      const assetId = beatButton.dataset.sourceGraphBeatAsset;
+      if (assetId) {
+        const variantCard = beatButton.closest("[data-source-graph-variant-card]");
+        const variantGroupId = variantCard?.dataset.sourceGraphVariantGroup || null;
+        const variantOptionId = variantCard?.dataset.sourceGraphVariantOption || null;
+        focusSourceGraphAsset(assetId);
+        state.sourceGraphSpatialPreview = {
+          beatId,
+          variantGroupId,
+          variantOptionId,
+          assetId,
+        };
+        state.sourceGraphTextDetail = null;
+      }
       renderPreservingScroll();
     });
   }
@@ -13592,6 +13011,7 @@ function bindEvents() {
 
   for (const linkTarget of document.querySelectorAll("[data-link-asset-id]")) {
     const linkToSelectedBeat = () => {
+      state.sourceGraphFocusedAssetId = linkTarget.dataset.linkAssetId;
       addLinkedAssetToSelectedBeat(linkTarget.dataset.linkAssetId);
       renderPreservingScroll();
     };
@@ -14177,6 +13597,36 @@ function bindSourceGraphAssetTooltipEvents() {
       if (sourceGraphAssetTooltipTarget === card) hideSourceGraphAssetTooltip();
     });
   }
+}
+
+function focusSourceGraphAsset(assetId) {
+  const asset = findAssetById(assetId);
+  if (!asset) return;
+  state.sourceGraphFocusedAssetId = asset.id;
+  state.sourceGraphAssetFocusPending = true;
+  const filter = state.sourceGraphAssetFilter;
+  const hiddenByFilter = (filter === "models" && !isModelAsset(asset))
+    || (filter === "images" && !isImageAsset(asset));
+  if (hiddenByFilter) state.sourceGraphAssetFilter = "all";
+}
+
+function revealSourceGraphFocusedAsset() {
+  if (!state.sourceGraphAssetFocusPending || state.activeId !== "source-graph") return;
+  state.sourceGraphAssetFocusPending = false;
+  const assetId = state.sourceGraphFocusedAssetId;
+  if (!assetId) return;
+  const grid = document.querySelector(".source-graph-asset-grid");
+  const card = [...document.querySelectorAll(".source-graph-asset-icon-card[data-link-asset-id]")]
+    .find((candidate) => candidate.dataset.linkAssetId === assetId);
+  if (!grid || !card) return;
+  const gridRect = grid.getBoundingClientRect();
+  const cardRect = card.getBoundingClientRect();
+  const centeredTop = grid.scrollTop
+    + (cardRect.top - gridRect.top)
+    - ((grid.clientHeight - cardRect.height) / 2);
+  grid.scrollTop = Math.max(0, centeredTop);
+  card.focus({ preventScroll: true });
+  hideSourceGraphAssetTooltip();
 }
 
 function scheduleSourceGraphAssetTooltip(card, pointer) {
@@ -16006,19 +15456,28 @@ function bindSourceGraphCanvasPanning(viewport) {
   const finishPan = (event, dismissTextDetail) => {
     if (!pan || pan.pointerId !== event.pointerId) return;
     const shouldDismissTextDetail = dismissTextDetail && !pan.moved && Boolean(state.sourceGraphTextDetail);
+    const shouldDismissSpatialPreview = dismissTextDetail
+      && !pan.moved
+      && state.activeId === "source-graph"
+      && Boolean(state.sourceGraphSpatialPreview);
     if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
     viewport.classList.remove("is-panning");
     pan = null;
-    if (shouldDismissTextDetail) {
-      state.sourceGraphTextDetail = null;
+    if (shouldDismissTextDetail || shouldDismissSpatialPreview) {
+      if (shouldDismissTextDetail) state.sourceGraphTextDetail = null;
+      if (shouldDismissSpatialPreview) state.sourceGraphSpatialPreview = null;
       renderPreservingScroll();
     }
   };
   viewport.addEventListener("pointerup", (event) => finishPan(event, true));
   viewport.addEventListener("pointercancel", (event) => finishPan(event, false));
   viewport.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || !state.sourceGraphTextDetail) return;
-    state.sourceGraphTextDetail = null;
+    if (event.key !== "Escape") return;
+    const dismissTextDetail = Boolean(state.sourceGraphTextDetail);
+    const dismissSpatialPreview = state.activeId === "source-graph" && Boolean(state.sourceGraphSpatialPreview);
+    if (!dismissTextDetail && !dismissSpatialPreview) return;
+    if (dismissTextDetail) state.sourceGraphTextDetail = null;
+    if (dismissSpatialPreview) state.sourceGraphSpatialPreview = null;
     renderPreservingScroll();
   });
 }
@@ -16040,47 +15499,14 @@ function bindSpatialRelationsEvents() {
   const closeSave = document.querySelector("[data-spatial-close-save]");
   if (closeSave) closeSave.addEventListener("click", () => closeSpatialSceneEditor());
 
+  for (const button of document.querySelectorAll("[data-spatial-beat-navigation]")) {
+    button.addEventListener("click", () => navigateSpatialSceneEditor(button.dataset.spatialBeatNavigation));
+  }
+
   for (const button of document.querySelectorAll("[data-spatial-hierarchy-scope]")) {
     button.addEventListener("click", () => {
       state.spatialHierarchyScope = button.dataset.spatialHierarchyScope === "all" ? "all" : "current";
       renderPreservingScroll();
-    });
-  }
-
-  const search = document.querySelector("[data-spatial-hierarchy-search]");
-  if (search) search.addEventListener("input", () => {
-    state.spatialHierarchyQuery = search.value;
-    const query = search.value.trim().toLowerCase();
-    for (const item of document.querySelectorAll("[data-spatial-search-text]")) {
-      if (item.closest(".spatial-hierarchy-assembly")) continue;
-      item.hidden = Boolean(query) && !String(item.dataset.spatialSearchText || "").includes(query);
-    }
-    for (const assembly of document.querySelectorAll("[data-spatial-assembly-id]")) {
-      const summary = assembly.querySelector(":scope > summary");
-      const members = [...assembly.querySelectorAll(".spatial-hierarchy-assembly-member")];
-      const rootMatches = !query || String(summary?.dataset.spatialSearchText || "").includes(query);
-      const matchingMembers = members.filter((item) => (
-        !query || String(item.dataset.spatialSearchText || "").includes(query)
-      ));
-      assembly.hidden = Boolean(query) && !rootMatches && !matchingMembers.length;
-      for (const member of members) member.hidden = Boolean(query) && !rootMatches && !matchingMembers.includes(member);
-      if (query && !assembly.hidden) {
-        assembly.dataset.spatialSearchExpanded = "true";
-        assembly.open = true;
-      } else if (!query && assembly.dataset.spatialSearchExpanded === "true") {
-        assembly.dataset.spatialSearchExpanded = "false";
-        assembly.open = state.spatialExpandedAssemblyIds.has(assembly.dataset.spatialAssemblyId);
-      }
-    }
-  });
-
-  for (const assembly of document.querySelectorAll("[data-spatial-assembly-id]")) {
-    assembly.addEventListener("toggle", () => {
-      assembly.querySelector(":scope > summary")?.setAttribute("aria-expanded", String(assembly.open));
-      if (assembly.dataset.spatialSearchExpanded === "true") return;
-      const assemblyId = assembly.dataset.spatialAssemblyId;
-      if (assembly.open) state.spatialExpandedAssemblyIds.add(assemblyId);
-      else state.spatialExpandedAssemblyIds.delete(assemblyId);
     });
   }
 
@@ -16139,10 +15565,6 @@ function bindSpatialRelationsEvents() {
         .filter((item) => (
           !item.hidden
           && item.style.display !== "none"
-          && (
-            !item.classList.contains("spatial-hierarchy-assembly-member")
-            || !item.closest("details:not([open])")
-          )
         ))
         .map((item) => item.dataset.spatialSelectEntity);
       const selection = spatialHierarchySelectionForClick(
@@ -16166,20 +15588,7 @@ function bindSpatialRelationsEvents() {
     button.addEventListener("click", () => setSpatialTransformMode(button.dataset.spatialTransformMode));
   }
 
-  const toggleSpace = document.querySelector("[data-spatial-toggle-space]");
-  if (toggleSpace) toggleSpace.addEventListener("click", () => {
-    state.spatialTransformSpace = state.spatialTransformSpace === "local" ? "world" : "local";
-    textViewer?.transformControls?.setSpace(state.spatialTransformSpace);
-    syncSpatialToolbarState();
-  });
-
-  const frame = document.querySelector("[data-spatial-frame-selected]");
-  if (frame) frame.addEventListener("click", () => frameSelectedSpatialEntity(textViewer));
-  const overview = document.querySelector("[data-spatial-frame-overview]");
-  if (overview) overview.addEventListener("click", () => frameSpatialSceneOverview(textViewer));
-
-  const reset = document.querySelector("[data-spatial-reset-selected]");
-  if (reset) reset.addEventListener("click", () => resetSelectedSpatialEntityToInference());
+  bindSpatialInspectorEvents();
   const resetAll = document.querySelector("[data-spatial-reset-all]");
   if (resetAll) resetAll.addEventListener("click", () => resetAllSpatialRelationsToInference());
 
@@ -16193,41 +15602,18 @@ function bindSpatialRelationsEvents() {
   const pasteModel = document.querySelector("[data-spatial-paste-model]");
   if (pasteModel) pasteModel.addEventListener("click", () => pasteSpatialGlbInstance());
   bindSpatialPropagationTargetEvents();
+}
 
+function bindSpatialInspectorEvents() {
+  const reset = document.querySelector("[data-spatial-reset-selected]");
+  if (reset) reset.addEventListener("click", () => resetSelectedSpatialEntityToInference());
   const ratio = document.querySelector("[data-spatial-ratio-lock]");
   if (ratio) ratio.addEventListener("change", () => {
     state.spatialScaleRatioLocked = ratio.checked;
   });
-
   for (const input of document.querySelectorAll("[data-spatial-transform-field]")) {
     input.addEventListener("change", () => updateSelectedSpatialTransformField(input.dataset.spatialTransformField, input.value));
   }
-
-  const anchorType = document.querySelector("[data-spatial-anchor-type]");
-  if (anchorType) anchorType.addEventListener("change", () => {
-    mutateSelectedSpatialRelation((entity) => {
-      entity.anchor = { ...normalizeSpatialAnchor(entity.anchor, entity), type: anchorType.value };
-      if (!["asset", "source-focus"].includes(anchorType.value)) delete entity.anchor.assetId;
-    });
-    renderPreservingScroll();
-  });
-
-  const anchorAsset = document.querySelector("[data-spatial-anchor-asset]");
-  if (anchorAsset) anchorAsset.addEventListener("change", () => {
-    mutateSelectedSpatialRelation((entity) => {
-      entity.anchor = { ...normalizeSpatialAnchor(entity.anchor, entity), assetId: anchorAsset.value || undefined };
-    });
-    applySpatialDraftToViewer(textViewer);
-    syncSpatialInspectorFromSelection();
-  });
-
-  const orientation = document.querySelector("[data-spatial-orientation-policy]");
-  if (orientation) orientation.addEventListener("change", () => {
-    mutateSelectedSpatialRelation((entity) => {
-      entity.orientationPolicy = orientation.value;
-    });
-    syncSpatialInspectorFromSelection();
-  });
 }
 
 function openSpatialSceneEditor(context) {
@@ -16235,7 +15621,7 @@ function openSpatialSceneEditor(context) {
   if (!normalized.beatId || !spatialSceneBeat(normalized)) return;
   state.output = null;
   const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
-  pushStoryvrBrowserNavigation(
+  requestStoryvrBrowserNavigation(
     createStoryvrNavigationRoute(spatialRelationsComponentId(), normalized),
     { parentEntryId: currentEntry?.entryId },
   );
@@ -16243,24 +15629,34 @@ function openSpatialSceneEditor(context) {
 
 async function closeSpatialSceneEditor() {
   if (!state.spatialEditorScene || state.busy) return;
-  const button = document.querySelector("[data-spatial-close-save]");
-  if (button) {
+  await returnToSpatialCanvasWithBrowserHistory();
+}
+
+async function navigateSpatialSceneEditor(direction) {
+  if (!state.spatialEditorScene || state.busy || spatialBeatNavigationPending) return;
+  const navigation = spatialBeatNavigationState();
+  const targetContext = direction === "previous" ? navigation.previousContext : navigation.nextContext;
+  if (!targetContext) return;
+  spatialBeatNavigationPending = true;
+  for (const button of document.querySelectorAll("[data-spatial-beat-navigation]")) {
     button.disabled = true;
-    button.textContent = "Saving…";
+    button.classList.add("is-saving");
+    button.setAttribute("aria-busy", "true");
   }
   try {
-    await historyFinalizePromise;
-    const savedChanges = await flushSpatialRelationsAutosave();
-    state.output = {
-      spatial: savedChanges
-        ? "Scene saved. Select another beat or variant to continue."
-        : "Scene closed. Select another beat or variant to continue.",
-    };
-    returnToSpatialCanvasWithBrowserHistory();
+    await requestStoryvrBrowserNavigation(
+      createStoryvrNavigationRoute(spatialRelationsComponentId(), targetContext),
+      { mode: "replace" },
+    );
   } catch (error) {
-    state.output = { error: `Scene save failed: ${error.message}`, diagnostics: error.diagnostics || [] };
+    state.output = {
+      error: `Current scene could not be saved. You are still on this beat: ${error.message}`,
+      diagnostics: error.diagnostics || [],
+    };
     setSpatialAutosaveStatus(`Save failed: ${shortText(error.message, 58)}`);
     render();
+  } finally {
+    spatialBeatNavigationPending = false;
   }
 }
 
@@ -16277,6 +15673,9 @@ function bindAttentionGuidanceEvents() {
   }
   const closeSave = document.querySelector("[data-attention-close-save]");
   if (closeSave) closeSave.addEventListener("click", () => closeAttentionSceneEditor());
+  for (const button of document.querySelectorAll("[data-attention-beat-navigation]")) {
+    button.addEventListener("click", () => navigateAttentionSceneEditor(button.dataset.attentionBeatNavigation));
+  }
   for (const button of document.querySelectorAll("[data-attention-select-marker]")) {
     button.addEventListener("click", () => selectAttentionMarkerInViewer(button.dataset.attentionSelectMarker));
   }
@@ -16285,10 +15684,6 @@ function bindAttentionGuidanceEvents() {
   }
   const reset = document.querySelector("[data-attention-reset-selected]");
   if (reset) reset.addEventListener("click", resetSelectedAttentionMarker);
-  const overview = document.querySelector("[data-attention-frame-overview]");
-  if (overview) overview.addEventListener("click", () => frameAttentionSceneOverview(textViewer));
-  const frame = document.querySelector("[data-attention-frame-selected]");
-  if (frame) frame.addEventListener("click", () => frameSelectedAttentionMarker(textViewer));
   const undo = document.querySelector("[data-attention-undo]");
   if (undo) undo.addEventListener("click", () => performHistoryAction("undo"));
   const redo = document.querySelector("[data-attention-redo]");
@@ -16297,6 +15692,8 @@ function bindAttentionGuidanceEvents() {
   if (manualTarget) manualTarget.addEventListener("change", () => syncAttentionManualTargetControls(textViewer));
   const addManual = document.querySelector("[data-attention-add-manual]");
   if (addManual) addManual.addEventListener("click", addManualAttentionTarget);
+  const placeManual = document.querySelector("[data-attention-place-manual]");
+  if (placeManual) placeManual.addEventListener("click", () => toggleManualAttentionTargetPlacement(textViewer));
 }
 
 function openAttentionSceneEditor(context) {
@@ -16304,7 +15701,7 @@ function openAttentionSceneEditor(context) {
   if (!normalized.beatId || !spatialSceneBeat(normalized)) return;
   state.output = null;
   const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
-  pushStoryvrBrowserNavigation(
+  requestStoryvrBrowserNavigation(
     createStoryvrNavigationRoute(ATTENTION_GUIDANCE_COMPONENT_ID, normalized),
     { parentEntryId: currentEntry?.entryId },
   );
@@ -16312,32 +15709,114 @@ function openAttentionSceneEditor(context) {
 
 async function closeAttentionSceneEditor() {
   if (!state.attentionEditorScene || state.busy) return;
-  const button = document.querySelector("[data-attention-close-save]");
-  if (button) {
+  await returnToAttentionCanvasWithBrowserHistory();
+}
+
+async function navigateAttentionSceneEditor(direction) {
+  if (!state.attentionEditorScene || state.busy || attentionBeatNavigationPending) return;
+  const navigation = spatialBeatNavigationState(activeAttentionSceneContext());
+  const targetContext = direction === "previous" ? navigation.previousContext : navigation.nextContext;
+  if (!targetContext) return;
+  attentionBeatNavigationPending = true;
+  for (const button of document.querySelectorAll("[data-attention-beat-navigation]")) {
     button.disabled = true;
-    button.textContent = "Saving…";
+    button.classList.add("is-saving");
+    button.setAttribute("aria-busy", "true");
   }
   try {
-    await historyFinalizePromise;
-    await flushAttentionGuidanceAutosave({ force: true });
-    state.output = { attention: "Attention scene saved. Select another beat or variant to continue." };
-    returnToAttentionCanvasWithBrowserHistory();
+    await requestStoryvrBrowserNavigation(
+      createStoryvrNavigationRoute(ATTENTION_GUIDANCE_COMPONENT_ID, targetContext),
+      { mode: "replace" },
+    );
   } catch (error) {
-    state.output = { error: `Attention scene save failed: ${error.message}`, diagnostics: error.diagnostics || [] };
+    state.output = {
+      error: `Current scene could not be saved. You are still on this beat: ${error.message}`,
+      diagnostics: error.diagnostics || [],
+    };
     setAttentionAutosaveStatus(`Save failed: ${shortText(error.message, 58)}`);
     render();
+  } finally {
+    attentionBeatNavigationPending = false;
   }
 }
 
-async function persistSourceMotionLinks() {
+async function persistSourceMotionLinks(options = {}) {
   const assignments = sourceMotionAssignmentPayload();
-  const changedCount = sourceMotionTracks().filter(sourceMotionTrackHasUnsavedChanges).length;
+  const changedTracks = sourceMotionTracks().filter(sourceMotionTrackHasUnsavedChanges);
+  const changedCount = changedTracks.length;
+  if (!changedCount) return 0;
   await api.post("/api/source-motion-links", { assignments });
-  state.output = {
-    sourceMotionLinksSaved: `Saved motion assignments for ${changedCount} source motion${changedCount === 1 ? "" : "s"}.`,
-  };
+  for (const componentId of new Set(changedTracks.flatMap(sourceMotionTrackComponents))) {
+    markStoryvrCheckpointCompletionPending(componentId);
+  }
+  if (!options.silent) {
+    state.output = {
+      sourceMotionLinksSaved: `Saved motion assignments for ${changedCount} source motion${changedCount === 1 ? "" : "s"}.`,
+    };
+  }
   await refresh();
   return changedCount;
+}
+
+async function saveStoryGraphCore(options = {}) {
+  if (!state.graphDirty) return state.data.graph;
+  state.data.graph = await api.post("/api/story-graph", JSON.parse(state.graphDraft));
+  state.graphDirty = false;
+  if (!options.silent) {
+    state.output = {
+      saved: state.data.paths.storyGraphPath,
+      inferenceRefreshed: Boolean(state.data.graph.sourceGraphInference?.changed),
+    };
+  }
+  await refresh(false, { savedGraph: true });
+  return state.data.graph;
+}
+
+async function saveEnvironmentCheckpointCore() {
+  await flushEnvironmentDraft();
+  if (!environmentCheckpointAssignmentsReady()) {
+    throw new Error("Generate every selected beat environment before saving.");
+  }
+  const response = await api.post("/api/environment-enhancement/save");
+  applyEnvironmentEnhancementPayload(response, { resetDraft: true });
+  clearStoryvrCheckpointCompletionPending("environment-enhancement");
+  await refresh(false);
+  return response;
+}
+
+async function saveDecisionCheckpointCore(component) {
+  if (!component) throw new Error("The current authoring step is unavailable.");
+  const payload = {
+    authorEdits: currentEditNotesValue(),
+  };
+  if (isSpatialRelationsComponentId(component.id)) await flushSpatialRelationsAutosave();
+  if (component.id === ATTENTION_GUIDANCE_COMPONENT_ID) await flushAttentionGuidanceAutosave();
+  if (component.id === "transition-pacing") {
+    payload.finalTuningPrompt = currentEditNotesValue();
+  } else if (component.id === "interaction-control") {
+    const context = interactionBoundaryContext(selectedInteractionControlBase());
+    if (!interactionBoundaryContextIsComplete(context)) {
+      throw new Error("Choose a reader action for every highlighted scene change before finishing this step.");
+    }
+    payload.controllerConfiguration = ensureInteractionControllerConfiguration();
+    payload.boundaryOverrides = interactionBoundaryOverridesPayload();
+    payload.variantOverrides = interactionVariantOverridesPayload();
+    payload.inBeatInteractionsSchemaVersion = IN_BEAT_INTERACTIONS_SCHEMA;
+    payload.inBeatInteractions = interactionInBeatInteractionsPayload();
+  } else {
+    const selected = selectedOptionIdForComponent(component);
+    if (!selected && component.id !== ATTENTION_GUIDANCE_COMPONENT_ID) {
+      throw new Error(`Choose an option in ${participantComponentLabel(component.id, component.label)} before finishing this step.`);
+    }
+    if (selected) payload.optionId = selected;
+    if (isSpatialRelationsComponentId(component.id)) payload.spatialRelations = spatialRelationsForSave(component);
+    if (component.id === ATTENTION_GUIDANCE_COMPONENT_ID) payload.attentionGuidance = attentionGuidanceForSave();
+  }
+  state.data.decisions[component.id] = await api.post(`/api/decisions/${component.id}/save`, payload);
+  if (component.id === "interaction-control") resetInteractionControlDraftCaches();
+  clearStoryvrCheckpointCompletionPending(component.id);
+  await refresh();
+  return state.data.decisions[component.id];
 }
 
 async function writeRunCommandToClipboard(command) {
@@ -16421,13 +15900,7 @@ async function handleAction(action, options = {}) {
       return;
     }
     if (action === "save-graph") {
-      state.data.graph = await api.post("/api/story-graph", JSON.parse(state.graphDraft));
-      state.graphDirty = false;
-      state.output = {
-        saved: state.data.paths.storyGraphPath,
-        inferenceRefreshed: Boolean(state.data.graph.sourceGraphInference?.changed),
-      };
-      return refresh();
+      return saveStoryGraphCore();
     }
     if (action === "apply-animation-probe") {
       const wasDirty = state.graphDirty;
@@ -16451,7 +15924,7 @@ async function handleAction(action, options = {}) {
       state.selectedBeatIds = [];
       state.beatSelectionAnchorId = null;
       state.output = { regenerated: state.data.paths.storyGraphPath };
-      return refresh();
+      return refresh(false, { savedGraph: true });
     }
     if (action === "start-codex-login") {
       state.loginOutput = [];
@@ -16495,42 +15968,7 @@ async function handleAction(action, options = {}) {
       return refresh();
     }
     if (action === "save-checkpoint") {
-      const payload = {
-        authorEdits: currentEditNotesValue(),
-      };
-      if (isSpatialRelationsComponentId(component.id)) await flushSpatialRelationsAutosave();
-      if (component.id === ATTENTION_GUIDANCE_COMPONENT_ID) await flushAttentionGuidanceAutosave({ force: true });
-      if (component.id === "transition-pacing") {
-        payload.finalTuningPrompt = currentEditNotesValue();
-        state.data.decisions[component.id] = await api.post(`/api/decisions/${component.id}/save`, payload);
-        return refresh();
-      }
-      if (component.id === "interaction-control") {
-        const context = interactionBoundaryContext(selectedInteractionControlBase());
-        if (!interactionBoundaryContextIsComplete(context)) {
-          state.output = { error: "Choose a reader action for every highlighted scene change before finishing this step." };
-          render();
-          return;
-        }
-        payload.controllerConfiguration = ensureInteractionControllerConfiguration();
-        payload.boundaryOverrides = interactionBoundaryOverridesPayload();
-        payload.variantOverrides = interactionVariantOverridesPayload();
-        payload.inBeatInteractionsSchemaVersion = IN_BEAT_INTERACTIONS_SCHEMA;
-        payload.inBeatInteractions = interactionInBeatInteractionsPayload();
-        state.data.decisions[component.id] = await api.post(`/api/decisions/${component.id}/save`, payload);
-        resetInteractionControlDraftCaches();
-        return refresh();
-      }
-      const selected = selectedOptionIdForComponent(component);
-      if (!selected && component.id !== ATTENTION_GUIDANCE_COMPONENT_ID) {
-        state.output = { error: `Choose an option in ${participantComponentLabel(component.id, component.label)} before finishing this step.` };
-        return;
-      }
-      if (selected) payload.optionId = selected;
-      if (isSpatialRelationsComponentId(component.id)) payload.spatialRelations = spatialRelationsForSave(component);
-      if (component.id === ATTENTION_GUIDANCE_COMPONENT_ID) payload.attentionGuidance = attentionGuidanceForSave();
-      state.data.decisions[component.id] = await api.post(`/api/decisions/${component.id}/save`, payload);
-      return refresh();
+      return saveDecisionCheckpointCore(component);
     }
     if (action === "compile") {
       if (state.graphDirty) {
@@ -16561,16 +15999,16 @@ function historySpecForAction(action, component) {
   };
 }
 
-async function refresh(clearOutput = false) {
+async function refresh(clearOutput = false, options = {}) {
   const output = clearOutput ? null : state.output;
   const activeId = state.activeId;
   const selectedOptionId = state.selectedOptionId;
   const selectedBeatIds = state.selectedBeatIds;
   const beatSelectionAnchorId = state.beatSelectionAnchorId;
+  const previousStoryCanvasGroupingGenerationSignature = storyCanvasGroupingGenerationSignature();
   state.data = await api.get("/api/state");
-  resetStoryCanvasGroupingUiForSavedGraph();
+  reconcileStoryCanvasGroupingUiAfterRefresh(previousStoryCanvasGroupingGenerationSignature, options);
   syncEnvironmentUiFromState({ resetDraft: true });
-  await refreshCodexStatus();
   initializeSourceMotionLinkingDraft(true);
   state.graphDraft = JSON.stringify(state.data.graph, null, 2);
   state.graphDirty = false;
@@ -16626,7 +16064,7 @@ function connectCodexLoginEvents() {
 async function run(task) {
   try {
     state.busy = true;
-    render();
+    updateAuthorBusyDom();
     await task();
   } catch (error) {
     state.output = {
@@ -16636,6 +16074,7 @@ async function run(task) {
   } finally {
     state.busy = false;
     render();
+    updateAuthorBusyDom();
   }
 }
 
@@ -16695,6 +16134,7 @@ function initializeTopologyViewer(active) {
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.target.set(0, 0.45, 0);
+  configureSpatialEditorMouseControls(controls);
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x6f7f78, 2.4));
   const keyLight = new THREE.DirectionalLight(0xffffff, 3.2);
@@ -16968,14 +16408,17 @@ function loadTopologySwapAsset(viewer, step, index, finishAsset) {
           modelRoot.remove(placeholder);
           disposeObject(placeholder);
         }
-        if (finalReviewFraming) {
-          normalizeSpatialRuntimeObject(
-            gltf.scene,
-            finalReviewFraming.targetSize,
-            finalReviewFraming.verticalAlignment,
-          );
-        } else {
-          normalizeTopologyObject(gltf.scene, targetSize);
+        applySpatialLoaderTransformPolicy(gltf.scene, spatialEntity);
+        if (spatialEntity?.preserveSourceGeometry !== true) {
+          if (finalReviewFraming) {
+            normalizeSpatialRuntimeObject(
+              gltf.scene,
+              finalReviewFraming.targetSize,
+              finalReviewFraming.verticalAlignment,
+            );
+          } else {
+            normalizeTopologyObject(gltf.scene, targetSize);
+          }
         }
         entry.opacityMaterials.push(...preparePreviewOpacityTarget(gltf.scene));
         modelRoot.add(gltf.scene);
@@ -17014,6 +16457,7 @@ function loadTopologySwapAsset(viewer, step, index, finishAsset) {
         const plane = makeTopologyImagePlane(texture, targetSize);
         entry.opacityMaterials.push(...preparePreviewOpacityTarget(plane));
         modelRoot.add(plane);
+        entry.sourceScene = plane;
         setPreviewEntryOpacity(entry, group.visible ? 1 : 0);
         finishAsset(true);
       },
@@ -17776,8 +17220,8 @@ function normalizeFinalReviewViewRotationMode(value) {
 
 function finalReviewViewRotationHint(mode) {
   return normalizeFinalReviewViewRotationMode(mode) === "reader"
-    ? "Drag elsewhere to look around from the reader"
-    : "Drag elsewhere to orbit the scene";
+    ? "Look around from the reader"
+    : "Orbit the scene";
 }
 
 function updateFinalReviewViewRotationUi(mode) {
@@ -17871,7 +17315,7 @@ function setFinalReviewViewRotationMode(viewer, requestedMode) {
     viewer.controls.update();
   }
   viewer.viewRotationMode = nextMode;
-  viewer.controls.enablePan = nextMode === "scene";
+  viewer.controls.enablePan = true;
   if (nextMode === "reader") {
     if (!restoredStoredCameraState) applyFinalReviewAuthoredReaderPose(viewer);
     resetFinalReviewReaderLookAnchor(viewer);
@@ -17891,6 +17335,19 @@ function stabilizeFinalReviewReaderLook(viewer) {
   }
   const direction = viewer.readerLookDirection || new THREE.Vector3();
   viewer.readerLookDirection = direction;
+  const expectedTarget = viewer.readerLookPosition.clone().addScaledVector(
+    direction,
+    viewer.readerLookDistance,
+  );
+  const cameraDelta = viewer.camera.position.clone().sub(viewer.readerLookPosition);
+  const targetDelta = viewer.controls.target.clone().sub(expectedTarget);
+  const panTolerance = Math.max(1e-12, targetDelta.lengthSq() * 1e-8);
+  if (
+    targetDelta.lengthSq() > 1e-16
+    && cameraDelta.distanceToSquared(targetDelta) <= panTolerance
+  ) {
+    viewer.readerLookPosition.add(targetDelta);
+  }
   viewer.camera.getWorldDirection(direction);
   viewer.camera.position.copy(viewer.readerLookPosition);
   viewer.controls.target.copy(viewer.readerLookPosition).addScaledVector(
@@ -17931,7 +17388,7 @@ function fitInheritedTopologyPreviewCamera(viewer, object) {
 
 function fitInteractionControlPreviewCamera(viewer, object) {
   if (viewer?.spatialEditorCamera) {
-    const framed = frameSpatialSceneOverview(viewer);
+    const framed = fitSpatialEditorCameraOnLoad(viewer);
     if (!framed) fitCameraToObject(viewer.camera, viewer.controls, object);
     viewer.previewCameraFramingReady = true;
     return;
@@ -18247,6 +17704,7 @@ function initializeDynamicGeometryViewer(active) {
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.target.set(0, 0.5, 0);
+  configureSpatialEditorMouseControls(controls);
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x6f7f78, 2.35));
   const keyLight = new THREE.DirectionalLight(0xffffff, 3.1);
@@ -18578,6 +18036,7 @@ function initializeInterBeatDynamicsViewer(active) {
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.target.set(0, 0.5, 0);
+  configureSpatialEditorMouseControls(controls);
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x6f7f78, 2.35));
   const keyLight = new THREE.DirectionalLight(0xffffff, 3.1);
@@ -18977,6 +18436,7 @@ function initializeEnvironmentEnhancementViewer(active) {
   controls.dampingFactor = 0.075;
   controls.target.set(0, 1.15, 0);
   controls.maxPolarAngle = Math.PI * 0.98;
+  configureSpatialEditorMouseControls(controls);
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x5b625f, 1.6));
   const keyLight = new THREE.DirectionalLight(0xfff2d8, 2.2);
@@ -19257,12 +18717,15 @@ function loadEnvironmentPreviewStoryAssets(viewer, status) {
         disposeObject(gltf.scene);
         return;
       }
-      const pose = spatialTopologyAssetPose({ topologyKind }, index, entries.length);
-      normalizeSpatialRuntimeObject(
-        gltf.scene,
-        pose.targetSize,
-        spatialEntityVerticalAlignment(entry.entity),
-      );
+      applySpatialLoaderTransformPolicy(gltf.scene, entry.entity);
+      if (entry.entity?.preserveSourceGeometry !== true) {
+        const pose = spatialTopologyAssetPose({ topologyKind }, index, entries.length);
+        normalizeSpatialRuntimeObject(
+          gltf.scene,
+          pose.targetSize,
+          spatialEntityVerticalAlignment(entry.entity),
+        );
+      }
       wrapper.add(gltf.scene);
       finish(true);
     }, undefined, () => finish(false));
@@ -19379,7 +18842,7 @@ function updateEnvironmentViewerStatus(viewer = contextViewer, status = document
   else if (environmentEnhancementSkipped()) status.textContent = viewer.storyAssetCount
     ? `This ${spatialSceneLabel} is loaded with StoryVR's neutral reader environment.`
     : "Using StoryVR's standard neutral scene with no added environment.";
-  else status.textContent = viewer.storyAssetCount ? `This ${spatialSceneLabel} is loaded. Upload an environment to surround it.` : "Upload an environment to begin the preview.";
+  else status.textContent = viewer.storyAssetCount ? `This ${spatialSceneLabel} is loaded. Generate an environment to surround it.` : "Generate an environment to begin the preview.";
 }
 
 function applyEnvironmentDraftToViewer(viewer = contextViewer) {
@@ -19586,7 +19049,7 @@ function attachLockedEnvironmentToViewer(viewer) {
       },
       undefined,
       (error) => {
-        viewer.lockedEnvironmentError = error?.message || "Uploaded environment could not be loaded.";
+        viewer.lockedEnvironmentError = error?.message || "Environment could not be loaded.";
       },
     );
     return;
@@ -19620,7 +19083,7 @@ function attachLockedEnvironmentToViewer(viewer) {
     },
     undefined,
     (error) => {
-      viewer.lockedEnvironmentError = error?.message || "Uploaded environment panorama could not be loaded.";
+      viewer.lockedEnvironmentError = error?.message || "Environment panorama could not be loaded.";
     },
   );
 }
@@ -19737,6 +19200,7 @@ function initializeLegacyContextLayeringViewer(active) {
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.target.set(0, 0.5, 0);
+  configureSpatialEditorMouseControls(controls);
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x6f7f78, 2.35));
   const keyLight = new THREE.DirectionalLight(0xffffff, 3.1);
@@ -19976,9 +19440,9 @@ function initializeInteractionControlViewer(active) {
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
-  controls.enablePan = false;
   controls.maxPolarAngle = Math.PI / 2 - 0.02;
   controls.target.set(0, 0.8, 0);
+  configureSpatialEditorMouseControls(controls);
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x6f7f78, 2.35));
   const keyLight = new THREE.DirectionalLight(0xffffff, 3.2);
@@ -20194,6 +19658,7 @@ function initializeInteractionControlViewer(active) {
     viewer.focused = true;
     container.classList.add("focused");
     renderer.domElement.focus();
+    if (event.button !== 0) return;
     updatePointer(event);
     raycaster.setFromCamera(pointer, camera);
     const hits = raycaster.intersectObjects([...viewer.actionTargets, ...viewer.draggableTargets], true);
@@ -20238,7 +19703,9 @@ function initializeInteractionControlViewer(active) {
     viewer.draggingInteraction = false;
     viewer.draggingPanel = false;
     controls.enabled = true;
-    renderer.domElement.releasePointerCapture?.(event.pointerId);
+    if (renderer.domElement.hasPointerCapture?.(event.pointerId)) {
+      renderer.domElement.releasePointerCapture?.(event.pointerId);
+    }
   };
 
   renderer.domElement.addEventListener("pointerdown", viewer.pointerDownHandler);
@@ -20334,28 +19801,8 @@ function initializeFinalReviewViewer(active) {
   const routeInteractionKind = recognizedInteractionPolicyKind(activeProgressionBoundary?.effectivePolicy);
   const decisionKinds = { ...savedDecisionKinds, interaction: routeInteractionKind };
   const transitionAssetLinks = finalReviewTransitionAssetLinks(transitionPlayback);
-  const sceneSourceComposition = finalReviewSourceCompositionForScene(sceneContext);
-  const transitionSourceCompositionAssetLinks = finalReviewTransitionSourceCompositionAssetLinks(
-    transitionPlayback,
-    sceneSourceComposition,
-  );
-  const sourceComposition = transitionPlayback
-    ? transitionSourceCompositionAssetLinks.length ? sceneSourceComposition : null
-    : sceneSourceComposition;
-  const sourceCompositionAssetLinks = transitionSourceCompositionAssetLinks.length
-    ? transitionSourceCompositionAssetLinks
-    : transitionPlayback
-      ? []
-      : finalReviewSourceCompositionAssetLinks(beat, sceneContext, sourceComposition);
-  const destinationSourceCompositionAssetLinks = sourceComposition
-    ? finalReviewSourceCompositionAssetLinks(beat, sceneContext, sourceComposition)
-    : [];
-  const cumulativeContext = sourceComposition
-    ? null
-    : finalReviewCumulativeContextForBeat(beats, beatIndex, sceneContext, beat);
-  const exactSceneAssetLinks = sourceCompositionAssetLinks.length
-    ? sourceCompositionAssetLinks
-    : transitionAssetLinks.length
+  const cumulativeContext = finalReviewCumulativeContextForBeat(beats, beatIndex, sceneContext, beat);
+  const exactSceneAssetLinks = transitionAssetLinks.length
       ? transitionAssetLinks
       : beat && (proceduralPlan || sceneContext?.variantOptionId)
         ? dynamicSceneAssetLinks(null, [beat], sceneContext)
@@ -20416,6 +19863,7 @@ function initializeFinalReviewViewer(active) {
   controls.dampingFactor = 0.08;
   controls.enableZoom = false;
   controls.target.set(0, 0.78, 0);
+  configureSpatialEditorMouseControls(controls);
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x6f7f78, 2.4));
   const keyLight = new THREE.DirectionalLight(0xffffff, 3.3);
@@ -20456,14 +19904,6 @@ function initializeFinalReviewViewer(active) {
     layers,
     cumulativeContext,
     assetLinks: exactSceneAssetLinks,
-    sourceComposition,
-    sourceCompositionDestinationInstanceIds: new Set(
-      destinationSourceCompositionAssetLinks
-        .map((assetLink) => String(assetLink.sourceCompositionInstanceId || ""))
-        .filter(Boolean),
-    ),
-    sourceCompositionRoot: null,
-    sourceCompositionFrameRoot: null,
     dynamicObjects: [],
     proceduralPlan,
     proceduralInstances,
@@ -20573,8 +20013,7 @@ function initializeFinalReviewViewer(active) {
     readerLookDistance: null,
   };
   finalReviewViewer = viewer;
-  initializeFinalReviewSourceComposition(viewer);
-  controls.enablePan = viewer.viewRotationMode === "scene";
+  controls.enablePan = true;
   const restoredCameraState = state.finalReviewViewerCameraState;
   const canRestoreCameraState = shouldRestoreFinalReviewViewerCameraState(viewer, restoredCameraState);
   // Match the compiled reader: use the authored station only for the initial
@@ -20685,6 +20124,7 @@ function initializeFinalReviewViewer(active) {
     if (!viewer.draggingTextPanel && !viewer.draggingReaderHand) renderer.domElement.style.cursor = "";
   };
   viewer.readerHandPointerDownHandler = (event) => {
+    if (event.button !== 0) return;
     const textPanelControl = textPanelControlAtPointer(event);
     if (textPanelControl && !textPanelControl.userData.finalReviewTextPanelDisabled) {
       const action = textPanelControl.userData.finalReviewTextPanelAction;
@@ -20810,7 +20250,9 @@ function initializeFinalReviewViewer(active) {
     viewer.draggingReaderHand = false;
     controls.enabled = !renderer.xr.isPresenting;
     renderer.domElement.style.cursor = "";
-    renderer.domElement.releasePointerCapture?.(event.pointerId);
+    if (renderer.domElement.hasPointerCapture?.(event.pointerId)) {
+      renderer.domElement.releasePointerCapture?.(event.pointerId);
+    }
   };
   viewer.textPanelWheelHandler = (event) => {
     const textPanelControl = textPanelControlAtPointer(event);
@@ -20902,9 +20344,6 @@ function initializeFinalReviewViewer(active) {
       pending -= 1;
       if (!ok) failed += 1;
       if (viewer.disposed) return;
-      if (pending === 0 && sourceComposition) {
-        frameSourceLockedSpatialComposition(viewer);
-      }
       if (
         !canRestoreCameraState
         && !(viewer.viewRotationMode === "reader" && viewer.readerLookPosition)
@@ -20931,7 +20370,7 @@ function initializeFinalReviewViewer(active) {
       loadDynamicAsset(viewer, assetLink, index, exactSceneAssetLinks.length, true, (ok) => {
         finishExactSceneAsset(ok);
         loadNextExactSceneAsset(index + 1);
-      }, { sourceComposition: Boolean(sourceComposition) });
+      });
     };
     loadNextExactSceneAsset();
   } else if (cumulativeContext && cumulativeAssetLinks.length) {
@@ -21486,14 +20925,17 @@ function loadFinalReviewAsset(viewer, asset, finishAsset) {
           group.remove(placeholder);
           disposeObject(placeholder);
         }
-        if (finalReviewFraming) {
-          normalizeSpatialRuntimeObject(
-            gltf.scene,
-            finalReviewFraming.targetSize,
-            finalReviewFraming.verticalAlignment,
-          );
-        } else {
-          normalizeTopologyObject(gltf.scene, 1.12);
+        applySpatialLoaderTransformPolicy(gltf.scene, spatialEntity);
+        if (spatialEntity?.preserveSourceGeometry !== true) {
+          if (finalReviewFraming) {
+            normalizeSpatialRuntimeObject(
+              gltf.scene,
+              finalReviewFraming.targetSize,
+              finalReviewFraming.verticalAlignment,
+            );
+          } else {
+            normalizeTopologyObject(gltf.scene, 1.12);
+          }
         }
         group.add(gltf.scene);
         viewer.finalReviewAssetEntry.sourceScene = gltf.scene;
@@ -21520,7 +20962,9 @@ function loadFinalReviewAsset(viewer, asset, finishAsset) {
           group.remove(placeholder);
           disposeObject(placeholder);
         }
-        group.add(makeTopologyImagePlane(texture, 1.05));
+        const plane = makeTopologyImagePlane(texture, 1.05);
+        group.add(plane);
+        viewer.finalReviewAssetEntry.sourceScene = plane;
         finishAsset(true);
       },
       undefined,
@@ -21628,6 +21072,7 @@ function initializeInteractionControllerModel(container) {
   controls.enableZoom = true;
   controls.rotateSpeed = 0.58;
   controls.zoomSpeed = 0.7;
+  configureSpatialEditorMouseControls(controls);
 
   const viewer = {
     container,
@@ -22448,11 +21893,32 @@ function finalReviewAttentionEntries(viewer) {
     ...(viewer?.dynamicObjects || []),
     ...(viewer?.swapGroups || []),
     ...(viewer?.proceduralPreviewEntries || []),
-  ])];
+    viewer?.finalReviewAssetEntry || null,
+  ].filter(Boolean))];
 }
 
 function finalReviewAttentionTargetForMarker(viewer, attentionScene, marker) {
-  if (!marker?.assetId || marker.coordinateSpace !== "spatial-scene") return null;
+  if (!marker || marker.coordinateSpace !== "spatial-scene") return null;
+  const targetKind = String(marker.targetKind || "").trim();
+  if (targetKind === "spatial-point") {
+    if (!attentionPosition(marker.position)) return null;
+    const group = { root: viewer.root, meshes: [], bounds: new THREE.Box3() };
+    return {
+      key: finalReviewAttentionCompletionKey(attentionScene, marker),
+      marker,
+      root: viewer.root,
+      pointRoot: viewer.root,
+      pointTarget: true,
+      groups: [group],
+      rootsByMesh: new Map(),
+      meshes: [],
+      bounds: new THREE.Box3(),
+      meshBounds: new THREE.Box3(),
+      arrow: null,
+      completed: false,
+    };
+  }
+  if (!marker.assetId) return null;
   const matches = finalReviewAttentionEntries(viewer).filter((entry) => entry?.assetId === marker.assetId);
   const entityId = String(marker.entityId || "").trim();
   const entries = entityId
@@ -22461,11 +21927,10 @@ function finalReviewAttentionTargetForMarker(viewer, attentionScene, marker) {
     ))
     : matches;
   const selector = String(marker.partSelector || "").trim();
-  const targetKind = String(marker.targetKind || "").trim();
   if (selector && (targetKind !== "named-renderable-part" || !attentionSelectorIsNarrow(selector))) return null;
-  if (!selector && targetKind !== "standalone-glb") return null;
+  if (!selector && !["standalone-glb", "standalone-image"].includes(targetKind)) return null;
   const groups = entries.flatMap((entry) => {
-    const root = entry?.sourceScene || entry?.modelRoot || null;
+    const root = entry?.sourceScene || entry?.modelRoot || entry?.group || entry?.authorWrapper || null;
     if (!root?.traverse) return [];
     const meshes = [];
     root.traverse((object) => {
@@ -22497,6 +21962,17 @@ function finalReviewAttentionTargetForMarker(viewer, attentionScene, marker) {
 
 function finalReviewAttentionTargetBounds(target, visibleMeshes) {
   target.bounds.makeEmpty();
+  if (target?.pointTarget) {
+    const position = attentionPosition(target.marker?.position);
+    if (!position || !target.pointRoot) return null;
+    const center = new THREE.Vector3(position.x, position.y, position.z);
+    target.pointRoot.updateWorldMatrix(true, false);
+    target.pointRoot.localToWorld(center);
+    target.bounds.min.copy(center);
+    target.bounds.max.copy(center);
+    if (target.groups?.[0]?.bounds) target.groups[0].bounds.copy(target.bounds);
+    return target.bounds;
+  }
   const visibleSet = new Set(visibleMeshes || []);
   const groups = target?.groups?.length
     ? target.groups
@@ -22706,7 +22182,13 @@ function createFinalReviewAttentionSparkle(viewer, groupIndex = 0) {
   };
 }
 
-function syncFinalReviewAttentionSparkle(effect, bounds, visible, deltaSeconds = 1 / 60) {
+function syncFinalReviewAttentionSparkle(
+  effect,
+  bounds,
+  visible,
+  deltaSeconds = 1 / 60,
+  anchorAtBoundsCenter = false,
+) {
   if (!effect?.root) return;
   effect.root.visible = Boolean(visible);
   if (!visible || !bounds || bounds.isEmpty()) return;
@@ -22715,11 +22197,15 @@ function syncFinalReviewAttentionSparkle(effect, bounds, visible, deltaSeconds =
   const pulse = (Math.sin(time * 5.4) + 1) * 0.5;
   const sphere = bounds.getBoundingSphere(new THREE.Sphere());
   const effectScale = THREE.MathUtils.clamp(sphere.radius * 0.52, 0.22, 0.48);
-  effect.root.position.set(
-    sphere.center.x,
-    bounds.max.y + THREE.MathUtils.clamp(sphere.radius * 0.14, 0.05, 0.16),
-    sphere.center.z,
-  );
+  if (anchorAtBoundsCenter) {
+    effect.root.position.copy(sphere.center);
+  } else {
+    effect.root.position.set(
+      sphere.center.x,
+      bounds.max.y + THREE.MathUtils.clamp(sphere.radius * 0.14, 0.05, 0.16),
+      sphere.center.z,
+    );
+  }
   effect.root.scale.setScalar(effectScale);
 
   const bloomScale = 1.55 + pulse * 0.28;
@@ -22762,7 +22248,13 @@ function applyFinalReviewAttentionSparkles(viewer, target, enabled, deltaSeconds
       group.investigationEffect = createFinalReviewAttentionSparkle(viewer, index);
     }
     if (group.investigationEffect) {
-      syncFinalReviewAttentionSparkle(group.investigationEffect, group.bounds, visible, deltaSeconds);
+      syncFinalReviewAttentionSparkle(
+        group.investigationEffect,
+        group.bounds,
+        visible,
+        deltaSeconds,
+        target?.pointTarget === true,
+      );
     }
   }
 }
@@ -24124,6 +23616,7 @@ function initializeInteractionInBeatConstraintGizmo(viewer) {
   transformControls.addEventListener("dragging-changed", (event) => { viewer.controls.enabled = !event.value; });
   transformControls.addEventListener("mouseDown", () => {
     if (viewer.interactionInBeatPickGesture) viewer.interactionInBeatPickGesture.blocked = true;
+    viewer.navigationTransformFinalized = false;
     viewer.destinationHistoryStarted = beginAuthorHistory("Edit in-beat interaction range", "interaction-control");
   });
   transformControls.addEventListener("objectChange", () => {
@@ -24131,6 +23624,10 @@ function initializeInteractionInBeatConstraintGizmo(viewer) {
     refreshInteractionConstraintRangeVisual(viewer);
   });
   transformControls.addEventListener("mouseUp", () => {
+    if (viewer.navigationTransformFinalized) {
+      viewer.navigationTransformFinalized = false;
+      return;
+    }
     const activeGhost = transformControls.object;
     const local = interactionLocalTransformForWorld(candidate.object.parent, activeGhost);
     const endpoint = activeGhost?.userData?.interactionConstraintEndpoint === "max" ? "max" : "min";
@@ -24227,10 +23724,15 @@ function initializeInteractionConfigurationGizmo(viewer) {
     viewer.controls.enabled = !event.value;
   });
   transformControls.addEventListener("mouseDown", () => {
+    viewer.navigationTransformFinalized = false;
     viewer.destinationHistoryStarted = beginAuthorHistory("Edit interaction destination", "interaction-control");
   });
   transformControls.addEventListener("objectChange", () => syncInteractionDestinationInputsFromViewer(viewer));
   transformControls.addEventListener("mouseUp", () => {
+    if (viewer.navigationTransformFinalized) {
+      viewer.navigationTransformFinalized = false;
+      return;
+    }
     const editorContext = interactionEditorContextFromState();
     const object = transformControls.object;
     if (!editorContext || !object) return;
@@ -25073,14 +24575,18 @@ function initializeSpatialRelationsViewer(active) {
   status.className = "topology-viewer-status overlay";
   status.textContent = assetLinks.length ? `Loading ${assetLinks.length} linked scene asset${assetLinks.length === 1 ? "" : "s"}...` : "This scene has no linked visual assets to arrange.";
   container.replaceChildren(renderer.domElement, status);
+  const selectionMarquee = document.createElement("div");
+  selectionMarquee.className = "spatial-selection-marquee";
+  selectionMarquee.hidden = true;
+  selectionMarquee.setAttribute("aria-hidden", "true");
+  container.append(selectionMarquee);
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
-  controls.enablePan = true;
   controls.screenSpacePanning = false;
-  controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
   controls.maxPolarAngle = Math.PI / 2 - 0.02;
   controls.target.set(0, 0.85, 0);
+  configureSpatialEditorMouseControls(controls);
   scene.add(new THREE.HemisphereLight(0xffffff, 0x6f7f78, 2.4));
   const keyLight = new THREE.DirectionalLight(0xffffff, 3.1);
   keyLight.position.set(4, 7, 5);
@@ -25097,6 +24603,7 @@ function initializeSpatialRelationsViewer(active) {
     assetPositions.set(assetLink.assetId, spatialTopologyAssetPose({ topologyKind: layoutKind }, index, Math.max(assetLinks.length, 1)).position);
   });
   const viewer = {
+    container,
     scene,
     camera,
     renderer,
@@ -25140,13 +24647,9 @@ function initializeSpatialRelationsViewer(active) {
     transformMutationActive: false,
     selectionHelpers: [],
     selectionPointerGesture: null,
+    selectionMarquee,
     spatialEditorCamera: "outside-reader-rig-v2",
     locked: false,
-    sourceCompositionRoot: null,
-    sourceCompositionFrameRoot: null,
-    sourceComposition: sceneContract?.placementPolicy === "source-locked"
-      ? sceneContract.sourceComposition || null
-      : null,
     animationId: null,
     resizeHandler: null,
     keyDownHandler: null,
@@ -25163,25 +24666,6 @@ function initializeSpatialRelationsViewer(active) {
     viewer.spatialObjects.set(readerEntity.id, readerEditorLayer.rig);
     viewer.spatialPickTargets.push(readerEditorLayer.proxy);
   }
-  if (viewer.sourceComposition) {
-    const rootEntity = sceneEntities.find((entity) => (
-      spatialEntityIsSourceCompositionRoot(entity)
-      && entity.id === viewer.sourceComposition.rootEntityId
-    )) || sceneEntities.find(spatialEntityIsSourceCompositionRoot);
-    const sourceCompositionRoot = new THREE.Group();
-    sourceCompositionRoot.name = `StoryVR source composition · ${viewer.sourceComposition.compositionId || "assembly"}`;
-    const sourceCompositionFrameRoot = new THREE.Group();
-    sourceCompositionFrameRoot.name = "StoryVR source composition framing";
-    sourceCompositionRoot.add(sourceCompositionFrameRoot);
-    root.add(sourceCompositionRoot);
-    viewer.sourceCompositionRoot = sourceCompositionRoot;
-    viewer.sourceCompositionFrameRoot = sourceCompositionFrameRoot;
-    if (rootEntity) {
-      applySpatialEntityTransformToObject(viewer, rootEntity, sourceCompositionRoot);
-      viewer.spatialObjects.set(rootEntity.id, sourceCompositionRoot);
-    }
-  }
-
   if (
     selectedSpatialRelationEntities(draft).some((entity) => spatialEntityType(entity) === "reader")
     && state.spatialTransformMode === "scale"
@@ -25192,7 +24676,7 @@ function initializeSpatialRelationsViewer(active) {
   const transformControls = new TransformControls(camera, renderer.domElement);
   transformControls.enabled = true;
   transformControls.setMode(state.spatialTransformMode);
-  transformControls.setSpace(state.spatialTransformSpace);
+  transformControls.setSpace("world");
   transformControls.setSize(0.72);
   const transformHelper = transformControls.getHelper();
   scene.add(transformHelper);
@@ -25203,10 +24687,12 @@ function initializeSpatialRelationsViewer(active) {
   });
   transformControls.addEventListener("mouseDown", () => {
     if (viewer.locked || !spatialSelectionCanTransform(transformControls.mode, draft)) return;
+    viewer.navigationTransformFinalized = false;
     pushSpatialUndoSnapshot();
+    const selectedEntities = selectedSpatialRelationEntities(draft);
     viewer.transformScaleStart = transformControls.object?.scale?.clone?.() || null;
     viewer.transformScaleDriverIndex = null;
-    viewer.transformSelectionStart = selectedSpatialRelationEntities(draft).length > 1
+    viewer.transformSelectionStart = selectedEntities.length > 1
       ? captureSpatialSelectionTransformStart(viewer)
       : null;
   });
@@ -25241,6 +24727,10 @@ function initializeSpatialRelationsViewer(active) {
     }
   });
   transformControls.addEventListener("mouseUp", () => {
+    if (viewer.navigationTransformFinalized) {
+      viewer.navigationTransformFinalized = false;
+      return;
+    }
     if (viewer.locked || !spatialSelectionCanTransform(transformControls.mode, draft)) return;
     viewer.transformScaleStart = null;
     viewer.transformScaleDriverIndex = null;
@@ -25259,14 +24749,13 @@ function initializeSpatialRelationsViewer(active) {
   const finishAsset = () => {
     pending -= 1;
     if (pending <= 0 && !viewer.disposed) {
-      frameSourceLockedSpatialComposition(viewer);
       viewer.spatialPlaybackReady = true;
       viewer.sourceElapsed = 0;
       viewer.playing = upstreamBeatState.playTransition
         && viewer.spatialPlaybackEntries.some((entry) => entry.spatialTransitionPlaying);
       status.remove();
       syncSpatialSelectionInViewer();
-      if (!canRestoreCameraState) frameSpatialSceneOverview(viewer);
+      if (!canRestoreCameraState) fitSpatialEditorCameraOnLoad(viewer);
     }
   };
   if (!assetLinks.length) requestAnimationFrame(() => {
@@ -25274,7 +24763,7 @@ function initializeSpatialRelationsViewer(active) {
     viewer.spatialPlaybackReady = true;
     status.remove();
     syncSpatialSelectionInViewer();
-    if (!canRestoreCameraState) frameSpatialSceneOverview(viewer);
+    if (!canRestoreCameraState) fitSpatialEditorCameraOnLoad(viewer);
   });
   assetLinks.forEach((assetLink, index) => {
     if (assetLink.kind === "image-plane") loadSpatialRelationsImage(viewer, assetLink, index, assetLinks.length, finishAsset);
@@ -25286,49 +24775,6 @@ function initializeSpatialRelationsViewer(active) {
   raycaster.params.Points.threshold = 0.035;
   const pointer = new THREE.Vector2();
   const clickMovementThresholdSquared = 36;
-  const spatialObjectIsEffectivelyVisible = (object) => {
-    for (let current = object; current; current = current.parent) {
-      if (current.visible === false) return false;
-      if (current === viewer.scene) return true;
-    }
-    return false;
-  };
-  const preciseVisibleSpatialBounds = (object) => {
-    const bounds = [];
-    const point = new THREE.Vector3();
-    const localBox = new THREE.Box3();
-    const worldBox = new THREE.Box3();
-    const instanceMatrix = new THREE.Matrix4();
-    const worldMatrix = new THREE.Matrix4();
-    object.updateWorldMatrix(true, true);
-    object.traverse((renderable) => {
-      if (!spatialObjectIsEffectivelyVisible(renderable)) return;
-      const geometry = renderable.geometry;
-      const position = geometry?.getAttribute?.("position");
-      if (!position) return;
-      if (renderable.isInstancedMesh) {
-        if (geometry.boundingBox === null) geometry.computeBoundingBox();
-        if (!geometry.boundingBox) return;
-        localBox.copy(geometry.boundingBox);
-        for (let index = 0; index < renderable.count; index += 1) {
-          renderable.getMatrixAt(index, instanceMatrix);
-          worldMatrix.multiplyMatrices(renderable.matrixWorld, instanceMatrix);
-          worldBox.copy(localBox).applyMatrix4(worldMatrix);
-          bounds.push(worldBox.clone());
-        }
-        return;
-      }
-      const renderableBounds = new THREE.Box3();
-      for (let index = 0; index < position.count; index += 1) {
-        if (renderable.isMesh && typeof renderable.getVertexPosition === "function") {
-          renderable.getVertexPosition(index, point);
-        } else point.fromBufferAttribute(position, index);
-        renderableBounds.expandByPoint(point.applyMatrix4(renderable.matrixWorld));
-      }
-      if (!renderableBounds.isEmpty()) bounds.push(renderableBounds);
-    });
-    return bounds;
-  };
   const spatialEntityIdAtPointer = (event) => {
     const rect = renderer.domElement.getBoundingClientRect();
     if (
@@ -25343,7 +24789,7 @@ function initializeSpatialRelationsViewer(active) {
     pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
     for (const hit of raycaster.intersectObjects(viewer.spatialPickTargets, true)) {
-      if (!spatialObjectIsEffectivelyVisible(hit.object)) continue;
+      if (!spatialObjectIsEffectivelyVisible(hit.object, viewer.scene)) continue;
       let target = hit.object;
       while (target && !target.userData?.spatialEntityId) target = target.parent;
       const entityId = target?.userData?.spatialEntityId || null;
@@ -25364,7 +24810,7 @@ function initializeSpatialRelationsViewer(active) {
         || !object?.visible
         || object.userData?.spatialPlaybackActive === false
       ) continue;
-      for (const bounds of preciseVisibleSpatialBounds(object)) {
+      for (const bounds of preciseVisibleSpatialBounds(object, viewer.scene)) {
         const hitPoint = raycaster.ray.intersectBox(bounds, new THREE.Vector3());
         if (!hitPoint) continue;
         const distance = raycaster.ray.origin.distanceToSquared(hitPoint);
@@ -25373,46 +24819,113 @@ function initializeSpatialRelationsViewer(active) {
     }
     return closestGlb?.entityId || null;
   };
+  const hideSelectionMarquee = () => {
+    selectionMarquee.hidden = true;
+  };
   viewer.pointerDownHandler = (event) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || event.isPrimary === false) return;
     const startedOnTransformGizmo = Boolean(transformControls.dragging || transformControls.axis);
     const entityId = startedOnTransformGizmo ? null : spatialEntityIdAtPointer(event);
     viewer.selectionPointerGesture = {
       pointerId: event.pointerId,
       clientX: event.clientX,
       clientY: event.clientY,
+      currentX: event.clientX,
+      currentY: event.clientY,
       moved: false,
       startedOnTransformGizmo,
       entityId,
+      additive: event.shiftKey,
+      toggle: event.metaKey || event.ctrlKey,
     };
     renderer.domElement.focus();
+    if (!startedOnTransformGizmo) renderer.domElement.setPointerCapture?.(event.pointerId);
   };
   viewer.pointerMoveHandler = (event) => {
     const gesture = viewer.selectionPointerGesture;
     if (!gesture || gesture.pointerId !== event.pointerId) return;
     const deltaX = event.clientX - gesture.clientX;
     const deltaY = event.clientY - gesture.clientY;
-    if (deltaX * deltaX + deltaY * deltaY > clickMovementThresholdSquared) gesture.moved = true;
+    gesture.currentX = event.clientX;
+    gesture.currentY = event.clientY;
+    if (deltaX * deltaX + deltaY * deltaY <= clickMovementThresholdSquared) return;
+    gesture.moved = true;
+    if (gesture.startedOnTransformGizmo) return;
+    event.preventDefault();
+    updateSpatialSelectionMarquee(
+      selectionMarquee,
+      normalizeSpatialSelectionRectangle(
+        gesture.clientX,
+        gesture.clientY,
+        gesture.currentX,
+        gesture.currentY,
+      ),
+      container.getBoundingClientRect(),
+    );
   };
   viewer.pointerUpHandler = (event) => {
     const gesture = viewer.selectionPointerGesture;
     if (!gesture || gesture.pointerId !== event.pointerId) return;
     viewer.selectionPointerGesture = null;
+    hideSelectionMarquee();
+    if (renderer.domElement.hasPointerCapture?.(event.pointerId)) {
+      renderer.domElement.releasePointerCapture?.(event.pointerId);
+    }
     const deltaX = event.clientX - gesture.clientX;
     const deltaY = event.clientY - gesture.clientY;
     const moved = gesture.moved || deltaX * deltaX + deltaY * deltaY > clickMovementThresholdSquared;
     if (
       event.button !== 0
-      || moved
       || gesture.startedOnTransformGizmo
       || viewer.disposed
       || transformControls.dragging
     ) return;
+    if (moved) {
+      event.preventDefault();
+      const selectionRectangle = normalizeSpatialSelectionRectangle(
+        gesture.clientX,
+        gesture.clientY,
+        event.clientX,
+        event.clientY,
+      );
+      const hitEntityIds = spatialEntityIdsInSelectionRectangle(viewer, selectionRectangle);
+      if (!hitEntityIds.length) return;
+      const orderedEntityIds = spatialEditorSceneEntities(
+        state.spatialRelationsDraft,
+        activeSpatialSceneContext(),
+      ).map((entity) => entity.id);
+      const entityIds = spatialSelectionForRectangle(
+        orderedEntityIds,
+        selectedSpatialRelationEntityIds(),
+        hitEntityIds,
+        { additive: gesture.additive, toggle: gesture.toggle },
+      );
+      const primaryEntityId = [...hitEntityIds].reverse().find((entityId) => entityIds.includes(entityId))
+        || entityIds[entityIds.length - 1]
+        || null;
+      setSpatialRelationSelection(entityIds, {
+        primaryEntityId,
+        anchorEntityId: primaryEntityId,
+      });
+      return;
+    }
     const entityId = gesture.entityId || spatialEntityIdAtPointer(event);
-    if (entityId) selectSpatialRelationEntityInViewer(entityId);
+    if (entityId) {
+      selectSpatialRelationEntityInViewer(entityId, {
+        additive: gesture.additive,
+        toggle: gesture.toggle,
+      });
+    } else if (!gesture.additive && !gesture.toggle) {
+      clearSpatialRelationSelection();
+    }
   };
   viewer.pointerCancelHandler = (event) => {
-    if (viewer.selectionPointerGesture?.pointerId === event.pointerId) viewer.selectionPointerGesture = null;
+    if (viewer.selectionPointerGesture?.pointerId !== event.pointerId) return;
+    viewer.selectionPointerGesture = null;
+    hideSelectionMarquee();
+    if (renderer.domElement.hasPointerCapture?.(event.pointerId)) {
+      renderer.domElement.releasePointerCapture?.(event.pointerId);
+    }
   };
   renderer.domElement.addEventListener("pointerdown", viewer.pointerDownHandler);
   window.addEventListener("pointermove", viewer.pointerMoveHandler);
@@ -25497,14 +25010,14 @@ function initializeAttentionGuidanceViewer(active) {
   status.className = "topology-viewer-status overlay";
   status.textContent = assetEntities.length
     ? `Loading ${assetEntities.length} saved scene asset${assetEntities.length === 1 ? "" : "s"} and validating visible targets...`
-    : "No linked GLB scene object; this beat will remain without a default sphere.";
+    : "No linked model or image is available; a target can still be placed manually.";
   container.replaceChildren(renderer.domElement, status);
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
-  controls.enablePan = false;
   controls.maxPolarAngle = Math.PI / 2 - 0.02;
   controls.target.set(0, 0.85, 0);
+  configureSpatialEditorMouseControls(controls);
   scene.add(new THREE.HemisphereLight(0xffffff, 0x6f7f78, 2.4));
   const keyLight = new THREE.DirectionalLight(0xffffff, 3.1);
   keyLight.position.set(4, 7, 5);
@@ -25563,6 +25076,7 @@ function initializeAttentionGuidanceViewer(active) {
     transformControls: null,
     transformHelper: null,
     attentionHistoryStarted: false,
+    manualAttentionPlacementActive: false,
     spatialEditorCamera: "outside-reader-rig-v2",
     animationId: null,
     resizeHandler: null,
@@ -25589,7 +25103,8 @@ function initializeAttentionGuidanceViewer(active) {
   });
   transformControls.addEventListener("mouseDown", () => {
     if (viewer.locked || viewer.attentionHistoryStarted) return;
-    viewer.attentionHistoryStarted = beginAuthorHistory("Move Attention Guidance sphere", ATTENTION_GUIDANCE_COMPONENT_ID);
+    viewer.navigationTransformFinalized = false;
+    viewer.attentionHistoryStarted = beginAuthorHistory("Move Attention Guidance target", ATTENTION_GUIDANCE_COMPONENT_ID);
   });
   transformControls.addEventListener("objectChange", () => {
     if (viewer.locked || !transformControls.object) return;
@@ -25597,6 +25112,10 @@ function initializeAttentionGuidanceViewer(active) {
     syncAttentionInspectorFromSelection();
   });
   transformControls.addEventListener("mouseUp", () => {
+    if (viewer.navigationTransformFinalized) {
+      viewer.navigationTransformFinalized = false;
+      return;
+    }
     if (viewer.locked) return;
     commitAttentionDraftMutation();
     if (viewer.attentionHistoryStarted) finalizePersistentAuthorHistory(flushAttentionGuidanceAutosave);
@@ -25620,7 +25139,7 @@ function initializeAttentionGuidanceViewer(active) {
     syncAttentionManualTargetControls(viewer);
     ensureAttentionMarkerSelection(attentionScene);
     selectAttentionMarkerInViewer(state.selectedAttentionMarkerId);
-    if (!canRestoreCameraState) frameAttentionSceneOverview(viewer);
+    if (!canRestoreCameraState) fitAttentionEditorCameraOnLoad(viewer);
     if (evaluationChanged && !viewer.locked) requestAnimationFrame(() => {
       if (textViewer === viewer && !viewer.disposed) render();
     });
@@ -25634,11 +25153,17 @@ function initializeAttentionGuidanceViewer(active) {
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   viewer.pointerDownHandler = (event) => {
-    if (transformControls.dragging || transformControls.axis) return;
+    if (event.button !== 0 || transformControls.dragging || transformControls.axis) return;
     const rect = renderer.domElement.getBoundingClientRect();
     pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
+    if (viewer.manualAttentionPlacementActive) {
+      event.preventDefault();
+      const position = attentionManualPlacementPosition(viewer, raycaster);
+      if (position) addManualAttentionTargetAtPosition(position, viewer);
+      return;
+    }
     const hit = raycaster.intersectObjects(viewer.attentionPickTargets, true)[0];
     let target = hit?.object || null;
     while (target && !target.userData?.attentionMarkerId) target = target.parent;
@@ -25646,8 +25171,14 @@ function initializeAttentionGuidanceViewer(active) {
   };
   renderer.domElement.addEventListener("pointerdown", viewer.pointerDownHandler);
   viewer.keyDownHandler = (event) => {
-    if (viewer.locked || event.key.toLowerCase() !== "w") return;
+    if (viewer.locked) return;
     if (event.metaKey || event.ctrlKey || event.altKey || /^(input|textarea|select)$/i.test(event.target?.tagName || "")) return;
+    if (event.key === "Escape" && viewer.manualAttentionPlacementActive) {
+      event.preventDefault();
+      cancelManualAttentionTargetPlacement(viewer);
+      return;
+    }
+    if (event.key.toLowerCase() !== "w") return;
     event.preventDefault();
     transformControls.setMode("translate");
   };
@@ -25723,11 +25254,14 @@ function loadAttentionGuidanceGlb(viewer, entity, index, total, done) {
     }
     wrapper.remove(placeholder);
     disposeObject(placeholder);
-    normalizeSpatialRuntimeObject(
-      gltf.scene,
-      topologyPose.targetSize,
-      spatialEntityVerticalAlignment(entity),
-    );
+    applySpatialLoaderTransformPolicy(gltf.scene, entity);
+    if (entity?.preserveSourceGeometry !== true) {
+      normalizeSpatialRuntimeObject(
+        gltf.scene,
+        topologyPose.targetSize,
+        spatialEntityVerticalAlignment(entity),
+      );
+    }
     gltf.scene.userData.attentionStoryObject = true;
     gltf.scene.traverse((object) => { object.userData.attentionStoryObject = true; });
     wrapper.add(gltf.scene);
@@ -25751,6 +25285,8 @@ function loadAttentionGuidanceImage(viewer, entity, done) {
   const wrapper = new THREE.Group();
   wrapper.name = `Fixed story image · ${entity.assetId}`;
   wrapper.userData.attentionStoryObject = true;
+  wrapper.userData.spatialEntityId = entity.id;
+  wrapper.userData.assetId = entity.assetId;
   viewer.root.add(wrapper);
   viewer.storyObjects.set(entity.id, wrapper);
   applyAttentionSpatialEntityTransform(entity, wrapper);
@@ -25775,6 +25311,14 @@ function loadAttentionGuidanceImage(viewer, entity, done) {
     );
     plane.userData.attentionStoryObject = true;
     wrapper.add(plane);
+    viewer.attentionAssetEntries.set(entity.id, {
+      assetId: entity.assetId,
+      entityId: entity.id,
+      authorWrapper: wrapper,
+      wrapper,
+      sourceScene: wrapper,
+      sourcePlayback: null,
+    });
     done(true);
   }, undefined, () => done(false));
 }
@@ -25822,6 +25366,7 @@ function attentionCandidateMeshes(entry, candidate) {
     const manuallySelected = String(candidate.provenance?.source || "").startsWith("author-manual");
     return mode === "shared-timeline" && !manuallySelected ? [] : visibleMeshes;
   }
+  if (candidate.targetKind === "standalone-image") return visibleMeshes;
   if (candidate.targetKind !== "named-renderable-part" || !attentionSelectorIsNarrow(candidate.partSelector)) return [];
   return visibleMeshes.filter((object) => sourcePartSelectorMatchesNode(candidate.partSelector, object, root));
 }
@@ -25846,6 +25391,36 @@ function attentionCandidatePosition(viewer, candidate) {
   return { x: center.x, y: center.y, z: center.z };
 }
 
+function attentionManualPlacementPosition(viewer, raycaster) {
+  if (!viewer?.root || !raycaster?.ray) return null;
+  const storyRoots = [...(viewer.storyObjects?.values?.() || [])].filter(Boolean);
+  const storyHit = raycaster.intersectObjects(storyRoots, true).find((hit) => {
+    let object = hit.object;
+    while (object) {
+      if (object.userData?.attentionMarkerId) return false;
+      if (object.userData?.attentionStoryObject) return true;
+      object = object.parent;
+    }
+    return false;
+  });
+  let worldPosition = storyHit?.point?.clone?.() || null;
+  if (!worldPosition) {
+    worldPosition = raycaster.ray.intersectPlane(
+      new THREE.Plane(new THREE.Vector3(0, 1, 0), 0),
+      new THREE.Vector3(),
+    );
+  }
+  if (!worldPosition) {
+    const target = viewer.controls?.target || new THREE.Vector3(0, 0.85, 0);
+    const distance = Math.max(1.5, raycaster.ray.origin.distanceTo(target));
+    worldPosition = raycaster.ray.at(distance, new THREE.Vector3());
+  }
+  viewer.root.updateWorldMatrix(true, false);
+  const local = viewer.root.worldToLocal(worldPosition.clone());
+  if (![local.x, local.y, local.z].every(Number.isFinite)) return null;
+  return { x: local.x, y: local.y, z: local.z };
+}
+
 function evaluateAttentionGuidanceScene(viewer) {
   const scene = viewer?.attentionScene;
   if (!scene) return false;
@@ -25854,12 +25429,14 @@ function evaluateAttentionGuidanceScene(viewer) {
   const markers = [];
   let rejectedCandidateCount = 0;
   for (const candidate of candidates) {
-    const inferredPosition = attentionCandidatePosition(viewer, candidate);
+    const saved = existing.get(candidate.id);
+    const inferredPosition = candidate.targetKind === "spatial-point"
+      ? attentionPosition(saved?.inferredPosition)
+      : attentionCandidatePosition(viewer, candidate);
     if (!inferredPosition) {
       rejectedCandidateCount += 1;
       continue;
     }
-    const saved = existing.get(candidate.id);
     const savedPosition = saved ? attentionPosition(saved.position) : null;
     const marker = normalizeAttentionMarker({
       ...candidate,
@@ -25873,7 +25450,7 @@ function evaluateAttentionGuidanceScene(viewer) {
       inferredPosition,
       position: savedPosition || inferredPosition,
       confidence: candidate.confidence ?? saved?.confidence,
-      provenance: candidate.provenance || saved?.provenance,
+      provenance: saved?.provenance || candidate.provenance,
       channels: candidate.channels,
       reconciliationStatus: candidate.reconciliationStatus,
       reviewRequired: candidate.reviewRequired,
@@ -25912,7 +25489,7 @@ function evaluateAttentionGuidanceScene(viewer) {
 
 function makeAttentionMarkerObject(marker) {
   const group = new THREE.Group();
-  group.name = `Attention sphere · ${marker.id}`;
+  group.name = `Attention target · ${marker.id}`;
   group.userData.attentionMarkerId = marker.id;
   const sphere = new THREE.Mesh(
     new THREE.SphereGeometry(0.14, 28, 18),
@@ -25966,7 +25543,8 @@ function persistAttentionMarkerObjectPosition(viewer, object) {
   const marker = attentionSceneMarkers(scene).find((candidate) => candidate.id === markerId);
   if (!marker) return;
   marker.position = { x: object.position.x, y: object.position.y, z: object.position.z };
-  marker.manual = !attentionPositionsEqual(marker.position, marker.inferredPosition);
+  marker.manual = attentionMarkerEditLabel(marker) === "manual"
+    || !attentionPositionsEqual(marker.position, marker.inferredPosition);
 }
 
 function applyAttentionDraftToViewer(viewer) {
@@ -25990,7 +25568,7 @@ function selectAttentionMarkerInViewer(markerId) {
     item.classList.toggle("selected", item.dataset.attentionSelectMarker === marker?.id);
   }
   const pill = document.querySelector(".attention-preview-card .attention-kind-pill");
-  if (pill) pill.textContent = marker ? attentionMarkerLabel(marker) : "No sphere";
+  if (pill) pill.textContent = marker ? attentionMarkerLabel(marker) : "No target";
   syncAttentionInspectorFromSelection();
 }
 
@@ -26051,15 +25629,8 @@ function frameAttentionBounds(viewer, bounds) {
   return true;
 }
 
-function frameAttentionSceneOverview(viewer) {
+function fitAttentionEditorCameraOnLoad(viewer) {
   return frameAttentionBounds(viewer, attentionSceneBounds(viewer));
-}
-
-function frameSelectedAttentionMarker(viewer) {
-  const object = viewer?.attentionMarkerObjects?.get(state.selectedAttentionMarkerId);
-  if (!object) return false;
-  object.updateWorldMatrix(true, true);
-  return frameAttentionBounds(viewer, new THREE.Box3().setFromObject(object));
 }
 
 function spatialBeatScenePresence(beat) {
@@ -26150,66 +25721,8 @@ function normalizeSpatialRuntimeObject(object, targetSize, verticalAlignment = "
   ) * scale;
 }
 
-function sourceSpatialCompositionBounds(value) {
-  const minimum = Array.isArray(value?.min) ? value.min.map(Number) : null;
-  const maximum = Array.isArray(value?.max) ? value.max.map(Number) : null;
-  if (
-    minimum?.length !== 3
-    || maximum?.length !== 3
-    || ![...minimum, ...maximum].every(Number.isFinite)
-  ) return null;
-  return new THREE.Box3(
-    new THREE.Vector3(...minimum),
-    new THREE.Vector3(...maximum),
-  );
-}
-
-function frameSourceLockedSpatialComposition(viewer) {
-  const frameRoot = viewer?.sourceCompositionFrameRoot;
-  const framing = viewer?.sourceComposition?.framing;
-  if (!frameRoot || !framing) return false;
-  const bounds = sourceSpatialCompositionBounds(framing.compositionBounds || framing.anchorBounds);
-  if (!bounds || bounds.isEmpty()) return false;
-  const center = bounds.getCenter(new THREE.Vector3());
-  const size = bounds.getSize(new THREE.Vector3());
-  const maxSize = Math.max(size.x, size.y, size.z) || 1;
-  const targetSize = spatialTopologyAssetPose(viewer, 0, 1).targetSize;
-  const scale = targetSize / maxSize;
-  frameRoot.scale.setScalar(scale);
-  frameRoot.position.set(
-    -center.x * scale,
-    -(String(framing.verticalAlignment || "").toLowerCase() === "ground" ? bounds.min.y : center.y) * scale,
-    -center.z * scale,
-  );
-  frameRoot.updateWorldMatrix(true, true);
-  return true;
-}
-
-function initializeFinalReviewSourceComposition(viewer) {
-  if (!viewer?.sourceComposition || !viewer.root) return false;
-  const sceneEntities = spatialSceneEntities(lockedSpatialRelationsContract(), viewer.sceneContext);
-  const rootEntity = sceneEntities.find((entity) => (
-    spatialEntityIsSourceCompositionRoot(entity)
-    && entity.id === viewer.sourceComposition.rootEntityId
-  )) || sceneEntities.find(spatialEntityIsSourceCompositionRoot);
-  const sourceCompositionRoot = new THREE.Group();
-  sourceCompositionRoot.name = `StoryVR source composition · ${viewer.sourceComposition.compositionId || "assembly"}`;
-  const sourceCompositionFrameRoot = new THREE.Group();
-  sourceCompositionFrameRoot.name = "StoryVR source composition framing";
-  sourceCompositionRoot.add(sourceCompositionFrameRoot);
-  viewer.root.add(sourceCompositionRoot);
-  viewer.sourceCompositionRoot = sourceCompositionRoot;
-  viewer.sourceCompositionFrameRoot = sourceCompositionFrameRoot;
-  if (rootEntity) applySpatialEntityTransformToObject(viewer, rootEntity, sourceCompositionRoot);
-  return true;
-}
-
-function applySourceLockedLoaderTransformPolicy(root, entity) {
-  if (
-    !root
-    || !spatialEntityIsSourceLockedMember(entity)
-    || entity.loaderTransformPolicy !== "reset-immediate-child-scale"
-  ) return false;
+function applySpatialLoaderTransformPolicy(root, entity) {
+  if (!root || entity?.loaderTransformPolicy !== "reset-immediate-child-scale") return false;
   const target = String(entity.loaderTransformTarget || "").trim().toLowerCase().replace(/_/g, "-");
   const targetRoot = target === "first-scene-child-children"
     ? root.children?.[0]
@@ -26477,10 +25990,7 @@ function loadSpatialRelationsGlb(viewer, assetLink, index, total, done) {
   authorWrapper.userData.assetId = assetLink.assetId;
   topologyWrapper.add(authorWrapper);
   const entity = spatialRelationEntityById(viewer.spatialContract || state.spatialRelationsDraft, entityId);
-  const sourceLocked = spatialEntityIsSourceLockedMember(entity);
-  (sourceLocked && viewer.sourceCompositionFrameRoot
-    ? viewer.sourceCompositionFrameRoot
-    : viewer.root).add(topologyWrapper);
+  viewer.root.add(topologyWrapper);
   viewer.spatialObjects.set(entityId, authorWrapper);
   const placeholder = makeTextComfortPlaceholder(asset?.filename || assetLink.assetId, "GLB");
   placeholder.userData.spatialEntityId = entityId;
@@ -26525,8 +26035,8 @@ function loadSpatialRelationsGlb(viewer, assetLink, index, total, done) {
     authorWrapper.remove(placeholder);
     disposeObject(placeholder);
     viewer.spatialPickTargets = viewer.spatialPickTargets.filter((object) => object !== placeholder);
-    applySourceLockedLoaderTransformPolicy(gltf.scene, entity);
-    if (!sourceLocked) {
+    applySpatialLoaderTransformPolicy(gltf.scene, entity);
+    if (entity?.preserveSourceGeometry !== true) {
       normalizeSpatialRuntimeObject(
         gltf.scene,
         topologyPose.targetSize,
@@ -26568,9 +26078,7 @@ function loadSpatialRelationsImage(viewer, assetLink, index, total, done) {
   authorWrapper.name = `StoryVR image-plane transform · ${assetLink.assetId}`;
   authorWrapper.userData.spatialEntityId = entityId;
   authorWrapper.userData.assetId = assetLink.assetId;
-  (spatialEntityIsSourceLockedMember(entity) && viewer.sourceCompositionFrameRoot
-    ? viewer.sourceCompositionFrameRoot
-    : viewer.root).add(authorWrapper);
+  viewer.root.add(authorWrapper);
   viewer.spatialObjects.set(entityId, authorWrapper);
   const placeholder = makeTextComfortPlaceholder(asset?.filename || assetLink.assetId, "IMG");
   placeholder.userData.spatialEntityId = entityId;
@@ -26659,8 +26167,7 @@ function spatialAnchorWorldPosition(viewer, entity) {
 
 function applySpatialEntityTransformToObject(viewer, entity, object) {
   if (!entity || !object) return;
-  const transform = sourceLockedSpatialTransform(entity)
-    || normalizeSpatialTransform(entity.transform, entity.inferredTransform);
+  const transform = normalizeSpatialTransform(entity.transform, entity.inferredTransform);
   const position = new THREE.Vector3(...transform.position);
   const isText = spatialEntityType(entity) === "text-panel";
   const isReader = spatialEntityType(entity) === "reader";
@@ -26737,8 +26244,7 @@ function applyLockedSpatialGlbTransform(viewer, assetId, authorWrapper, resolved
   if (!viewer?.layers?.enabled?.[SPATIAL_RELATIONS_COMPONENT_ID] || !authorWrapper || !assetId) return false;
   const entity = resolvedEntity || lockedSpatialGlbEntityForViewer(viewer, assetId);
   if (!entity) return false;
-  const transform = sourceLockedSpatialTransform(entity)
-    || normalizeSpatialTransform(entity.transform, entity.inferredTransform);
+  const transform = normalizeSpatialTransform(entity.transform, entity.inferredTransform);
   authorWrapper.position.fromArray(transform.position);
   authorWrapper.quaternion.fromArray(transform.quaternion);
   authorWrapper.scale.fromArray(transform.scale);
@@ -27001,6 +26507,153 @@ function applySpatialDraftToViewer(viewer) {
   updateSpatialAnchoredTextPanel(viewer);
 }
 
+function normalizeSpatialSelectionRectangle(startX, startY, endX, endY) {
+  const left = Math.min(Number(startX) || 0, Number(endX) || 0);
+  const top = Math.min(Number(startY) || 0, Number(endY) || 0);
+  const right = Math.max(Number(startX) || 0, Number(endX) || 0);
+  const bottom = Math.max(Number(startY) || 0, Number(endY) || 0);
+  return {
+    left,
+    top,
+    right,
+    bottom,
+    width: right - left,
+    height: bottom - top,
+  };
+}
+
+function spatialObjectIsEffectivelyVisible(object, scene) {
+  for (let current = object; current; current = current.parent) {
+    if (current.visible === false) return false;
+    if (current === scene) return true;
+  }
+  return false;
+}
+
+function preciseVisibleSpatialBounds(object, scene) {
+  const bounds = [];
+  const point = new THREE.Vector3();
+  const localBox = new THREE.Box3();
+  const worldBox = new THREE.Box3();
+  const instanceMatrix = new THREE.Matrix4();
+  const worldMatrix = new THREE.Matrix4();
+  if (!object) return bounds;
+  object.updateWorldMatrix(true, true);
+  object.traverse((renderable) => {
+    if (!spatialObjectIsEffectivelyVisible(renderable, scene)) return;
+    const geometry = renderable.geometry;
+    const position = geometry?.getAttribute?.("position");
+    if (!position) return;
+    if (renderable.isInstancedMesh) {
+      if (geometry.boundingBox === null) geometry.computeBoundingBox();
+      if (!geometry.boundingBox) return;
+      localBox.copy(geometry.boundingBox);
+      for (let index = 0; index < renderable.count; index += 1) {
+        renderable.getMatrixAt(index, instanceMatrix);
+        worldMatrix.multiplyMatrices(renderable.matrixWorld, instanceMatrix);
+        worldBox.copy(localBox).applyMatrix4(worldMatrix);
+        bounds.push(worldBox.clone());
+      }
+      return;
+    }
+    const renderableBounds = new THREE.Box3();
+    for (let index = 0; index < position.count; index += 1) {
+      if (renderable.isMesh && typeof renderable.getVertexPosition === "function") {
+        renderable.getVertexPosition(index, point);
+      } else point.fromBufferAttribute(position, index);
+      renderableBounds.expandByPoint(point.applyMatrix4(renderable.matrixWorld));
+    }
+    if (!renderableBounds.isEmpty()) bounds.push(renderableBounds);
+  });
+  return bounds;
+}
+
+function spatialSelectionFrustum(camera, viewportRect, selectionRectangle) {
+  if (!camera || !viewportRect?.width || !viewportRect?.height || !selectionRectangle) return null;
+  const left = (THREE.MathUtils.clamp(
+    (selectionRectangle.left - viewportRect.left) / viewportRect.width,
+    0,
+    1,
+  ) * 2) - 1;
+  const right = (THREE.MathUtils.clamp(
+    (selectionRectangle.right - viewportRect.left) / viewportRect.width,
+    0,
+    1,
+  ) * 2) - 1;
+  const top = 1 - (THREE.MathUtils.clamp(
+    (selectionRectangle.top - viewportRect.top) / viewportRect.height,
+    0,
+    1,
+  ) * 2);
+  const bottom = 1 - (THREE.MathUtils.clamp(
+    (selectionRectangle.bottom - viewportRect.top) / viewportRect.height,
+    0,
+    1,
+  ) * 2);
+  if (right - left <= 1e-9 || top - bottom <= 1e-9) return null;
+  camera.updateWorldMatrix(true, false);
+  const crop = new THREE.Matrix4().set(
+    2 / (right - left), 0, 0, -(right + left) / (right - left),
+    0, 2 / (top - bottom), 0, -(top + bottom) / (top - bottom),
+    0, 0, 1, 0,
+    0, 0, 0, 1,
+  );
+  const projectionView = new THREE.Matrix4().multiplyMatrices(
+    camera.projectionMatrix,
+    camera.matrixWorldInverse,
+  );
+  crop.multiply(projectionView);
+  return new THREE.Frustum().setFromProjectionMatrix(crop, camera.coordinateSystem);
+}
+
+function spatialEntityIdsInSelectionRectangle(viewer, selectionRectangle) {
+  const viewportRect = viewer?.renderer?.domElement?.getBoundingClientRect?.();
+  const frustum = spatialSelectionFrustum(viewer?.camera, viewportRect, selectionRectangle);
+  if (!viewer?.spatialObjects || !frustum) return [];
+  return spatialEditorSceneEntities(state.spatialRelationsDraft, activeSpatialSceneContext())
+    .filter((entity) => ["glb", "image-plane", "reader"].includes(spatialEntityType(entity)))
+    .filter((entity) => {
+      const object = viewer.spatialObjects.get(entity.id);
+      if (!object || object.userData?.spatialPlaybackActive === false) return false;
+      return preciseVisibleSpatialBounds(object, viewer.scene)
+        .some((bounds) => frustum.intersectsBox(bounds));
+    })
+    .map((entity) => entity.id);
+}
+
+function spatialSelectionForRectangle(
+  orderedEntityIds,
+  selectedEntityIds,
+  hitEntityIds,
+  options = {},
+) {
+  const orderedIds = [...new Set((orderedEntityIds || []).filter(Boolean))];
+  const selected = new Set((selectedEntityIds || []).filter((entityId) => orderedIds.includes(entityId)));
+  const hits = [...new Set((hitEntityIds || []).filter((entityId) => orderedIds.includes(entityId)))];
+  if (options.toggle === true) {
+    for (const entityId of hits) {
+      if (selected.has(entityId)) selected.delete(entityId);
+      else selected.add(entityId);
+    }
+  } else if (options.additive === true) {
+    for (const entityId of hits) selected.add(entityId);
+  } else {
+    selected.clear();
+    for (const entityId of hits) selected.add(entityId);
+  }
+  if (!selected.size && hits.length) selected.add(hits[hits.length - 1]);
+  return orderedIds.filter((entityId) => selected.has(entityId));
+}
+
+function updateSpatialSelectionMarquee(element, selectionRectangle, containerRect) {
+  if (!element || !selectionRectangle || !containerRect) return;
+  element.hidden = false;
+  element.style.left = `${selectionRectangle.left - containerRect.left}px`;
+  element.style.top = `${selectionRectangle.top - containerRect.top}px`;
+  element.style.width = `${selectionRectangle.width}px`;
+  element.style.height = `${selectionRectangle.height}px`;
+}
+
 function syncSpatialSelectionHelpers(viewer, objects) {
   if (!viewer?.scene) return;
   for (const helper of viewer.selectionHelpers || []) {
@@ -27134,10 +26787,6 @@ function syncSpatialSelectionInViewer() {
     item.classList.toggle("selected", selected);
     item.classList.toggle("selection-primary", item.dataset.spatialSelectEntity === state.selectedSpatialEntityId);
     item.setAttribute("aria-pressed", String(selected));
-    if (selected && item.classList.contains("spatial-hierarchy-assembly-member")) {
-      const assembly = item.closest("[data-spatial-assembly-id]");
-      if (assembly && !assembly.open) assembly.open = true;
-    }
   }
   const title = document.querySelector(".spatial-preview-card .topology-kind-pill");
   if (title) title.textContent = spatialSelectionLabel(entities);
@@ -27145,26 +26794,51 @@ function syncSpatialSelectionInViewer() {
   syncSpatialInspectorFromSelection();
 }
 
-function selectSpatialRelationEntityInViewer(entityId) {
+function selectSpatialRelationEntityInViewer(entityId, options = {}) {
   const entity = spatialRelationEntityById(state.spatialRelationsDraft, entityId);
   if (!entity) return;
-  setSpatialRelationSelection([entityId], {
-    primaryEntityId: entityId,
-    anchorEntityId: entityId,
+  const orderedEntityIds = spatialEditorSceneEntities(
+    state.spatialRelationsDraft,
+    activeSpatialSceneContext(),
+  ).map((candidate) => candidate.id);
+  const entityIds = spatialSelectionForRectangle(
+    orderedEntityIds,
+    selectedSpatialRelationEntityIds(),
+    [entityId],
+    options,
+  );
+  const primaryEntityId = entityIds.includes(entityId)
+    ? entityId
+    : entityIds[entityIds.length - 1] || null;
+  setSpatialRelationSelection(entityIds, {
+    primaryEntityId,
+    anchorEntityId: primaryEntityId,
+  });
+}
+
+function clearSpatialRelationSelection() {
+  setSpatialRelationSelection([], {
+    primaryEntityId: null,
+    anchorEntityId: null,
+    explicitClear: true,
   });
 }
 
 function syncSpatialInspectorFromSelection() {
   const entity = selectedSpatialRelationEntity();
+  const inspector = document.querySelector(".spatial-inspector");
+  const inspectorHasSelection = Boolean(inspector?.querySelector("[data-spatial-inspector-title]"));
+  if (inspector && inspectorHasSelection !== Boolean(entity)) {
+    inspector.outerHTML = renderSpatialRelationsInspector(entity);
+    bindSpatialInspectorEvents();
+  }
   if (!entity) return;
   const selectedEntities = selectedSpatialRelationEntities();
   const multipleSelected = selectedEntities.length > 1;
   const transform = multipleSelected
     ? spatialSelectionTransformSummary(selectedEntities)
-    : sourceLockedSpatialTransform(entity)
-      || normalizeSpatialTransform(entity.transform, entity.inferredTransform);
-  const transformBlocked = spatialSelectionHasAncestorConflict(selectedEntities)
-    || selectedEntities.some((selected) => !spatialEntityTransformEditable(selected));
+    : normalizeSpatialTransform(entity.transform, entity.inferredTransform);
+  const transformBlocked = selectedEntities.some((selected) => !spatialEntityTransformEditable(selected));
   const values = { position: transform.position, rotation: spatialEulerDegrees(transform.quaternion), scale: transform.scale };
   for (const input of document.querySelectorAll("[data-spatial-transform-field]")) {
     const [group, indexText] = input.dataset.spatialTransformField.split(".");
@@ -27178,15 +26852,14 @@ function syncSpatialInspectorFromSelection() {
       ? `${selectedEntities.length} selected`
       : entity.manual
         ? "manual"
-        : spatialEntityIsSourceLockedMember(entity) ? "source placed" : "inferred";
+        : "inferred";
     badge.classList.toggle("warning", selectionChanged);
     badge.classList.toggle("good", !selectionChanged);
   }
   const title = document.querySelector("[data-spatial-inspector-title]");
   if (title) title.textContent = spatialSelectionLabel(selectedEntities);
   const scope = document.querySelector("[data-spatial-inspector-scope]");
-  if (scope) scope.textContent = multipleSelected ? "Group transform" : spatialEntityScopeLabel(entity);
-  const isText = spatialEntityType(entity) === "text-panel";
+  if (scope) scope.textContent = "Transform";
   const isReader = selectedEntities.some((selected) => spatialEntityType(selected) === "reader");
   const scaleSection = document.querySelector("[data-spatial-scale-section]");
   if (scaleSection) scaleSection.hidden = isReader;
@@ -27194,8 +26867,6 @@ function syncSpatialInspectorFromSelection() {
   if (ratio) ratio.disabled = transformBlocked || isReader;
   const multiNote = document.querySelector("[data-spatial-multi-selection-note]");
   if (multiNote) multiNote.hidden = !multipleSelected;
-  const individualDetails = document.querySelector("[data-spatial-individual-details]");
-  if (individualDetails) individualDetails.hidden = multipleSelected;
   const reset = document.querySelector("[data-spatial-reset-selected]");
   if (reset) {
     reset.disabled = transformBlocked;
@@ -27203,24 +26874,6 @@ function syncSpatialInspectorFromSelection() {
       ? `Reset ${selectedEntities.length} selected objects`
       : "Reset to suggested placement";
   }
-  const policies = document.querySelector("[data-spatial-text-policies]");
-  if (policies) policies.hidden = !isText;
-  if (isText) {
-    const anchor = normalizeSpatialAnchor(entity.anchor, entity);
-    const anchorType = document.querySelector("[data-spatial-anchor-type]");
-    if (anchorType) anchorType.value = anchor.type;
-    const anchorAsset = document.querySelector("[data-spatial-anchor-asset]");
-    if (anchorAsset) {
-      anchorAsset.value = anchor.assetId || "";
-      anchorAsset.disabled = !["asset", "source-focus"].includes(anchor.type);
-    }
-    const orientation = document.querySelector("[data-spatial-orientation-policy]");
-    if (orientation) orientation.value = entity.orientationPolicy;
-  }
-  const confidence = Number(entity.inference?.confidence);
-  const reasons = Array.isArray(entity.inference?.reasons) ? entity.inference.reasons : [];
-  const inference = document.querySelector("[data-spatial-inference-copy]");
-  if (inference) inference.textContent = `${Number.isFinite(confidence) ? `${Math.round(confidence * 100)}% confidence. ` : ""}${reasons[0] || (isText ? "Geometric readability and semantic anchor candidate." : "Inherited from Asset Topology.")}`;
   for (const item of document.querySelectorAll("[data-spatial-select-entity]")) {
     const itemEntity = spatialRelationEntityById(
       state.spatialRelationsDraft,
@@ -27231,7 +26884,7 @@ function syncSpatialInspectorFromSelection() {
     if (status) {
       status.textContent = itemEntity.manual
         ? "edited"
-        : spatialEntityIsSourceLockedMember(itemEntity) ? "source placed" : "inferred";
+        : "inferred";
       status.classList.toggle("inferred", !itemEntity.manual);
     }
   }
@@ -27250,28 +26903,22 @@ function setSpatialTransformMode(mode) {
 function syncSpatialToolbarState() {
   const selectedEntities = selectedSpatialRelationEntities();
   const readerSelected = selectedEntities.some((selected) => spatialEntityType(selected) === "reader");
-  const ancestorConflict = spatialSelectionHasAncestorConflict(selectedEntities);
-  const transformBlocked = ancestorConflict
-    || selectedEntities.some((selected) => !spatialEntityTransformEditable(selected));
+  const transformBlocked = selectedEntities.some((selected) => !spatialEntityTransformEditable(selected));
   for (const button of document.querySelectorAll("[data-spatial-transform-mode]")) {
     const mode = button.dataset.spatialTransformMode;
     button.classList.toggle("selected", button.dataset.spatialTransformMode === state.spatialTransformMode);
     button.disabled = !selectedEntities.length || transformBlocked || (mode === "scale" && readerSelected);
     button.title = transformBlocked
-      ? ancestorConflict
-        ? "Select the Assembly root or its member objects, not both"
-        : "This selection cannot be transformed"
+      ? "This selection cannot be transformed"
       : mode === "scale" && readerSelected
         ? "Reader scale is fixed"
         : selectedEntities.length ? "" : "Select an object";
   }
-  const space = document.querySelector("[data-spatial-toggle-space]");
-  if (space) space.textContent = state.spatialTransformSpace === "local" ? "Local" : "World";
   syncSpatialClipboardControls();
   syncSpatialPropagationControls();
 }
 
-function frameSpatialSceneOverview(viewer) {
+function fitSpatialEditorCameraOnLoad(viewer) {
   if (!viewer || viewer.disposed) return false;
   const bounds = new THREE.Box3();
   for (const object of viewer.spatialObjects?.values?.() || []) {
@@ -27322,27 +26969,6 @@ function frameSpatialSceneOverview(viewer) {
   return true;
 }
 
-function frameSelectedSpatialEntity(viewer) {
-  const selectedIds = selectedSpatialRelationEntityIds();
-  const objects = selectedIds
-    .map((entityId) => viewer?.spatialObjects?.get(entityId))
-    .filter(Boolean);
-  if (!objects.length) return;
-  const box = new THREE.Box3();
-  for (const object of objects) box.expandByObject(object);
-  if (box.isEmpty()) return;
-  const center = box.getCenter(new THREE.Vector3());
-  const size = box.getSize(new THREE.Vector3());
-  const radius = Math.max(size.length() * 0.75, 0.8);
-  const direction = viewer.camera.position.clone().sub(viewer.controls.target).normalize();
-  viewer.controls.target.copy(center);
-  viewer.camera.position.copy(center).add(direction.multiplyScalar(radius * 2.2));
-  viewer.camera.near = Math.max(0.01, radius / 100);
-  viewer.camera.far = Math.max(100, radius * 100);
-  viewer.camera.updateProjectionMatrix();
-  viewer.controls.update();
-}
-
 function initializeTextComfortViewer(active) {
   if (active?.id !== "text-comfort") return;
   const container = document.querySelector("[data-text-viewer]");
@@ -27389,6 +27015,7 @@ function initializeTextComfortViewer(active) {
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.target.set(0, 0.85, 0);
+  configureSpatialEditorMouseControls(controls);
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x6f7f78, 2.4));
   const keyLight = new THREE.DirectionalLight(0xffffff, 3.1);
@@ -27539,6 +27166,7 @@ function initializeTextComfortViewer(active) {
     viewer.focused = true;
     container.classList.add("focused");
     renderer.domElement.focus();
+    if (event.button !== 0) return;
     updatePointer(event);
     raycaster.setFromCamera(pointer, camera);
     const hits = viewer.panel ? raycaster.intersectObject(viewer.panel, true) : [];
@@ -28296,7 +27924,7 @@ function addInterBeatTransitionOverlays(root, kind, fromPosition, toPosition, pl
   return effects;
 }
 
-function loadDynamicAsset(viewer, assetLink, index, total, active, finishAsset, options = {}) {
+function loadDynamicAsset(viewer, assetLink, index, total, active, finishAsset) {
   const asset = findAssetById(assetLink.assetId);
   const wrapper = new THREE.Group();
   const authorWrapper = new THREE.Group();
@@ -28309,9 +27937,6 @@ function loadDynamicAsset(viewer, assetLink, index, total, active, finishAsset, 
   const spatialEntityId = assetLink.entityId || spatialEntity?.id || "";
   authorWrapper.userData.spatialEntityId = spatialEntityId;
   const spatialTransformApplied = applyLockedSpatialGlbTransform(viewer, assetLink.assetId, authorWrapper, spatialEntity);
-  const sourceCompositionMember = options.sourceComposition === true
-    && Boolean(viewer.sourceCompositionFrameRoot)
-    && spatialEntityIsSourceLockedMember(spatialEntity);
   const basePosition = spatialTransformApplied
     ? new THREE.Vector3()
     : dynamicAssetPosition3d(index, total, viewer.layoutKind, active);
@@ -28320,7 +27945,7 @@ function loadDynamicAsset(viewer, assetLink, index, total, active, finishAsset, 
     : dynamicPreviewAssetTargetSize(viewer, active);
   wrapper.position.copy(basePosition);
   wrapper.add(authorWrapper);
-  (sourceCompositionMember ? viewer.sourceCompositionFrameRoot : viewer.root).add(wrapper);
+  viewer.root.add(wrapper);
   const dynamicEntry = {
     wrapper,
     authorWrapper,
@@ -28328,8 +27953,6 @@ function loadDynamicAsset(viewer, assetLink, index, total, active, finishAsset, 
     active,
     baseScale: spatialTransformApplied ? 1 : active ? 1.08 : 0.92,
     spatialTransformApplied,
-    sourceCompositionMember,
-    sourceCompositionInstanceId: String(assetLink.sourceCompositionInstanceId || ""),
     assetId: assetLink.assetId,
     entityId: spatialEntityId,
     index,
@@ -28389,15 +28012,13 @@ function loadDynamicAsset(viewer, assetLink, index, total, active, finishAsset, 
           authorWrapper.remove(placeholder);
           disposeObject(placeholder);
         }
-        applySourceLockedLoaderTransformPolicy(gltf.scene, spatialEntity);
-        if (spatialTransformApplied) {
-          if (!sourceCompositionMember) {
-            normalizeSpatialRuntimeObject(
-              gltf.scene,
-              targetSize,
-              spatialEntityVerticalAlignment(spatialEntity),
-            );
-          }
+        applySpatialLoaderTransformPolicy(gltf.scene, spatialEntity);
+        if (spatialTransformApplied && spatialEntity?.preserveSourceGeometry !== true) {
+          normalizeSpatialRuntimeObject(
+            gltf.scene,
+            targetSize,
+            spatialEntityVerticalAlignment(spatialEntity),
+          );
         }
         else normalizeTopologyObject(gltf.scene, targetSize);
         dynamicEntry.opacityMaterials.push(...preparePreviewOpacityTarget(gltf.scene));
@@ -28442,6 +28063,7 @@ function loadDynamicAsset(viewer, assetLink, index, total, active, finishAsset, 
           : makeTopologyImagePlane(texture, targetSize);
         dynamicEntry.opacityMaterials.push(...preparePreviewOpacityTarget(plane));
         authorWrapper.add(plane);
+        dynamicEntry.sourceScene = plane;
         finishAsset(true);
       },
       undefined,
@@ -30436,6 +30058,267 @@ function syncSelectedModelWithActiveContext() {
   if (!beat || !linked) state.selectedModelAssetId = null;
 }
 
+function sourceGraphSpatialPreviewContract() {
+  const locked = lockedSpatialRelationsContract();
+  if (locked) return locked;
+  const saved = spatialRelationsDecision()?.spatialRelations;
+  if (
+    spatialRelationEntities(saved).length
+    || saved?.resolvedByBeat
+    || saved?.resolvedByVariant
+  ) return saved;
+  return null;
+}
+
+function sourceGraphSpatialPreviewEntries(preview, contract) {
+  const linkedAssetIds = new Set(preview.linkedAssetIds);
+  const sceneEntities = spatialSceneEntities(contract, preview.sceneContext)
+    .filter((entity) => {
+      const kind = spatialEntityType(entity);
+      return (kind === "glb" || kind === "image-plane") && linkedAssetIds.has(entity.assetId);
+    });
+  const coveredAssetIds = new Set(sceneEntities.map((entity) => entity.assetId));
+  const entries = sceneEntities.map((entity) => ({
+    assetId: entity.assetId,
+    entity,
+    kind: spatialEntityType(entity),
+  }));
+  for (const assetId of preview.linkedAssetIds) {
+    if (coveredAssetIds.has(assetId)) continue;
+    const asset = findAssetById(assetId);
+    if (!asset || (!isModelAsset(asset) && !isImageAsset(asset))) continue;
+    entries.push({
+      assetId,
+      entity: null,
+      kind: isImageAsset(asset) ? "image-plane" : "glb",
+    });
+  }
+  return entries;
+}
+
+function applySourceGraphSpatialPreviewFallbackTransform(wrapper, index, total) {
+  if (total <= 1) {
+    wrapper.position.set(0, 0, 0);
+    return;
+  }
+  const columns = Math.min(3, total);
+  const rows = Math.ceil(total / columns);
+  const column = index % columns;
+  const row = Math.floor(index / columns);
+  wrapper.position.set(
+    (column - ((columns - 1) / 2)) * 2.15,
+    0,
+    (row - ((rows - 1) / 2)) * 1.7,
+  );
+}
+
+function frameSourceGraphSpatialPreview(viewer) {
+  const candidates = viewer.selectedObjects.length ? viewer.selectedObjects : [...viewer.spatialObjects.values()];
+  const bounds = new THREE.Box3();
+  for (const object of candidates) {
+    object.updateWorldMatrix(true, true);
+    bounds.union(new THREE.Box3().setFromObject(object, true));
+  }
+  if (bounds.isEmpty()) return;
+  const center = bounds.getCenter(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
+  const maxSize = Math.max(size.x, size.y, size.z, 0.7);
+  const distance = maxSize / (2 * Math.tan(THREE.MathUtils.degToRad(viewer.camera.fov / 2)));
+  const direction = new THREE.Vector3(1, 0.72, 1).normalize();
+  viewer.camera.position.copy(center).add(direction.multiplyScalar(distance * 2.05));
+  viewer.camera.near = Math.max(distance / 100, 0.01);
+  viewer.camera.far = Math.max(distance * 100, 100);
+  viewer.camera.updateProjectionMatrix();
+  viewer.controls.target.copy(center);
+  viewer.controls.update();
+}
+
+function markSourceGraphSpatialPreviewSelection(viewer, object, assetId) {
+  if (assetId !== viewer.preview.assetId) return;
+  viewer.selectedObjects.push(object);
+  const helper = new THREE.BoxHelper(object, 0x007f73);
+  helper.name = "Selected asset preview highlight";
+  helper.material.transparent = true;
+  helper.material.opacity = 0.95;
+  helper.material.depthTest = false;
+  helper.renderOrder = 20;
+  viewer.scene.add(helper);
+  viewer.highlightHelpers.push(helper);
+}
+
+function loadSourceGraphSpatialPreviewGlb(viewer, entry, index, total, done) {
+  const asset = findAssetById(entry.assetId);
+  const src = asset && assetLoadSrc(asset);
+  const wrapper = new THREE.Group();
+  wrapper.name = `Read-only scene object · ${entry.assetId}`;
+  wrapper.userData.assetId = entry.assetId;
+  viewer.root.add(wrapper);
+  viewer.spatialObjects.set(entry.entity?.id || `preview:${entry.assetId}:${index}`, wrapper);
+  if (entry.entity) applySpatialEntityTransformToObject(viewer, entry.entity, wrapper);
+  else applySourceGraphSpatialPreviewFallbackTransform(wrapper, index, total);
+  if (!src) {
+    done(false);
+    return;
+  }
+  createGltfLoader().load(src, (gltf) => {
+    if (viewer.disposed) {
+      disposeObject(gltf.scene);
+      return;
+    }
+    applySpatialLoaderTransformPolicy(gltf.scene, entry.entity);
+    if (entry.entity?.preserveSourceGeometry !== true) {
+      normalizeSpatialRuntimeObject(
+        gltf.scene,
+        spatialTopologyAssetPose(viewer, index, Math.max(total, 1)).targetSize,
+        spatialEntityVerticalAlignment(entry.entity),
+      );
+    }
+    wrapper.add(gltf.scene);
+    wrapper.updateWorldMatrix(true, true);
+    markSourceGraphSpatialPreviewSelection(viewer, wrapper, entry.assetId);
+    done(true);
+  }, undefined, () => done(false));
+}
+
+function loadSourceGraphSpatialPreviewImage(viewer, entry, index, total, done) {
+  const asset = findAssetById(entry.assetId);
+  const src = asset && assetPreviewSrc(asset);
+  const wrapper = new THREE.Group();
+  wrapper.name = `Read-only scene image · ${entry.assetId}`;
+  wrapper.userData.assetId = entry.assetId;
+  viewer.root.add(wrapper);
+  viewer.spatialObjects.set(entry.entity?.id || `preview:${entry.assetId}:${index}`, wrapper);
+  if (entry.entity) applySpatialEntityTransformToObject(viewer, entry.entity, wrapper);
+  else {
+    applySourceGraphSpatialPreviewFallbackTransform(wrapper, index, total);
+    wrapper.position.y = 1;
+  }
+  if (!src) {
+    done(false);
+    return;
+  }
+  new THREE.TextureLoader().load(src, (texture) => {
+    if (viewer.disposed) {
+      texture.dispose();
+      return;
+    }
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const image = entry.entity?.image || {};
+    const actualAspect = texture.image?.width && texture.image?.height
+      ? texture.image.width / texture.image.height
+      : null;
+    const aspect = Number(image.aspectRatio) || actualAspect || 16 / 9;
+    const width = Math.max(0.1, Number(image.width) || 1.6);
+    const height = Math.max(0.1, Number(image.height) || width / Math.max(aspect, 0.1));
+    const plane = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, height),
+      new THREE.MeshBasicMaterial({ map: texture, transparent: true, side: THREE.DoubleSide }),
+    );
+    wrapper.add(plane);
+    wrapper.updateWorldMatrix(true, true);
+    markSourceGraphSpatialPreviewSelection(viewer, wrapper, entry.assetId);
+    done(true);
+  }, undefined, () => done(false));
+}
+
+function initializeSourceGraphSpatialPreview(active) {
+  if (active?.id !== "source-graph") return;
+  const container = document.querySelector("[data-source-graph-spatial-preview-viewer]");
+  const preview = sourceGraphSpatialPreviewState();
+  if (!container || !preview) return;
+  const contract = sourceGraphSpatialPreviewContract();
+  const sceneRecord = spatialSceneRecordForContext(contract, preview.sceneContext);
+  const entries = sourceGraphSpatialPreviewEntries(preview, contract);
+  const width = Math.max(container.clientWidth, 280);
+  const height = Math.max(container.clientHeight, 190);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xf8f7ec);
+  const camera = new THREE.PerspectiveCamera(40, width / height, 0.01, 1000);
+  camera.position.set(3.2, 2.2, 4.2);
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(width, height);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.domElement.tabIndex = 0;
+  renderer.domElement.className = "source-graph-spatial-preview-canvas spatial-editor-mouse-controls";
+  const status = container.querySelector(".source-graph-spatial-preview-status") || document.createElement("div");
+  status.className = "source-graph-spatial-preview-status";
+  status.textContent = entries.length ? "Loading scene…" : "No spatial assets to preview.";
+  container.replaceChildren(renderer.domElement, status);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  configureSpatialEditorMouseControls(controls);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.screenSpacePanning = false;
+  controls.maxPolarAngle = Math.PI / 2 - 0.02;
+  controls.target.set(0, 0.9, 0);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x6f7f78, 2.5));
+  const keyLight = new THREE.DirectionalLight(0xffffff, 3);
+  keyLight.position.set(4, 7, 5);
+  scene.add(keyLight);
+  const fillLight = new THREE.DirectionalLight(0xbcece4, 1.2);
+  fillLight.position.set(-4, 3, -4);
+  scene.add(fillLight);
+  const root = new THREE.Group();
+  root.name = "Source Graph read-only spatial preview";
+  scene.add(root);
+  const layoutKind = sceneRecord?.topology?.kind || sceneRecord?.topologyKind || "single";
+  scene.add(makeSpatialEditorFloorGuide(layoutKind));
+  const viewer = {
+    container,
+    preview,
+    scene,
+    camera,
+    renderer,
+    controls,
+    root,
+    layoutKind,
+    topologyKind: layoutKind,
+    spatialObjects: new Map(),
+    selectedObjects: [],
+    highlightHelpers: [],
+    animationId: null,
+    resizeHandler: null,
+    disposed: false,
+  };
+  sourceGraphSpatialPreviewViewer = viewer;
+  let pending = entries.length;
+  let loaded = 0;
+  const finishEntry = (success) => {
+    pending -= 1;
+    if (success) loaded += 1;
+    if (pending > 0 || viewer.disposed) return;
+    if (loaded) status.remove();
+    else status.textContent = "Preview unavailable.";
+    frameSourceGraphSpatialPreview(viewer);
+  };
+  entries.forEach((entry, index) => {
+    if (entry.kind === "image-plane") {
+      loadSourceGraphSpatialPreviewImage(viewer, entry, index, entries.length, finishEntry);
+    } else loadSourceGraphSpatialPreviewGlb(viewer, entry, index, entries.length, finishEntry);
+  });
+  if (!entries.length) requestAnimationFrame(() => {
+    if (!viewer.disposed) frameSourceGraphSpatialPreview(viewer);
+  });
+  viewer.resizeHandler = () => {
+    if (viewer.disposed) return;
+    const nextWidth = Math.max(container.clientWidth, 280);
+    const nextHeight = Math.max(container.clientHeight, 190);
+    camera.aspect = nextWidth / nextHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(nextWidth, nextHeight);
+  };
+  window.addEventListener("resize", viewer.resizeHandler);
+  const animate = () => {
+    if (viewer.disposed) return;
+    for (const helper of viewer.highlightHelpers) helper.update();
+    controls.update();
+    renderer.render(scene, camera);
+    viewer.animationId = requestAnimationFrame(animate);
+  };
+  animate();
+}
+
 function initializeSelectedModelViewer() {
   const container = document.querySelector("[data-model-viewer]");
   if (!container || !state.selectedModelAssetId) return;
@@ -30539,6 +30422,22 @@ function fitCameraToObject(camera, controls, object) {
   controls.update();
 }
 
+function disposeSourceGraphSpatialPreviewViewer() {
+  if (!sourceGraphSpatialPreviewViewer) return;
+  sourceGraphSpatialPreviewViewer.disposed = true;
+  if (sourceGraphSpatialPreviewViewer.animationId) {
+    cancelAnimationFrame(sourceGraphSpatialPreviewViewer.animationId);
+  }
+  if (sourceGraphSpatialPreviewViewer.resizeHandler) {
+    window.removeEventListener("resize", sourceGraphSpatialPreviewViewer.resizeHandler);
+  }
+  sourceGraphSpatialPreviewViewer.controls?.dispose();
+  disposeObject(sourceGraphSpatialPreviewViewer.scene);
+  sourceGraphSpatialPreviewViewer.renderer?.dispose();
+  sourceGraphSpatialPreviewViewer.renderer?.forceContextLoss?.();
+  sourceGraphSpatialPreviewViewer = null;
+}
+
 function disposeModelViewer() {
   if (!modelViewer) return;
   modelViewer.disposed = true;
@@ -30637,6 +30536,14 @@ function disposeTextComfortViewer() {
   if (textViewer.pointerUpHandler) window.removeEventListener("pointerup", textViewer.pointerUpHandler);
   if (textViewer.pointerCancelHandler) window.removeEventListener("pointercancel", textViewer.pointerCancelHandler);
   if (textViewer.pointerDownHandler) textViewer.renderer?.domElement?.removeEventListener("pointerdown", textViewer.pointerDownHandler);
+  if (textViewer.selectionPointerGesture) {
+    const pointerId = textViewer.selectionPointerGesture.pointerId;
+    if (textViewer.renderer?.domElement?.hasPointerCapture?.(pointerId)) {
+      textViewer.renderer.domElement.releasePointerCapture?.(pointerId);
+    }
+    textViewer.selectionPointerGesture = null;
+  }
+  textViewer.selectionMarquee?.remove?.();
   textViewer.transformControls?.detach?.();
   textViewer.transformControls?.dispose?.();
   textViewer.transformHelper?.removeFromParent?.();
@@ -31591,70 +31498,11 @@ function finalReviewBeats() {
   return spatialPreviewBeats();
 }
 
-function finalReviewSourceCompositionForScene(sceneContext) {
-  const scene = spatialSceneRecordForContext(lockedSpatialRelationsContract(), sceneContext);
-  const sourceComposition = scene?.placementPolicy === "source-locked"
-    ? scene.sourceComposition
-    : null;
-  return sourceComposition?.placementPolicy === "source-locked"
-    && Array.isArray(sourceComposition.memberEntityIds)
-    && sourceComposition.memberEntityIds.length
-    ? sourceComposition
-    : null;
-}
-
-function finalReviewSourceCompositionAssetLinks(beat, sceneContext, sourceComposition = null) {
-  const composition = sourceComposition || finalReviewSourceCompositionForScene(sceneContext);
-  if (!beat || !composition) return [];
-  const memberEntityIds = new Set(
-    composition.memberEntityIds.map((entityId) => String(entityId || "")).filter(Boolean),
-  );
-  const sourceInstanceIdsByEntityId = new Map(
-    spatialSceneEntities(lockedSpatialRelationsContract(), sceneContext)
-      .map((entity) => [String(entity?.id || ""), String(entity?.sourceInstanceId || "")]),
-  );
-  return dynamicSceneAssetLinks(null, [beat], sceneContext)
-    .filter((assetLink) => memberEntityIds.has(String(assetLink.entityId || "")))
-    .map((assetLink) => ({
-      ...assetLink,
-      sourceCompositionInstanceId: sourceInstanceIdsByEntityId.get(String(assetLink.entityId || "")) || "",
-    }));
-}
-
-function finalReviewTransitionSourceCompositionAssetLinks(playback, destinationComposition = null) {
-  const boundary = playback?.boundary;
-  const toContext = boundary?.toSceneContext
-    || (boundary?.toBeatId ? interBeatDefaultSceneContextForBeat(boundary.toBeatId) : null);
-  const toComposition = destinationComposition || finalReviewSourceCompositionForScene(toContext);
-  if (!boundary?.to || !toContext?.beatId || !toComposition) return [];
-  const toBeat = finalReviewBeatForSceneContext(toContext) || boundary.to;
-  const toLinks = finalReviewSourceCompositionAssetLinks(toBeat, toContext, toComposition);
-  const fromContext = boundary.fromSceneContext
-    || (boundary.fromBeatId ? interBeatDefaultSceneContextForBeat(boundary.fromBeatId) : null);
-  const fromComposition = finalReviewSourceCompositionForScene(fromContext);
-  const sameComposition = fromComposition
-    && String(fromComposition.compositionId || "") === String(toComposition.compositionId || "");
-  const fromBeat = sameComposition
-    ? finalReviewBeatForSceneContext(fromContext) || boundary.from
-    : null;
-  const fromLinks = fromBeat
-    ? finalReviewSourceCompositionAssetLinks(fromBeat, fromContext, fromComposition)
-    : [];
-  const linksByInstance = new Map();
-  for (const assetLink of [...fromLinks, ...toLinks]) {
-    const instanceId = String(assetLink.sourceCompositionInstanceId || "");
-    const key = instanceId || `asset:${assetLink.assetId}`;
-    linksByInstance.set(key, assetLink);
-  }
-  return [...linksByInstance.values()];
-}
-
 function finalReviewCumulativeContextForBeat(beats, beatIndex, sceneContext, beat) {
   if (
     !beat
     || sceneContext?.variantOptionId
     || !(beat.linkedAssetIds || []).length
-    || finalReviewSourceCompositionForScene(sceneContext)
   ) return null;
   return cumulativeSingleAnchorContext(beats, beatIndex);
 }
@@ -31868,8 +31716,8 @@ function finalReviewTextPanelVariantState(beat, sceneContext) {
   };
 }
 
-function openFinalReviewScene(targetContext) {
-  if (!targetContext?.beatId) return false;
+async function openFinalReviewScene(targetContext) {
+  if (!targetContext?.beatId || storyvrNavigationRequestPending) return false;
   const beats = finalReviewBeats();
   const selectedIndex = beats.findIndex((beat) => beat.id === targetContext.beatId);
   const beat = beats[selectedIndex];
@@ -31894,7 +31742,7 @@ function openFinalReviewScene(targetContext) {
   } : null;
   state.finalReviewViewerCameraState = captureFinalReviewViewerCameraState();
   const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
-  const opened = pushStoryvrBrowserNavigation(
+  const opened = await requestStoryvrBrowserNavigation(
     createStoryvrNavigationRoute("transition-pacing", validContext),
     { parentEntryId: currentEntry?.entryId },
   );
@@ -31902,7 +31750,7 @@ function openFinalReviewScene(targetContext) {
   return opened;
 }
 
-function applyFinalReviewVariantSelection(targetContext) {
+async function applyFinalReviewVariantSelection(targetContext) {
   if (!targetContext?.variantOptionId) return false;
   return openFinalReviewScene(targetContext);
 }
@@ -32630,10 +32478,11 @@ function resetSpatialRelationsDraftState() {
   state.selectedSpatialEntityId = null;
   state.selectedSpatialEntityIds = [];
   state.spatialSelectionAnchorEntityId = null;
+  state.spatialSelectionClearedSceneKey = "";
   state.spatialPropagationSelectionId = null;
   state.spatialPropagationTargetsOpen = false;
   state.spatialPropagationTargetBeatIds = [];
-  state.spatialPropagationStatus = "Select a GLB model to reuse its transform in other scenes.";
+  state.spatialPropagationStatus = "";
   state.spatialDraftRevision = 0;
   state.spatialAutosaveTimer = null;
   state.spatialAutosaveStatus = "Draft ready";
@@ -32725,8 +32574,10 @@ function normalizeAttentionCandidate(value) {
   if (!value || typeof value !== "object") return null;
   const id = String(value.id || "").trim();
   const assetId = String(value.assetId || "").trim();
+  const entityId = String(value.entityId || "").trim();
   const targetKind = String(value.targetKind || "").trim();
-  if (!id || !assetId || !["standalone-glb", "named-renderable-part"].includes(targetKind)) return null;
+  if (!id || !["standalone-glb", "standalone-image", "named-renderable-part", "spatial-point"].includes(targetKind)) return null;
+  if (targetKind !== "spatial-point" && !assetId) return null;
   const partSelector = String(value.partSelector || "").trim();
   if (targetKind === "named-renderable-part" && !partSelector) return null;
   const channels = [...new Set((Array.isArray(value.channels) ? value.channels : [])
@@ -32737,27 +32588,38 @@ function normalizeAttentionCandidate(value) {
     || reconciliationStatus === "runtime-only"
     || reconciliationStatus === "semantic-only"
     || reconciliationStatus === "conflict";
-  return {
+  const normalized = {
     ...value,
     id,
-    assetId,
     targetKind,
     ...(partSelector ? { partSelector } : {}),
     channels,
     reconciliationStatus,
     reviewRequired,
   };
+  if (assetId) normalized.assetId = assetId;
+  else delete normalized.assetId;
+  if (entityId) normalized.entityId = entityId;
+  else delete normalized.entityId;
+  return normalized;
 }
 
 function normalizeAttentionMarker(value) {
   if (!value || typeof value !== "object") return null;
   const id = String(value.id || "").trim();
   const assetId = String(value.assetId || "").trim();
+  const entityId = String(value.entityId || "").trim();
+  const targetKind = String(value.targetKind || "").trim();
   const inferredPosition = attentionPosition(value.inferredPosition);
   const position = attentionPosition(value.position);
-  if (!id || !assetId || !inferredPosition || !position) return null;
+  if (!id || !inferredPosition || !position) return null;
+  if (targetKind === "spatial-point") {
+    delete value.assetId;
+    delete value.entityId;
+  } else if (!assetId) return null;
   value.id = id;
-  value.assetId = assetId;
+  if (assetId) value.assetId = assetId;
+  if (entityId) value.entityId = entityId;
   value.coordinateSpace = "spatial-scene";
   value.inferredPosition = inferredPosition;
   value.position = position;
@@ -32780,7 +32642,7 @@ function dedupeAttentionCandidates(candidates) {
 function attentionManualTargetOptions(scene) {
   return (Array.isArray(scene?.manualTargetOptions) ? scene.manualTargetOptions : [])
     .map(normalizeAttentionCandidate)
-    .filter((candidate) => candidate?.targetKind === "standalone-glb" && candidate?.entityId);
+    .filter((candidate) => ["standalone-glb", "standalone-image"].includes(candidate?.targetKind) && candidate?.entityId);
 }
 
 function attentionAvailableManualTargetOptions(scene) {
@@ -32788,9 +32650,21 @@ function attentionAvailableManualTargetOptions(scene) {
   return attentionManualTargetOptions(scene).filter((candidate) => !markerIds.has(candidate.id));
 }
 
+function attentionManualPositionTargetOption(scene) {
+  return (Array.isArray(scene?.manualTargetOptions) ? scene.manualTargetOptions : [])
+    .map(normalizeAttentionCandidate)
+    .find((candidate) => candidate?.targetKind === "spatial-point") || null;
+}
+
+function attentionAvailableManualPositionTarget(scene) {
+  const candidate = attentionManualPositionTargetOption(scene);
+  if (!candidate) return null;
+  return attentionSceneMarkers(scene).some((marker) => marker.id === candidate.id) ? null : candidate;
+}
+
 function attentionManualTargetLabel(candidate) {
   const asset = findAssetById(candidate?.assetId);
-  return asset?.filename || asset?.label || candidate?.assetId || candidate?.entityId || "Visible model";
+  return asset?.filename || asset?.label || candidate?.assetId || candidate?.entityId || "Visible object";
 }
 
 function attentionSceneChannelCandidates(scene, channel) {
@@ -32875,7 +32749,7 @@ function ensureAttentionGuidanceDraft() {
     state.attentionGuidanceDraft = {
       ...(source ? cloneJson(source) : {}),
       schemaVersion: "storyvr-attention-guidance/v1",
-      inferenceVersion: source?.inferenceVersion || "dual-runtime-semantic-v2",
+      inferenceVersion: source?.inferenceVersion || "dual-runtime-semantic-v3",
       inputSignature: signature,
       coordinateSpace: "spatial-scene",
       resolvedByBeat,
@@ -32892,7 +32766,7 @@ function attentionGuidanceForSave() {
   const draft = ensureAttentionGuidanceDraft();
   const clean = cleanSpatialRelationsValue(draft);
   clean.schemaVersion = "storyvr-attention-guidance/v1";
-  clean.inferenceVersion = clean.inferenceVersion || "dual-runtime-semantic-v2";
+  clean.inferenceVersion = clean.inferenceVersion || "dual-runtime-semantic-v3";
   clean.coordinateSpace = "spatial-scene";
   for (const scene of attentionAllSceneRecords(clean)) {
     scene.candidates = attentionSceneCandidates(scene);
@@ -32904,14 +32778,27 @@ function attentionGuidanceForSave() {
 }
 
 function attentionMarkerLabel(marker) {
-  if (!marker) return "No sphere";
+  if (!marker) return "No target";
+  if (marker.targetKind === "spatial-point") return "Manual position";
   const asset = findAssetById(marker.assetId);
   const assetLabel = asset?.filename || asset?.label || marker.assetId;
   return marker.partSelector ? `${marker.partSelector} · ${assetLabel}` : assetLabel;
 }
 
 function attentionMarkerEditLabel(marker) {
-  return String(marker?.provenance?.source || "").startsWith("author-manual-attention-target") ? "manual" : "moved";
+  return String(marker?.provenance?.source || "").startsWith("author-manual-attention-") ? "manual" : "moved";
+}
+
+function attentionTargetKindLabel(marker) {
+  if (marker?.targetKind === "spatial-point") return "Manual scene position";
+  if (marker?.targetKind === "standalone-image") return "Visible image";
+  return marker?.partSelector ? "Visible GLB part" : "Visible standalone GLB";
+}
+
+function attentionMarkerResetLabel(marker) {
+  return marker?.targetKind === "spatial-point"
+    ? "Reset target to placed position"
+    : "Reset target to inferred position";
 }
 
 function ensureAttentionMarkerSelection(scene) {
@@ -32933,6 +32820,7 @@ function setAttentionAutosaveStatus(value) {
 function commitAttentionDraftMutation(options = {}) {
   state.attentionDraftRevision += 1;
   state.attentionDraftDirty = true;
+  markStoryvrCheckpointCompletionPending(ATTENTION_GUIDANCE_COMPONENT_ID);
   if (options.immediate) {
     const requestId = state.attentionAutosaveRequestId + 1;
     state.attentionAutosaveRequestId = requestId;
@@ -32976,30 +32864,38 @@ async function persistAttentionGuidanceDraft(requestId) {
   if (!state.data.decisions) state.data.decisions = {};
   state.data.decisions[ATTENTION_GUIDANCE_COMPONENT_ID] = decision;
   state.attentionDraftDirty = false;
+  if (decision?.current === true && decision?.stale !== true) {
+    clearStoryvrCheckpointCompletionPending(ATTENTION_GUIDANCE_COMPONENT_ID);
+  } else {
+    markStoryvrCheckpointCompletionPending(ATTENTION_GUIDANCE_COMPONENT_ID);
+  }
   setAttentionAutosaveStatus("Draft saved");
   updateCheckpointStatusDom(ATTENTION_GUIDANCE_COMPONENT_ID);
   return decision;
 }
 
-async function flushAttentionGuidanceAutosave(options = {}) {
+async function flushAttentionGuidanceAutosave() {
   const hadPendingTimer = Boolean(state.attentionAutosaveTimer);
+  const hadPendingPromise = Boolean(state.attentionAutosavePromise);
   if (state.attentionAutosaveTimer) {
     clearTimeout(state.attentionAutosaveTimer);
     state.attentionAutosaveTimer = null;
   }
   if (state.attentionAutosavePromise) await state.attentionAutosavePromise;
-  if (hadPendingTimer || options.force === true) {
+  if (hadPendingTimer || state.attentionDraftDirty) {
     const requestId = state.attentionAutosaveRequestId + 1;
     state.attentionAutosaveRequestId = requestId;
     await startAttentionGuidanceAutosave(requestId);
+    return true;
   }
+  return hadPendingPromise;
 }
 
 function mutateSelectedAttentionMarker(mutator, options = {}) {
   const scene = attentionSceneRecordForContext(state.attentionGuidanceDraft, activeAttentionSceneContext());
   const marker = selectedAttentionMarker(scene);
   if (!marker || typeof mutator !== "function") return false;
-  const historyStarted = options.recordHistory === false ? false : beginAuthorHistory("Move Attention Guidance sphere", ATTENTION_GUIDANCE_COMPONENT_ID);
+  const historyStarted = options.recordHistory === false ? false : beginAuthorHistory("Move Attention Guidance target", ATTENTION_GUIDANCE_COMPONENT_ID);
   mutator(marker);
   marker.position = attentionPosition(marker.position) || cloneJson(marker.inferredPosition);
   const authorCreated = attentionMarkerEditLabel(marker) === "manual";
@@ -33013,6 +32909,7 @@ function syncAttentionManualTargetControls(viewer = textViewer) {
   const scene = attentionSceneRecordForContext(state.attentionGuidanceDraft, activeAttentionSceneContext());
   const select = document.querySelector("[data-attention-manual-target]");
   const button = document.querySelector("[data-attention-add-manual]");
+  const placeButton = document.querySelector("[data-attention-place-manual]");
   if (!select || !button) return;
   const options = attentionAvailableManualTargetOptions(scene);
   const availableById = new Map(options.map((candidate) => [candidate.id, candidate]));
@@ -33026,16 +32923,42 @@ function syncAttentionManualTargetControls(viewer = textViewer) {
     if (next) select.value = next.id;
   }
   button.disabled = !availableById.get(select.value) || !attentionCandidatePosition(viewer, availableById.get(select.value));
+  if (placeButton) {
+    const manualPosition = attentionAvailableManualPositionTarget(scene);
+    placeButton.disabled = !manualPosition || viewer?.locked === true;
+    if (!manualPosition && viewer?.manualAttentionPlacementActive) cancelManualAttentionTargetPlacement(viewer);
+  }
 }
 
-function addManualAttentionTarget() {
-  const viewer = textViewer;
+function setManualAttentionTargetPlacement(viewer, active) {
+  if (!viewer || viewer.locked) return false;
+  viewer.manualAttentionPlacementActive = active === true;
+  const button = document.querySelector("[data-attention-place-manual]");
+  if (button) {
+    button.classList.toggle("selected", viewer.manualAttentionPlacementActive);
+    button.setAttribute("aria-pressed", String(viewer.manualAttentionPlacementActive));
+    button.textContent = viewer.manualAttentionPlacementActive ? "Click scene to place target" : "Place target manually";
+  }
+  viewer.renderer?.domElement?.classList?.toggle("attention-placement-active", viewer.manualAttentionPlacementActive);
+  if (viewer.manualAttentionPlacementActive) viewer.transformControls?.detach();
+  else if (state.selectedAttentionMarkerId) selectAttentionMarkerInViewer(state.selectedAttentionMarkerId);
+  return true;
+}
+
+function toggleManualAttentionTargetPlacement(viewer = textViewer) {
   const scene = attentionSceneRecordForContext(state.attentionGuidanceDraft, activeAttentionSceneContext());
-  const selectedId = document.querySelector("[data-attention-manual-target]")?.value || "";
-  const candidate = attentionAvailableManualTargetOptions(scene).find((option) => option.id === selectedId);
-  const position = attentionCandidatePosition(viewer, candidate);
-  if (!scene || !candidate || !position || viewer?.locked) return false;
-  const historyStarted = beginAuthorHistory("Add Attention Guidance sphere", ATTENTION_GUIDANCE_COMPONENT_ID);
+  if (!viewer || viewer.locked || (!viewer.manualAttentionPlacementActive && !attentionAvailableManualPositionTarget(scene))) return false;
+  return setManualAttentionTargetPlacement(viewer, !viewer.manualAttentionPlacementActive);
+}
+
+function cancelManualAttentionTargetPlacement(viewer = textViewer) {
+  if (!viewer?.manualAttentionPlacementActive) return false;
+  return setManualAttentionTargetPlacement(viewer, false);
+}
+
+function addAttentionTargetMarker({ viewer, scene, candidate, position, source, evidenceType, historyLabel }) {
+  if (!scene || !candidate || !attentionPosition(position) || viewer?.locked) return false;
+  const historyStarted = beginAuthorHistory(historyLabel || "Add Attention Guidance target", ATTENTION_GUIDANCE_COMPONENT_ID);
   scene.candidates = dedupeAttentionCandidates([
     ...attentionSceneCandidates(scene),
     cloneJson(candidate),
@@ -33049,8 +32972,8 @@ function addManualAttentionTarget() {
       manual: true,
       provenance: {
         ...(candidate.provenance || {}),
-        source: "author-manual-attention-target",
-        evidenceType: "author-selected-visible-glb",
+        source,
+        evidenceType,
       },
     }),
   ].filter(Boolean);
@@ -33066,6 +32989,39 @@ function addManualAttentionTarget() {
   if (historyStarted) finalizePersistentAuthorHistory(flushAttentionGuidanceAutosave);
   renderPreservingScroll();
   return true;
+}
+
+function addManualAttentionTarget() {
+  const viewer = textViewer;
+  const scene = attentionSceneRecordForContext(state.attentionGuidanceDraft, activeAttentionSceneContext());
+  const selectedId = document.querySelector("[data-attention-manual-target]")?.value || "";
+  const candidate = attentionAvailableManualTargetOptions(scene).find((option) => option.id === selectedId);
+  const position = attentionCandidatePosition(viewer, candidate);
+  return addAttentionTargetMarker({
+    viewer,
+    scene,
+    candidate,
+    position,
+    source: "author-manual-attention-target",
+    evidenceType: candidate?.targetKind === "standalone-image" ? "author-selected-visible-image" : "author-selected-visible-glb",
+    historyLabel: "Add object as Attention Guidance target",
+  });
+}
+
+function addManualAttentionTargetAtPosition(position, viewer = textViewer) {
+  const scene = attentionSceneRecordForContext(state.attentionGuidanceDraft, activeAttentionSceneContext());
+  const candidate = attentionAvailableManualPositionTarget(scene);
+  if (!candidate) return false;
+  cancelManualAttentionTargetPlacement(viewer);
+  return addAttentionTargetMarker({
+    viewer,
+    scene,
+    candidate,
+    position,
+    source: "author-manual-attention-position",
+    evidenceType: "author-placed-spatial-point",
+    historyLabel: "Place Attention Guidance target",
+  });
 }
 
 function updateSelectedAttentionPositionField(indexValue, rawValue) {
@@ -33100,11 +33056,6 @@ function spatialRelationEntities(contract) {
 
 function spatialEntityType(entity) {
   if (entity?.type === "reader" || entity?.kind === "reader" || String(entity?.id || "").startsWith("reader:")) return "reader";
-  if (
-    entity?.type === "composition-root"
-    || entity?.kind === "composition-root"
-    || String(entity?.id || "").startsWith("source-composition:")
-  ) return "composition-root";
   if (entity?.type === "glb" || entity?.kind === "glb" || String(entity?.id || "").startsWith("glb:")) return "glb";
   if (entity?.type === "image-plane" || entity?.kind === "image-plane" || String(entity?.id || "").startsWith("image:")) return "image-plane";
   return "text-panel";
@@ -33122,9 +33073,6 @@ function spatialModelAssets() {
 function spatialRelationEntityLabel(entity) {
   if (!entity) return "";
   if (spatialEntityType(entity) === "reader") return "Reader";
-  if (spatialEntityType(entity) === "composition-root") {
-    return `${entity.compositionId || "Source composition"} · Assembly`;
-  }
   if (spatialEntityType(entity) !== "text-panel") {
     const assetId = entity.assetId || String(entity.id).split(":beat:")[0].replace(/^(glb|image):/, "");
     const asset = findAssetById(assetId);
@@ -33140,9 +33088,6 @@ function spatialRelationEntityLabel(entity) {
 
 function spatialEntityScopeLabel(entity) {
   if (spatialEntityType(entity) === "reader") return `Beat-scoped reader pose · ${entity?.beatId || activeSpatialSceneContext()?.beatId || "scene"}`;
-  if (spatialEntityType(entity) === "composition-root") {
-    return `Source assembly root · ${entity?.beatId || activeSpatialSceneContext()?.beatId || "scene"}`;
-  }
   if (spatialEntityType(entity) === "glb") {
     const scope = `Beat-scoped GLB · ${entity?.beatId || activeSpatialSceneContext()?.beatId || "scene"}`;
     return entity?.authoredInstance === true ? `${scope} · authored instance` : scope;
@@ -33160,8 +33105,18 @@ function normalizeSpatialTransform(value, fallback = null) {
     const defaultNumber = Number(Array.isArray(defaults) ? defaults[index] : defaults?.[["x", "y", "z"][index]]);
     return Math.max(min, Math.min(max, Number.isFinite(number) ? number : (Number.isFinite(defaultNumber) ? defaultNumber : (min > 0 ? 1 : 0))));
   });
-  const position = vector(source.position, base.position, -100, 100);
-  const scale = vector(source.scale, base.scale || [1, 1, 1], 0.001, 100);
+  const position = vector(
+    source.position,
+    base.position,
+    -SPATIAL_TRANSFORM_POSITION_LIMIT,
+    SPATIAL_TRANSFORM_POSITION_LIMIT,
+  );
+  const scale = vector(
+    source.scale,
+    base.scale || [1, 1, 1],
+    0.001,
+    SPATIAL_TRANSFORM_SCALE_LIMIT,
+  );
   let quaternion = Array.isArray(source.quaternion) ? source.quaternion.map(Number) : null;
   if (!quaternion?.every(Number.isFinite) || quaternion.length !== 4) {
     quaternion = Array.isArray(base.quaternion) ? base.quaternion.map(Number) : null;
@@ -33177,40 +33132,6 @@ function normalizeSpatialTransform(value, fallback = null) {
   return { position, quaternion: normalizedQuaternion, scale };
 }
 
-function sourceLockedSpatialMatrix(entity) {
-  if (
-    entity?.placementPolicy !== "source-locked"
-    || !["glb", "image-plane"].includes(spatialEntityType(entity))
-  ) return null;
-  const matrix = Array.isArray(entity.sourceMatrix) ? entity.sourceMatrix.map(Number) : null;
-  return matrix?.length === 16 && matrix.every(Number.isFinite) ? matrix : null;
-}
-
-function sourceLockedSpatialTransform(entity) {
-  if (entity?.manual === true) return null;
-  const matrix = sourceLockedSpatialMatrix(entity);
-  if (!matrix) return null;
-  const objectMatrix = new THREE.Matrix4().fromArray(matrix);
-  const position = new THREE.Vector3();
-  const quaternion = new THREE.Quaternion();
-  const scale = new THREE.Vector3();
-  objectMatrix.decompose(position, quaternion, scale);
-  return {
-    position: position.toArray(),
-    quaternion: quaternion.normalize().toArray(),
-    scale: scale.toArray(),
-  };
-}
-
-function spatialEntityIsSourceLockedMember(entity) {
-  return Boolean(sourceLockedSpatialMatrix(entity));
-}
-
-function spatialEntityIsSourceCompositionRoot(entity) {
-  return spatialEntityType(entity) === "composition-root"
-    && entity?.placementPolicy === "source-locked";
-}
-
 function spatialEntityTransformEditable(entity) {
   return Boolean(entity);
 }
@@ -33218,15 +33139,20 @@ function spatialEntityTransformEditable(entity) {
 function spatialLockedScaleForAxis(startScale, axisIndex, nextAxisValue) {
   const start = [0, 1, 2].map((index) => {
     const value = Number(startScale?.[index]);
-    return Math.max(0.001, Math.min(100, Number.isFinite(value) ? value : 1));
+    return Math.max(
+      0.001,
+      Math.min(SPATIAL_TRANSFORM_SCALE_LIMIT, Number.isFinite(value) ? value : 1),
+    );
   });
   const index = Number.isInteger(axisIndex) && axisIndex >= 0 && axisIndex <= 2 ? axisIndex : 0;
   const requested = Number(nextAxisValue);
   const desiredRatio = Number.isFinite(requested) ? requested / start[index] : 1;
   const minimumRatio = Math.max(...start.map((value) => 0.001 / value));
-  const maximumRatio = Math.min(...start.map((value) => 100 / value));
+  const maximumRatio = Math.min(...start.map((value) => SPATIAL_TRANSFORM_SCALE_LIMIT / value));
   const ratio = Math.max(minimumRatio, Math.min(maximumRatio, desiredRatio));
-  return start.map((value) => Math.max(0.001, Math.min(100, value * ratio)));
+  return start.map((value) => (
+    Math.max(0.001, Math.min(SPATIAL_TRANSFORM_SCALE_LIMIT, value * ratio))
+  ));
 }
 
 function spatialLockedScaleDriverIndex(startScale, currentScale, axis, previousIndex = null) {
@@ -33261,7 +33187,7 @@ function formatSpatialNumber(value) {
 
 function normalizeSpatialAnchor(anchor, entity = null) {
   const source = anchor && typeof anchor === "object" ? anchor : {};
-  const sceneRoot = ["reader", "glb", "image-plane", "composition-root"].includes(spatialEntityType(entity));
+  const sceneRoot = ["reader", "glb", "image-plane"].includes(spatialEntityType(entity));
   const type = sceneRoot
     ? "scene"
     : ["world", "reader", "asset", "source-focus"].includes(source.type)
@@ -33443,10 +33369,6 @@ function normalizeSpatialRelationEntity(source, fallback, options = {}) {
     entity.beatId = entity.beatId || fallback.beatId || activeSpatialSceneContext()?.beatId || null;
     entity.scope = "beat";
     delete entity.assetId;
-  } else if (entity.type === "composition-root") {
-    entity.beatId = entity.beatId || fallback.beatId || activeSpatialSceneContext()?.beatId || null;
-    entity.scope = "beat";
-    delete entity.assetId;
   } else if (entity.type === "glb" || entity.type === "image-plane") {
     entity.assetId = entity.assetId || String(entity.id).split(":beat:")[0].replace(/^(glb|image):/, "");
     entity.beatId = entity.beatId || fallback.beatId || activeSpatialSceneContext()?.beatId || null;
@@ -33462,13 +33384,8 @@ function normalizeSpatialRelationEntity(source, fallback, options = {}) {
     entity.beatId = entity.beatId || entity.id.slice("text-panel:".length);
     entity.scope = "beat";
   }
-  const lockedTransform = sourceLockedSpatialTransform(entity);
-  entity.inferredTransform = lockedTransform
-    ? cloneJson(lockedTransform)
-    : normalizeSpatialTransform(entity.inferredTransform || entity.transform, fallback.inferredTransform);
-  entity.transform = lockedTransform
-    ? cloneJson(lockedTransform)
-    : normalizeSpatialTransform(entity.transform, entity.inferredTransform);
+  entity.inferredTransform = normalizeSpatialTransform(entity.inferredTransform || entity.transform, fallback.inferredTransform);
+  entity.transform = normalizeSpatialTransform(entity.transform, entity.inferredTransform);
   if (entity.type === "reader") {
     entity.inferredTransform.scale = [1, 1, 1];
     entity.transform.scale = [1, 1, 1];
@@ -33592,16 +33509,11 @@ function spatialRelationsForSave(component = spatialRelationsComponent()) {
   const normalizeEntities = (owner) => {
     if (!owner || !Array.isArray(owner.entities)) return;
     owner.entities = owner.entities.map((entity) => {
-      const lockedTransform = sourceLockedSpatialTransform(entity);
       return {
         ...entity,
-        inferredTransform: lockedTransform
-          ? cloneJson(lockedTransform)
-          : normalizeSpatialTransform(entity.inferredTransform),
-        transform: lockedTransform
-          ? cloneJson(lockedTransform)
-          : normalizeSpatialTransform(entity.transform, entity.inferredTransform),
-        manual: lockedTransform ? false : Boolean(entity.manual),
+        inferredTransform: normalizeSpatialTransform(entity.inferredTransform),
+        transform: normalizeSpatialTransform(entity.transform, entity.inferredTransform),
+        manual: Boolean(entity.manual),
       };
     });
   };
@@ -33660,16 +33572,6 @@ function selectedSpatialRelationEntities(
     .filter((entity) => selectedIds.has(entity.id));
 }
 
-function spatialSelectionHasAncestorConflict(entities = selectedSpatialRelationEntities()) {
-  const selectedRootIds = new Set((entities || [])
-    .filter((entity) => spatialEntityType(entity) === "composition-root")
-    .map((entity) => entity.id));
-  return Boolean(selectedRootIds.size) && (entities || []).some((entity) => (
-    spatialEntityType(entity) === "glb"
-    && selectedRootIds.has(String(entity?.compositionRootId || ""))
-  ));
-}
-
 function spatialSelectionCanTransform(
   mode = state.spatialTransformMode,
   contract = state.spatialRelationsDraft,
@@ -33677,7 +33579,6 @@ function spatialSelectionCanTransform(
   const entities = selectedSpatialRelationEntities(contract);
   if (
     !entities.length
-    || spatialSelectionHasAncestorConflict(entities)
     || entities.some((entity) => !spatialEntityTransformEditable(entity))
   ) return false;
   return mode !== "scale" || entities.every((entity) => spatialEntityType(entity) !== "reader");
@@ -33689,6 +33590,7 @@ function spatialSelectionLabel(entities = selectedSpatialRelationEntities()) {
 }
 
 function setSpatialRelationSelection(entityIds, options = {}) {
+  const sceneKey = spatialSceneRequestKey(activeSpatialSceneContext());
   const entities = spatialEditorSceneEntities(
     state.spatialRelationsDraft,
     activeSpatialSceneContext(),
@@ -33703,6 +33605,8 @@ function setSpatialRelationSelection(entityIds, options = {}) {
     : selectedIds[selectedIds.length - 1] || null;
   state.selectedSpatialEntityIds = selectedIds;
   state.selectedSpatialEntityId = primaryEntityId;
+  if (selectedIds.length) state.spatialSelectionClearedSceneKey = "";
+  else if (options.explicitClear === true) state.spatialSelectionClearedSceneKey = sceneKey;
   if (Object.hasOwn(options, "anchorEntityId")) {
     state.spatialSelectionAnchorEntityId = options.anchorEntityId || null;
   } else if (primaryEntityId) state.spatialSelectionAnchorEntityId = primaryEntityId;
@@ -33764,20 +33668,25 @@ function ensureSpatialSelection(draft, beat, context = activeSpatialSceneContext
   const entityIds = new Set(entities.map((entity) => entity.id));
   const selectedIds = selectedSpatialRelationEntityIds(draft, context)
     .filter((entityId) => entityIds.has(entityId));
-  if (!selectedIds.length && entities[0]?.id) selectedIds.push(entities[0].id);
+  const sceneKey = spatialSceneRequestKey(context);
+  const explicitlyCleared = Boolean(sceneKey)
+    && state.spatialSelectionClearedSceneKey === sceneKey;
+  if (!selectedIds.length && entities[0]?.id && !explicitlyCleared) selectedIds.push(entities[0].id);
   const primaryEntityId = selectedIds.includes(state.selectedSpatialEntityId)
     ? state.selectedSpatialEntityId
     : selectedIds[selectedIds.length - 1] || null;
   state.selectedSpatialEntityIds = selectedIds;
   state.selectedSpatialEntityId = primaryEntityId;
+  if (selectedIds.length || !entities.length) state.spatialSelectionClearedSceneKey = "";
   if (!entityIds.has(state.spatialSelectionAnchorEntityId)) {
     state.spatialSelectionAnchorEntityId = primaryEntityId;
   }
 }
 
-function spatialGlbCrossSceneMatchKey(entity) {
+function spatialGlbCrossSceneMatchKey(entity, options = {}) {
   if (spatialEntityType(entity) !== "glb" || !entity?.assetId) return "";
-  if (entity?.placementPolicy === "source-locked" && Array.isArray(entity?.sourceMatrix)) return "";
+  const sourceIdentity = String(entity.sourceInstanceId || "").trim();
+  if (sourceIdentity) return `source:${sourceIdentity}`;
   if (entity.authoredInstance !== true) return `${entity.assetId}::base`;
   const idOrdinal = String(entity.id || "").match(/:instance:(\d+)$/)?.[1];
   const instanceIndex = Number(entity.instanceIndex || idOrdinal);
@@ -33797,7 +33706,9 @@ function spatialMatchingGlbsInOtherScenes(
   return spatialAllSceneRecords(contract).flatMap((scene) => {
     if (scene === sourceScene) return [];
     return spatialRelationEntities(scene)
-      .filter((entity) => spatialGlbCrossSceneMatchKey(entity) === matchKey)
+      .filter((entity) => (
+        spatialGlbCrossSceneMatchKey(entity, { includeAttachedSource: true }) === matchKey
+      ))
       .map((entity) => ({ scene, entity }));
   });
 }
@@ -33828,7 +33739,6 @@ function spatialClipboardTargetBase(context = activeSpatialSceneContext()) {
   if (!clipboard?.assetId || !context?.beatId) return null;
   return spatialSceneEntities(state.spatialRelationsDraft, context).find((entity) => (
     spatialEntityType(entity) === "glb"
-    && !spatialEntityIsSourceLockedMember(entity)
     && entity.authoredInstance !== true
     && entity.assetId === clipboard.assetId
   )) || null;
@@ -33843,8 +33753,7 @@ function syncSpatialClipboardControls() {
   const singleSelected = selectedSpatialRelationEntities().length === 1;
   const copy = document.querySelector("[data-spatial-copy-model]");
   if (copy) copy.disabled = !singleSelected
-    || spatialEntityType(selected) !== "glb"
-    || spatialEntityIsSourceLockedMember(selected);
+    || spatialEntityType(selected) !== "glb";
   const paste = document.querySelector("[data-spatial-paste-model]");
   if (paste) paste.disabled = !canPasteSpatialGlbInstance();
   const status = document.querySelector("[data-spatial-clipboard-status]");
@@ -33895,7 +33804,7 @@ function syncSpatialPropagationControls() {
       ? (targetBeats.length
           ? `Choose which other beat${targetBeats.length === 1 ? "" : "s"} should receive the ${spatialRelationEntityLabel(selected)} transform.`
           : "No matching instance of this GLB exists in another beat.")
-      : "Select a GLB model to reuse its transform in other scenes.";
+      : "";
   }
   const selectedIds = new Set(
     (state.spatialPropagationTargetBeatIds || []).filter((beatId) => validIds.has(beatId)),
@@ -33946,7 +33855,6 @@ function copySelectedSpatialGlb() {
   if (
     selectedSpatialRelationEntities().length !== 1
     || spatialEntityType(entity) !== "glb"
-    || spatialEntityIsSourceLockedMember(entity)
   ) {
     state.spatialClipboardStatus = "Select one GLB model before copying.";
     syncSpatialClipboardControls();
@@ -33967,9 +33875,7 @@ function applySelectedSpatialGlbTransformToMatchingScenes() {
   const sourceEntity = selectedSpatialRelationEntity();
   if (
     selectedSpatialRelationEntities().length !== 1
-    ||
-    spatialEntityType(sourceEntity) !== "glb"
-    || (sourceEntity?.placementPolicy === "source-locked" && Array.isArray(sourceEntity?.sourceMatrix))
+    || spatialEntityType(sourceEntity) !== "glb"
   ) {
     state.spatialPropagationStatus = "Select a GLB model before applying its transform.";
     syncSpatialPropagationControls();
@@ -33995,7 +33901,13 @@ function applySelectedSpatialGlbTransformToMatchingScenes() {
     const transform = cloneJson(sourceTransform);
     const manual = entity.authoredInstance === true
       || !spatialTransformsEqual(transform, entity.inferredTransform);
-    return { scene, entity, transform, verticalAlignment: sourceVerticalAlignment, manual };
+    return {
+      scene,
+      entity,
+      transform,
+      verticalAlignment: sourceVerticalAlignment,
+      manual,
+    };
   }).filter(({ entity, transform, verticalAlignment, manual }) => (
     !spatialTransformsEqual(entity.transform, transform)
     || spatialEntityVerticalAlignment(entity) !== verticalAlignment
@@ -34012,7 +33924,12 @@ function applySelectedSpatialGlbTransformToMatchingScenes() {
     return false;
   }
   pushSpatialUndoSnapshot();
-  for (const { entity, transform, verticalAlignment, manual } of updates) {
+  for (const {
+    entity,
+    transform,
+    verticalAlignment,
+    manual,
+  } of updates) {
     entity.transform = transform;
     entity.verticalAlignment = verticalAlignment;
     entity.manual = manual;
@@ -34107,8 +34024,7 @@ function spatialSelectionTransformSummary(
 ) {
   if (!entities.length) return normalizeSpatialTransform();
   if (entities.length === 1) {
-    return sourceLockedSpatialTransform(entities[0])
-      || normalizeSpatialTransform(entities[0].transform, entities[0].inferredTransform);
+    return normalizeSpatialTransform(entities[0].transform, entities[0].inferredTransform);
   }
   const loadedEntries = spatialSelectionObjects(viewer, entities);
   const allObjectsLoaded = loadedEntries.length === entities.length
@@ -34124,8 +34040,7 @@ function spatialSelectionTransformSummary(
     };
   }
   for (const entity of entities) {
-    const transform = sourceLockedSpatialTransform(entity)
-      || normalizeSpatialTransform(entity.transform, entity.inferredTransform);
+    const transform = normalizeSpatialTransform(entity.transform, entity.inferredTransform);
     for (let index = 0; index < 3; index += 1) position[index] += transform.position[index];
   }
   return {
@@ -34145,7 +34060,7 @@ function updateSpatialEntityManualState(entity, options = {}) {
 }
 
 function applySpatialTransformDeltaToEntities(entities, deltaMatrix) {
-  if (!deltaMatrix?.isMatrix4 || spatialSelectionHasAncestorConflict(entities)) return 0;
+  if (!deltaMatrix?.isMatrix4) return 0;
   let updatedCount = 0;
   for (const entity of entities || []) {
     if (!spatialEntityTransformEditable(entity)) continue;
@@ -34193,7 +34108,9 @@ function spatialGroupTransformDelta(entities, group, index, value) {
     const scale = state.spatialScaleRatioLocked
       ? spatialLockedScaleForAxis([1, 1, 1], index, value)
       : [1, 1, 1].map((axisValue, axisIndex) => (
-        axisIndex === index ? Math.max(0.001, Math.min(100, value)) : axisValue
+        axisIndex === index
+          ? Math.max(0.001, Math.min(SPATIAL_TRANSFORM_SCALE_LIMIT, value))
+          : axisValue
       ));
     operation.makeScale(...scale);
   } else return null;
@@ -34212,6 +34129,7 @@ function commitSpatialDraftMutation() {
   syncSpatialFlatEntitiesFromScenes(state.spatialRelationsDraft);
   state.spatialDraftRevision += 1;
   state.spatialDraftDirty = true;
+  markStoryvrCheckpointCompletionPending(spatialRelationsComponentId());
   scheduleSpatialRelationsAutosave();
   const status = document.querySelector("[data-spatial-autosave-status]");
   if (status) status.textContent = `${state.spatialAutosaveStatus} · revision ${state.spatialDraftRevision}`;
@@ -34271,6 +34189,11 @@ async function persistSpatialRelationsDraft(requestId) {
   if (!state.data.decisions) state.data.decisions = {};
   state.data.decisions[SPATIAL_RELATIONS_COMPONENT_ID] = decision;
   state.spatialDraftDirty = false;
+  if (decision?.current === true && decision?.stale !== true) {
+    clearStoryvrCheckpointCompletionPending(SPATIAL_RELATIONS_COMPONENT_ID);
+  } else {
+    markStoryvrCheckpointCompletionPending(SPATIAL_RELATIONS_COMPONENT_ID);
+  }
   setSpatialAutosaveStatus("Draft saved");
   updateCheckpointStatusDom(SPATIAL_RELATIONS_COMPONENT_ID);
   return decision;
@@ -36384,30 +36307,8 @@ function sourcePlaybackContractOwnsEntryVisibility(entry) {
   return sourcePlaybackAssetForId(assetId)?.mode === "shared-timeline";
 }
 
-function applyInterBeatSourceCompositionMembership(viewer, entry, phase = "destination") {
-  const destinationInstanceIds = viewer?.sourceCompositionDestinationInstanceIds;
-  const instanceId = String(entry?.sourceCompositionInstanceId || "");
-  if (
-    viewer?.componentId !== "transition-pacing"
-    || !viewer.finalReviewTransitionPlayback
-    || !entry?.sourceCompositionMember
-    || !(destinationInstanceIds instanceof Set)
-    || !destinationInstanceIds.size
-    || !instanceId
-    || !entry.wrapper
-  ) return null;
-  const visible = phase !== "destination" || destinationInstanceIds.has(instanceId);
-  entry.wrapper.visible = visible;
-  entry.sourceCompositionDestinationVisible = visible;
-  return visible;
-}
-
 function applyInterBeatSourcePartMaskToEntry(viewer, entry, phase = "destination") {
   if (!viewerExecutesInterBeatTransition(viewer) || !entry?.sourceScene) return null;
-  const compositionMemberVisible = applyInterBeatSourceCompositionMembership(viewer, entry, phase);
-  if (compositionMemberVisible === false) {
-    return { applied: false, compositionMemberVisible: false };
-  }
   if (sourcePlaybackContractOwnsEntryVisibility(entry)) return { applied: false, contractOwned: true };
   const assetId = entry.assetId || entry.step?.assetId;
   const destination = sourcePartSelectorsForBeatAsset(viewer.sourcePartToBeatId, assetId);
@@ -36544,14 +36445,14 @@ function inferContextLayerKind(proposal) {
 
 function contextLayerKindLabel(kind) {
   if (kind === "none") return "No added environment";
-  if (kind === "environment") return "Uploaded surrounding";
+  if (kind === "environment") return "Generated surrounding";
   if (kind === "nested") return "Nested scale";
   return "Object only";
 }
 
 function contextLayerKindHelp(kind) {
-  if (kind === "none") return "Keep StoryVR's standard neutral scene without attaching an uploaded surrounding.";
-  if (kind === "environment") return "Preview the saved story assets inside the uploaded persistent surrounding.";
+  if (kind === "none") return "Keep StoryVR's standard neutral scene without attaching a generated surrounding.";
+  if (kind === "environment") return "Preview the saved story assets inside the generated persistent surrounding.";
   if (kind === "nested") return "Preview object, habitat, and room scale as nested layers with a small detail inset.";
   return "Preview the active story object isolated on the inspection anchor with minimal surrounding context.";
 }

@@ -217,21 +217,17 @@ export async function generateEnvironmentImageWithCodex({
 }
 
 /**
- * Generates a clean, tileable floor texture that visually matches a panorama.
- * The reference is copied/converted into the isolated worker directory so the
- * Codex image tool receives an ordinary LDR PNG even when the authored source
- * is HDR or EXR.
+ * Generates a clean, tileable floor texture that visually matches the PNG
+ * panorama produced by the Generate flow.
  */
 export async function generateMatchingGroundTextureWithCodex({
   prompt,
   referenceImage = null,
-  referenceImagePath = null,
   codexBin = process.env.CODEX_BIN || "codex",
   codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
   codexVersion = null,
   timeoutMs = DEFAULT_GENERATION_TIMEOUT_MS,
   commandRunner = runSpawnedCommand,
-  referenceConverter = convertPanoramaReferenceWithSips,
   imageNormalizer = normalizePngWithSips,
   temporaryRoot = os.tmpdir(),
   platform = process.platform,
@@ -242,10 +238,7 @@ export async function generateMatchingGroundTextureWithCodex({
   const sceneDescription = sanitizeEnvironmentGenerationPrompt(prompt);
   assertCodexImageGenerationCliVersion(codexVersion, { platform });
   const hasReferenceBytes = Buffer.isBuffer(referenceImage) || referenceImage instanceof Uint8Array;
-  const hasReferencePath = typeof referenceImagePath === "string" && referenceImagePath.trim();
-  if (hasReferenceBytes === Boolean(hasReferencePath)) {
-    throw new TypeError("Provide exactly one panorama reference as image bytes or a file path.");
-  }
+  if (!hasReferenceBytes) throw new TypeError("Provide the generated panorama as PNG image bytes.");
 
   const resolvedCodexHome = path.resolve(codexHome);
   const generatedImagesRoot = path.join(resolvedCodexHome, "generated_images");
@@ -256,13 +249,10 @@ export async function generateMatchingGroundTextureWithCodex({
   const generationId = `ground-${Date.now().toString(36)}-${randomUUID()}`;
 
   try {
-    if (hasReferenceBytes) {
-      const bytes = Buffer.from(referenceImage);
-      if (!bytes.byteLength) throw new TypeError("The panorama reference image is empty.");
-      await writeFile(referencePath, bytes, { flag: "wx" });
-    } else {
-      await referenceConverter(path.resolve(referenceImagePath), referencePath);
-    }
+    const bytes = Buffer.from(referenceImage);
+    if (!bytes.byteLength) throw new TypeError("The generated panorama is empty.");
+    pngDimensions(bytes);
+    await writeFile(referencePath, bytes, { flag: "wx" });
 
     const generatedImageSnapshot = await snapshotGeneratedPngs(generatedImagesRoot);
     const generationStartedAt = Date.now();
@@ -793,32 +783,6 @@ async function normalizePngWithSips(sourcePath, outputPath, { width, height }) {
   if (!result.ok) {
     const detail = firstUsefulCommandError(result);
     throw new Error(`Could not normalize the generated panorama with sips${detail ? `: ${detail}` : "."}`);
-  }
-}
-
-async function convertPanoramaReferenceWithSips(sourcePath, outputPath) {
-  const result = await runSpawnedCommand(
-    "/usr/bin/sips",
-    [
-      "--resampleHeightWidthMax",
-      "2048",
-      "--setProperty",
-      "format",
-      "png",
-      sourcePath,
-      "--out",
-      outputPath,
-    ],
-    {
-      cwd: path.dirname(outputPath),
-      env: { ...process.env, NO_COLOR: "1" },
-      timeoutMs: 60_000,
-      maxOutputBytes: 256 * 1024,
-    },
-  );
-  if (!result.ok) {
-    const detail = firstUsefulCommandError(result);
-    throw new Error(`Could not prepare the panorama reference with sips${detail ? `: ${detail}` : "."}`);
   }
 }
 

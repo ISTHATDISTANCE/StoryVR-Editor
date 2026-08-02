@@ -14,10 +14,9 @@ import {
 import path from "node:path";
 
 export const ENVIRONMENT_STORE_SCHEMA_VERSION = "storyvr-environment-enhancement/v1";
-export const MAX_ENVIRONMENT_UPLOAD_BYTES = 120 * 1024 * 1024;
+export const MAX_ENVIRONMENT_GENERATED_ASSET_BYTES = 120 * 1024 * 1024;
 
-const MANUAL_UPLOAD_EXTENSIONS = new Set([".hdr", ".exr"]);
-const GENERATED_UPLOAD_EXTENSION = ".png";
+const GENERATED_ASSET_EXTENSION = ".png";
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 const DEFAULT_TRANSFORM = Object.freeze({
@@ -39,6 +38,7 @@ const DEFAULT_RENDERING = Object.freeze({
 export const DEFAULT_ENVIRONMENT_MOVEMENT_CUE = Object.freeze({
   enabled: false,
   style: "sand",
+  coverage: "bounded",
   texture: null,
   position: Object.freeze([0, 0.004, -0.4]),
   widthMeters: 2,
@@ -63,7 +63,6 @@ const MOVEMENT_CUE_LIMITS = Object.freeze({
 
 const ENVIRONMENT_ASSIGNMENT_KEYS = Object.freeze([
   "selectedSource",
-  "pendingSource",
   "candidate",
   "provider",
   "providerAssetId",
@@ -84,7 +83,7 @@ const RETIRED_ENVIRONMENT_METADATA_KEY = ["rights", "Confirmation"].join("");
 
 /**
  * Creates the story-local persistent store used by the Environment Enhancement
- * checkpoint. Draft metadata lives under analysis/storyvr while uploaded files
+ * checkpoint. Draft metadata lives under analysis/storyvr while generated files
  * live in the reader app's public directory so Vite copies them into builds.
  *
  * Public methods are asynchronous except for assetPathFromUrl(). Mutations are
@@ -112,111 +111,60 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
     return jsonClone(await readState(manifestPath));
   }
 
-  function selectSource(candidate, { beatId = null } = {}) {
+  function importGenerated(generation) {
     return serializeMutation(async () => {
       const previous = await readState(manifestPath);
-      const normalizedBeatId = optionalBeatId(beatId);
-      const previousAssignment = editableAssignmentForBeat(previous, normalizedBeatId);
-      const selectedSource = normalizeCandidate(candidate);
-      const assignment = normalizeEnvironmentAssignment({
-        ...previousAssignment,
-        pendingSource: selectedSource,
-        skipped: false,
-      });
-      const next = assignEnvironment(previous, normalizedBeatId, assignment);
-      await writeStateAtomic(manifestPath, next);
-      return jsonClone(next);
-    });
-  }
-
-  function importUpload(upload) {
-    return serializeMutation(async () => {
-      const previous = await readState(manifestPath);
-      const beatId = optionalBeatId(upload?.beatId);
+      const beatId = optionalBeatId(generation?.beatId);
       const previousAssignment = editableAssignmentForBeat(previous, beatId);
-      const candidate = isPlainObject(upload?.candidate)
-        ? upload.candidate
-        : previousAssignment.pendingSource || previousAssignment.selectedSource;
-      const normalized = normalizeUpload({ ...upload, candidate });
-      return installUpload(previous, normalized, (sourcePath) => writeUploadToFile(
+      const normalized = normalizeGeneratedAsset(generation);
+      return installGeneratedPair(previous, normalized, (sourcePath) => writeAssetToFile(
         normalized.body,
         sourcePath,
-        normalized.upload.expectedBytes,
-        MAX_ENVIRONMENT_UPLOAD_BYTES,
+        normalized.assetInput.expectedBytes,
+        MAX_ENVIRONMENT_GENERATED_ASSET_BYTES,
       ), {
         beatId,
         previousAssignment,
-        groundInput: upload?.ground,
-        generateGround: upload?.generateGround,
+        groundInput: generation?.ground,
       });
     });
   }
 
-  function importGenerated(upload) {
-    return serializeMutation(async () => {
-      const previous = await readState(manifestPath);
-      const beatId = optionalBeatId(upload?.beatId);
-      const previousAssignment = editableAssignmentForBeat(previous, beatId);
-      const normalized = normalizeGeneratedUpload(upload);
-      return installUpload(previous, normalized, (sourcePath) => writeUploadToFile(
-        normalized.body,
-        sourcePath,
-        normalized.upload.expectedBytes,
-        MAX_ENVIRONMENT_UPLOAD_BYTES,
-      ), {
-        beatId,
-        previousAssignment,
-        groundInput: upload?.ground,
-      });
-    });
-  }
-
-  async function installUpload(previous, normalized, receiveSource, {
+  async function installGeneratedPair(previous, normalized, receiveSource, {
     beatId = null,
     previousAssignment = editableAssignmentForBeat(previous, beatId),
     groundInput = null,
-    generateGround = null,
   } = {}) {
     await mkdir(assetRoot, { recursive: true });
 
-    const workspace = await mkdtemp(path.join(assetRoot, ".upload-"));
+    const workspace = await mkdtemp(path.join(assetRoot, ".generation-"));
     const stagingRoot = path.join(workspace, "payload");
-    const sourcePath = path.join(workspace, normalized.upload.filename);
+    const sourcePath = path.join(workspace, normalized.assetInput.filename);
 
     try {
       const source = await receiveSource(sourcePath);
-      await validateMainAsset(sourcePath, normalized.upload.kind);
+      await validateGeneratedPanoramaAsset(sourcePath);
 
-      let generatedGround = groundInput;
-      if (!generatedGround && typeof generateGround === "function") {
-        generatedGround = await generateGround({
-          sourcePath,
-          filename: normalized.upload.filename,
-          candidate: jsonClone(normalized.candidate),
-          provider: normalized.provider,
-          providerAssetId: normalized.providerAssetId,
-        });
-      }
-      const ground = normalizeGeneratedGroundUpload(generatedGround);
+      const ground = normalizeGeneratedGround(groundInput);
       const groundSourcePath = path.join(workspace, ground.filename);
       if (groundSourcePath === sourcePath) {
         throw new TypeError("Generated ground filename must differ from the panorama filename.");
       }
-      const groundSource = await writeUploadToFile(
+      const groundSource = await writeAssetToFile(
         ground.body,
         groundSourcePath,
         ground.expectedBytes,
-        MAX_ENVIRONMENT_UPLOAD_BYTES,
+        MAX_ENVIRONMENT_GENERATED_ASSET_BYTES,
       );
       await validateGeneratedGroundAsset(groundSourcePath);
 
       await mkdir(stagingRoot, { recursive: true });
-      await rename(sourcePath, path.join(stagingRoot, normalized.upload.filename));
+      await rename(sourcePath, path.join(stagingRoot, normalized.assetInput.filename));
       await rename(groundSourcePath, path.join(stagingRoot, ground.filename));
 
       const files = await collectRegularFiles(stagingRoot);
       const mainAsset = files.find((file) => (
-        toPosixPath(path.relative(stagingRoot, file.path)) === normalized.upload.filename
+        toPosixPath(path.relative(stagingRoot, file.path)) === normalized.assetInput.filename
       ));
       const groundAssetFile = files.find((file) => (
         toPosixPath(path.relative(stagingRoot, file.path)) === ground.filename
@@ -227,7 +175,7 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
 
       const providerAssetKey = normalized.providerAssetKey;
       const destination = path.join(assetRoot, providerAssetKey);
-      const relativeMainPath = normalized.upload.filename;
+      const relativeMainPath = normalized.assetInput.filename;
       const relativeGroundPath = ground.filename;
       const [mainSha256, groundSha256] = await Promise.all([
         sha256File(mainAsset.path),
@@ -269,6 +217,7 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
         ...previousCue,
         enabled: preservePriorVisibility ? previousCue.enabled : true,
         style: "generated",
+        coverage: "infinite",
         texture: groundTexture,
       });
       const sourceMetadata = deepMerge({}, normalized.sourceMetadata, {
@@ -277,7 +226,6 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
 
       const assignment = normalizeEnvironmentAssignment({
         selectedSource: candidate,
-        pendingSource: null,
         candidate,
         provider: normalized.provider,
         providerAssetId: normalized.providerAssetId,
@@ -292,7 +240,7 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
           providerAssetId: normalized.providerAssetId,
           sourceUrl,
           sourceMetadata,
-          uploadedAt: now,
+          generatedAt: now,
         },
         asset: {
           providerAssetKey,
@@ -308,9 +256,9 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
           mediaType: mediaTypeForFormat(format),
           sha256: mainSha256,
           bytes: mainAsset.bytes,
-          sourceUpload: {
-            kind: normalized.upload.kind,
-            filename: normalized.upload.filename,
+          generationSource: {
+            kind: normalized.assetInput.kind,
+            filename: normalized.assetInput.filename,
             sha256: source.sha256,
             bytes: source.bytes,
           },
@@ -320,7 +268,7 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
         rendering: deepMerge({}, DEFAULT_RENDERING, candidate.rendering),
         movementCue,
         performance: deepMerge({}, candidate.metrics, candidate.performance, {
-          uploadBytes: source.bytes,
+          generatedBytes: source.bytes,
           packagedBytes: totalBytes,
           mainAssetBytes: mainAsset.bytes,
           groundTextureBytes: groundAssetFile.bytes,
@@ -354,7 +302,7 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
       const normalizedBeatId = optionalBeatId(beatId);
       const previousAssignment = editableAssignmentForBeat(previous, normalizedBeatId);
       if (!previousAssignment.asset && skipped !== true) {
-        throw new Error("Upload an environment asset before editing its draft.");
+        throw new Error("Generate an environment asset before editing its draft.");
       }
       if (skipped !== undefined && typeof skipped !== "boolean") {
         throw new TypeError("skipped must be a boolean.");
@@ -428,6 +376,34 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
     });
   }
 
+  function reconcileBeatAssignments(currentBeatIds) {
+    return serializeMutation(async () => {
+      const retainedBeatIds = new Set(uniqueBeatIds(currentBeatIds, "currentBeatIds"));
+      const previous = await readState(manifestPath);
+      const assignmentEntries = Object.entries(previous.assignmentsByBeat);
+      const removedBeatIds = assignmentEntries
+        .filter(([beatId]) => !retainedBeatIds.has(beatId))
+        .map(([beatId]) => beatId);
+
+      if (!removedBeatIds.length) {
+        return {
+          removedBeatIds: [],
+          state: jsonClone(previous),
+        };
+      }
+
+      const assignmentsByBeat = Object.fromEntries(
+        assignmentEntries.filter(([beatId]) => retainedBeatIds.has(beatId)),
+      );
+      const next = touch(previous, { assignmentsByBeat });
+      await writeStateAtomic(manifestPath, next);
+      return {
+        removedBeatIds,
+        state: jsonClone(next),
+      };
+    });
+  }
+
   function assetPathFromUrl(pathname) {
     if (typeof pathname !== "string") return null;
     const rawPathname = pathname.split(/[?#]/, 1)[0];
@@ -461,11 +437,10 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
 
   return {
     getState,
-    selectSource,
-    importUpload,
     importGenerated,
     updateDraft,
     applyAssignment,
+    reconcileBeatAssignments,
     assetPathFromUrl,
     paths: Object.freeze({ assetRoot, manifestPath, storyRoot }),
   };
@@ -495,7 +470,6 @@ function editableAssignmentForBeat(state, beatId) {
 function emptyAssignment() {
   return {
     selectedSource: null,
-    pendingSource: null,
     candidate: null,
     provider: null,
     providerAssetId: null,
@@ -521,7 +495,6 @@ function emptyState() {
     createdAt: null,
     updatedAt: null,
     selectedSource: null,
-    pendingSource: null,
     candidate: null,
     provider: null,
     providerAssetId: null,
@@ -561,6 +534,7 @@ async function readState(manifestPath) {
   const {
     locked: _legacyLocked,
     lockedAt: _legacyLockedAt,
+    pendingSource: _retiredPendingSource,
     ...editableValue
   } = value;
   const hasScopedAssignments = Object.hasOwn(value, "defaultAssignment")
@@ -586,14 +560,18 @@ async function readState(manifestPath) {
 
 function normalizeEnvironmentAssignment(value) {
   const source = omitRetiredEnvironmentConsentMetadata(isPlainObject(value) ? value : {});
+  const {
+    pendingSource: _retiredPendingSource,
+    ...activeSource
+  } = source;
   return {
     ...emptyAssignment(),
-    ...jsonClone(source),
-    transform: deepMerge({}, DEFAULT_TRANSFORM, source.transform),
-    rendering: deepMerge({}, DEFAULT_RENDERING, source.rendering),
-    movementCue: normalizeEnvironmentMovementCue(source.movementCue),
-    performance: isPlainObject(source.performance) ? jsonClone(source.performance) : {},
-    skipped: source.skipped === true,
+    ...jsonClone(activeSource),
+    transform: deepMerge({}, DEFAULT_TRANSFORM, activeSource.transform),
+    rendering: deepMerge({}, DEFAULT_RENDERING, activeSource.rendering),
+    movementCue: normalizeEnvironmentMovementCue(activeSource.movementCue),
+    performance: isPlainObject(activeSource.performance) ? jsonClone(activeSource.performance) : {},
+    skipped: activeSource.skipped === true || Boolean(_retiredPendingSource && !activeSource.asset),
   };
 }
 
@@ -683,6 +661,7 @@ export function normalizeEnvironmentMovementCue(value, fallback = DEFAULT_ENVIRO
   return {
     enabled: source.enabled === undefined ? baseline.enabled === true : source.enabled === true,
     style: texture ? "generated" : "sand",
+    coverage: normalizeMovementCueCoverage(source.coverage, baseline.coverage),
     texture,
     position: normalizedMovementCuePosition(source.position, fallbackPosition),
     widthMeters: boundedMovementCueNumber(
@@ -718,6 +697,12 @@ export function normalizeEnvironmentMovementCue(value, fallback = DEFAULT_ENVIRO
   };
 }
 
+function normalizeMovementCueCoverage(value, fallback) {
+  const fallbackCoverage = fallback === "infinite" ? "infinite" : "bounded";
+  if (value === undefined) return fallbackCoverage;
+  return value === "infinite" ? "infinite" : "bounded";
+}
+
 function normalizedMovementCuePosition(value, fallback) {
   const source = Array.isArray(value) ? value : [];
   return [0, 1, 2].map((index) => boundedMovementCueNumber(
@@ -751,91 +736,42 @@ async function writeStateAtomic(manifestPath, state) {
   }
 }
 
-function normalizeUpload(upload) {
-  if (!isPlainObject(upload) || !isPlainObject(upload.candidate)) {
-    throw new TypeError("upload must contain a candidate object.");
+function normalizeGeneratedAsset(generation) {
+  if (!isPlainObject(generation) || !isPlainObject(generation.candidate)) {
+    throw new TypeError("generated environment must contain a candidate object.");
   }
-  if (upload.body === undefined || upload.body === null) {
-    throw new TypeError("upload.body is required.");
-  }
-
-  const candidate = normalizeCandidate(upload.candidate);
-  const provider = firstNonEmptyString(
-    typeof candidate.provider === "string" ? candidate.provider : candidate.provider?.id,
-    candidate.provenance?.provider,
-    candidate.source,
-  );
-  const providerAssetId = firstNonEmptyString(
-    candidate.providerAssetId,
-    candidate.assetId,
-    candidate.sourceId,
-    candidate.id,
-  );
-  if (!provider || !providerAssetId) {
-    throw new TypeError("candidate must identify both its provider and provider asset id.");
+  if (generation.body === undefined || generation.body === null) {
+    throw new TypeError("generated environment body is required.");
   }
 
-  const filename = safeFilename(upload.filename, "", "upload.filename");
-  const extension = path.extname(filename).toLowerCase();
-  if (!MANUAL_UPLOAD_EXTENSIONS.has(extension)) {
-    throw new TypeError("upload.filename must end in .hdr or .exr for a 360° image.");
-  }
-  const expectedBytes = normalizeExpectedBytes(upload.expectedBytes, "upload.expectedBytes");
-
-  return {
-    body: upload.body,
-    candidate,
-    provider,
-    providerAssetId,
-    providerAssetKey: `${slug(provider)}-${slug(providerAssetId)}`,
-    sourceMetadata: deepMerge({}, isPlainObject(upload.sourceMetadata) ? upload.sourceMetadata : {}, {
-      importMethod: "user-upload",
-      originalFilename: filename,
-    }),
-    upload: {
-      kind: "file",
-      filename,
-      expectedBytes,
-    },
-  };
-}
-
-function normalizeGeneratedUpload(upload) {
-  if (!isPlainObject(upload) || !isPlainObject(upload.candidate)) {
-    throw new TypeError("generated upload must contain a candidate object.");
-  }
-  if (upload.body === undefined || upload.body === null) {
-    throw new TypeError("generated upload.body is required.");
-  }
-
-  const candidate = normalizeCandidate(upload.candidate);
+  const candidate = normalizeCandidate(generation.candidate);
   if (
     candidate.provider !== "codex-cli"
     || candidate.provenance?.source !== "codex-cli-image-generation"
     || candidate.provenance?.generated !== true
   ) {
-    throw new TypeError("generated upload must come from Codex CLI image generation.");
+    throw new TypeError("generated environment must come from Codex CLI image generation.");
   }
-  const filename = safeFilename(upload.filename, "environment.png", "generated upload.filename");
-  if (path.extname(filename).toLowerCase() !== GENERATED_UPLOAD_EXTENSION) {
-    throw new TypeError("generated upload.filename must end in .png.");
+  const filename = safeFilename(generation.filename, "environment.png", "generated environment filename");
+  if (path.extname(filename).toLowerCase() !== GENERATED_ASSET_EXTENSION) {
+    throw new TypeError("generated environment filename must end in .png.");
   }
   const expectedBytes = normalizeExpectedBytes(
-    upload.expectedBytes,
-    "generated upload.expectedBytes",
+    generation.expectedBytes,
+    "generated environment expectedBytes",
   );
 
   return {
-    body: upload.body,
+    body: generation.body,
     candidate,
     provider: candidate.provider,
     providerAssetId: candidate.providerAssetId,
     providerAssetKey: `${slug(candidate.provider)}-${slug(candidate.providerAssetId)}`,
-    sourceMetadata: deepMerge({}, isPlainObject(upload.sourceMetadata) ? upload.sourceMetadata : {}, {
+    sourceMetadata: deepMerge({}, isPlainObject(generation.sourceMetadata) ? generation.sourceMetadata : {}, {
       importMethod: "codex-cli-generation",
       originalFilename: filename,
     }),
-    upload: {
+    assetInput: {
       kind: "generated",
       filename,
       expectedBytes,
@@ -843,7 +779,7 @@ function normalizeGeneratedUpload(upload) {
   };
 }
 
-function normalizeGeneratedGroundUpload(value) {
+function normalizeGeneratedGround(value) {
   if (!isPlainObject(value)) {
     throw new TypeError("Every environment panorama requires a generated matching ground texture.");
   }
@@ -915,20 +851,20 @@ function normalizeCandidate(value) {
   };
 }
 
-async function writeUploadToFile(body, outputPath, expectedBytes, maximumBytes) {
+async function writeAssetToFile(body, outputPath, expectedBytes, maximumBytes) {
   if (maximumBytes < 0) {
-    throw new Error(`Environment upload exceeds the ${MAX_ENVIRONMENT_UPLOAD_BYTES}-byte limit.`);
+    throw new Error(`Generated environment asset exceeds the ${MAX_ENVIRONMENT_GENERATED_ASSET_BYTES}-byte limit.`);
   }
 
   const digest = createHash("sha256");
   const handle = await open(outputPath, "wx");
   let bytes = 0;
   try {
-    for await (const chunk of uploadChunks(body)) {
+    for await (const chunk of assetChunks(body)) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       bytes += buffer.byteLength;
       if (bytes > maximumBytes) {
-        throw new Error(`Environment upload exceeds the ${MAX_ENVIRONMENT_UPLOAD_BYTES}-byte limit.`);
+        throw new Error(`Generated environment asset exceeds the ${MAX_ENVIRONMENT_GENERATED_ASSET_BYTES}-byte limit.`);
       }
       digest.update(buffer);
       await handle.write(buffer);
@@ -942,12 +878,12 @@ async function writeUploadToFile(body, outputPath, expectedBytes, maximumBytes) 
 
   if (expectedBytes !== null && bytes !== expectedBytes) {
     await rm(outputPath, { force: true });
-    throw new Error(`Environment upload size did not match the expected ${expectedBytes} bytes.`);
+    throw new Error(`Generated environment size did not match the expected ${expectedBytes} bytes.`);
   }
   return { bytes, sha256: digest.digest("hex") };
 }
 
-async function* uploadChunks(body) {
+async function* assetChunks(body) {
   if (Buffer.isBuffer(body) || body instanceof Uint8Array) {
     yield body;
     return;
@@ -974,10 +910,10 @@ async function* uploadChunks(body) {
     return;
   }
   if (body && typeof body.stream === "function") {
-    yield* uploadChunks(body.stream());
+    yield* assetChunks(body.stream());
     return;
   }
-  throw new TypeError("upload.body must be a readable file body.");
+  throw new TypeError("Generated asset body must be readable.");
 }
 
 async function collectRegularFiles(root) {
@@ -1019,73 +955,13 @@ async function validateGeneratedGroundAsset(filePath) {
   }
 }
 
-async function validateMainAsset(filePath, uploadKind = "file") {
+async function validateGeneratedPanoramaAsset(filePath) {
   const extension = path.extname(filePath).toLowerCase();
-  if (extension === ".hdr") {
-    const prefix = await readPrefix(filePath, 64 * 1024);
-    const header = prefix.toString("ascii");
-    if (!header.startsWith("#?RADIANCE") && !header.startsWith("#?RGBE")) {
-      throw new Error("Uploaded HDR asset is missing a Radiance/RGBE header.");
-    }
-    const resolution = hdrResolution(header);
-    if (!resolution) throw new Error("Uploaded HDR image is missing its pixel dimensions.");
-    assertEquirectangularDimensions(resolution.width, resolution.height, "HDR");
-    return;
-  }
-  if (extension === ".exr") {
-    const prefix = await readPrefix(filePath, 64 * 1024);
-    if (prefix.length < 4 || prefix.readUInt32LE(0) !== 0x01312f76) {
-      throw new Error("Uploaded EXR asset has an invalid magic number.");
-    }
-    const resolution = exrResolution(prefix);
-    if (!resolution) throw new Error("Uploaded EXR image is missing a readable dataWindow.");
-    assertEquirectangularDimensions(resolution.width, resolution.height, "EXR");
-    return;
-  }
-  if (extension === ".png") {
-    if (uploadKind !== "generated") {
-      throw new Error("PNG environments may only be installed from Codex CLI generation.");
-    }
-    const prefix = await readPrefix(filePath, 64);
-    const resolution = pngResolution(prefix);
-    if (!resolution) throw new Error("Generated PNG image has an invalid signature or IHDR header.");
-    assertEquirectangularDimensions(resolution.width, resolution.height, "PNG", "Generated");
-  }
-}
-
-function hdrResolution(header) {
-  const yThenX = header.match(/(?:^|\r?\n)[+-]Y\s+(\d+)\s+[+-]X\s+(\d+)(?:\r?\n|$)/m);
-  if (yThenX) return { width: Number(yThenX[2]), height: Number(yThenX[1]) };
-  const xThenY = header.match(/(?:^|\r?\n)[+-]X\s+(\d+)\s+[+-]Y\s+(\d+)(?:\r?\n|$)/m);
-  return xThenY ? { width: Number(xThenY[1]), height: Number(xThenY[2]) } : null;
-}
-
-function exrResolution(header) {
-  if (header.length < 8) return null;
-  let offset = 8;
-  while (offset < header.length) {
-    const nameEnd = header.indexOf(0, offset);
-    if (nameEnd < 0) return null;
-    if (nameEnd === offset) return null;
-    const name = header.toString("utf8", offset, nameEnd);
-    offset = nameEnd + 1;
-    const typeEnd = header.indexOf(0, offset);
-    if (typeEnd < 0 || typeEnd + 5 > header.length) return null;
-    const type = header.toString("utf8", offset, typeEnd);
-    offset = typeEnd + 1;
-    const size = header.readUInt32LE(offset);
-    offset += 4;
-    if (offset + size > header.length) return null;
-    if (name === "dataWindow" && type === "box2i" && size >= 16) {
-      const minX = header.readInt32LE(offset);
-      const minY = header.readInt32LE(offset + 4);
-      const maxX = header.readInt32LE(offset + 8);
-      const maxY = header.readInt32LE(offset + 12);
-      return { width: maxX - minX + 1, height: maxY - minY + 1 };
-    }
-    offset += size;
-  }
-  return null;
+  if (extension !== ".png") throw new Error("Generated environments must be PNG images.");
+  const prefix = await readPrefix(filePath, 64);
+  const resolution = pngResolution(prefix);
+  if (!resolution) throw new Error("Generated PNG image has an invalid signature or IHDR header.");
+  assertEquirectangularDimensions(resolution.width, resolution.height, "PNG", "Generated");
 }
 
 function pngResolution(header) {
@@ -1103,7 +979,7 @@ function pngResolution(header) {
   };
 }
 
-function assertEquirectangularDimensions(width, height, format, action = "Uploaded") {
+function assertEquirectangularDimensions(width, height, format, action = "Generated") {
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
     throw new Error(`${action} ${format} image has invalid pixel dimensions.`);
   }
@@ -1168,8 +1044,6 @@ function touch(previous, updates, now = new Date().toISOString()) {
 }
 
 function mediaTypeForFormat(format) {
-  if (format === "hdr") return "image/vnd.radiance";
-  if (format === "exr") return "image/x-exr";
   if (format === "png") return "image/png";
   return "application/octet-stream";
 }
@@ -1181,7 +1055,7 @@ function encodeEnvironmentEntryPath(value) {
     .join("/");
 }
 
-function safeFilename(value, fallback, label = "upload.filename") {
+function safeFilename(value, fallback, label = "filename") {
   const candidate = typeof value === "string" && value.trim() ? value.trim() : fallback;
   if (
     !candidate
@@ -1204,8 +1078,8 @@ function normalizeExpectedBytes(value, label) {
   if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0) {
     throw new TypeError(`${label} must be a non-negative integer.`);
   }
-  if (expectedBytes > MAX_ENVIRONMENT_UPLOAD_BYTES) {
-    throw new Error(`Environment upload exceeds the ${MAX_ENVIRONMENT_UPLOAD_BYTES}-byte limit.`);
+  if (expectedBytes > MAX_ENVIRONMENT_GENERATED_ASSET_BYTES) {
+    throw new Error(`Generated environment asset exceeds the ${MAX_ENVIRONMENT_GENERATED_ASSET_BYTES}-byte limit.`);
   }
   return expectedBytes;
 }

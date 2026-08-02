@@ -67,9 +67,8 @@ const LEGACY_TEXT_COMFORT_COMPONENT_ID = "text-comfort";
 const LEGACY_SPATIAL_RELATIONS_SCHEMA_VERSION = "storyvr-spatial-relations/v1";
 const SPATIAL_RELATIONS_SCHEMA_VERSION = "storyvr-spatial-relations/v2";
 const SPATIAL_RELATIONS_INFERENCE_VERSION = "per-scene-exact-assets-v3";
-const SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION = "storyvr-source-spatial-composition/v1";
-const SOURCE_LOCKED_PLACEMENT_POLICY = "source-locked";
-const SOURCE_SPATIAL_COMPOSITION_INFERENCE_VERSION = "active-members-only-v2";
+const SPATIAL_TRANSFORM_POSITION_LIMIT = 1_000_000;
+const SPATIAL_TRANSFORM_SCALE_LIMIT = 1_000_000;
 const TEXT_PANEL_CLEARANCE_STRATEGY = "visible-bounds-push-v2";
 const SPATIAL_RELATIONS_OPTION_ID = "spatial-relations-inferred-layout";
 const SPATIAL_TRAVERSAL_SCHEMA_VERSION = "storyvr-spatial-traversal/v1";
@@ -132,13 +131,13 @@ const MANUAL_READER_POSE_EPSILON_METERS = 0.02;
 const MANUAL_READER_POSE_EPSILON_RADIANS = Math.PI / 180;
 const ENVIRONMENT_ENHANCEMENT_SCHEMA_VERSION = "storyvr-environment-enhancement/v1";
 const ENVIRONMENT_ENHANCEMENT_ASSIGNMENTS_SCHEMA_VERSION = "storyvr-environment-enhancement-assignments/v2";
-const ENVIRONMENT_SEARCH_RECOMMENDATION_SCHEMA_VERSION = "storyvr-environment-search-recommendation/v1";
-const ENVIRONMENT_ENHANCEMENT_OPTION_ID = "environment-enhancement-uploaded-environment";
+const ENVIRONMENT_ENHANCEMENT_OPTION_ID = "environment-enhancement-generated-environment";
+const LEGACY_ENVIRONMENT_ENHANCEMENT_OPTION_ID = "environment-enhancement-uploaded-environment";
 const ENVIRONMENT_ENHANCEMENT_SKIP_OPTION_ID = "environment-enhancement-no-added-environment";
 const ATTENTION_GUIDANCE_SCHEMA_VERSION = "storyvr-attention-guidance/v1";
-const ATTENTION_GUIDANCE_INFERENCE_VERSION = "dual-runtime-semantic-v2";
+const ATTENTION_GUIDANCE_INFERENCE_VERSION = "dual-runtime-semantic-v3";
 const ATTENTION_GUIDANCE_OPTION_ID = "attention-guidance-reviewed-points";
-const ATTENTION_READER_GUIDANCE_SCHEMA_VERSION = "storyvr-attention-reader-guidance/v1";
+const ATTENTION_READER_GUIDANCE_SCHEMA_VERSION = "storyvr-attention-reader-guidance/v2";
 const ENVIRONMENT_ASSET_FORMATS = new Set(["glb", "gltf", "hdr", "exr", "png"]);
 const ENVIRONMENT_BACKGROUND_MODES = new Set(["asset", "fog-color", "transparent"]);
 const ASSET_TOPOLOGY_COMPATIBILITY_COMPONENT = {
@@ -278,6 +277,9 @@ const PERFORMANCE_OPTIMIZATION_DEFAULT_SETTINGS = Object.freeze({
   xrFixedFoveation: 1,
 });
 const ANIMATION_PROBE_JUDGMENT_FILE = "codex-animation-judgment.json";
+const ANIMATION_PROBE_EVIDENCE_FILE = "animation-evidence.json";
+const ANIMATION_PROBE_ARTIFACT_CACHE_LIMIT = 32;
+const animationProbeArtifactProjectionCache = new Map();
 const ANIMATION_PROBE_MIN_CONFIDENCE = 0.35;
 const SOURCE_MOTION_LINKING_SCHEMA_VERSION = "storyvr-source-motion-linking/v1";
 const SOURCE_MOTION_OVERRIDES_SCHEMA_VERSION = "storyvr-source-motion-overrides/v1";
@@ -307,14 +309,20 @@ export async function loadAuthorProject(options) {
     storyFolder: paths.storyFolder,
   });
   assertSupportedStory(paths, runtime);
-  const project = await readJsonIfExists(paths.projectPath) || makeProject(paths, runtime);
+  const storedProject = await readJsonIfExists(paths.projectPath);
+  const storedProjectMaterialSignature = authorProjectMaterialSignature(storedProject);
+  const project = storedProject || makeProject(paths, runtime);
   const preMigrationComponentOrder = Array.isArray(project.componentOrder) ? [...project.componentOrder] : [];
+  const previouslyCompletedCheckpointIds = new Set();
+  for (const component of DECISION_COMPONENTS) {
+    const stored = await readJsonIfExists(path.join(paths.decisionsRoot, `${component.id}.json`));
+    if (stored?.savedAt) previouslyCompletedCheckpointIds.add(component.id);
+  }
   await migrateEnvironmentEnhancementWorkflow(paths, project);
   await migrateSpatialRelationsWorkflow(paths, project, { preMigrationComponentOrder });
   await migrateRetiredViewpointWorkflow(paths, project);
   await migrateAttentionGuidanceWorkflow(paths, project, { preMigrationComponentOrder });
   await migrateDecisionStatusWorkflow(paths);
-  project.updatedAt = new Date().toISOString();
   project.story = {
     slug: runtime.slug,
     title: runtime.title,
@@ -322,7 +330,10 @@ export async function loadAuthorProject(options) {
     resourceFolder: paths.resourceFolder,
     storyFolder: paths.storyFolder,
   };
-  await writeJson(paths.projectPath, project);
+  if (!storedProject || storedProjectMaterialSignature !== authorProjectMaterialSignature(project)) {
+    project.updatedAt = new Date().toISOString();
+    await writeJson(paths.projectPath, project);
+  }
 
   const rawGraph = await readJsonIfExists(paths.storyGraphPath);
   const graph = rawGraph
@@ -338,6 +349,16 @@ export async function loadAuthorProject(options) {
   if (previousComponentsCurrent(SPATIAL_RELATIONS_COMPONENT_ID, decisions)) {
     ({ proposals, decisions } = await ensureSpatialRelationsInferenceState(paths, proposals, decisions, graph, runtime));
   }
+  const workflowRevalidation = await revalidatePreviouslyCompletedWorkflow({
+    options,
+    paths,
+    graph,
+    runtime,
+    proposals,
+    decisions,
+    previouslyCompletedCheckpointIds,
+  });
+  ({ proposals, decisions } = workflowRevalidation);
   if (previousComponentsCurrent(ATTENTION_GUIDANCE_COMPONENT_ID, decisions)) {
     ({ proposals, decisions } = await ensureAttentionGuidanceInferenceState(paths, proposals, decisions, graph, runtime));
   }
@@ -345,11 +366,18 @@ export async function loadAuthorProject(options) {
     await ensureSourceDynamicsPreviewDecisionsAvailable(paths, graph, { force: sourceMotionChanged });
     decisions = await readDecisionIndex(paths);
   }
-  const spatialRelations = decisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations
-    || proposals[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations
+  const spatialRelations = proposals[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations
+    || decisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations
     || null;
-  const attentionGuidance = decisions[ATTENTION_GUIDANCE_COMPONENT_ID]?.attentionGuidance
-    || proposals[ATTENTION_GUIDANCE_COMPONENT_ID]?.attentionGuidance
+  const attentionGuidance = (
+    isValidCurrentDecision(
+      COMPONENT_BY_ID.get(ATTENTION_GUIDANCE_COMPONENT_ID),
+      decisions[ATTENTION_GUIDANCE_COMPONENT_ID],
+    )
+      ? decisions[ATTENTION_GUIDANCE_COMPONENT_ID]?.attentionGuidance
+      : proposals[ATTENTION_GUIDANCE_COMPONENT_ID]?.attentionGuidance
+  )
+    || decisions[ATTENTION_GUIDANCE_COMPONENT_ID]?.attentionGuidance
     || null;
   const interactionControlDraft = previousComponentsCurrent("interaction-control", decisions) && spatialRelations
     ? interactionControlDraftFor(
@@ -398,6 +426,7 @@ export async function loadAuthorProject(options) {
     proceduralDynamics,
     storyCanvasSegments,
     storyCanvasGrouping,
+    workflowRevalidation: workflowRevalidation.report,
     runtimeSummary: summarizeRuntime(runtime),
     readiness: readinessFor(decisions),
   };
@@ -1038,97 +1067,6 @@ export async function saveSourceMotionLinks(options, payload = {}) {
   return nextGraph.sourceMotionLinking || emptySourceMotionLinking();
 }
 
-export function environmentSearchRecommendationContext(project, graph) {
-  const story = graph?.story || project?.story || {};
-  const beats = Array.isArray(graph?.beats) ? graph.beats : [];
-  return {
-    story: {
-      slug: String(story.slug || project?.story?.slug || ""),
-      title: normalizeEnvironmentRecommendationText(story.title || project?.story?.title || ""),
-      sourceUrl: String(story.sourceUrl || project?.story?.sourceUrl || ""),
-    },
-    beatCount: beats.length,
-    beats: beats.map((beat, index) => ({
-      index,
-      id: String(beat?.id || `beat-${index + 1}`),
-      kind: String(beat?.kind || ""),
-      title: normalizeEnvironmentRecommendationText(beat?.title),
-      section: normalizeEnvironmentRecommendationText(beat?.section),
-      sectionHeading: normalizeEnvironmentRecommendationText(beat?.sectionHeading),
-      text: normalizeEnvironmentRecommendationText(beat?.text),
-    })),
-  };
-}
-
-export function environmentSearchRecommendationSignature(project, graph) {
-  return createHash("sha256")
-    .update(JSON.stringify(environmentSearchRecommendationContext(project, graph)))
-    .digest("hex");
-}
-
-export async function loadEnvironmentSearchRecommendation(options, input = {}) {
-  const paths = resolveAuthorPaths(options);
-  const [project, graph] = await Promise.all([
-    input.project ? Promise.resolve(input.project) : readJsonIfExists(paths.projectPath),
-    input.graph ? Promise.resolve(input.graph) : readJsonIfExists(paths.storyGraphPath),
-  ]);
-  if (!graph) return null;
-  const context = environmentSearchRecommendationContext(project, graph);
-  const storySignature = environmentSearchRecommendationSignature(project, graph);
-  const cached = await readJsonIfExists(paths.environmentSearchRecommendationPath);
-  return validEnvironmentSearchRecommendation(cached, storySignature, context.beatCount)
-    ? cached
-    : null;
-}
-
-export async function recommendEnvironmentSearchKeywords(options, input = {}) {
-  const paths = resolveAuthorPaths(options);
-  const [project, graph] = await Promise.all([
-    input.project ? Promise.resolve(input.project) : readJsonIfExists(paths.projectPath),
-    input.graph ? Promise.resolve(input.graph) : readRequiredJson(paths.storyGraphPath, "Generate the source graph before requesting environment search keywords."),
-  ]);
-  const context = environmentSearchRecommendationContext(project, graph);
-  if (!context.beats.length) {
-    throw Object.assign(new Error("The source graph has no story beats to analyze for an environment recommendation."), { statusCode: 409 });
-  }
-  const storySignature = environmentSearchRecommendationSignature(project, graph);
-  const cached = await readJsonIfExists(paths.environmentSearchRecommendationPath);
-  if (input.force !== true && validEnvironmentSearchRecommendation(cached, storySignature, context.beatCount)) {
-    return cached;
-  }
-
-  const codexGenerator = options.environmentRecommendationCodex || generateEnvironmentSearchRecommendationWithCodex;
-  const openaiGenerator = options.environmentRecommendationOpenAI || generateEnvironmentSearchRecommendationWithOpenAI;
-  const failures = [];
-  let recommendation = null;
-
-  if (options.aiProvider !== "openai") {
-    try {
-      const generated = await codexGenerator(context, options);
-      recommendation = normalizeEnvironmentSearchRecommendation(generated, context, storySignature);
-    } catch (error) {
-      failures.push({ provider: "codex", message: error.message });
-    }
-  }
-  if (!recommendation) {
-    try {
-      const generated = await openaiGenerator(context, options);
-      recommendation = normalizeEnvironmentSearchRecommendation(generated, context, storySignature);
-    } catch (error) {
-      failures.push({ provider: "openai", message: error.message });
-    }
-  }
-  if (!recommendation) {
-    const error = Object.assign(new Error("AI keyword recommendation is unavailable. Sign in with Codex or enter environment search terms manually."), {
-      statusCode: 503,
-      diagnostics: failures,
-    });
-    throw error;
-  }
-  await writeJson(paths.environmentSearchRecommendationPath, recommendation);
-  return recommendation;
-}
-
 export async function generateComponentProposals(options, componentId, request = {}) {
   const component = requireProposalComponent(componentId);
   if (isSpatialRelationsComponent(component)) {
@@ -1137,7 +1075,7 @@ export async function generateComponentProposals(options, componentId, request =
     });
   }
   if (isEnvironmentEnhancementComponent(component)) {
-    throw Object.assign(new Error("Environment Enhancement does not generate AI options through the generic proposal workflow. Use Search to find a public 360° HDRI, or Generate to create a story-local 2:1 PNG panorama through the signed-in Codex CLI."), {
+    throw Object.assign(new Error("Environment Enhancement does not generate AI options through the generic proposal workflow. Use Generate to create a story-local 2:1 PNG panorama and matching ground through the signed-in Codex CLI."), {
       statusCode: 409,
     });
   }
@@ -1840,6 +1778,180 @@ export async function saveCheckpointDecision(options, componentId, payload = {})
     await markDownstreamDecisionsStale(paths, component.id);
   }
   await refreshDerivedSourceDynamicsDecisionsWhenReady(paths);
+  return decision;
+}
+
+export async function saveCheckpointDecisionDraft(options, componentId, payload = {}) {
+  const component = requireProposalComponent(componentId);
+  const paths = resolveAuthorPaths(options);
+  if (isEnvironmentEnhancementComponent(component)) {
+    throw Object.assign(new Error("Use the Environment Enhancement draft action to persist its selected or pending asset."), { statusCode: 409 });
+  }
+  const decisions = await readDecisionIndex(paths);
+  assertPreviousCurrent(componentId, decisions);
+  const decisionPath = path.join(paths.decisionsRoot, `${component.id}.json`);
+  const current = await readJsonIfExists(decisionPath);
+  const previousMaterialSignature = decisionMaterialSignature(current);
+  let decision;
+
+  if (isSourceDynamicsPreviewComponent(component)) {
+    const graph = await readEnrichedSourceGraphForSourceDynamics(paths);
+    const option = sourceDynamicsPreviewForComponent(component.id, graph);
+    if (payload.optionId && payload.optionId !== option?.optionId) {
+      throw Object.assign(new Error(`Unknown source-derived optionId for ${component.id}: ${payload.optionId}`), { statusCode: 400 });
+    }
+    assertValidDecisionOption(component, option);
+    decision = {
+      ...(current || {}),
+      component: component.id,
+      label: component.label,
+      designDimension: component.dimension,
+      option,
+      authorEdits: payload.authorEdits ?? current?.authorEdits ?? "",
+      proposalGeneratedAt: null,
+      sourceDynamicsPreview: true,
+      inferredBy: "animation-probe",
+      inferencePrerequisites: [SPATIAL_RELATIONS_COMPONENT_ID, ENVIRONMENT_ENHANCEMENT_COMPONENT_ID, ATTENTION_GUIDANCE_COMPONENT_ID],
+    };
+    if (component.id === "dynamic-geometry") {
+      const proceduralStore = await readJsonIfExists(paths.proceduralDynamicsPath);
+      if (proceduralStore?.schemaVersion === "storyvr-procedural-dynamics/v1") {
+        decision.proceduralDynamicsRevision = Number.isSafeInteger(Number(proceduralStore.revision))
+          ? Number(proceduralStore.revision)
+          : 0;
+        decision.proceduralDynamicsSceneKeys = Object.keys(proceduralStore.plansByScene || {}).sort();
+      }
+    }
+    delete decision.autoSavedBy;
+    delete decision.autoSavePrerequisites;
+  } else if (isFinalReviewComponent(component)) {
+    const finalTuningPrompt = String(
+      payload.finalTuningPrompt
+        ?? payload.authorEdits
+        ?? current?.finalTuningPrompt
+        ?? current?.authorEdits
+        ?? "",
+    ).trim();
+    decision = {
+      component: component.id,
+      label: component.label,
+      designDimension: component.dimension,
+      option: FINAL_REVIEW_OPTION,
+      authorEdits: finalTuningPrompt,
+      finalTuningPrompt,
+      proposalGeneratedAt: null,
+    };
+  } else if (component.id === "interaction-control") {
+    const interactionState = await currentInteractionControlState(paths, decisions);
+    const inBeatInteractions = sanitizeInBeatInteractions(
+      payload.inBeatInteractions ?? current?.inBeatInteractions ?? [],
+    );
+    const controllerConfiguration = interactionControllerConfigurationForDecision(
+      current,
+      Object.prototype.hasOwnProperty.call(payload, "controllerConfiguration")
+        ? payload.controllerConfiguration
+        : undefined,
+    );
+    const preservedOverrides = Object.keys(current?.boundaryOverrides || {}).length
+      ? current.boundaryOverrides
+      : interactionDecisionBoundaryRecords(current);
+    const interactionControlByBoundary = applyInteractionControlBoundaryOverrides(
+      interactionState.interactionControlByBoundary,
+      payload.boundaryOverrides
+        ?? payload.interactionControlByBoundary
+        ?? payload.interactionControlByRoute
+        ?? preservedOverrides,
+      inBeatInteractions,
+      controllerConfiguration,
+    );
+    const preservedVariantEdgeOverrides = Object.keys(current?.variantOverrides || {}).length
+      ? current.variantOverrides
+      : Object.keys(current?.variantEdgeOverrides || {}).length
+        ? current.variantEdgeOverrides
+        : current?.variantInteractionControlByEdge;
+    const variantInteractionControlByEdge = applyVariantInteractionControlEdgeOverrides(
+      interactionState.variantInteractionControlByEdge,
+      payload.variantOverrides
+        ?? payload.variantEdgeOverrides
+        ?? payload.variantInteractionControlByEdge
+        ?? preservedVariantEdgeOverrides,
+      inBeatInteractions,
+    );
+    decision = {
+      component: component.id,
+      label: component.label,
+      designDimension: component.dimension,
+      option: controllerButtonFallbackOption(),
+      controllerConfiguration,
+      authorEdits: payload.authorEdits ?? current?.authorEdits ?? "",
+      proposalGeneratedAt: null,
+      spatialTraversal: interactionState.spatialTraversal,
+      interactionControlSchemaVersion: INTERACTION_CONTROL_BOUNDARY_SCHEMA_VERSION,
+      inBeatInteractionsSchemaVersion: IN_BEAT_INTERACTIONS_SCHEMA_VERSION,
+      inBeatInteractions,
+      interactionControlSourceSignature: interactionState.interactionControlSourceSignature,
+      interactionControlByBoundary,
+      interactionControlByRoute: interactionControlByBoundary,
+      variantInteractionControlByBeat: interactionState.variantInteractionControlByBeat,
+      variantInteractionControlByEdge,
+      boundaryOverrides: interactionControlBoundaryOverridesFromRecords(interactionControlByBoundary),
+      variantOverrides: variantInteractionControlEdgeOverridesFromRecords(variantInteractionControlByEdge),
+      locomotionMode: null,
+    };
+  } else {
+    const bundle = payload.optionId || !current?.option
+      ? await readRequiredJson(
+        path.join(paths.proposalsRoot, `${component.id}.json`),
+        `Generate or load ${component.label} before saving a draft.`,
+      )
+      : await readJsonIfExists(path.join(paths.proposalsRoot, `${component.id}.json`));
+    const submittedOption = payload.optionId
+      ? bundle?.proposals?.find((proposal) => proposal.optionId === payload.optionId)
+      : current?.option;
+    if (!submittedOption) {
+      throw Object.assign(new Error(`Unknown or missing optionId for ${component.id}: ${payload.optionId || "missing"}`), { statusCode: 400 });
+    }
+    const decisionOption = component.id === "asset-topology"
+      ? await sanitizeAssetTopologyDecisionOption(paths, submittedOption)
+      : submittedOption;
+    assertValidDecisionOption(component, decisionOption);
+    decision = {
+      ...(current || {}),
+      component: component.id,
+      label: component.label,
+      designDimension: component.dimension,
+      option: decisionOption,
+      authorEdits: payload.authorEdits ?? current?.authorEdits ?? "",
+      proposalGeneratedAt: bundle?.generatedAt || current?.proposalGeneratedAt || null,
+    };
+    if (isSpatialRelationsComponent(component)) {
+      decision.spatialRelations = await validatedSpatialRelationsContract(
+        paths,
+        payload.spatialRelations || current?.spatialRelations || bundle?.spatialRelations || submittedOption.spatialRelations,
+      );
+    }
+    if (isAttentionGuidanceComponent(component)) {
+      decision.attentionGuidance = await validatedAttentionGuidanceContract(
+        paths,
+        payload.attentionGuidance || current?.attentionGuidance || bundle?.attentionGuidance || submittedOption.attentionGuidance,
+      );
+    }
+  }
+
+  assertValidDecisionOption(component, decision.option);
+  const nextMaterialSignature = decisionMaterialSignature(decision);
+  if (current && previousMaterialSignature === nextMaterialSignature) return current;
+
+  delete decision.requiresReview;
+  decision.draftUpdatedAt = new Date().toISOString();
+  decision = decisionWithStatus(decision, "draft");
+  await writeJson(decisionPath, decision);
+  if (isSpatialRelationsComponent(component)) {
+    await writeDerivedAssetTopologyDecision(paths, decision.spatialRelations, decision);
+  }
+  if (previousMaterialSignature && previousMaterialSignature !== nextMaterialSignature) {
+    await markDownstreamDecisionsStale(paths, component.id);
+  }
   return decision;
 }
 
@@ -4058,24 +4170,19 @@ export async function saveEnvironmentEnhancementDecisionDraft(options, environme
   const decisionPath = path.join(paths.decisionsRoot, `${component.id}.json`);
   const current = await readJsonIfExists(decisionPath);
   const scoped = isEnvironmentEnhancementAssignmentsSource(environmentState);
-  const hasPendingSourceWithoutAsset = environmentEnhancementAssignmentsHavePendingSource(environmentState);
-  const environmentEnhancement = hasPendingSourceWithoutAsset
-    ? null
-    : scoped
-      ? await validatedEnvironmentEnhancementAssignments(
-        paths,
-        environmentState,
-        await readRequiredJson(
-          paths.storyGraphPath,
-          "Generate the source graph before editing Environment Enhancement.",
-        ),
-      )
-      : await validatedEnvironmentEnhancementContract(paths, environmentState);
-  const option = environmentEnhancement
-    ? scoped && !environmentEnhancementAssignmentsHaveEnvironment(environmentEnhancement)
-      ? environmentEnhancementSkipDecisionOption(component)
-      : environmentEnhancementDecisionOption(component, environmentEnhancement)
-    : current?.option || null;
+  const environmentEnhancement = scoped
+    ? await validatedEnvironmentEnhancementAssignments(
+      paths,
+      environmentState,
+      await readRequiredJson(
+        paths.storyGraphPath,
+        "Generate the source graph before editing Environment Enhancement.",
+      ),
+    )
+    : await validatedEnvironmentEnhancementContract(paths, environmentState);
+  const option = scoped && !environmentEnhancementAssignmentsHaveEnvironment(environmentEnhancement)
+    ? environmentEnhancementSkipDecisionOption(component)
+    : environmentEnhancementDecisionOption(component, environmentEnhancement);
   const decision = decisionWithStatus({
     component: component.id,
     label: component.label,
@@ -4083,12 +4190,10 @@ export async function saveEnvironmentEnhancementDecisionDraft(options, environme
     option,
     authorEdits: current?.authorEdits || "",
     proposalGeneratedAt: null,
-    ...(hasPendingSourceWithoutAsset ? { pendingEnvironmentSource: cloneJson(environmentState.pendingSource) } : {}),
   }, "draft", new Date().toISOString());
   await writeJson(decisionPath, decision);
   if (isValidCurrentDecision(component, current)
-    || decisionMaterialSignature(current) !== decisionMaterialSignature(decision)
-    || hasPendingSourceWithoutAsset) {
+    || decisionMaterialSignature(current) !== decisionMaterialSignature(decision)) {
     await markDownstreamDecisionsStale(paths, component.id);
   }
   return decision;
@@ -4224,9 +4329,17 @@ async function ensureSourceDynamicsPreviewDecisionsAvailable(paths, graph, optio
       written[component.id] = existing;
       continue;
     }
-    await writeJson(decisionPath, nextDraft);
+    const next = existing?.status === "stale" && existing.savedAt
+      ? decisionWithStatus({
+        ...nextDraft,
+        invalidatedBy: existing.invalidatedBy || "upstream-change",
+        staleAt: existing.staleAt || new Date().toISOString(),
+        requiresReview: existing.requiresReview === true,
+      }, "stale", existing.savedAt)
+      : nextDraft;
+    await writeJson(decisionPath, next);
     if (existing?.status === "current") await markDownstreamDecisionsStale(paths, component.id);
-    written[component.id] = nextDraft;
+    written[component.id] = next;
   }
   return written;
 }
@@ -4285,6 +4398,10 @@ async function writeDerivedAssetTopologyDecision(paths, spatialRelations, spatia
 }
 
 export async function compileAuthorRuntime(options) {
+  // Compilation is another entry point into the workflow, so give any
+  // previously completed downstream checkpoints the same deterministic
+  // revalidation pass that the author UI performs on load.
+  await loadAuthorProject(options);
   const paths = resolveAuthorPaths(options);
   const runtime = await importFetchedStoryResources(paths.resourceFolder, "dev", {
     repoRoot: REPO_ROOT,
@@ -5405,7 +5522,6 @@ export function resolveAuthorPaths(options) {
     projectPath: path.join(analysisRoot, "project.json"),
     storyGraphPath: path.join(analysisRoot, "story-graph.json"),
     storyCanvasSegmentsPath: path.join(analysisRoot, "story-canvas-segments.json"),
-    environmentSearchRecommendationPath: path.join(analysisRoot, "environment-search-recommendation.json"),
     performanceOptimizationPath: path.join(analysisRoot, "performance-optimization.json"),
     proceduralDynamicsPath: path.join(analysisRoot, "procedural-dynamics.json"),
     sourceMotionOverridesPath: path.join(analysisRoot, "source-motion-overrides.json"),
@@ -5444,6 +5560,12 @@ function makeProject(paths, runtime) {
     componentOrder: COMPONENTS.map((component) => component.id),
     activeComponent: "source-graph",
   };
+}
+
+function authorProjectMaterialSignature(project) {
+  if (!project || typeof project !== "object") return "";
+  const { updatedAt: _updatedAt, ...material } = project;
+  return createHash("sha256").update(JSON.stringify(material)).digest("hex");
 }
 
 async function migrateDecisionStatusWorkflow(paths) {
@@ -5512,6 +5634,7 @@ function decisionWithStatus(decision, status, savedAt = undefined) {
     autoLockPrerequisites,
     autoCurrentBy,
     autoCurrentPrerequisites,
+    pendingEnvironmentSource: _retiredPendingEnvironmentSource,
     ...rest
   } = decision || {};
   const statusSavedAt = status === "current"
@@ -5532,7 +5655,6 @@ function decisionWithStatus(decision, status, savedAt = undefined) {
     delete next.requiresReview;
     delete next.staleAt;
     delete next.draftUpdatedAt;
-    delete next.pendingEnvironmentSource;
   } else if (status === "draft") {
     delete next.invalidatedBy;
     delete next.staleAt;
@@ -5822,9 +5944,6 @@ async function generateStoryGraph(paths, runtime, options = {}) {
     ...(Array.isArray(runtime.pointCloudEffects) && runtime.pointCloudEffects.length
       ? { pointCloudEffects: cloneJson(runtime.pointCloudEffects) }
       : {}),
-    ...(runtime.sourceSpatialCompositions?.schemaVersion === SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION
-      ? { sourceSpatialCompositions: omitRetiredViewpointMetadata(cloneJson(runtime.sourceSpatialCompositions)) }
-      : {}),
     entities: extractEntities(runtime.contentUnits),
     assetInventory: runtime.assets.map((asset) => ({
       id: asset.id,
@@ -5875,11 +5994,9 @@ async function enrichSourceGraphWithAnimationProbe(paths, graph, runtime) {
 }
 
 export function applyAnimationProbeLinksToGraph(graph, runtime, artifacts = [], overrides = null, sourceMotionPlayback = null) {
-  graph = synchronizeSourceSpatialCompositions(
-    synchronizePointCloudEffects(
-      refreshSourceGraphCanonicalVariantText(graph, runtime),
-      runtime,
-    ),
+  const graphBeforeEnrichment = graph;
+  graph = synchronizePointCloudEffects(
+    refreshSourceGraphCanonicalVariantText(graph, runtime),
     runtime,
   );
   const selectedArtifact = selectAnimationProbeArtifact(artifacts, runtime);
@@ -5996,14 +6113,11 @@ export function applyAnimationProbeLinksToGraph(graph, runtime, artifacts = [], 
   normalized.sourceGraphInference = {
     schemaVersion: SOURCE_GRAPH_INFERENCE_SCHEMA_VERSION,
     signature: inferenceSignature,
-    refreshedAt: new Date().toISOString(),
-    changed: previousInferenceSignature ? previousInferenceSignature !== inferenceSignature : false,
   };
 
   if (applied.length) {
     normalized.animationProbeLinking = {
       schemaVersion: "storyvr-animation-probe-linking/v1",
-      appliedAt: new Date().toISOString(),
       artifactPath: selectedArtifact.artifactPath || selectedArtifact.path || "",
       storySlug: probeArtifactStorySlug(selectedArtifact),
       promotedLinkCount: applied.length,
@@ -6013,74 +6127,387 @@ export function applyAnimationProbeLinksToGraph(graph, runtime, artifacts = [], 
       skipped,
     };
   }
+  const materialChanged = sourceGraphEnrichmentMaterialSignature(graphBeforeEnrichment)
+    !== sourceGraphEnrichmentMaterialSignature(normalized);
+  const enrichedAt = new Date().toISOString();
+  const previousInference = graphBeforeEnrichment?.sourceGraphInference;
+  normalized.sourceGraphInference = !materialChanged && previousInference?.refreshedAt
+    ? {
+      ...cloneJson(previousInference),
+      schemaVersion: SOURCE_GRAPH_INFERENCE_SCHEMA_VERSION,
+      signature: inferenceSignature,
+    }
+    : {
+      schemaVersion: SOURCE_GRAPH_INFERENCE_SCHEMA_VERSION,
+      signature: inferenceSignature,
+      refreshedAt: enrichedAt,
+      changed: previousInferenceSignature ? previousInferenceSignature !== inferenceSignature : false,
+    };
+  if (normalized.animationProbeLinking) {
+    normalized.animationProbeLinking.appliedAt = !materialChanged && graphBeforeEnrichment?.animationProbeLinking?.appliedAt
+      ? graphBeforeEnrichment.animationProbeLinking.appliedAt
+      : enrichedAt;
+  }
   return normalized;
+}
+
+function sourceGraphEnrichmentMaterialSignature(graph) {
+  if (!graph || typeof graph !== "object") return "";
+  const material = cloneJson(graph);
+  if (material.sourceGraphInference && typeof material.sourceGraphInference === "object") {
+    material.sourceGraphInference = {
+      schemaVersion: material.sourceGraphInference.schemaVersion || SOURCE_GRAPH_INFERENCE_SCHEMA_VERSION,
+      signature: material.sourceGraphInference.signature || "",
+    };
+  }
+  if (material.animationProbeLinking && typeof material.animationProbeLinking === "object") {
+    delete material.animationProbeLinking.appliedAt;
+  }
+  return createHash("sha256").update(JSON.stringify(material)).digest("hex");
 }
 
 function synchronizePointCloudEffects(graph, runtime) {
   const next = graph && typeof graph === "object" ? { ...graph } : {};
+  delete next.sourceSpatialCompositions;
+  delete next.sourceSpatialComposition;
   const effects = Array.isArray(runtime?.pointCloudEffects) ? runtime.pointCloudEffects : [];
   if (effects.length) next.pointCloudEffects = cloneJson(effects);
   else delete next.pointCloudEffects;
   return next;
 }
 
-function synchronizeSourceSpatialCompositions(graph, runtime) {
-  const next = graph && typeof graph === "object" ? { ...graph } : {};
-  const compositions = runtime?.sourceSpatialCompositions;
-  if (compositions?.schemaVersion === SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION
-    && Array.isArray(compositions.compositions)
-    && compositions.compositions.length) {
-    next.sourceSpatialCompositions = omitRetiredViewpointMetadata(cloneJson(compositions));
-  } else {
-    delete next.sourceSpatialCompositions;
-  }
-  return omitRetiredViewpointMetadata(next);
-}
-
-async function findAnimationProbeArtifacts(paths, runtime) {
-  const preferredRoot = path.join(paths.storyFolder, "analysis", "animation-logic-probe");
-  const fallbackRoot = path.join(REPO_ROOT, "animation_capture_experiement");
+export async function findAnimationProbeArtifacts(paths, runtime, discoveryOptions = {}) {
+  const preferredRoot = discoveryOptions.preferredRoot
+    || path.join(paths.storyFolder, "analysis", "animation-logic-probe");
+  const fallbackRoot = Object.hasOwn(discoveryOptions, "fallbackRoot")
+    ? discoveryOptions.fallbackRoot
+    : path.join(REPO_ROOT, "animation_capture_experiement");
   const preferred = await readAnimationProbeArtifacts(preferredRoot, {
     preferred: true,
     trustedStoryFolder: true,
-    maxDepth: 3,
+    maxDepth: discoveryOptions.preferredMaxDepth || 3,
   });
-  const fallback = await readAnimationProbeArtifacts(fallbackRoot, {
-    preferred: false,
-    trustedStoryFolder: false,
-    maxDepth: 6,
-  });
-  return [...preferred, ...fallback]
-    .filter((artifact) => animationProbeArtifactMatchesRuntime(artifact, runtime))
-    .sort((a, b) => {
-      if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
-      const qualityDelta = animationProbeArtifactQuality(b) - animationProbeArtifactQuality(a);
-      if (qualityDelta) return qualityDelta;
-      return (b.mtimeMs || 0) - (a.mtimeMs || 0);
+  // A story-local probe is authoritative. Besides avoiding ambiguous cross-story
+  // matches, returning here prevents the same local artifact from being parsed a
+  // second time through the repository-wide fallback tree.
+  const candidates = preferred.length || !fallbackRoot
+    ? preferred
+    : await readAnimationProbeArtifacts(fallbackRoot, {
+      preferred: false,
+      trustedStoryFolder: false,
+      maxDepth: discoveryOptions.fallbackMaxDepth || 6,
     });
+  return candidates
+    .filter((artifact) => animationProbeArtifactMatchesRuntime(artifact, runtime))
+    .sort(compareAnimationProbeArtifacts);
+}
+
+function compareAnimationProbeArtifacts(a, b) {
+  if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
+  const qualityDelta = animationProbeArtifactQuality(b) - animationProbeArtifactQuality(a);
+  if (qualityDelta) return qualityDelta;
+  return (b.mtimeMs || 0) - (a.mtimeMs || 0);
 }
 
 async function readAnimationProbeArtifacts(root, options = {}) {
   if (!await exists(root)) return [];
   const files = await findFilesByName(root, ANIMATION_PROBE_JUDGMENT_FILE, options.maxDepth || 4);
-  const artifacts = [];
+  const descriptors = [];
+  const canonicalJudgmentPaths = new Set();
   for (const judgmentPath of files) {
-    const judgment = await readJsonIfExists(judgmentPath);
-    if (!judgment) continue;
-    const evidencePath = path.join(path.dirname(judgmentPath), "animation-evidence.json");
-    const evidence = await readJsonIfExists(evidencePath);
-    const fileStat = await stat(judgmentPath).catch(() => null);
+    const descriptor = await animationProbeArtifactDescriptor(judgmentPath, options);
+    if (!descriptor || canonicalJudgmentPaths.has(descriptor.canonicalJudgmentPath)) continue;
+    canonicalJudgmentPaths.add(descriptor.canonicalJudgmentPath);
+    descriptors.push(descriptor);
+  }
+  const artifacts = [];
+  // Load and immediately compact one artifact at a time so raw evidence from
+  // multiple runs is never retained concurrently.
+  for (const descriptor of descriptors) {
+    const projection = await readAnimationProbeArtifactProjection(descriptor);
+    if (!projection?.judgment) continue;
     artifacts.push({
-      judgment,
-      evidence,
+      judgment: projection.judgment,
+      evidence: projection.evidence,
       preferred: Boolean(options.preferred),
       trustedStoryFolder: Boolean(options.trustedStoryFolder),
-      path: judgmentPath,
-      artifactPath: toPosix(path.relative(REPO_ROOT, judgmentPath)),
-      mtimeMs: fileStat?.mtimeMs || 0,
+      path: descriptor.judgmentPath,
+      artifactPath: toPosix(path.relative(REPO_ROOT, descriptor.judgmentPath)),
+      mtimeMs: descriptor.judgmentStat.mtimeMs || 0,
     });
   }
   return artifacts;
+}
+
+async function animationProbeArtifactDescriptor(judgmentPath, options = {}) {
+  const evidencePath = path.join(path.dirname(judgmentPath), ANIMATION_PROBE_EVIDENCE_FILE);
+  const judgmentStat = await stat(judgmentPath).catch(() => null);
+  if (!judgmentStat?.isFile()) return null;
+  const evidenceStat = await stat(evidencePath).catch(() => null);
+  const canonicalJudgmentPath = await realpath(judgmentPath).catch(() => path.resolve(judgmentPath));
+  const canonicalEvidencePath = evidenceStat?.isFile()
+    ? await realpath(evidencePath).catch(() => path.resolve(evidencePath))
+    : "";
+  return {
+    judgmentPath,
+    evidencePath,
+    judgmentStat,
+    evidenceStat: evidenceStat?.isFile() ? evidenceStat : null,
+    canonicalJudgmentPath,
+    canonicalEvidencePath,
+    preferred: Boolean(options.preferred),
+    trustedStoryFolder: Boolean(options.trustedStoryFolder),
+  };
+}
+
+async function readAnimationProbeArtifactProjection(descriptor) {
+  const cacheIdentity = `${descriptor.canonicalJudgmentPath}\0${descriptor.canonicalEvidencePath}`;
+  const cacheKey = [
+    descriptor.canonicalJudgmentPath,
+    descriptor.judgmentStat.size,
+    descriptor.judgmentStat.mtimeMs,
+    descriptor.canonicalEvidencePath,
+    descriptor.evidenceStat?.size || 0,
+    descriptor.evidenceStat?.mtimeMs || 0,
+  ].join("\0");
+  const cached = animationProbeArtifactProjectionCache.get(cacheKey);
+  if (cached) {
+    animationProbeArtifactProjectionCache.delete(cacheKey);
+    animationProbeArtifactProjectionCache.set(cacheKey, cached);
+    return cloneJson(cached.projection);
+  }
+
+  const rawJudgment = await readJsonIfExists(descriptor.judgmentPath);
+  if (!rawJudgment) return null;
+  const rawEvidence = descriptor.evidenceStat
+    ? await readJsonIfExists(descriptor.evidencePath)
+    : null;
+  const projection = {
+    judgment: compactAnimationProbeJudgment(rawJudgment),
+    evidence: compactAnimationProbeEvidence(rawEvidence),
+  };
+  for (const [key, entry] of animationProbeArtifactProjectionCache) {
+    if (entry.identity === cacheIdentity) animationProbeArtifactProjectionCache.delete(key);
+  }
+  while (animationProbeArtifactProjectionCache.size >= ANIMATION_PROBE_ARTIFACT_CACHE_LIMIT) {
+    animationProbeArtifactProjectionCache.delete(animationProbeArtifactProjectionCache.keys().next().value);
+  }
+  animationProbeArtifactProjectionCache.set(cacheKey, { identity: cacheIdentity, projection });
+  return cloneJson(projection);
+}
+
+function compactAnimationProbeJudgment(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    ...compactJsonFields(source, [
+      "schemaVersion",
+      "story",
+      "storySlug",
+      "storyUrl",
+      "storyTitle",
+      "engine",
+      "assetJudgments",
+      "modelBeatAssociations",
+      "imageBeatAssociations",
+      "glbAnimationInterpretations",
+    ]),
+    ...(Array.isArray(source.beatRuntimeStates) ? {
+      beatRuntimeStates: source.beatRuntimeStates.map(compactAnimationProbeRuntimeState),
+    } : {}),
+    ...(Array.isArray(source.inferredBeatAssetStates) ? {
+      inferredBeatAssetStates: source.inferredBeatAssetStates.map(compactAnimationProbeRuntimeState),
+    } : {}),
+  };
+}
+
+function compactAnimationProbeEvidence(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const models = Array.isArray(source.glbAnimations?.models)
+    ? source.glbAnimations.models.map((model) => ({
+      ...compactJsonFields(model, [
+        "assetFile",
+        "assetUrl",
+        "assetUrls",
+        "file",
+        "finalUrl",
+        "cameraCount",
+        "hasCameraAnimation",
+      ]),
+      ...(Array.isArray(model?.nodes) ? {
+        nodes: model.nodes.map((node) => compactJsonFields(node, ["index", "name", "camera"])),
+      } : {}),
+      ...(Array.isArray(model?.animations) ? {
+        animations: model.animations.map((animation) => compactJsonFields(animation, [
+          "index",
+          "name",
+          "duration",
+          "targetNodeNames",
+          "targetPaths",
+          "cameraChannelCount",
+        ])),
+      } : {}),
+    }))
+    : [];
+  return {
+    ...compactJsonFields(source, ["story"]),
+    ...(models.length ? { glbAnimations: { models } } : {}),
+  };
+}
+
+function compactAnimationProbeRuntimeState(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    ...compactJsonFields(source, [
+      "authoredBeatId",
+      "sourceBeatId",
+      "beatId",
+      "assetFile",
+      "assetUrl",
+      "assetIdentitySource",
+      "text",
+      "scrollPercent",
+      "scrollRange",
+      "confidence",
+      "variantGroupId",
+      "variantOptionId",
+      "optionId",
+      "sceneKey",
+      "interactionPath",
+      "captureStatus",
+      "visualEvidenceRefs",
+      "evidenceRefs",
+      "snapshotIds",
+      "focusChanged",
+      "runtimeChanged",
+      "modelChanged",
+      "modelSwapped",
+      "activeModelChanged",
+      "newlyPresent",
+      "becameVisible",
+      "transformChanged",
+      "visibilityChanged",
+      "opacityChanged",
+      "animationActionChanged",
+      "activeAnimationChanged",
+      "changeKinds",
+      "changeKind",
+      "reasoning",
+    ]),
+    ...(Array.isArray(source.visibleModels) ? {
+      visibleModels: source.visibleModels.map(compactAnimationProbeRuntimeModel),
+    } : {}),
+    ...(Array.isArray(source.renderActiveModels) ? {
+      renderActiveModels: source.renderActiveModels.map(compactAnimationProbeRuntimeModel),
+    } : {}),
+    ...(Array.isArray(source.parts) ? { parts: source.parts.map(compactAnimationProbePart) } : {}),
+    ...(Array.isArray(source.animations) ? { animations: source.animations.map(compactAnimationProbeAnimation) } : {}),
+    ...(Array.isArray(source.visualEvidence) ? {
+      visualEvidence: source.visualEvidence.map((entry) => ({
+        ...compactJsonFields(entry, ["evidenceRef"]),
+        ...(entry?.canvasCrop?.evidenceRef ? { canvasCrop: { evidenceRef: entry.canvasCrop.evidenceRef } } : {}),
+        ...(entry?.frame?.evidenceRef ? { frame: { evidenceRef: entry.frame.evidenceRef } } : {}),
+      })),
+    } : {}),
+  };
+}
+
+function compactAnimationProbeRuntimeModel(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    ...compactJsonFields(source, [
+      "assetFile",
+      "assetUrl",
+      "variantGroupId",
+      "variantOptionId",
+      "sceneKey",
+      "interactionPath",
+      "assetIdentitySource",
+      "captureStatus",
+      "runtimeVisible",
+      "visible",
+      "renderActive",
+      "active",
+      "focusChanged",
+      "runtimeChanged",
+      "modelChanged",
+      "modelSwapped",
+      "activeModelChanged",
+      "newlyPresent",
+      "becameVisible",
+      "transformChanged",
+      "visibilityChanged",
+      "opacityChanged",
+      "animationActionChanged",
+      "activeAnimationChanged",
+      "changeKinds",
+      "changeKind",
+    ]),
+    ...(Array.isArray(source.visibleParts) ? { visibleParts: source.visibleParts.map(compactAnimationProbePart) } : {}),
+    ...(Array.isArray(source.partStateChanges) ? { partStateChanges: source.partStateChanges.map(compactAnimationProbePart) } : {}),
+    ...(Array.isArray(source.playingAnimations) ? {
+      playingAnimations: source.playingAnimations.map(compactAnimationProbeAnimation),
+    } : {}),
+    ...(Array.isArray(source.activeAnimations) ? {
+      activeAnimations: source.activeAnimations.map(compactAnimationProbeAnimation),
+    } : {}),
+  };
+}
+
+function compactAnimationProbePart(value) {
+  return compactJsonFields(value, [
+    "name",
+    "nodeName",
+    "nodePath",
+    "path",
+    "role",
+    "matchSource",
+    "runtimeObservationKind",
+    "changed",
+    "transformChanged",
+    "visibilityChanged",
+    "opacityChanged",
+    "animationActionChanged",
+    "changeKind",
+    "changeKinds",
+    "worldTransform",
+    "transform",
+    "worldPosition",
+    "position",
+    "matrixWorld",
+    "opacity",
+    "materialOpacity",
+    "visible",
+    "visibilityState",
+    "visibilitySource",
+    "confidence",
+    "evidenceRefs",
+    "snapshotIds",
+    "provenance",
+  ]);
+}
+
+function compactAnimationProbeAnimation(value) {
+  return compactJsonFields(value, [
+    "clipIndex",
+    "animationIndex",
+    "clipName",
+    "animationName",
+    "targetParts",
+    "targetNodeNames",
+    "playState",
+    "playback",
+    "confidence",
+    "evidenceRefs",
+    "snapshotIds",
+    "provenance",
+  ]);
+}
+
+function compactJsonFields(value, fields) {
+  const source = value && typeof value === "object" ? value : {};
+  return Object.fromEntries(fields
+    .filter((field) => Object.hasOwn(source, field))
+    .map((field) => [field, cloneJson(source[field])]));
 }
 
 async function findFilesByName(root, fileName, maxDepth, depth = 0) {
@@ -6098,12 +6525,7 @@ async function findFilesByName(root, fileName, maxDepth, depth = 0) {
 function selectAnimationProbeArtifact(artifacts, runtime) {
   return (artifacts || [])
     .filter((artifact) => animationProbeArtifactMatchesRuntime(artifact, runtime))
-    .sort((a, b) => {
-      if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
-      const qualityDelta = animationProbeArtifactQuality(b) - animationProbeArtifactQuality(a);
-      if (qualityDelta) return qualityDelta;
-      return (b.mtimeMs || 0) - (a.mtimeMs || 0);
-    })[0] || null;
+    .sort(compareAnimationProbeArtifacts)[0] || null;
 }
 
 function animationProbeArtifactQuality(artifact) {
@@ -7668,8 +8090,9 @@ function attentionGuidanceInputSignature(graph, runtime, decisions, spatialRelat
     })),
     variants: variantGroupDependencyState(graph || {}),
     variantRuntimeEvidence: attentionVariantRuntimeEvidenceDependencyState(graph || {}),
-    assets: (runtime?.assets || []).filter((asset) => spatialVisualAssetKind(asset) === "glb").map((asset) => ({
+    assets: (runtime?.assets || []).filter(isSpatialVisualAsset).map((asset) => ({
       id: asset.id,
+      kind: spatialVisualAssetKind(asset),
       path: asset.path || asset.url || "",
       url: asset.url || "",
       label: asset.label || asset.name || asset.title || "",
@@ -7699,11 +8122,12 @@ function attentionGuidanceInputSignature(graph, runtime, decisions, spatialRelat
       ].map((scene) => ({
         sceneKey: scene?.sceneKey || "",
         linkedAssetIds: [...(scene?.linkedAssetIds || [])].sort(),
-        glbs: (scene?.entities || []).filter((entity) => entity?.kind === "glb").map((entity) => ({
+        targetableObjects: attentionGuidanceTargetableSceneEntities(scene).map((entity) => ({
           id: entity.id,
+          kind: entity.kind,
           assetId: entity.assetId,
           transform: entity.transform || null,
-        })),
+        })).sort((left, right) => left.id.localeCompare(right.id)),
       })),
     },
     environment: environmentOption ? {
@@ -7739,19 +8163,34 @@ export function inferAttentionGuidanceContract(graph, runtime, decisions = {}) {
 }
 
 function inferAttentionGuidanceScene(scene, graph, assetById) {
-  const glbEntities = (scene?.entities || []).filter((entity) => entity?.kind === "glb" && entity?.assetId);
-  const manualTargetOptions = glbEntities.map((entity) => attentionGuidanceCandidate({
-    sceneKey: scene.sceneKey,
-    entity,
-    targetKind: "standalone-glb",
-    partSelector: null,
-    renderableName: null,
-    confidence: 1,
-    provenance: {
-      source: "author-manual-target-option",
-      evidenceType: "saved-spatial-scene-glb",
-    },
-  }));
+  const targetableEntities = attentionGuidanceTargetableSceneEntities(scene);
+  const glbEntities = targetableEntities.filter((entity) => entity.kind === "glb");
+  const manualTargetOptions = [
+    ...targetableEntities.map((entity) => attentionGuidanceCandidate({
+      sceneKey: scene.sceneKey,
+      entity,
+      targetKind: entity.kind === "image-plane" ? "standalone-image" : "standalone-glb",
+      partSelector: null,
+      renderableName: null,
+      confidence: 1,
+      provenance: {
+        source: "author-manual-target-option",
+        evidenceType: entity.kind === "image-plane" ? "saved-spatial-scene-image" : "saved-spatial-scene-glb",
+      },
+    })),
+    attentionGuidanceCandidate({
+      sceneKey: scene.sceneKey,
+      entity: null,
+      targetKind: "spatial-point",
+      partSelector: null,
+      renderableName: null,
+      confidence: 1,
+      provenance: {
+        source: "author-manual-target-option",
+        evidenceType: "author-placed-spatial-point",
+      },
+    }),
+  ];
   const linkedGlbAssetIds = new Set(glbEntities.map((entity) => entity.assetId));
   const scenePartStates = sourcePartStatesForAttentionScene(graph, scene);
   const directSceneRuntimeAssetIds = uniqueStrings(scenePartStates
@@ -7879,6 +8318,14 @@ function inferAttentionGuidanceScene(scene, graph, assetById) {
         reason: null,
       },
   };
+}
+
+function attentionGuidanceTargetableSceneEntities(scene) {
+  return (scene?.entities || []).filter((entity) => (
+    entity?.id
+    && entity?.assetId
+    && ["glb", "image-plane"].includes(entity.kind)
+  ));
 }
 
 function sourcePartStatesForAttentionScene(graph, scene) {
@@ -8633,10 +9080,12 @@ function isConservativeRenderableName(value) {
 }
 
 function attentionGuidanceCandidate({ sceneKey, entity, targetKind, partSelector, renderableName, confidence, provenance, channel = null }) {
+  const assetId = entity?.assetId || null;
+  const entityId = entity?.id || null;
   const id = `attention:${createHash("sha256").update(JSON.stringify({
     sceneKey,
-    entityId: entity.id,
-    assetId: entity.assetId,
+    entityId,
+    assetId,
     targetKind,
     partSelector: partSelector || null,
   })).digest("hex").slice(0, 20)}`;
@@ -8644,8 +9093,8 @@ function attentionGuidanceCandidate({ sceneKey, entity, targetKind, partSelector
     id,
     targetKind,
     coordinateSpace: "spatial-scene",
-    assetId: entity.assetId,
-    entityId: entity.id,
+    ...(assetId ? { assetId } : {}),
+    ...(entityId ? { entityId } : {}),
     partSelector: partSelector || null,
     renderableName: renderableName || null,
     confidence: Number(Math.max(0, Math.min(1, Number(confidence) || 0)).toFixed(2)),
@@ -8684,6 +9133,28 @@ export function validateAttentionGuidanceContract(value, inferred) {
     resolvedByVariant,
     timeline: inferred.timeline.map((entry) => ({ ...entry })),
   };
+}
+
+export function mergeAttentionGuidanceWithExisting(inferred, existing) {
+  if (!existing || typeof existing !== "object") return inferred;
+  const surviving = {
+    ...existing,
+    schemaVersion: ATTENTION_GUIDANCE_SCHEMA_VERSION,
+    inputSignature: inferred.inputSignature,
+    resolvedByBeat: Object.fromEntries(
+      Object.keys(inferred.resolvedByBeat || {}).map((beatId) => [
+        beatId,
+        existing.resolvedByBeat?.[beatId] || inferred.resolvedByBeat[beatId],
+      ]),
+    ),
+    resolvedByVariant: Object.fromEntries(
+      Object.keys(inferred.resolvedByVariant || {}).map((sceneKey) => [
+        sceneKey,
+        existing.resolvedByVariant?.[sceneKey] || inferred.resolvedByVariant[sceneKey],
+      ]),
+    ),
+  };
+  return validateAttentionGuidanceContract(surviving, inferred);
 }
 
 function assertNoUnknownAttentionScenes(source, inferred) {
@@ -8780,8 +9251,8 @@ function sanitizeAttentionGuidanceMarker(value, candidate) {
     id: candidate.id,
     targetKind: candidate.targetKind,
     coordinateSpace: "spatial-scene",
-    assetId: candidate.assetId,
-    entityId: candidate.entityId,
+    ...(candidate.assetId ? { assetId: candidate.assetId } : {}),
+    ...(candidate.entityId ? { entityId: candidate.entityId } : {}),
     partSelector: candidate.partSelector,
     renderableName: candidate.renderableName,
     inferredPosition,
@@ -8994,597 +9465,9 @@ function sourceDynamicsPreviewPrerequisitesCurrent(decisions) {
   return previousComponentsCurrent("dynamic-geometry", decisions);
 }
 
-function sourceSpatialValue(source, ...keys) {
-  if (!source || typeof source !== "object") return undefined;
-  for (const key of keys) {
-    if (Object.prototype.hasOwnProperty.call(source, key)) return source[key];
-  }
-  return undefined;
-}
-
-function sourceSpatialString(source, ...keys) {
-  if (!source || typeof source !== "object") return "";
-  for (const key of keys) {
-    const value = String(source[key] || "").trim();
-    if (value) return value;
-  }
-  return "";
-}
-
-function sourceSpatialArray(value) {
-  return Array.isArray(value) ? value : [];
-}
-
-function sourceSpatialVector(value) {
-  if (Array.isArray(value) && value.length >= 3) {
-    const result = value.slice(0, 3).map(Number);
-    return result.every(Number.isFinite) ? result : null;
-  }
-  if (!value || typeof value !== "object") return null;
-  const result = [value.x, value.y, value.z].map(Number);
-  return result.every(Number.isFinite) ? result : null;
-}
-
-function normalizeSourceSpatialBounds(value) {
-  if (!value || typeof value !== "object") return null;
-  const minimum = sourceSpatialVector(sourceSpatialValue(
-    value,
-    "min",
-    "minimum",
-    "minimumPoint",
-    "minimum_point",
-  ));
-  const maximum = sourceSpatialVector(sourceSpatialValue(
-    value,
-    "max",
-    "maximum",
-    "maximumPoint",
-    "maximum_point",
-  ));
-  if (!minimum || !maximum || minimum.some((item, index) => item > maximum[index])) return null;
-  return {
-    min: minimum.map((item) => Number(item.toFixed(8))),
-    max: maximum.map((item) => Number(item.toFixed(8))),
-  };
-}
-
-function normalizeSourceSpatialMatrix(value) {
-  const source = Array.isArray(value)
-    ? value
-    : Array.isArray(value?.elements)
-      ? value.elements
-      : null;
-  if (!source || source.length !== 16) return null;
-  const matrix = source.map(Number);
-  if (!matrix.every(Number.isFinite)) return null;
-  if (
-    Math.abs(matrix[3]) > 1e-5
-    || Math.abs(matrix[7]) > 1e-5
-    || Math.abs(matrix[11]) > 1e-5
-    || Math.abs(matrix[15] - 1) > 1e-5
-  ) return null;
-  return matrix.map((item) => Number(item.toFixed(10)));
-}
-
-function sourceSpatialMatrixTransform(matrix) {
-  if (!matrix) return null;
-  const columnX = [matrix[0], matrix[1], matrix[2]];
-  const columnY = [matrix[4], matrix[5], matrix[6]];
-  const columnZ = [matrix[8], matrix[9], matrix[10]];
-  const length = (column) => Math.hypot(...column);
-  const scales = [length(columnX), length(columnY), length(columnZ)];
-  if (scales.some((item) => !Number.isFinite(item) || item < 1e-10)) return null;
-  const normalized = [columnX, columnY, columnZ].map((column, index) => (
-    column.map((item) => item / scales[index])
-  ));
-  const dot = (left, right) => left.reduce((sum, item, index) => sum + item * right[index], 0);
-  if (
-    Math.abs(dot(normalized[0], normalized[1])) > 1e-4
-    || Math.abs(dot(normalized[0], normalized[2])) > 1e-4
-    || Math.abs(dot(normalized[1], normalized[2])) > 1e-4
-  ) return null;
-  const determinant = (
-    normalized[0][0] * (normalized[1][1] * normalized[2][2] - normalized[2][1] * normalized[1][2])
-    - normalized[1][0] * (normalized[0][1] * normalized[2][2] - normalized[2][1] * normalized[0][2])
-    + normalized[2][0] * (normalized[0][1] * normalized[1][2] - normalized[1][1] * normalized[0][2])
-  );
-  if (!Number.isFinite(determinant) || determinant < 0.999 || determinant > 1.001) return null;
-
-  const r00 = normalized[0][0];
-  const r01 = normalized[1][0];
-  const r02 = normalized[2][0];
-  const r10 = normalized[0][1];
-  const r11 = normalized[1][1];
-  const r12 = normalized[2][1];
-  const r20 = normalized[0][2];
-  const r21 = normalized[1][2];
-  const r22 = normalized[2][2];
-  let x;
-  let y;
-  let z;
-  let w;
-  const trace = r00 + r11 + r22;
-  if (trace > 0) {
-    const root = Math.sqrt(trace + 1) * 2;
-    w = 0.25 * root;
-    x = (r21 - r12) / root;
-    y = (r02 - r20) / root;
-    z = (r10 - r01) / root;
-  } else if (r00 > r11 && r00 > r22) {
-    const root = Math.sqrt(1 + r00 - r11 - r22) * 2;
-    w = (r21 - r12) / root;
-    x = 0.25 * root;
-    y = (r01 + r10) / root;
-    z = (r02 + r20) / root;
-  } else if (r11 > r22) {
-    const root = Math.sqrt(1 + r11 - r00 - r22) * 2;
-    w = (r02 - r20) / root;
-    x = (r01 + r10) / root;
-    y = 0.25 * root;
-    z = (r12 + r21) / root;
-  } else {
-    const root = Math.sqrt(1 + r22 - r00 - r11) * 2;
-    w = (r10 - r01) / root;
-    x = (r02 + r20) / root;
-    y = (r12 + r21) / root;
-    z = 0.25 * root;
-  }
-  const quaternionLength = Math.hypot(x, y, z, w) || 1;
-  return {
-    position: [matrix[12], matrix[13], matrix[14]].map((item) => Number(item.toFixed(8))),
-    quaternion: [x, y, z, w].map((item) => Number((item / quaternionLength).toFixed(8))),
-    scale: scales.map((item) => Number(item.toFixed(8))),
-  };
-}
-
-function sourceSpatialTransformBounds(bounds, matrix) {
-  if (!bounds || !matrix) return null;
-  const result = {
-    min: [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY],
-    max: [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY],
-  };
-  for (const x of [bounds.min[0], bounds.max[0]]) {
-    for (const y of [bounds.min[1], bounds.max[1]]) {
-      for (const z of [bounds.min[2], bounds.max[2]]) {
-        const point = [
-          matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12],
-          matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13],
-          matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14],
-        ];
-        for (let index = 0; index < 3; index += 1) {
-          result.min[index] = Math.min(result.min[index], point[index]);
-          result.max[index] = Math.max(result.max[index], point[index]);
-        }
-      }
-    }
-  }
-  return {
-    min: result.min.map((item) => Number(item.toFixed(8))),
-    max: result.max.map((item) => Number(item.toFixed(8))),
-  };
-}
-
-function sourceSpatialAssetKeys(value) {
-  const supplied = String(value || "").trim();
-  if (!supplied) return [];
-  let pathname = supplied;
-  try {
-    pathname = new URL(supplied).pathname;
-  } catch {
-    pathname = supplied.split(/[?#]/, 1)[0];
-  }
-  const normalized = pathname.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
-  const file = normalized.split("/").filter(Boolean).pop() || "";
-  return uniqueStrings([supplied.toLowerCase(), normalized, file]);
-}
-
-function sourceSpatialAssetResolver(graph, runtime) {
-  const byKey = new Map();
-  const assets = [
-    ...sourceSpatialArray(runtime?.assets),
-    ...sourceSpatialArray(graph?.assetInventory),
-  ];
-  for (const asset of assets) {
-    if (!asset?.id) continue;
-    for (const value of [
-      asset.id,
-      asset.path,
-      asset.url,
-      asset.originalUrl,
-      asset.original_url,
-      asset.assetUrl,
-      asset.asset_url,
-    ]) {
-      for (const key of sourceSpatialAssetKeys(value)) {
-        if (!byKey.has(key)) byKey.set(key, asset);
-      }
-    }
-  }
-  return (member) => {
-    for (const value of [
-      sourceSpatialValue(member, "assetId", "asset_id"),
-      sourceSpatialValue(member, "assetPath", "asset_path"),
-      sourceSpatialValue(member, "assetFile", "asset_file"),
-      sourceSpatialValue(member, "assetUrl", "asset_url"),
-      member?.url,
-    ]) {
-      for (const key of sourceSpatialAssetKeys(value)) {
-        const asset = byKey.get(key);
-        if (asset) return asset;
-      }
-    }
-    return null;
-  };
-}
-
-function sourceSpatialCompositionSources(graph, runtime) {
-  return [
-    graph?.sourceSpatialCompositions,
-    graph?.sourceSpatialComposition,
-    graph?.source_spatial_compositions,
-    graph?.source_spatial_composition,
-    graph?.authorMetadata?.sourceSpatialCompositions,
-    graph?.author_metadata?.source_spatial_compositions,
-    graph?.animationProbe?.sourceSpatialCompositions,
-    graph?.animation_probe?.sourceSpatialCompositions,
-    graph?.animationProbeJudgment?.sourceSpatialCompositions,
-    runtime?.sourceSpatialCompositions,
-    runtime?.sourceSpatialComposition,
-    runtime?.source_spatial_compositions,
-    runtime?.source_spatial_composition,
-    runtime?.authorMetadata?.sourceSpatialCompositions,
-    runtime?.author_metadata?.source_spatial_compositions,
-    runtime?.animationProbe?.sourceSpatialCompositions,
-    runtime?.animation_probe?.sourceSpatialCompositions,
-  ].filter((source) => source && typeof source === "object");
-}
-
-function sourceSpatialInstanceIds(value, knownInstanceIds) {
-  const source = Array.isArray(value)
-    ? value
-    : Array.isArray(value?.activeInstanceIds)
-      ? value.activeInstanceIds
-      : Array.isArray(value?.active_instance_ids)
-        ? value.active_instance_ids
-        : Array.isArray(value?.visibleInstanceIds)
-          ? value.visibleInstanceIds
-          : Array.isArray(value?.visible_instance_ids)
-            ? value.visible_instance_ids
-            : Array.isArray(value?.memberInstanceIds)
-              ? value.memberInstanceIds
-              : Array.isArray(value?.member_instance_ids)
-                ? value.member_instance_ids
-                : Array.isArray(value?.instances)
-                  ? value.instances
-                  : [];
-  return uniqueStrings(source.map((entry) => (
-    typeof entry === "string"
-      ? entry
-      : sourceSpatialString(entry, "instanceId", "instance_id", "id")
-  ))).filter((instanceId) => knownInstanceIds.has(instanceId));
-}
-
-function normalizeSourceSpatialActiveSets(value, knownInstanceIds) {
-  const activeSets = {};
-  const add = (key, entry) => {
-    const normalizedKey = String(key || "").trim();
-    if (!normalizedKey) return;
-    const instanceIds = sourceSpatialInstanceIds(entry, knownInstanceIds);
-    if (instanceIds.length || Array.isArray(entry)) activeSets[normalizedKey] = instanceIds;
-  };
-  const records = Array.isArray(value) ? value : [];
-  for (const record of records) {
-    const beatId = sourceSpatialString(record, "sceneKey", "scene_key", "beatId", "beat_id", "id");
-    add(beatId, record);
-  }
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    for (const [beatKey, entry] of Object.entries(value)) {
-      add(beatKey, entry);
-      const variants = sourceSpatialValue(
-        entry,
-        "variantsByOptionId",
-        "variants_by_option_id",
-        "variants",
-        "options",
-      );
-      if (!variants || typeof variants !== "object" || Array.isArray(variants)) continue;
-      for (const [optionId, variantEntry] of Object.entries(variants)) {
-        add(`beat:${beatKey}:variant:${optionId}`, variantEntry);
-        add(`${beatKey}:variant:${optionId}`, variantEntry);
-      }
-    }
-  }
-  return activeSets;
-}
-
-function normalizeSourceSpatialLoaderTransformPolicy(value) {
-  const supplied = typeof value === "string"
-    ? value
-    : sourceSpatialString(value, "operation", "policy", "kind", "type");
-  const normalized = String(supplied || "").trim().toLowerCase().replace(/_/g, "-");
-  return [
-    "reset-immediate-child-scale",
-    "reset-immediate-child-scales",
-  ].includes(normalized)
-    ? "reset-immediate-child-scale"
-    : null;
-}
-
-function normalizeSourceSpatialLoaderTransformTarget(value) {
-  let supplied = value;
-  if (supplied && typeof supplied === "object") {
-    supplied = sourceSpatialValue(
-      supplied,
-      "target",
-      "loaderTransformTarget",
-      "loader_transform_target",
-      "transformTarget",
-      "transform_target",
-      "detail",
-    );
-    if (supplied && typeof supplied === "object") {
-      supplied = sourceSpatialValue(
-        supplied,
-        "target",
-        "loaderTransformTarget",
-        "loader_transform_target",
-        "transformTarget",
-        "transform_target",
-        "value",
-      );
-    }
-  }
-  const normalized = String(supplied || "").trim().toLowerCase().replace(/_/g, "-");
-  if ([
-    "first-scene-child-children",
-    "first-child-children",
-  ].includes(normalized)) return "first-scene-child-children";
-  if ([
-    "immediate-children",
-    "root-children",
-    "scene-root-children",
-    "default",
-    "legacy",
-  ].includes(normalized)) return "immediate-children";
-  return null;
-}
-
-function normalizeSourceSpatialComposition(composition, resolveAsset, contractSignature = "") {
-  if (!composition || typeof composition !== "object") return null;
-  if (composition.accepted !== true) return null;
-  if (sourceSpatialString(composition, "placementPolicy", "placement_policy") !== SOURCE_LOCKED_PLACEMENT_POLICY) return null;
-  const compositionId = sourceSpatialString(composition, "compositionId", "composition_id", "id");
-  if (!compositionId) return null;
-  const seenInstanceIds = new Set();
-  const members = [];
-  for (const rawMember of sourceSpatialArray(sourceSpatialValue(composition, "members", "instances"))) {
-    const instanceId = sourceSpatialString(rawMember, "instanceId", "instance_id", "id");
-    const asset = resolveAsset(rawMember);
-    const resolvedLocalMatrix = normalizeSourceSpatialMatrix(sourceSpatialValue(
-      rawMember,
-      "resolvedLocalMatrix",
-      "resolved_local_matrix",
-      "localMatrix",
-      "local_matrix",
-      "matrix",
-    ) || sourceSpatialValue(rawMember?.transformRef, "matrix", "resolvedLocalMatrix", "resolved_local_matrix"));
-    const sourceMatrix = normalizeSourceSpatialMatrix(sourceSpatialValue(
-      rawMember,
-      "sourceMatrix",
-      "source_matrix",
-      "worldMatrix",
-      "world_matrix",
-    ));
-    const effectiveMatrix = resolvedLocalMatrix || sourceMatrix;
-    const transform = sourceSpatialMatrixTransform(effectiveMatrix);
-    if (!instanceId || seenInstanceIds.has(instanceId) || !asset?.id || !effectiveMatrix || !transform) return null;
-    seenInstanceIds.add(instanceId);
-    const intrinsicBounds = normalizeSourceSpatialBounds(sourceSpatialValue(
-      rawMember,
-      "intrinsicBounds",
-      "intrinsic_bounds",
-      "bounds",
-      "localBounds",
-      "local_bounds",
-    ));
-    const loaderTransformPolicySource = sourceSpatialValue(
-      rawMember,
-      "loaderTransformPolicy",
-      "loader_transform_policy",
-    );
-    const loaderTransformPolicy = normalizeSourceSpatialLoaderTransformPolicy(loaderTransformPolicySource);
-    const loaderTransformTarget = loaderTransformPolicy
-      ? normalizeSourceSpatialLoaderTransformTarget(
-        sourceSpatialValue(
-          rawMember,
-          "loaderTransformTarget",
-          "loader_transform_target",
-          "loaderTransformDetail",
-          "loader_transform_detail",
-          "loaderTransformPolicyDetail",
-          "loader_transform_policy_detail",
-        ) ?? loaderTransformPolicySource,
-      )
-      : null;
-    members.push({
-      instanceId,
-      assetId: asset.id,
-      assetPath: asset.path || sourceSpatialString(rawMember, "assetPath", "asset_path") || null,
-      assetUrl: sourceSpatialString(rawMember, "assetUrl", "asset_url", "url") || asset.originalUrl || asset.url || null,
-      resolvedLocalMatrix: effectiveMatrix,
-      ...(sourceMatrix ? { sourceMatrix } : {}),
-      transform,
-      ...(intrinsicBounds ? { intrinsicBounds } : {}),
-      role: sourceSpatialString(rawMember, "role", "semanticRole", "semantic_role") || "member",
-      ...(loaderTransformPolicy ? { loaderTransformPolicy } : {}),
-      ...(loaderTransformTarget ? { loaderTransformTarget } : {}),
-      persistent: sourceSpatialValue(rawMember, "persistent", "isPersistent", "is_persistent") === true,
-      beatIds: uniqueStrings(sourceSpatialArray(sourceSpatialValue(rawMember, "beatIds", "beat_ids", "beats"))
-        .map((beat) => typeof beat === "string" ? beat : sourceSpatialString(beat, "beatId", "beat_id", "id"))),
-      interactable: sourceSpatialValue(rawMember, "interactable", "interactive") !== false,
-    });
-  }
-  if (members.length < 2) return null;
-
-  const framingSource = sourceSpatialValue(composition, "framing", "frame", "normalization") || {};
-  const anchorSource = sourceSpatialValue(framingSource, "anchor", "framingAnchor", "framing_anchor") || {};
-  const anchorInstanceId = sourceSpatialString(
-    framingSource,
-    "anchorInstanceId",
-    "anchor_instance_id",
-    "anchorMemberId",
-    "anchor_member_id",
-  ) || sourceSpatialString(anchorSource, "instanceId", "instance_id", "id")
-    || sourceSpatialString(composition, "referenceInstanceId", "reference_instance_id");
-  const anchorMember = members.find((member) => member.instanceId === anchorInstanceId);
-  if (!anchorMember?.intrinsicBounds) return null;
-  const anchorBounds = sourceSpatialTransformBounds(
-    anchorMember.intrinsicBounds,
-    anchorMember.resolvedLocalMatrix,
-  );
-  if (!anchorBounds) return null;
-  const compositionBounds = normalizeSourceSpatialBounds(sourceSpatialValue(
-    framingSource,
-    "compositionBounds",
-    "composition_bounds",
-    "bounds",
-  ));
-  const framingCoordinateSpace = sourceSpatialString(
-    framingSource,
-    "coordinateSpace",
-    "coordinate_space",
-  ) === "source-config-local"
-    ? "source-config-local"
-    : "";
-  const knownInstanceIds = new Set(members.map((member) => member.instanceId));
-  const excludedInstanceIds = uniqueStrings(sourceSpatialArray(sourceSpatialValue(
-    framingSource,
-    "excludedInstanceIds",
-    "excluded_instance_ids",
-    "exclusions",
-  )).map((entry) => (
-    typeof entry === "string" ? entry : sourceSpatialString(entry, "instanceId", "instance_id", "id")
-  ))).filter((instanceId) => knownInstanceIds.has(instanceId));
-  const relations = sourceSpatialArray(sourceSpatialValue(composition, "relations", "relationships"))
-    .map((relation) => {
-      const subjectInstanceId = sourceSpatialString(
-        relation,
-        "subjectInstanceId",
-        "subject_instance_id",
-        "fromInstanceId",
-        "from_instance_id",
-      );
-      const referenceInstanceId = sourceSpatialString(
-        relation,
-        "referenceInstanceId",
-        "reference_instance_id",
-        "toInstanceId",
-        "to_instance_id",
-      );
-      if (!knownInstanceIds.has(subjectInstanceId) || !knownInstanceIds.has(referenceInstanceId)) return null;
-      return {
-        subjectInstanceId,
-        referenceInstanceId,
-        predicate: sourceSpatialString(relation, "predicate", "relation", "type") || "source-relative",
-        ...(Number.isFinite(Number(relation?.confidence))
-          ? { confidence: Number(Math.max(0, Math.min(1, Number(relation.confidence))).toFixed(4)) }
-          : {}),
-      };
-    })
-    .filter(Boolean);
-  const activeSetsByBeat = normalizeSourceSpatialActiveSets(sourceSpatialValue(
-    composition,
-    "activeSetsByBeat",
-    "active_sets_by_beat",
-    "activeSets",
-    "active_sets",
-  ), knownInstanceIds);
-  const confidenceValue = Number(sourceSpatialValue(composition, "confidence", "acceptanceConfidence", "acceptance_confidence"));
-  const normalized = {
-    compositionId,
-    accepted: true,
-    placementPolicy: SOURCE_LOCKED_PLACEMENT_POLICY,
-    members,
-    relations,
-    framing: {
-      anchorInstanceId,
-      anchorBounds,
-      ...(framingCoordinateSpace ? { coordinateSpace: framingCoordinateSpace } : {}),
-      ...(compositionBounds ? { compositionBounds } : {}),
-      excludedInstanceIds,
-      verticalAlignment: ["ground", "center"].includes(sourceSpatialString(
-        framingSource,
-        "verticalAlignment",
-        "vertical_alignment",
-      ).toLowerCase())
-        ? sourceSpatialString(framingSource, "verticalAlignment", "vertical_alignment").toLowerCase()
-        : "center",
-    },
-    activeSetsByBeat,
-    beatIds: uniqueStrings(sourceSpatialArray(sourceSpatialValue(composition, "beatIds", "beat_ids", "beats"))
-      .map((beat) => typeof beat === "string" ? beat : sourceSpatialString(beat, "beatId", "beat_id", "id"))),
-    signature: sourceSpatialString(composition, "signature", "compositionSignature", "composition_signature")
-      || contractSignature,
-    provenance: cloneJson(sourceSpatialValue(composition, "provenance", "evidence", "source") || {}),
-    runtimeValidation: cloneJson(sourceSpatialValue(
-      composition,
-      "runtimeValidation",
-      "runtime_validation",
-      "validation",
-    ) || null),
-    ...(Number.isFinite(confidenceValue)
-      ? { confidence: Number(Math.max(0, Math.min(1, confidenceValue)).toFixed(4)) }
-      : {}),
-  };
-  if (!normalized.signature) {
-    normalized.signature = createHash("sha256").update(JSON.stringify({
-      compositionId,
-      members: members.map((member) => ({
-        instanceId: member.instanceId,
-        assetId: member.assetId,
-        matrix: member.resolvedLocalMatrix,
-      })),
-      activeSetsByBeat,
-    })).digest("hex");
-  }
-  return normalized;
-}
-
-function sourceSpatialCompositionsForInference(graph, runtime) {
-  const resolveAsset = sourceSpatialAssetResolver(graph, runtime);
-  const byId = new Map();
-  let suppliedSignature = "";
-  for (const source of sourceSpatialCompositionSources(graph, runtime)) {
-    const schemaVersion = sourceSpatialString(source, "schemaVersion", "schema_version");
-    if (schemaVersion && schemaVersion !== SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION) continue;
-    const contractSignature = sourceSpatialString(source, "signature", "contractSignature", "contract_signature");
-    if (!suppliedSignature && contractSignature) suppliedSignature = contractSignature;
-    const rawCompositions = Array.isArray(source)
-      ? source
-      : sourceSpatialArray(sourceSpatialValue(source, "compositions", "sourceSpatialCompositions", "source_spatial_compositions"));
-    const candidates = rawCompositions.length
-      ? rawCompositions
-      : sourceSpatialString(source, "compositionId", "composition_id")
-        ? [source]
-        : [];
-    for (const candidate of candidates) {
-      const normalized = normalizeSourceSpatialComposition(candidate, resolveAsset, contractSignature);
-      if (normalized && !byId.has(normalized.compositionId)) byId.set(normalized.compositionId, normalized);
-    }
-  }
-  const compositions = [...byId.values()].sort((left, right) => left.compositionId.localeCompare(right.compositionId));
-  if (!compositions.length) return null;
-  return {
-    schemaVersion: SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION,
-    signature: suppliedSignature || createHash("sha256").update(JSON.stringify(compositions)).digest("hex"),
-    compositions,
-  };
-}
-
 function spatialRelationsInputSignature(graph, runtime, decisions) {
   const cues = graph?.sourceSpatialCues || sourceSpatialCuesForGraph(graph);
   const contentUnits = authoredContentUnitsFromGraph(graph || {}, runtime || {});
-  const sourceSpatialCompositions = sourceSpatialCompositionsForInference(graph, runtime);
   const input = {
     inference: {
       version: SPATIAL_RELATIONS_INFERENCE_VERSION,
@@ -9618,10 +9501,7 @@ function spatialRelationsInputSignature(graph, runtime, decisions) {
       playback: graph?.sourceMotionPlayback || emptySourceMotionPlayback(),
     },
     sourcePartStates: sourcePartStatesRuntimeContract(graph || {}),
-    ...(sourceSpatialCompositions ? {
-      sourceSpatialCompositionInferenceVersion: SOURCE_SPATIAL_COMPOSITION_INFERENCE_VERSION,
-      sourceSpatialCompositions,
-    } : {}),
+    sourceSpatialPlacements: cloneJson(runtime?.sourceSpatialPlacements || []),
   };
   return createHash("sha256").update(JSON.stringify(input)).digest("hex");
 }
@@ -9629,7 +9509,6 @@ function spatialRelationsInputSignature(graph, runtime, decisions) {
 export function inferSpatialRelationsContract(graph, runtime, decisions = {}) {
   const inputSignature = spatialRelationsInputSignature(graph, runtime, decisions);
   const cues = graph?.sourceSpatialCues || sourceSpatialCuesForGraph(graph);
-  const sourceSpatialCompositions = sourceSpatialCompositionsForInference(graph, runtime);
   const cueByBeat = new Map((cues?.cues || []).filter((cue) => cue?.beatId).map((cue) => [cue.beatId, cue]));
   const assetById = new Map((runtime?.assets || []).filter((asset) => asset?.id).map((asset) => [asset.id, asset]));
   const legacyTopologyKind = assetTopologyKindFromLabel(decisions?.["asset-topology"]?.option?.label);
@@ -9640,7 +9519,7 @@ export function inferSpatialRelationsContract(graph, runtime, decisions = {}) {
     cue: cueByBeat.get(definition.beatId) || null,
     inputSignature,
     requestedTopologyKind: legacyTopologyKind,
-    sourceSpatialCompositions,
+    sourceSpatialPlacements: runtime?.sourceSpatialPlacements || [],
   }));
   const resolvedByBeat = Object.fromEntries(scenes
     .filter((scene) => !scene.variantOptionId)
@@ -9657,7 +9536,6 @@ export function inferSpatialRelationsContract(graph, runtime, decisions = {}) {
     resolvedByBeat,
     resolvedByVariant,
     timeline: scenes.map(spatialSceneTimelineEntry),
-    ...(sourceSpatialCompositions ? { sourceSpatialCompositions } : {}),
   };
 }
 
@@ -9734,237 +9612,33 @@ function spatialVisualAssetKind(asset) {
   return null;
 }
 
-function sourceSpatialDefinitionActiveSetKeys(definition) {
-  if (definition.variantOptionId) {
-    return uniqueStrings([
+function sourceSpatialPlacementSceneKeys(definition) {
+  return definition.variantOptionId
+    ? uniqueStrings([
       definition.sceneKey,
       `beat:${definition.beatId}:variant:${definition.variantOptionId}`,
       `${definition.beatId}:variant:${definition.variantOptionId}`,
       `${definition.beatId}::${definition.variantOptionId}`,
-    ]);
-  }
-  return uniqueStrings([definition.sceneKey, definition.beatId, `beat:${definition.beatId}`]);
+    ])
+    : uniqueStrings([definition.sceneKey, definition.beatId, `beat:${definition.beatId}`]);
 }
 
-function sourceSpatialActiveMembersForDefinition(composition, definition) {
-  const activeSets = composition?.activeSetsByBeat || {};
-  let explicitlyActive = null;
-  for (const key of sourceSpatialDefinitionActiveSetKeys(definition)) {
-    if (!Object.prototype.hasOwnProperty.call(activeSets, key)) continue;
-    explicitlyActive = new Set(activeSets[key] || []);
-    break;
-  }
-  if (definition.variantOptionId && explicitlyActive === null) return null;
-  const memberBeatMatches = new Set((composition?.members || [])
-    .filter((member) => (member.beatIds || []).includes(definition.beatId))
-    .map((member) => member.instanceId));
-  const compositionBeatMatches = (composition?.beatIds || []).includes(definition.beatId);
-  if (explicitlyActive === null && !memberBeatMatches.size && !compositionBeatMatches) return null;
-  const activeIds = explicitlyActive || (
-    memberBeatMatches.size
-      ? memberBeatMatches
-      : new Set((composition?.members || []).map((member) => member.instanceId))
-  );
-  const anchorInstanceId = composition?.framing?.anchorInstanceId;
-  if (anchorInstanceId) activeIds.add(anchorInstanceId);
-  for (const member of composition?.members || []) {
-    if (member.persistent) activeIds.add(member.instanceId);
-  }
-  const activeMembers = (composition?.members || []).filter((member) => activeIds.has(member.instanceId));
-  return activeMembers.length >= 2 ? activeMembers : null;
-}
-
-function sourceSpatialCompositionForDefinition(sourceSpatialCompositions, definition) {
-  const matches = (sourceSpatialCompositions?.compositions || []).flatMap((composition) => {
-    const activeMembers = sourceSpatialActiveMembersForDefinition(composition, definition);
-    return activeMembers ? [{ composition, activeMembers }] : [];
+function sourceSpatialPlacementsForDefinition(sourceSpatialPlacements, definition, assetById) {
+  const sceneKeys = new Set(sourceSpatialPlacementSceneKeys(definition));
+  return (Array.isArray(sourceSpatialPlacements) ? sourceSpatialPlacements : []).filter((placement) => {
+    if (!placement?.instanceId || spatialVisualAssetKind(assetById.get(placement.assetId)) !== "glb") return false;
+    if (uniqueStrings(placement.activeSceneKeys || []).some((key) => sceneKeys.has(key))) return true;
+    return !definition.variantOptionId && uniqueStrings(placement.beatIds || []).includes(definition.beatId);
   });
-  return matches.length === 1 ? matches[0] : null;
 }
 
-function sourceSpatialEntityIdToken(value) {
-  return String(value || "")
-    .trim()
+function sourceSpatialPlacementEntityId(placement, definition, placementCountForAsset, placementIndexForAsset) {
+  const base = `glb:${placement.assetId}:${spatialSceneEntitySuffix(definition)}`;
+  if (placementCountForAsset === 1 || placementIndexForAsset === 0) return base;
+  const instanceToken = String(placement.instanceId || placementIndexForAsset + 1)
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    || "member";
-}
-
-function sourceSpatialLeafEntityId(member, definition, assetMemberCount) {
-  const base = `glb:${member.assetId}:${spatialSceneEntitySuffix(definition)}`;
-  return assetMemberCount === 1
-    ? base
-    : `${base}:source-instance:${sourceSpatialEntityIdToken(member.instanceId)}`;
-}
-
-function inferSourceLockedSpatialScene({
-  scene,
-  definition,
-  composition,
-  activeMembers,
-  assetById,
-  inputSignature,
-}) {
-  const eligibleMembers = activeMembers.filter((member) => (
-    spatialVisualAssetKind(assetById.get(member.assetId)) === "glb"
-  ));
-  if (eligibleMembers.length < 2) return scene;
-  const membersPerAsset = new Map();
-  for (const member of eligibleMembers) {
-    membersPerAsset.set(member.assetId, (membersPerAsset.get(member.assetId) || 0) + 1);
-  }
-  const genericVisualByAssetId = new Map(scene.entities
-    .filter((entity) => entity.kind === "glb")
-    .map((entity) => [entity.assetId, entity]));
-  const memberEntities = eligibleMembers.map((member) => {
-    const base = membersPerAsset.get(member.assetId) === 1
-      ? genericVisualByAssetId.get(member.assetId)
-      : null;
-    const id = sourceSpatialLeafEntityId(member, definition, membersPerAsset.get(member.assetId));
-    const transform = cloneJson(member.transform);
-    return {
-      ...(base ? cloneJson(base) : {
-        id,
-        kind: "glb",
-        scope: "beat",
-        sceneKey: definition.sceneKey,
-        beatId: definition.beatId,
-        variantGroupId: definition.variantGroupId,
-        variantOptionId: definition.variantOptionId,
-        assetId: member.assetId,
-        anchor: { type: "scene", assetId: null, cueId: null },
-        orientationPolicy: "fixed",
-      }),
-      id,
-      placementPolicy: SOURCE_LOCKED_PLACEMENT_POLICY,
-      compositionId: composition.compositionId,
-      sourceInstanceId: member.instanceId,
-      compositionRootId: `source-composition:${sourceSpatialEntityIdToken(composition.compositionId)}:${spatialSceneEntitySuffix(definition)}`,
-      sourceMatrix: cloneJson(member.resolvedLocalMatrix),
-      ...(member.intrinsicBounds ? { intrinsicBounds: cloneJson(member.intrinsicBounds) } : {}),
-      sourceRole: member.role,
-      ...(member.loaderTransformPolicy ? { loaderTransformPolicy: member.loaderTransformPolicy } : {}),
-      ...(member.loaderTransformTarget ? { loaderTransformTarget: member.loaderTransformTarget } : {}),
-      persistent: member.persistent === true,
-      interactable: member.interactable !== false,
-      verticalAlignment: "center",
-      inferredTransform: cloneJson(transform),
-      transform: cloneJson(transform),
-      inference: {
-        confidence: Number.isFinite(Number(composition.confidence)) ? Number(composition.confidence) : 1,
-        reasons: ["This model starts from its captured source-local placement within the accepted source assembly."],
-        inputSignature,
-      },
-      manual: false,
-    };
-  });
-  const rootId = memberEntities[0]?.compositionRootId;
-  const rootTransform = spatialTransform();
-  const rootEntity = {
-    id: rootId,
-    kind: "composition-root",
-    scope: "beat",
-    sceneKey: definition.sceneKey,
-    beatId: definition.beatId,
-    variantGroupId: definition.variantGroupId,
-    variantOptionId: definition.variantOptionId,
-    anchor: { type: "scene", assetId: null, cueId: null },
-    placementPolicy: SOURCE_LOCKED_PLACEMENT_POLICY,
-    compositionId: composition.compositionId,
-    inferredTransform: cloneJson(rootTransform),
-    transform: cloneJson(rootTransform),
-    orientationPolicy: "fixed",
-    interactable: false,
-    authorTransformable: true,
-    inference: {
-      confidence: Number.isFinite(Number(composition.confidence)) ? Number(composition.confidence) : 1,
-      reasons: ["This root frames the accepted source assembly once while preserving every member's relative placement."],
-      inputSignature,
-    },
-    manual: false,
-  };
-  const memberEntityByInstanceId = new Map(memberEntities.map((entity) => [entity.sourceInstanceId, entity]));
-  const anchorEntity = memberEntityByInstanceId.get(composition.framing.anchorInstanceId);
-  if (!anchorEntity) return scene;
-  const retainedNonVisual = scene.entities
-    .filter((entity) => !["glb", "image-plane"].includes(entity.kind))
-    .map((entity) => cloneJson(entity));
-  const retainedImageEntities = scene.entities
-    .filter((entity) => entity.kind === "image-plane")
-    .map((entity) => cloneJson(entity));
-  const textEntity = retainedNonVisual.find((entity) => entity.kind === "text-panel");
-  if (textEntity) {
-    const explicitSourceFocus = textEntity.anchor?.type === "source-focus" && textEntity.anchor?.cueId
-      ? memberEntities.find((member) => member.assetId === textEntity.anchor.assetId)
-      : null;
-    const semanticFocus = memberEntities.find((member) => (
-      /\b(active|focus|foreground|landmark|marker|pin|placed|subject)\b/i.test(String(member.sourceRole || ""))
-    ));
-    const preferredAnchor = explicitSourceFocus || semanticFocus || anchorEntity;
-    if (preferredAnchor && textEntity.anchor?.assetId !== preferredAnchor.assetId) {
-      textEntity.assetId = preferredAnchor.assetId;
-      textEntity.anchor = {
-        type: "asset",
-        assetId: preferredAnchor.assetId,
-        cueId: null,
-      };
-      textEntity.clearance = inferredSpatialPanelClearance(textEntity.anchor);
-      textEntity.inference = {
-        ...(textEntity.inference || {}),
-        reasons: [
-          "The panel follows the declared active or framing member of the accepted source composition.",
-          ...(textEntity.inference?.reasons || []),
-        ],
-      };
-    }
-  }
-  const linkedAssetIds = uniqueStrings([
-    ...memberEntities.map((entity) => entity.assetId),
-    ...retainedImageEntities.map((entity) => entity.assetId),
-  ]);
-  const sourceComposition = {
-    schemaVersion: SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION,
-    compositionId: composition.compositionId,
-    placementPolicy: SOURCE_LOCKED_PLACEMENT_POLICY,
-    rootEntityId: rootId,
-    memberEntityIds: memberEntities.map((entity) => entity.id),
-    activeInstanceIds: memberEntities.map((entity) => entity.sourceInstanceId),
-    relations: cloneJson(composition.relations || []),
-    framing: {
-      ...cloneJson(composition.framing),
-      anchorEntityId: anchorEntity.id,
-    },
-    signature: composition.signature,
-    provenance: cloneJson(composition.provenance || {}),
-    runtimeValidation: cloneJson(composition.runtimeValidation || null),
-    ...(Number.isFinite(Number(composition.confidence))
-      ? { confidence: Number(composition.confidence) }
-      : {}),
-    fallbackLinkedAssetIds: [...definition.linkedAssetIds],
-    fallbackTopology: cloneJson(scene.topology),
-  };
-  const sceneSignature = createHash("sha256").update(JSON.stringify({
-    inputSignature,
-    sceneKey: definition.sceneKey,
-    compositionId: composition.compositionId,
-    compositionSignature: composition.signature,
-    activeInstanceIds: sourceComposition.activeInstanceIds,
-    linkedAssetIds,
-  })).digest("hex");
-  return {
-    ...scene,
-    linkedAssetIds,
-    topology: { kind: "single", label: assetTopologyLabelFromKind("single") },
-    placementPolicy: SOURCE_LOCKED_PLACEMENT_POLICY,
-    sourceComposition,
-    inputSignature: sceneSignature,
-    entities: [
-      ...retainedNonVisual,
-      rootEntity,
-      ...memberEntities,
-      ...retainedImageEntities,
-    ],
-  };
+    .replace(/^-+|-+$/g, "") || String(placementIndexForAsset + 1);
+  return `${base}:source-instance:${instanceToken}`;
 }
 
 function inferSpatialScene({
@@ -9973,7 +9647,7 @@ function inferSpatialScene({
   cue,
   inputSignature,
   requestedTopologyKind,
-  sourceSpatialCompositions = null,
+  sourceSpatialPlacements = [],
 }) {
   const visualAssets = definition.linkedAssetIds.map((assetId) => assetById.get(assetId)).filter(isSpatialVisualAsset);
   const topologyKind = visualAssets.length <= 1 || !["single", "constellation", "map"].includes(requestedTopologyKind)
@@ -9981,7 +9655,7 @@ function inferSpatialScene({
     : requestedTopologyKind;
   const topology = { kind: topologyKind, label: assetTopologyLabelFromKind(topologyKind) };
   const suffix = spatialSceneEntitySuffix(definition);
-  const entities = visualAssets.map((asset, index) => {
+  const genericEntities = visualAssets.map((asset, index) => {
     const kind = spatialVisualAssetKind(asset);
     const transform = spatialLayoutTransform(topologyKind, index, visualAssets.length, kind);
     return {
@@ -10007,6 +9681,57 @@ function inferSpatialScene({
       manual: false,
     };
   });
+  const sourcePlacements = sourceSpatialPlacementsForDefinition(sourceSpatialPlacements, definition, assetById);
+  const placementCountsByAsset = new Map();
+  for (const placement of sourcePlacements) {
+    placementCountsByAsset.set(placement.assetId, (placementCountsByAsset.get(placement.assetId) || 0) + 1);
+  }
+  const placementIndexesByAsset = new Map();
+  const sourceEntities = sourcePlacements.map((placement) => {
+    const placementIndex = placementIndexesByAsset.get(placement.assetId) || 0;
+    placementIndexesByAsset.set(placement.assetId, placementIndex + 1);
+    const transform = spatialTransform(
+      placement.transform?.position,
+      placement.transform?.quaternion,
+      placement.transform?.scale,
+    );
+    return {
+      id: sourceSpatialPlacementEntityId(
+        placement,
+        definition,
+        placementCountsByAsset.get(placement.assetId),
+        placementIndex,
+      ),
+      kind: "glb",
+      scope: "beat",
+      sceneKey: definition.sceneKey,
+      beatId: definition.beatId,
+      variantGroupId: definition.variantGroupId,
+      variantOptionId: definition.variantOptionId,
+      assetId: placement.assetId,
+      sourceInstanceId: placement.instanceId,
+      anchor: { type: "scene", assetId: null, cueId: null },
+      verticalAlignment: "center",
+      inferredTransform: cloneJson(transform),
+      transform: cloneJson(transform),
+      orientationPolicy: "fixed",
+      preserveSourceGeometry: placement.preserveSourceGeometry === true,
+      ...(placement.sourceRole ? { sourceRole: placement.sourceRole } : {}),
+      ...(placement.loaderTransformPolicy ? { loaderTransformPolicy: placement.loaderTransformPolicy } : {}),
+      ...(placement.loaderTransformTarget ? { loaderTransformTarget: placement.loaderTransformTarget } : {}),
+      inference: {
+        confidence: 1,
+        reasons: ["Captured source layout preserved this object's relative position, rotation, and size."],
+        inputSignature,
+      },
+      manual: false,
+    };
+  });
+  const sourceAssetIds = new Set(sourceEntities.map((entity) => entity.assetId));
+  const entities = [
+    ...genericEntities.filter((entity) => entity.kind !== "glb" || !sourceAssetIds.has(entity.assetId)),
+    ...sourceEntities,
+  ];
   if (definition.text) {
     entities.unshift(inferSpatialTextEntity({ definition, entities, cue, inputSignature }));
   }
@@ -10019,7 +9744,7 @@ function inferSpatialScene({
     linkedAssetIds: definition.linkedAssetIds,
     text: definition.text,
   })).digest("hex");
-  const scene = {
+  return {
     sceneKey: definition.sceneKey,
     sceneId: definition.sceneId,
     beatId: definition.beatId,
@@ -10027,21 +9752,14 @@ function inferSpatialScene({
     variantOptionId: definition.variantOptionId,
     sourceOrder: definition.sourceOrder,
     variantOrder: definition.variantOrder,
-    linkedAssetIds: [...definition.linkedAssetIds],
+    linkedAssetIds: uniqueStrings([
+      ...definition.linkedAssetIds,
+      ...sourceEntities.map((entity) => entity.assetId),
+    ]),
     topology,
     inputSignature: sceneSignature,
     entities,
   };
-  const sourceComposition = sourceSpatialCompositionForDefinition(sourceSpatialCompositions, definition);
-  return sourceComposition
-    ? inferSourceLockedSpatialScene({
-      scene,
-      definition,
-      assetById,
-      inputSignature,
-      ...sourceComposition,
-    })
-    : scene;
 }
 
 function inferSpatialReaderEntity({ definition, inputSignature }) {
@@ -10392,12 +10110,6 @@ export function validateSpatialRelationsContract(value, inferred) {
     resolvedByBeat,
     resolvedByVariant,
     timeline: inferred.timeline.map((entry) => ({ ...entry })),
-    ...(inferred.sourceSpatialCompositions
-      ? { sourceSpatialCompositions: cloneJson(inferred.sourceSpatialCompositions) }
-      : {}),
-    ...(Array.isArray(inferred.sourceSpatialCompositionReviews) && inferred.sourceSpatialCompositionReviews.length
-      ? { sourceSpatialCompositionReviews: cloneJson(inferred.sourceSpatialCompositionReviews) }
-      : {}),
   };
 }
 
@@ -10470,11 +10182,6 @@ function spatialRelationEntitiesFromContract(contract, options = {}) {
 
 function spatialRelationEntityKind(entity) {
   if (entity?.kind === "reader" || entity?.type === "reader" || String(entity?.id || "").startsWith("reader:")) return "reader";
-  if (
-    entity?.kind === "composition-root"
-    || entity?.type === "composition-root"
-    || String(entity?.id || "").startsWith("source-composition:")
-  ) return "composition-root";
   if (entity?.kind === "image-plane" || entity?.type === "image-plane" || String(entity?.id || "").startsWith("image:")) return "image-plane";
   if (entity?.kind === "glb" || entity?.type === "glb" || String(entity?.id || "").startsWith("glb:")) return "glb";
   return "text-panel";
@@ -10524,8 +10231,6 @@ function sanitizeSpatialScene(value, base, sanitizedById) {
 
 function sanitizeSpatialRelationEntity(value, base, inputSignature, inferredById, options = {}) {
   const source = value && typeof value === "object" ? value : base;
-  // A source matrix records the captured assembly baseline. It is never accepted
-  // from a draft, but the member's ordinary transform remains author-editable.
   const transform = sanitizeSpatialTransform(
     source.transform || source.effectiveTransform || base.transform,
     base.transform,
@@ -10541,7 +10246,7 @@ function sanitizeSpatialRelationEntity(value, base, inputSignature, inferredById
   let anchorSource = source.anchor && typeof source.anchor === "object" ? source.anchor : base.anchor;
   let anchorType = String(anchorSource?.type || base.anchor.type);
   const visualEntity = ["glb", "image-plane"].includes(base.kind);
-  const sceneEntity = visualEntity || ["reader", "composition-root"].includes(base.kind);
+  const sceneEntity = visualEntity || base.kind === "reader";
   const allowedAnchorTypes = sceneEntity
     ? new Set(["scene", "topology"])
     : new Set(["source-focus", "asset", "reader", "world"]);
@@ -10650,14 +10355,28 @@ function sanitizeSpatialPanelClearance(value, fallback) {
 
 function sanitizeSpatialTransform(value, fallback, entityId) {
   const source = value && typeof value === "object" ? value : {};
-  const position = sanitizeSpatialArray(source.position, fallback.position, 3, -100, 100, `${entityId} position`);
+  const position = sanitizeSpatialArray(
+    source.position,
+    fallback.position,
+    3,
+    -SPATIAL_TRANSFORM_POSITION_LIMIT,
+    SPATIAL_TRANSFORM_POSITION_LIMIT,
+    `${entityId} position`,
+  );
   const quaternion = sanitizeSpatialArray(source.quaternion, fallback.quaternion, 4, -1, 1, `${entityId} quaternion`);
   const quaternionLength = Math.hypot(...quaternion);
   if (quaternionLength < 1e-6) {
     throw Object.assign(new Error(`Spatial Relations entity ${entityId} has a zero-length quaternion.`), { statusCode: 409 });
   }
   const normalizedQuaternion = quaternion.map((item) => Number((item / quaternionLength).toFixed(8)));
-  const scale = sanitizeSpatialArray(source.scale, fallback.scale, 3, 0.001, 100, `${entityId} scale`);
+  const scale = sanitizeSpatialArray(
+    source.scale,
+    fallback.scale,
+    3,
+    0.001,
+    SPATIAL_TRANSFORM_SCALE_LIMIT,
+    `${entityId} scale`,
+  );
   return { position, quaternion: normalizedQuaternion, scale };
 }
 
@@ -10978,175 +10697,8 @@ function retainedSpatialAuthoredInstances(inferred, existing) {
   });
 }
 
-function existingSpatialSceneForBase(existing, baseScene) {
-  if (!existing || !baseScene) return null;
-  if (baseScene.variantOptionId) {
-    return existing.resolvedByVariant?.[baseScene.sceneKey]
-      || existing.resolvedByBeat?.[baseScene.beatId]?.variantsByOptionId?.[baseScene.variantOptionId]
-      || null;
-  }
-  return existing.resolvedByBeat?.[baseScene.beatId] || null;
-}
-
-function sourceLockedSceneExistingAuthoredMembers(baseScene, existing) {
-  if (baseScene?.placementPolicy !== SOURCE_LOCKED_PLACEMENT_POLICY) return [];
-  const memberIds = new Set(baseScene.sourceComposition?.memberEntityIds || []);
-  const baseMembersById = new Map((baseScene.entities || [])
-    .filter((entity) => memberIds.has(entity.id))
-    .map((entity) => [entity.id, entity]));
-  const memberAssetIds = new Set((baseScene.entities || [])
-    .filter((entity) => memberIds.has(entity.id))
-    .map((entity) => entity.assetId)
-    .filter(Boolean));
-  const exactScene = existingSpatialSceneForBase(existing, baseScene);
-  const candidates = exactScene
-    ? spatialRelationEntitiesFromContract({ entities: exactScene.entities }, { rejectConflictingAuthored: true })
-    : spatialRelationEntitiesFromContract(existing, { rejectConflictingAuthored: true }).filter((entity) => (
-      String(entity?.sceneKey || "") === String(baseScene.sceneKey || "")
-      || (
-        String(entity?.beatId || "") === String(baseScene.beatId || "")
-        && String(entity?.variantOptionId || "") === String(baseScene.variantOptionId || "")
-      )
-    ));
-  const isSavedMemberOfThisComposition = (entity) => {
-    const baseMember = baseMembersById.get(entity.id);
-    return Boolean(
-      baseMember
-      && entity.placementPolicy === SOURCE_LOCKED_PLACEMENT_POLICY
-      && entity.compositionId === baseScene.sourceComposition?.compositionId
-      && entity.sourceInstanceId === baseMember.sourceInstanceId
-    );
-  };
-  return candidates.filter((entity) => (
-    spatialRelationEntityKind(entity) === "glb"
-    && (memberIds.has(entity.id) || memberAssetIds.has(entity.assetId))
-    && spatialRelationEntityHasAuthoredState(entity)
-    // A saved edit to a member of this same accepted composition belongs to the
-    // assembly and is restored below. Manual ordinary GLBs and added instances
-    // still require the existing review path before a composition is promoted.
-    && !isSavedMemberOfThisComposition(entity)
-  ));
-}
-
-function omitSourceLockedSpatialMemberFields(entity) {
-  const {
-    placementPolicy: _placementPolicy,
-    compositionId: _compositionId,
-    sourceInstanceId: _sourceInstanceId,
-    compositionRootId: _compositionRootId,
-    sourceMatrix: _sourceMatrix,
-    intrinsicBounds: _intrinsicBounds,
-    sourceRole: _sourceRole,
-    loaderTransformPolicy: _loaderTransformPolicy,
-    loaderTransformTarget: _loaderTransformTarget,
-    persistent: _persistent,
-    interactable: _interactable,
-    authorTransformable: _authorTransformable,
-    ...rest
-  } = entity || {};
-  return rest;
-}
-
-function fallbackSceneForSourceSpatialReview(scene, authoredMembers) {
-  const sourceComposition = scene.sourceComposition || {};
-  const linkedAssetIds = uniqueStrings(
-    sourceComposition.fallbackLinkedAssetIds?.length
-      ? sourceComposition.fallbackLinkedAssetIds
-      : scene.linkedAssetIds,
-  );
-  const fallbackTopology = sourceComposition.fallbackTopology || { kind: "single", label: assetTopologyLabelFromKind("single") };
-  const sourceVisuals = (scene.entities || []).filter((entity) => (
-    ["glb", "image-plane"].includes(spatialRelationEntityKind(entity))
-  ));
-  const visualByAssetId = new Map();
-  for (const entity of sourceVisuals) {
-    if (!linkedAssetIds.includes(entity.assetId) || visualByAssetId.has(entity.assetId)) continue;
-    visualByAssetId.set(entity.assetId, entity);
-  }
-  const visualEntities = linkedAssetIds.flatMap((assetId, index) => {
-    const source = visualByAssetId.get(assetId);
-    if (!source) return [];
-    const kind = spatialRelationEntityKind(source);
-    const transform = spatialLayoutTransform(
-      fallbackTopology.kind || "single",
-      index,
-      linkedAssetIds.length,
-      kind,
-    );
-    const id = `${kind === "glb" ? "glb" : "image"}:${assetId}:${spatialSceneEntitySuffix(scene)}`;
-    return [{
-      ...omitSourceLockedSpatialMemberFields(source),
-      id,
-      verticalAlignment: kind === "glb" ? "ground" : source.verticalAlignment,
-      inferredTransform: cloneJson(transform),
-      transform: cloneJson(transform),
-      inference: {
-        confidence: 1,
-        reasons: ["This scene remains on the ordinary per-model path until its existing authored placement is reviewed."],
-        inputSignature: source.inference?.inputSignature || scene.inputSignature,
-      },
-      manual: false,
-    }];
-  });
-  const nonVisualEntities = (scene.entities || []).filter((entity) => (
-    !["glb", "image-plane", "composition-root"].includes(spatialRelationEntityKind(entity))
-  ));
-  const {
-    placementPolicy: _placementPolicy,
-    sourceComposition: _sourceComposition,
-    ...baseScene
-  } = scene;
-  return {
-    ...baseScene,
-    linkedAssetIds,
-    topology: cloneJson(fallbackTopology),
-    entities: [...nonVisualEntities, ...visualEntities],
-    requiresSourceSpatialCompositionReview: true,
-    sourceSpatialCompositionReview: {
-      status: "required",
-      compositionId: sourceComposition.compositionId || null,
-      reason: "Existing manual or authored-instance model placement takes precedence over automatic source-composition promotion.",
-      entityIds: authoredMembers.map((entity) => entity.id),
-    },
-  };
-}
-
-function inferredWithSourceSpatialReviewFallbacks(inferred, existing) {
-  if (!inferred?.sourceSpatialCompositions) return inferred;
-  const reviews = [];
-  const rewrite = (scene) => {
-    const authoredMembers = sourceLockedSceneExistingAuthoredMembers(scene, existing);
-    if (!authoredMembers.length) return scene;
-    const fallback = fallbackSceneForSourceSpatialReview(scene, authoredMembers);
-    reviews.push({
-      sceneKey: fallback.sceneKey,
-      beatId: fallback.beatId,
-      variantOptionId: fallback.variantOptionId || null,
-      ...fallback.sourceSpatialCompositionReview,
-    });
-    return fallback;
-  };
-  const resolvedByBeat = Object.fromEntries(Object.entries(inferred.resolvedByBeat || {})
-    .map(([beatId, scene]) => [beatId, rewrite(scene)]));
-  const resolvedByVariant = Object.fromEntries(Object.entries(inferred.resolvedByVariant || {})
-    .map(([sceneKey, scene]) => [sceneKey, rewrite(scene)]));
-  if (!reviews.length) return inferred;
-  const scenes = [
-    ...Object.values(resolvedByBeat),
-    ...Object.values(resolvedByVariant),
-  ];
-  return {
-    ...inferred,
-    entities: scenes.flatMap((scene) => scene.entities || []),
-    resolvedByBeat,
-    resolvedByVariant,
-    sourceSpatialCompositionReviews: reviews,
-  };
-}
-
 export function mergeSpatialRelationsWithExisting(inferred, existing) {
   if (!existing || typeof existing !== "object") return inferred;
-  inferred = inferredWithSourceSpatialReviewFallbacks(inferred, existing);
   if (existing.schemaVersion === LEGACY_SPATIAL_RELATIONS_SCHEMA_VERSION) {
     return validateSpatialRelationsContract(existing, inferred);
   }
@@ -11346,10 +10898,25 @@ async function ensureSpatialRelationsInferenceState(paths, proposals, decisions,
     nextDecisions = { ...decisions, [SPATIAL_RELATIONS_COMPONENT_ID]: migratedDecision };
   }
   const spatialDecision = nextDecisions[SPATIAL_RELATIONS_COMPONENT_ID] || null;
-  const compatibilityDecision = derivedAssetTopologyDecision(contract, spatialDecision);
-  await writeJson(path.join(paths.decisionsRoot, "asset-topology.json"), compatibilityDecision);
+  const existingCompatibilityDecision = decisions["asset-topology"] || null;
+  let compatibilityDecision = derivedAssetTopologyDecision(contract, spatialDecision);
+  if (sameDecisionMaterialIgnoringDraftTimestamp(existingCompatibilityDecision, compatibilityDecision)) {
+    compatibilityDecision = existingCompatibilityDecision;
+  } else {
+    await writeJson(path.join(paths.decisionsRoot, "asset-topology.json"), compatibilityDecision);
+  }
   nextDecisions = { ...nextDecisions, "asset-topology": compatibilityDecision };
   return { proposals: nextProposals, decisions: nextDecisions };
+}
+
+function sameDecisionMaterialIgnoringDraftTimestamp(left, right) {
+  if (!left || !right) return false;
+  const normalize = (decision) => {
+    const value = cloneJson(decision);
+    delete value.draftUpdatedAt;
+    return value;
+  };
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
 
 function attentionGuidanceProposalBundle(contract) {
@@ -11363,13 +10930,13 @@ function attentionGuidanceProposalBundle(contract) {
     optionId: ATTENTION_GUIDANCE_OPTION_ID,
     label: "Attention points reviewed",
     designDimension: COMPONENT_BY_ID.get(ATTENTION_GUIDANCE_COMPONENT_ID).dimension,
-    description: "Conservative beat-scoped attention points resolved only from clearly visible standalone GLBs or specifically named renderable parts.",
+    description: "Automatic beat-scoped suggestions remain limited to clearly visible standalone GLBs or specifically named renderable parts; authors may also target saved image planes or place one finite free scene point.",
     sourceEvidence: uniqueStrings(candidates.flatMap((candidate) => candidate.provenance?.evidenceRefs || [])),
     assetLinks: uniqueStrings(candidates.map((candidate) => candidate.assetId)).map((assetId) => ({
       assetId,
       role: "clear visible attention candidate",
     })),
-    readerImpact: "Carries authored attention coordinates as metadata without rendering authoring spheres in the story reader.",
+    readerImpact: "Carries authored attention coordinates as metadata without rendering authoring target markers in the story reader.",
     risks: ["Broad selectors, invisible controls, and unresolved geometry intentionally produce no default marker."],
     implementationHints: ["Resolve candidates against posed visible renderables, then persist only finite spatial-scene coordinates."],
     confidence: candidates.length
@@ -11403,9 +10970,18 @@ async function ensureAttentionGuidanceInferenceState(paths, proposals, decisions
     || !existingContract.inputSignature
     || existingContract.inputSignature !== inferred.inputSignature
   );
-  const contract = existingContract && !stale
-    ? validateAttentionGuidanceContract(existingContract, inferred)
-    : inferred;
+  let reconciliationError = null;
+  let contract = inferred;
+  if (existingContract) {
+    try {
+      contract = stale
+        ? mergeAttentionGuidanceWithExisting(inferred, existingContract)
+        : validateAttentionGuidanceContract(existingContract, inferred);
+    } catch (error) {
+      reconciliationError = error;
+      contract = inferred;
+    }
+  }
   const bundle = attentionGuidanceProposalBundle(contract);
   if (JSON.stringify(existingProposal) !== JSON.stringify(bundle)) {
     await writeJson(path.join(paths.proposalsRoot, `${ATTENTION_GUIDANCE_COMPONENT_ID}.json`), bundle);
@@ -11414,13 +10990,17 @@ async function ensureAttentionGuidanceInferenceState(paths, proposals, decisions
   const attentionComponent = COMPONENT_BY_ID.get(ATTENTION_GUIDANCE_COMPONENT_ID);
   if (existingDecision && (!isValidCurrentDecision(attentionComponent, existingDecision) || stale)) {
     const nextStatus = stale ? "stale" : existingDecision.status;
+    const revalidationDiagnostics = reconciliationError
+      ? automaticRevalidationDiagnostics(reconciliationError, ATTENTION_GUIDANCE_COMPONENT_ID)
+      : existingDecision.revalidationDiagnostics;
     const nextDecision = decisionWithStatus({
       ...existingDecision,
       component: ATTENTION_GUIDANCE_COMPONENT_ID,
       label: "Attention Guidance",
       option: bundle.proposals[0],
-      attentionGuidance: contract,
-      requiresReview: stale || existingDecision.requiresReview === true,
+      attentionGuidance: reconciliationError ? existingContract : contract,
+      requiresReview: Boolean(reconciliationError) || existingDecision.requiresReview === true,
+      ...(revalidationDiagnostics?.length ? { revalidationDiagnostics } : {}),
       ...(stale ? { invalidatedBy: existingDecision.invalidatedBy || "attention-guidance-input", staleAt: new Date().toISOString() } : {}),
     }, DECISION_STATUSES.has(nextStatus) ? nextStatus : "draft", existingDecision.savedAt ?? null);
     await writeJson(path.join(paths.decisionsRoot, `${ATTENTION_GUIDANCE_COMPONENT_ID}.json`), nextDecision);
@@ -11430,6 +11010,303 @@ async function ensureAttentionGuidanceInferenceState(paths, proposals, decisions
   return {
     proposals: { ...proposals, [ATTENTION_GUIDANCE_COMPONENT_ID]: bundle },
     decisions: nextDecisions,
+  };
+}
+
+async function revalidatePreviouslyCompletedWorkflow({
+  options,
+  paths,
+  graph,
+  runtime,
+  proposals,
+  decisions,
+  previouslyCompletedCheckpointIds,
+}) {
+  let nextProposals = proposals;
+  let nextDecisions = decisions;
+  const details = [];
+  const completedIds = previouslyCompletedCheckpointIds instanceof Set
+    ? previouslyCompletedCheckpointIds
+    : new Set();
+
+  for (const component of DECISION_COMPONENTS) {
+    if (!previousComponentsCurrent(component.id, nextDecisions)) break;
+
+    if (component.id === ATTENTION_GUIDANCE_COMPONENT_ID) {
+      ({ proposals: nextProposals, decisions: nextDecisions } = await ensureAttentionGuidanceInferenceState(
+        paths,
+        nextProposals,
+        nextDecisions,
+        graph,
+        runtime,
+      ));
+    }
+    if (component.id === "dynamic-geometry") {
+      await ensureSourceDynamicsPreviewDecisionsAvailable(paths, graph);
+      nextDecisions = await readDecisionIndex(paths);
+    }
+
+    let decision = nextDecisions[component.id] || null;
+    if (isValidCurrentDecision(component, decision)) continue;
+    if (!completedIds.has(component.id)) break;
+
+    const originalSavedAt = decision?.savedAt || null;
+    const invalidatedBy = decision?.invalidatedBy || "upstream-change";
+    if (invalidatedBy === "source-motion-links") {
+      details.push({
+        component: component.id,
+        label: component.label,
+        status: "needs-review",
+        invalidatedBy,
+        diagnostics: [{
+          severity: "error",
+          code: "SOURCE_MOTION_REVIEW_REQUIRED",
+          component: component.id,
+          message: `Review ${component.label} after changing Source Motion links, then save this step again.`,
+        }],
+      });
+      break;
+    }
+    try {
+      let saved;
+      if (component.id === SPATIAL_RELATIONS_COMPONENT_ID) {
+        saved = await saveCheckpointDecision(options, component.id, {
+          optionId: SPATIAL_RELATIONS_OPTION_ID,
+          spatialRelations: decision.spatialRelations,
+          authorEdits: decision.authorEdits || "",
+        });
+      } else if (component.id === ENVIRONMENT_ENHANCEMENT_COMPONENT_ID) {
+        saved = isSkippedEnvironmentEnhancementOption(decision?.option)
+          ? await saveNoEnvironmentEnhancementCheckpoint(options)
+          : await saveEnvironmentEnhancementCheckpoint(
+            options,
+            decision?.option?.environmentEnhancement,
+          );
+      } else if (component.id === ATTENTION_GUIDANCE_COMPONENT_ID) {
+        if (decision?.revalidationDiagnostics?.length) {
+          throw Object.assign(new Error(decision.revalidationDiagnostics[0].message), {
+            statusCode: 409,
+            diagnostics: decision.revalidationDiagnostics,
+          });
+        }
+        saved = await saveCheckpointDecision(options, component.id, {
+          optionId: ATTENTION_GUIDANCE_OPTION_ID,
+          attentionGuidance: decision.attentionGuidance,
+          authorEdits: decision.authorEdits || "",
+        });
+      } else if (isSourceDynamicsPreviewComponent(component)) {
+        if (component.id === "dynamic-geometry") {
+          await reconcileProceduralDynamicsForAutomaticValidation(
+            paths,
+            graph,
+            runtime,
+            nextDecisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations || null,
+          );
+        }
+        saved = await saveCheckpointDecision(options, component.id, {
+          authorEdits: decision?.authorEdits || "",
+        });
+      } else if (component.id === "interaction-control") {
+        const interactionState = await currentInteractionControlState(paths, nextDecisions);
+        saved = await saveCheckpointDecision(
+          options,
+          component.id,
+          automaticInteractionControlPayload(decision, interactionState, graph, runtime),
+        );
+      } else if (isFinalReviewComponent(component)) {
+        saved = await saveCheckpointDecision(options, component.id, {
+          finalTuningPrompt: decision?.finalTuningPrompt ?? decision?.authorEdits ?? "",
+        });
+      } else {
+        saved = await saveCheckpointDecision(options, component.id, {
+          optionId: decision?.option?.optionId,
+          authorEdits: decision?.authorEdits || "",
+        });
+      }
+
+      const {
+        revalidationDiagnostics: _oldDiagnostics,
+        automaticRevalidation: _oldRevalidation,
+        ...savedDecision
+      } = saved;
+      const revalidatedAt = new Date().toISOString();
+      const revalidated = decisionWithStatus({
+        ...savedDecision,
+        automaticRevalidation: {
+          schemaVersion: "storyvr-workflow-revalidation/v1",
+          status: "current",
+          invalidatedBy,
+          revalidatedAt,
+          preservedSavedAt: originalSavedAt,
+        },
+      }, "current", originalSavedAt || saved.savedAt);
+      await writeJson(path.join(paths.decisionsRoot, `${component.id}.json`), revalidated);
+      if (component.id === SPATIAL_RELATIONS_COMPONENT_ID) {
+        await writeDerivedAssetTopologyDecision(paths, revalidated.spatialRelations, revalidated);
+      }
+      details.push({
+        component: component.id,
+        label: component.label,
+        status: "current",
+        invalidatedBy,
+      });
+      nextDecisions = await readDecisionIndex(paths);
+      decision = nextDecisions[component.id] || revalidated;
+    } catch (error) {
+      const diagnostics = automaticRevalidationDiagnostics(error, component.id);
+      const current = await readJsonIfExists(path.join(paths.decisionsRoot, `${component.id}.json`)) || decision;
+      const blocked = decisionWithStatus({
+        ...current,
+        requiresReview: true,
+        invalidatedBy,
+        staleAt: current?.staleAt || new Date().toISOString(),
+        revalidationDiagnostics: diagnostics,
+        automaticRevalidation: {
+          schemaVersion: "storyvr-workflow-revalidation/v1",
+          status: "needs-review",
+          invalidatedBy,
+          checkedAt: new Date().toISOString(),
+        },
+      }, "stale", originalSavedAt || current?.savedAt || null);
+      await writeJson(path.join(paths.decisionsRoot, `${component.id}.json`), blocked);
+      details.push({
+        component: component.id,
+        label: component.label,
+        status: "needs-review",
+        invalidatedBy,
+        diagnostics,
+      });
+      nextDecisions = await readDecisionIndex(paths);
+      break;
+    }
+  }
+
+  const needsReview = details.filter((entry) => entry.status === "needs-review").length;
+  return {
+    proposals: nextProposals,
+    decisions: nextDecisions,
+    report: {
+      schemaVersion: "storyvr-workflow-revalidation-report/v1",
+      status: needsReview ? "needs-review" : (details.length ? "complete" : "not-needed"),
+      checked: details.length,
+      keptCurrent: details.length - needsReview,
+      needsReview,
+      details,
+    },
+  };
+}
+
+function automaticRevalidationError(component, code, message, extra = {}) {
+  return Object.assign(new Error(message), {
+    statusCode: 409,
+    diagnostics: [{
+      severity: "error",
+      code,
+      component,
+      message,
+      ...extra,
+    }],
+  });
+}
+
+function automaticRevalidationDiagnostics(error, componentId) {
+  const diagnostics = Array.isArray(error?.diagnostics) ? error.diagnostics : [];
+  if (diagnostics.length) {
+    return diagnostics.map((diagnostic) => ({
+      severity: diagnostic?.severity || "error",
+      code: diagnostic?.code || "AUTOMATIC_REVALIDATION_NEEDS_REVIEW",
+      component: diagnostic?.component || componentId,
+      ...(diagnostic?.beatId ? { beatId: diagnostic.beatId } : {}),
+      ...(diagnostic?.variantGroupId ? { variantGroupId: diagnostic.variantGroupId } : {}),
+      ...(diagnostic?.variantOptionId ? { variantOptionId: diagnostic.variantOptionId } : {}),
+      ...(diagnostic?.boundaryId ? { boundaryId: diagnostic.boundaryId } : {}),
+      ...(diagnostic?.edgeId ? { edgeId: diagnostic.edgeId } : {}),
+      ...(diagnostic?.field ? { field: diagnostic.field } : {}),
+      message: String(diagnostic?.message || error?.message || "Review this step before continuing."),
+    }));
+  }
+  return [{
+    severity: "error",
+    code: "AUTOMATIC_REVALIDATION_NEEDS_REVIEW",
+    component: componentId,
+    message: String(error?.message || "Review this step before continuing."),
+  }];
+}
+
+async function reconcileProceduralDynamicsForAutomaticValidation(
+  paths,
+  graph,
+  runtime,
+  spatialRelations,
+) {
+  const raw = await readJsonIfExists(paths.proceduralDynamicsPath);
+  if (!raw || raw.schemaVersion !== "storyvr-procedural-dynamics/v1") return;
+  const contexts = proceduralDynamicsContexts(graph, runtime, spatialRelations);
+  const normalized = normalizeProceduralDynamicsStore(raw, contexts);
+  const rawSceneKeys = Object.keys(raw.plansByScene || {});
+  const normalizedSceneKeys = new Set(Object.keys(normalized.plansByScene || {}));
+  const invalidSurvivingSceneKeys = rawSceneKeys.filter((sceneKey) => (
+    contexts[sceneKey] && !normalizedSceneKeys.has(sceneKey)
+  ));
+  if (invalidSurvivingSceneKeys.length) {
+    const sceneKey = invalidSurvivingSceneKeys[0];
+    throw automaticRevalidationError(
+      "dynamic-geometry",
+      "PROCEDURAL_DYNAMICS_SURVIVING_PLAN_INVALID",
+      "A saved motion plan no longer matches the surviving scene objects. Review that scene's motion before continuing.",
+      { beatId: contexts[sceneKey]?.scene?.beatId || null },
+    );
+  }
+  const deletedSceneKeys = rawSceneKeys.filter((sceneKey) => !contexts[sceneKey]);
+  if (!deletedSceneKeys.length) return;
+  await writeJson(paths.proceduralDynamicsPath, {
+    ...normalized,
+    revision: Math.max(0, Number(raw.revision) || 0) + 1,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function automaticInteractionControlPayload(decision, interactionState, graph, runtime) {
+  const inferredBoundaries = interactionState.interactionControlByBoundary || [];
+  const knownBoundaryIds = new Set(inferredBoundaries.map((record) => record.boundaryId));
+  const knownLegacyBoundaryIds = new Set(inferredBoundaries.map((record) => (
+    interactionBoundaryId(record.fromBeatId, record.toBeatId)
+  )));
+  const sourceBoundaryOverrides = Object.keys(decision?.boundaryOverrides || {}).length
+    ? decision.boundaryOverrides
+    : interactionDecisionBoundaryRecords(decision);
+  const boundaryOverrides = Object.fromEntries(
+    [...normalizeInteractionControlBoundaryOverrides(sourceBoundaryOverrides)]
+      .filter(([boundaryId]) => knownBoundaryIds.has(boundaryId) || knownLegacyBoundaryIds.has(boundaryId)),
+  );
+
+  const inferredVariantEdges = interactionState.variantInteractionControlByEdge || [];
+  const knownVariantEdgeIds = new Set(inferredVariantEdges.map((record) => record.edgeId));
+  const sourceVariantOverrides = Object.keys(decision?.variantOverrides || {}).length
+    ? decision.variantOverrides
+    : Object.keys(decision?.variantEdgeOverrides || {}).length
+      ? decision.variantEdgeOverrides
+      : decision?.variantInteractionControlByEdge;
+  const variantOverrides = Object.fromEntries(
+    [...normalizeVariantInteractionControlEdgeOverrides(sourceVariantOverrides)]
+      .filter(([edgeId]) => knownVariantEdgeIds.has(edgeId)),
+  );
+
+  const currentSceneKeys = new Set(spatialSceneDefinitions(graph, runtime).map((definition) => (
+    requireSceneContext({
+      beatId: definition.beatId,
+      variantGroupId: definition.variantGroupId,
+      variantOptionId: definition.variantOptionId,
+    }).sceneKey
+  )));
+  const inBeatInteractions = sanitizeInBeatInteractions(decision?.inBeatInteractions || [])
+    .filter((record) => currentSceneKeys.has(record.sceneKey));
+  return {
+    authorEdits: decision?.authorEdits || "",
+    controllerConfiguration: decision?.controllerConfiguration,
+    boundaryOverrides,
+    variantOverrides,
+    inBeatInteractions,
   };
 }
 
@@ -13319,150 +13196,6 @@ function missingAssetNotes(runtime) {
   return notes;
 }
 
-function normalizeEnvironmentRecommendationText(value) {
-  return String(value || "")
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function normalizeEnvironmentSearchPhrase(value) {
-  return normalizeEnvironmentRecommendationText(value).slice(0, 180);
-}
-
-function validEnvironmentSearchRecommendation(value, storySignature, beatCount) {
-  return Boolean(
-    value
-    && value.schemaVersion === ENVIRONMENT_SEARCH_RECOMMENDATION_SCHEMA_VERSION
-    && value.source === "ai-story-analysis"
-    && value.storySignature === storySignature
-    && Number(value.beatCount) === Number(beatCount)
-    && normalizeEnvironmentSearchPhrase(value.query),
-  );
-}
-
-function normalizeEnvironmentSearchRecommendation(generated, context, storySignature) {
-  const keywords = Array.isArray(generated?.keywords)
-    ? generated.keywords.map(normalizeEnvironmentSearchPhrase).filter(Boolean)
-    : [];
-  const query = normalizeEnvironmentSearchPhrase(generated?.query || keywords.join(" "));
-  if (!query) throw new Error("The recommendation query is empty.");
-
-  const suggestions = [...new Set((Array.isArray(generated?.suggestions) ? generated.suggestions : [])
-    .map(normalizeEnvironmentSearchPhrase)
-    .filter((item) => item && item.toLowerCase() !== query.toLowerCase()))].slice(0, 4);
-  const allowedBeatIds = new Set(context.beats.map((beat) => beat.id));
-  const evidenceBeatIds = [...new Set((Array.isArray(generated?.evidenceBeatIds) ? generated.evidenceBeatIds : [])
-    .map((beatId) => String(beatId || "").trim())
-    .filter((beatId) => allowedBeatIds.has(beatId)))];
-
-  return {
-    schemaVersion: ENVIRONMENT_SEARCH_RECOMMENDATION_SCHEMA_VERSION,
-    query,
-    keywords: [...new Set(keywords)].slice(0, 12),
-    suggestions,
-    rationale: normalizeEnvironmentRecommendationText(generated?.rationale).slice(0, 1000),
-    evidenceBeatIds,
-    source: "ai-story-analysis",
-    storySignature,
-    beatCount: context.beatCount,
-    generatedAt: new Date().toISOString(),
-    engine: generated?.engine && typeof generated.engine === "object"
-      ? generated.engine
-      : { provider: "ai" },
-  };
-}
-
-async function generateEnvironmentSearchRecommendationWithCodex(context, options = {}) {
-  if (options.aiProvider === "openai") throw new Error("Codex provider disabled for this request.");
-  const codexBin = options.codexBin || process.env.CODEX_BIN || "codex";
-  const prompt = [
-    "You are the StoryVR environment search assistant running inside Codex.",
-    "Analyze every story beat in the supplied Context JSON before responding. Every saved beat is included; do not ignore later beats.",
-    "Recommend search terms for a public library of 360-degree equirectangular HDRI images. Describe the persistent surrounding place only, not the main characters, story objects, props, actions, camera behavior, or an asset to generate.",
-    "Prefer the dominant recurring physical setting. If the story moves among settings, choose the most useful persistent surrounding and offer up to four concise alternatives.",
-    "The primary query should contain roughly 3 to 8 concrete English search terms that work in the HDRI catalogs of Poly Haven or ambientCG.",
-    "Return one JSON object and no Markdown.",
-    "The JSON object must have this shape: {\"query\":\"string\",\"keywords\":[\"string\"],\"suggestions\":[\"string\"],\"rationale\":\"string\",\"evidenceBeatIds\":[\"string\"]}.",
-    `Context JSON:\n${JSON.stringify(context, null, 2)}`,
-  ].join("\n\n");
-
-  const result = await runCodexExec(codexBin, prompt, {
-    cwd: options.codexWorkspace || REPO_ROOT,
-    timeoutMs: options.codexTimeoutMs || 180_000,
-    requestLabel: "Codex environment search recommendation",
-  });
-  const finalText = extractCodexFinalText(result.stdout) || result.stdout;
-  return {
-    ...parseJsonObject(finalText),
-    engine: { provider: "codex-cli", codexBin },
-  };
-}
-
-async function generateEnvironmentSearchRecommendationWithOpenAI(context, options = {}) {
-  const apiKey = options.openaiApiKey || process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY is not set.");
-
-  const model = options.openaiModel || process.env.STORYVR_OPENAI_MODEL || "gpt-4.1-mini";
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      input: [
-        {
-          role: "system",
-          content: "Analyze every supplied StoryVR beat and recommend public-library search terms for a 360-degree equirectangular HDRI of the persistent surrounding place. Do not generate an environment image.",
-        },
-        {
-          role: "user",
-          content: JSON.stringify({
-            task: "Return one primary 3-to-8-term environment search phrase, its component keywords, up to four alternative phrases, a short rationale, and supporting beat IDs. Focus on surroundings rather than characters, objects, props, actions, or cameras.",
-            context,
-          }),
-        },
-      ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "storyvr_environment_search_recommendation",
-          strict: true,
-          schema: environmentSearchRecommendationSchema(),
-        },
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`OpenAI environment recommendation request failed: HTTP ${response.status} ${await response.text()}`);
-  }
-  const data = await response.json();
-  const text = data.output_text || data.output?.flatMap((item) => item.content || []).find((item) => item.type === "output_text")?.text;
-  if (!text) throw new Error("OpenAI response did not include output_text.");
-  return {
-    ...JSON.parse(text),
-    engine: { provider: "openai", model },
-  };
-}
-
-function environmentSearchRecommendationSchema() {
-  return {
-    type: "object",
-    additionalProperties: false,
-    required: ["query", "keywords", "suggestions", "rationale", "evidenceBeatIds"],
-    properties: {
-      query: { type: "string" },
-      keywords: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 12 },
-      suggestions: { type: "array", items: { type: "string" }, maxItems: 4 },
-      rationale: { type: "string" },
-      evidenceBeatIds: { type: "array", items: { type: "string" } },
-    },
-  };
-}
-
 async function generateWithCodex(context, options = {}) {
   if (options.aiProvider === "openai") throw new Error("Codex provider disabled for this request.");
   const codexBin = options.codexBin || process.env.CODEX_BIN || "codex";
@@ -14256,6 +13989,7 @@ function environmentEnhancementDecisionOption(component, environmentEnhancement)
       source.title,
       source.name,
       firstEnvironment.asset?.title,
+      firstEnvironment.asset?.generationSource?.filename,
       firstEnvironment.asset?.sourceUpload?.filename,
       "Environment asset",
     )
@@ -14331,22 +14065,6 @@ function environmentEnhancementAssignmentValue(value) {
     : value;
 }
 
-function environmentEnhancementAssignmentsHavePendingSource(value) {
-  if (!value || typeof value !== "object") return false;
-  const assignments = isEnvironmentEnhancementAssignmentsSource(value)
-    ? [
-      value.schemaVersion === ENVIRONMENT_ENHANCEMENT_ASSIGNMENTS_SCHEMA_VERSION
-        ? value.defaultEnvironment
-        : value.defaultAssignment,
-      ...Object.values(value.assignmentsByBeat || {}),
-    ]
-    : [value];
-  return assignments.some((assignment) => {
-    const source = environmentEnhancementAssignmentValue(assignment);
-    return Boolean(source?.pendingSource) && !source?.asset;
-  });
-}
-
 function environmentEnhancementSkipDecisionOption(component) {
   return {
     component: component.id,
@@ -14372,10 +14090,11 @@ function environmentEnhancementSkipDecisionOption(component) {
 
 async function validatedEnvironmentEnhancementAssignments(paths, value, graph) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const validationContext = createEnvironmentValidationContext();
   if (!isEnvironmentEnhancementAssignmentsSource(source)) {
     return {
       schemaVersion: ENVIRONMENT_ENHANCEMENT_ASSIGNMENTS_SCHEMA_VERSION,
-      defaultEnvironment: await validatedEnvironmentEnhancementContract(paths, source),
+      defaultEnvironment: await validatedEnvironmentEnhancementContract(paths, source, validationContext),
       assignmentsByBeat: {},
     };
   }
@@ -14389,29 +14108,22 @@ async function validatedEnvironmentEnhancementAssignments(paths, value, graph) {
   const defaultValue = environmentEnhancementAssignmentValue(rawDefault);
   const defaultEnvironment = defaultValue === null
     ? null
-    : await validatedEnvironmentEnhancementContract(paths, defaultValue);
+    : await validatedEnvironmentEnhancementContract(paths, defaultValue, validationContext);
   const rawAssignments = source.assignmentsByBeat && typeof source.assignmentsByBeat === "object" && !Array.isArray(source.assignmentsByBeat)
     ? source.assignmentsByBeat
     : {};
   const assignmentsByBeat = {};
   for (const [rawBeatId, assignment] of Object.entries(rawAssignments)) {
     const beatId = String(rawBeatId || "").trim();
-    if (!beatId || !beatIds.has(beatId)) {
-      throw Object.assign(new Error(`Environment Enhancement assignment targets an unknown authored beat: ${rawBeatId}`), {
-        statusCode: 409,
-        diagnostics: [{
-          severity: "error",
-          code: "UNKNOWN_ENVIRONMENT_ASSIGNMENT_BEAT",
-          component: ENVIRONMENT_ENHANCEMENT_COMPONENT_ID,
-          beatId: rawBeatId,
-          message: "Environment assignments must target a current authored Source Graph beat.",
-        }],
-      });
-    }
+    // A Source Graph card can be removed after this checkpoint was completed.
+    // Its scoped assignment is then unreachable and can be discarded safely;
+    // retaining it would create a save dead end because no current scene could
+    // ever expose or highlight the obsolete value.
+    if (!beatId || !beatIds.has(beatId)) continue;
     const assignmentValue = environmentEnhancementAssignmentValue(assignment);
     assignmentsByBeat[beatId] = assignmentValue === null
       ? null
-      : await validatedEnvironmentEnhancementContract(paths, assignmentValue);
+      : await validatedEnvironmentEnhancementContract(paths, assignmentValue, validationContext);
   }
 
   return {
@@ -14421,7 +14133,11 @@ async function validatedEnvironmentEnhancementAssignments(paths, value, graph) {
   };
 }
 
-async function validatedEnvironmentEnhancementContract(paths, value) {
+function createEnvironmentValidationContext() {
+  return { sha256ByFileIdentity: new Map() };
+}
+
+async function validatedEnvironmentEnhancementContract(paths, value, validationContext = createEnvironmentValidationContext()) {
   const source = value && typeof value === "object" ? value : {};
   const asset = source.asset && typeof source.asset === "object" ? source.asset : {};
   const publicPath = normalizeEnvironmentPublicPath(asset.publicPath || asset.entryPath);
@@ -14448,7 +14164,12 @@ async function validatedEnvironmentEnhancementContract(paths, value) {
   if (!realAssetPath.startsWith(`${realPublicRoot}${path.sep}`)) {
     throw Object.assign(new Error("Environment asset must resolve inside the story's WebXR public folder."), { statusCode: 409 });
   }
-  const actualSha256 = await sha256File(assetPath);
+  const actualSha256 = await memoizedEnvironmentSha256(
+    validationContext,
+    assetPath,
+    realAssetPath,
+    assetStats,
+  );
   const recordedSha256 = typeof asset.sha256 === "string" ? asset.sha256.trim().toLowerCase() : "";
   if (recordedSha256 && recordedSha256 !== actualSha256) {
     throw Object.assign(new Error(`Environment asset checksum no longer matches the saved asset: ${publicPath}`), {
@@ -14457,7 +14178,7 @@ async function validatedEnvironmentEnhancementContract(paths, value) {
         severity: "error",
         code: "ENVIRONMENT_ASSET_CHECKSUM_MISMATCH",
         component: ENVIRONMENT_ENHANCEMENT_COMPONENT_ID,
-        message: "The story-local environment file changed after it was selected. Upload or generate it again before saving or compiling.",
+        message: "The story-local environment file changed after it was generated. Generate it again before saving or compiling.",
       }],
     });
   }
@@ -14467,6 +14188,7 @@ async function validatedEnvironmentEnhancementContract(paths, value) {
   const movementCue = await normalizeValidatedEnvironmentMovementCue(
     source.movementCue,
     publicRoot,
+    validationContext,
   );
   const selectedSource = source.selectedSource && typeof source.selectedSource === "object"
     ? cloneJson(source.selectedSource)
@@ -14501,6 +14223,9 @@ async function validatedEnvironmentEnhancementContract(paths, value) {
       sourceUpload: asset.sourceUpload && typeof asset.sourceUpload === "object"
         ? cloneJson(asset.sourceUpload)
         : null,
+      generationSource: asset.generationSource && typeof asset.generationSource === "object"
+        ? cloneJson(asset.generationSource)
+        : null,
       dependencies: Array.isArray(asset.dependencies) ? cloneJson(asset.dependencies) : [],
     },
     transform,
@@ -14530,7 +14255,11 @@ function normalizeEnvironmentPublicPath(value) {
   return decoded;
 }
 
-async function normalizeValidatedEnvironmentMovementCue(value, publicRoot) {
+async function normalizeValidatedEnvironmentMovementCue(
+  value,
+  publicRoot,
+  validationContext = createEnvironmentValidationContext(),
+) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const movementCue = normalizeEnvironmentMovementCue(source);
   const textureSource = source.texture;
@@ -14589,7 +14318,12 @@ async function normalizeValidatedEnvironmentMovementCue(value, publicRoot) {
     throw Object.assign(new Error("Ground movement-cue texture must resolve inside the story's WebXR public folder."), { statusCode: 409 });
   }
 
-  const actualSha256 = await sha256File(texturePath);
+  const actualSha256 = await memoizedEnvironmentSha256(
+    validationContext,
+    texturePath,
+    realTexturePath,
+    textureStats,
+  );
   const recordedSha256 = typeof textureSource.sha256 === "string"
     ? textureSource.sha256.trim().toLowerCase()
     : "";
@@ -14670,6 +14404,20 @@ function sha256File(filePath) {
   });
 }
 
+function memoizedEnvironmentSha256(validationContext, filePath, realFilePath, fileStats) {
+  const cache = validationContext?.sha256ByFileIdentity;
+  if (!(cache instanceof Map)) return sha256File(filePath);
+  const identity = [
+    realFilePath || path.resolve(filePath),
+    fileStats?.dev || 0,
+    fileStats?.ino || 0,
+    fileStats?.size || 0,
+    fileStats?.mtimeMs || 0,
+  ].join("\0");
+  if (!cache.has(identity)) cache.set(identity, sha256File(filePath));
+  return cache.get(identity);
+}
+
 function compileDiagnostics(graph, runtime, decisions, contentUnits = runtime.contentUnits) {
   const diagnostics = [];
   const visualEvidenceLinks = (graph.textVisualEvidenceLinks || []).filter((link) => link.assetExpectation !== "none");
@@ -14706,8 +14454,15 @@ function assertPreviousCurrent(componentId, decisions) {
   if (index <= 0) return;
   const missing = DECISION_COMPONENTS.slice(0, index).filter((component) => !isValidCurrentDecision(component, decisions[component.id]));
   if (missing.length) {
+    const first = missing[0];
     throw Object.assign(new Error(`Previous checkpoints must be saved and current first: ${missing.map((component) => component.label).join(", ")}`), {
       statusCode: 409,
+      diagnostics: [{
+        severity: "error",
+        code: "UPSTREAM_CHECKPOINT_NOT_CURRENT",
+        component: first.id,
+        message: `${first.label} is the first earlier step that still needs review.`,
+      }],
     });
   }
 }
@@ -14743,7 +14498,7 @@ function assertValidDecisionOption(component, option) {
           severity: "error",
           code: "MISSING_ENVIRONMENT_ENHANCEMENT_DECISION",
           component: component.id,
-          message: "Search for or generate and inspect an environment asset, or explicitly skip the enhancement for this story.",
+          message: "Generate and inspect an environment asset, or explicitly skip the enhancement for this story.",
         }],
       });
     }
@@ -14904,7 +14659,7 @@ function isAttentionGuidanceComponent(component) {
 function isSpatialRelationsContractShape(value) {
   if (value?.schemaVersion !== SPATIAL_RELATIONS_SCHEMA_VERSION || !value.inputSignature || !Array.isArray(value.entities)) return false;
   if (!value.resolvedByBeat || typeof value.resolvedByBeat !== "object") return false;
-  return value.entities.every((entity) => entity?.id && ["reader", "text-panel", "glb", "image-plane", "composition-root"].includes(entity.kind)
+  return value.entities.every((entity) => entity?.id && ["reader", "text-panel", "glb", "image-plane"].includes(entity.kind)
     && Array.isArray(entity.transform?.position) && entity.transform.position.length === 3
     && Array.isArray(entity.transform?.quaternion) && entity.transform.quaternion.length === 4
     && Array.isArray(entity.transform?.scale) && entity.transform.scale.length === 3);
@@ -14950,12 +14705,17 @@ function isValidEnvironmentEnhancementOption(option) {
       contract.defaultEnvironment,
       ...Object.values(assignments),
     ].filter((environment) => environment !== null && environment !== undefined);
-    return option?.optionId === ENVIRONMENT_ENHANCEMENT_OPTION_ID
+    return isEnvironmentEnhancementAssetOptionId(option?.optionId)
       && environments.length > 0
       && environments.every(isValidEnvironmentEnhancementContractShape);
   }
-  return option?.optionId === ENVIRONMENT_ENHANCEMENT_OPTION_ID
+  return isEnvironmentEnhancementAssetOptionId(option?.optionId)
     && isValidEnvironmentEnhancementContractShape(contract);
+}
+
+function isEnvironmentEnhancementAssetOptionId(optionId) {
+  return optionId === ENVIRONMENT_ENHANCEMENT_OPTION_ID
+    || optionId === LEGACY_ENVIRONMENT_ENHANCEMENT_OPTION_ID;
 }
 
 function isValidEnvironmentEnhancementContractShape(contract) {
@@ -15058,6 +14818,13 @@ function readinessFor(decisions) {
           saved: Boolean(decision?.savedAt),
           stale: status === "stale",
           status,
+          invalidatedBy: decision?.invalidatedBy || null,
+          diagnostics: Array.isArray(decision?.revalidationDiagnostics)
+            ? cloneJson(decision.revalidationDiagnostics)
+            : [],
+          automaticRevalidation: decision?.automaticRevalidation
+            ? cloneJson(decision.automaticRevalidation)
+            : null,
         },
       ];
     }),
@@ -15096,6 +14863,13 @@ async function markDownstreamDecisionsStale(paths, componentId) {
     const decisionPath = path.join(paths.decisionsRoot, `${component.id}.json`);
     const decision = await readJsonIfExists(decisionPath);
     if (!decision) continue;
+    if (
+      decision.status === "stale"
+      && decision.invalidatedBy === componentId
+      && decision.requiresReview === true
+      && typeof decision.staleAt === "string"
+      && decision.staleAt
+    ) continue;
     await writeJson(decisionPath, decisionWithStatus({
       ...decision,
       invalidatedBy: componentId,
@@ -15141,9 +14915,6 @@ function summarizeGraph(graph) {
     assetInventory: (graph.assetInventory || []).slice(0, 60),
     ...(Array.isArray(graph.pointCloudEffects) && graph.pointCloudEffects.length
       ? { pointCloudEffects: cloneJson(graph.pointCloudEffects) }
-      : {}),
-    ...(graph.sourceSpatialCompositions?.schemaVersion === SOURCE_SPATIAL_COMPOSITION_SCHEMA_VERSION
-      ? { sourceSpatialCompositions: cloneJson(graph.sourceSpatialCompositions) }
       : {}),
     ...(Array.isArray(graph.variantGroups) && graph.variantGroups.length ? { variantGroups: graph.variantGroups } : {}),
     animationProbeLinking: graph.animationProbeLinking || null,

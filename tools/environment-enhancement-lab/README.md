@@ -16,7 +16,7 @@ The lab does not request provider credentials or download provider assets on the
 
 ## Run it
 
-From `/Users/lutao/Desktop/web2vr_4`:
+From the standalone StoryVR repository directory:
 
 ```bash
 node tools/environment-enhancement-lab/server.mjs

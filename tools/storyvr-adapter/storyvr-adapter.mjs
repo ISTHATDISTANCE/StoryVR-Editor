@@ -2,6 +2,7 @@ import { access, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promi
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { Matrix4, Quaternion, Vector3 } from "three";
 import { normalizeStoryVrPointCloudEffects } from "../storyvr-author/point-cloud-runtime.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -196,7 +197,7 @@ export async function importFetchedStoryResources(resourceFolder, mode = "dev", 
   const storyTitle = firstNonEmpty(storyStructure.title, sourceDiscovery.title, slug);
   const assets = assetsFromManifest(manifest);
   const pointCloudEffects = normalizeStoryVrPointCloudEffects(storyStructure.point_cloud_effects, assets);
-  const sourceSpatialCompositions = normalizeFetchedSourceSpatialCompositions(storyStructure, assets);
+  const sourceSpatialPlacements = normalizeFetchedSourceSpatialPlacements(storyStructure, assets);
   const rawContentUnits = contentUnitsFromFetchedStructure(storyStructure, { storyTitle });
   const variantGroups = variantGroupsFromFetchedStructure(storyStructure, assets);
   const unresolvedVariantGroupCount = arrayOr(storyStructure.unresolved_variant_groups).length;
@@ -246,7 +247,7 @@ export async function importFetchedStoryResources(resourceFolder, mode = "dev", 
     contentUnits,
     ...(variantGroups.length ? { variantGroups } : {}),
     ...(pointCloudEffects.length ? { pointCloudEffects } : {}),
-    ...(sourceSpatialCompositions ? { sourceSpatialCompositions } : {}),
+    ...(sourceSpatialPlacements.length ? { sourceSpatialPlacements } : {}),
     sceneTopology: {
       kind: "fetched-resource-sequence",
       routeStops: [],
@@ -292,9 +293,7 @@ export async function importFetchedStoryResources(resourceFolder, mode = "dev", 
       variantGroupCount: variantGroups.length,
       unresolvedVariantGroupCount,
       ...(pointCloudEffects.length ? { pointCloudEffectCount: pointCloudEffects.length } : {}),
-      ...(sourceSpatialCompositions ? {
-        sourceSpatialCompositionCount: sourceSpatialCompositions.compositions.length
-      } : {}),
+      ...(sourceSpatialPlacements.length ? { sourceSpatialPlacementCount: sourceSpatialPlacements.length } : {}),
     },
   };
 
@@ -1130,13 +1129,12 @@ function assetsFromManifest(manifest) {
   });
 }
 
-function normalizeFetchedSourceSpatialCompositions(storyStructure, assets) {
+function normalizeFetchedSourceSpatialPlacements(storyStructure, assets) {
   const source = storyStructure?.source_spatial_compositions
     || storyStructure?.sourceSpatialCompositions
     || storyStructure?.animation_probe?.sourceSpatialCompositions
     || null;
-  if (!source || typeof source !== "object") return null;
-  if (source.schemaVersion !== "storyvr-source-spatial-composition/v1") return null;
+  if (source?.schemaVersion !== "storyvr-source-spatial-composition/v1") return [];
 
   const assetIndex = new Map();
   const addAssetKey = (value, asset) => {
@@ -1153,13 +1151,7 @@ function normalizeFetchedSourceSpatialCompositions(storyStructure, assets) {
     addAssetKey(asset.originalUrl, asset);
   }
   const resolveAsset = (member) => {
-    for (const value of [
-      member?.assetId,
-      member?.assetPath,
-      member?.assetFile,
-      member?.assetUrl,
-      member?.url,
-    ]) {
+    for (const value of [member?.assetId, member?.assetPath, member?.assetFile, member?.assetUrl, member?.url]) {
       const key = String(value || "").trim().toLowerCase();
       if (!key) continue;
       const match = assetIndex.get(key) || assetIndex.get(assetFileName(key));
@@ -1167,44 +1159,78 @@ function normalizeFetchedSourceSpatialCompositions(storyStructure, assets) {
     }
     return null;
   };
-
-  const compositions = arrayOr(source.compositions)
-    .filter((composition) => (
-      composition
-      && composition.accepted === true
-      && composition.placementPolicy === "source-locked"
-    ))
-    .map((composition) => {
-      const members = arrayOr(composition.members).map((member) => {
-        const asset = resolveAsset(member);
-        if (!asset) return null;
-        return {
-          ...member,
-          assetId: asset.id,
-          assetPath: asset.path,
-          assetUrl: member.assetUrl || member.url || asset.originalUrl || asset.url || null,
-        };
-      }).filter(Boolean);
-      if (members.length < 2) return null;
-      const instanceIds = new Set(members.map((member) => member.instanceId).filter(Boolean));
-      const relations = arrayOr(composition.relations).filter((relation) => (
-        relation
-        && instanceIds.has(relation.subjectInstanceId)
-        && instanceIds.has(relation.referenceInstanceId)
-      ));
-      return {
-        ...composition,
-        members,
-        relations,
-      };
-    })
-    .filter(Boolean);
-  if (!compositions.length) return null;
-  return {
-    schemaVersion: source.schemaVersion,
-    signature: String(source.signature || ""),
-    compositions,
+  const matrixFor = (value) => {
+    const values = Array.isArray(value) ? value.map(Number) : null;
+    return values?.length === 16 && values.every(Number.isFinite)
+      ? new Matrix4().fromArray(values)
+      : null;
   };
+  const boundsFor = (value) => {
+    const minimum = Array.isArray(value?.min) ? value.min.map(Number) : null;
+    const maximum = Array.isArray(value?.max) ? value.max.map(Number) : null;
+    return minimum?.length === 3
+      && maximum?.length === 3
+      && [...minimum, ...maximum].every(Number.isFinite)
+      ? { minimum, maximum }
+      : null;
+  };
+
+  const placements = [];
+  for (const composition of arrayOr(source.compositions)) {
+    if (composition?.accepted !== true || composition?.placementPolicy !== "source-locked") continue;
+    const framing = composition.framing || {};
+    const bounds = boundsFor(framing.contentBounds || framing.anchorBounds || framing.compositionBounds);
+    if (!bounds) continue;
+    const size = bounds.maximum.map((value, index) => value - bounds.minimum[index]);
+    const maximumSize = Math.max(...size);
+    if (!(maximumSize > 0)) continue;
+    const scale = 1.9 / maximumSize;
+    const center = bounds.minimum.map((value, index) => (value + bounds.maximum[index]) * 0.5);
+    const groundAligned = String(framing.verticalAlignment || "").toLowerCase() === "ground";
+    const frameMatrix = new Matrix4()
+      .makeTranslation(
+        -center[0] * scale,
+        -(groundAligned ? bounds.minimum[1] : center[1]) * scale,
+        -center[2] * scale,
+      )
+      .multiply(new Matrix4().makeScale(scale, scale, scale));
+    const activeSets = composition.activeSetsByBeat && typeof composition.activeSetsByBeat === "object"
+      ? composition.activeSetsByBeat
+      : {};
+    const anchorInstanceId = String(framing.anchorInstanceId || "");
+    for (const member of arrayOr(composition.members)) {
+      const asset = resolveAsset(member);
+      const localMatrix = matrixFor(member?.resolvedLocalMatrix || member?.sourceMatrix || member?.matrix);
+      const instanceId = String(member?.instanceId || member?.id || "").trim();
+      if (!asset || !localMatrix || !instanceId) continue;
+      const position = new Vector3();
+      const quaternion = new Quaternion();
+      const objectScale = new Vector3();
+      frameMatrix.clone().multiply(localMatrix).decompose(position, quaternion, objectScale);
+      const activeSceneKeys = Object.entries(activeSets)
+        .filter(([, instanceIds]) => {
+          const ids = new Set(arrayOr(instanceIds).map(String));
+          return ids.has(instanceId) || member.persistent === true || instanceId === anchorInstanceId;
+        })
+        .map(([key]) => String(key));
+      placements.push({
+        instanceId,
+        assetId: asset.id,
+        transform: {
+          position: position.toArray(),
+          quaternion: quaternion.normalize().toArray(),
+          scale: objectScale.toArray(),
+        },
+        activeSceneKeys,
+        beatIds: arrayOr(member.beatIds || member.beat_ids).map(String),
+        preserveSourceGeometry: true,
+        ...(instanceId === anchorInstanceId ? { sourceRole: "framing-anchor" } : {}),
+        ...(member.loaderTransformPolicy ? { loaderTransformPolicy: member.loaderTransformPolicy } : {}),
+        ...(member.loaderTransformTarget ? { loaderTransformTarget: member.loaderTransformTarget } : {}),
+      });
+    }
+  }
+  return placements;
 }
 
 function linkImageAssetsToFetchedContentUnits(contentUnits, assets, storyStructure) {

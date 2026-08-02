@@ -38,6 +38,8 @@ const SPATIAL_TEXT_CLEARANCE_TRANSITION_MS = 100;
 const SPATIAL_TEXT_CLEARANCE_REVEAL_MS = 120;
 const SPATIAL_TEXT_CLEARANCE_INWARD_HYSTERESIS = 0.02;
 const CURRENT_SPATIAL_RELATIONS_INFERENCE_VERSION = "per-scene-exact-assets-v3";
+const SPATIAL_TRANSFORM_POSITION_LIMIT = 1_000_000;
+const SPATIAL_TRANSFORM_SCALE_LIMIT = 1_000_000;
 const ATTENTION_COMPLETION_DISTANCE_METERS = 3;
 const ATTENTION_ARROW_EDGE_NDC = 0.72;
 const ATTENTION_ARROW_DISTANCE_METERS = 0.86;
@@ -118,8 +120,8 @@ const DIRECT_GHOST_DESTINATION_HOLD_SECONDS = 3;
 const DIRECT_GHOST_INACTIVITY_REPLAY_SECONDS = 5;
 let sharedDracoLoader = null;
 let sharedKtx2Loader = null;
-let sourceCompositionNeutralEnvironmentMap = null;
-let sourceCompositionNeutralEnvironmentTarget = null;
+let preservedGeometryNeutralEnvironmentMap = null;
+let preservedGeometryNeutralEnvironmentTarget = null;
 
 function createGltfLoader() {
   const loader = new GLTFLoader();
@@ -338,8 +340,6 @@ let activeSourcePresentationSignature = "";
 const activeSupplementalModelEntries = [];
 const activeSpatialImageEntries = [];
 const activeProceduralDynamicsEntries = [];
-let activeSourceCompositionRoot = null;
-let activeSourceCompositionFrameRoot = null;
 let activeSceneLoadRevision = 0;
 let habitat = null;
 let spatialTextPanel = null;
@@ -646,7 +646,7 @@ readerPanelToggle?.addEventListener("click", (event) => {
 configureReaderPanelMouseDragging();
 window.addEventListener("resize", resize);
 window.addEventListener("pagehide", disposeRuntimeEnvironmentEnhancement, { once: true });
-window.addEventListener("pagehide", disposeSourceCompositionNeutralEnvironment, { once: true });
+window.addEventListener("pagehide", disposePreservedGeometryNeutralEnvironment, { once: true });
 renderer.domElement.addEventListener("pointerdown", () => renderer.domElement.focus());
 renderer.domElement.addEventListener("blur", () => desktopReaderMovementKeys.clear());
 window.addEventListener("blur", () => desktopReaderMovementKeys.clear());
@@ -1225,15 +1225,20 @@ function finiteAttentionPoint(value) {
 
 function normalizeRuntimeAttentionMarker(value, index = 0) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const targetKind = String(value.targetKind || "").trim();
   const assetId = String(value.assetId || "").trim();
   const position = finiteAttentionPoint(value.position);
   const coordinateSpace = String(value.coordinateSpace || "spatial-scene").trim().toLowerCase();
-  if (!assetId || !position || coordinateSpace !== "spatial-scene") return null;
+  if (
+    !position
+    || coordinateSpace !== "spatial-scene"
+    || (!assetId && targetKind !== "spatial-point")
+  ) return null;
   const inferredPosition = finiteAttentionPoint(value.inferredPosition) || position;
   const confidence = Number(value.confidence);
   const marker = {
     id: String(value.id || `attention-marker-${index + 1}`).trim(),
-    assetId,
+    ...(assetId ? { assetId } : {}),
     coordinateSpace,
     inferredPosition,
     position,
@@ -1245,7 +1250,6 @@ function normalizeRuntimeAttentionMarker(value, index = 0) {
   };
   const entityId = String(value.entityId || "").trim();
   const partSelector = String(value.partSelector || "").trim();
-  const targetKind = String(value.targetKind || "").trim();
   const renderableName = String(value.renderableName || "").trim();
   if (entityId) marker.entityId = entityId;
   if (partSelector) marker.partSelector = partSelector;
@@ -1305,14 +1309,18 @@ function normalizeRuntimeAttentionSceneMap(value, keyKind = "beat") {
 
 function normalizeRuntimeAttentionReaderGuidance(value) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : null;
-  if (!source || source.schemaVersion !== "storyvr-attention-reader-guidance/v1") return null;
+  const schemaVersion = String(source?.schemaVersion || "");
+  if (!source || ![
+    "storyvr-attention-reader-guidance/v1",
+    "storyvr-attention-reader-guidance/v2",
+  ].includes(schemaVersion)) return null;
   const completion = source.completion && typeof source.completion === "object" ? source.completion : {};
   const arrow = source.arrow && typeof source.arrow === "object" ? source.arrow : {};
   const glow = source.glow && typeof source.glow === "object" ? source.glow : {};
   const requestedDistance = Number(completion.distanceMeters);
   const requestedOpacity = Number(glow.opacity);
   return {
-    schemaVersion: String(source.schemaVersion || "storyvr-attention-reader-guidance/v1"),
+    schemaVersion,
     completion: {
       distanceMeters: Number.isFinite(requestedDistance)
         ? Math.max(0.1, Math.min(100, requestedDistance))
@@ -2433,7 +2441,75 @@ function runtimeAttentionMeshIsVisible(mesh, root) {
 }
 
 function resolveRuntimeAttentionTarget(attentionScene, marker) {
-  if (!marker?.assetId || marker.coordinateSpace !== "spatial-scene") return null;
+  if (!marker || marker.coordinateSpace !== "spatial-scene") return null;
+  const targetKind = String(marker.targetKind || "").trim();
+  if (targetKind === "spatial-point") {
+    const point = finiteAttentionPoint(marker.position);
+    if (!point) return null;
+    const pointGroup = {
+      root: modelRoot,
+      meshes: [],
+      bounds: new THREE.Box3(),
+      investigationEffect: null,
+    };
+    return {
+      key: attentionCompletionKey(attentionScene, marker),
+      scene: attentionScene,
+      marker,
+      targetKind,
+      root: modelRoot,
+      groups: [pointGroup],
+      rootsByMesh: new Map(),
+      meshes: [],
+      localPoint: new THREE.Vector3(point.x, point.y, point.z),
+      worldPoint: new THREE.Vector3(),
+      bounds: new THREE.Box3(),
+      meshBounds: new THREE.Box3(),
+      arrow: null,
+      completed: false,
+    };
+  }
+  if (!marker.assetId) return null;
+  const entityId = String(marker.entityId || "").trim();
+  if (targetKind === "standalone-image") {
+    const imageEntries = activeSpatialImageEntries.filter((entry) => (
+      entry.asset?.id === marker.assetId
+      && (!entityId || String(
+        entry.entity?.id
+          || entry.entity?.entityId
+          || entry.authorTransformRoot?.userData?.spatialEntityId
+          || "",
+      ) === entityId)
+    ));
+    const groups = imageEntries.flatMap((imageEntry) => (
+      imageEntry?.plane?.isMesh && imageEntry.plane.geometry
+        ? [{
+            imageEntry,
+            root: imageEntry.authorTransformRoot || imageEntry.plane,
+            meshes: [imageEntry.plane],
+            bounds: new THREE.Box3(),
+          }]
+        : []
+    ));
+    const meshes = groups.flatMap((group) => group.meshes);
+    if (!meshes.length) return null;
+    return {
+      key: attentionCompletionKey(attentionScene, marker),
+      scene: attentionScene,
+      marker,
+      targetKind,
+      imageEntry: groups[0].imageEntry,
+      imageEntries: groups.map((group) => group.imageEntry),
+      root: groups[0].root,
+      groups,
+      rootsByMesh: new Map(groups.map((group) => [group.meshes[0], group.root])),
+      meshes,
+      bounds: new THREE.Box3(),
+      meshBounds: new THREE.Box3(),
+      arrow: null,
+      completed: false,
+    };
+  }
   const matchingEntries = [
     ...(activeModel && activeModelAsset?.id === marker.assetId ? [{
       asset: activeModelAsset,
@@ -2443,14 +2519,12 @@ function resolveRuntimeAttentionTarget(attentionScene, marker) {
     }] : []),
     ...activeSupplementalModelEntries.filter((entry) => entry.asset?.id === marker.assetId),
   ];
-  const entityId = String(marker.entityId || "").trim();
   const modelEntries = entityId
     ? matchingEntries.filter((entry) => (
       String(entry.authorTransformRoot?.userData?.spatialEntityId || "") === entityId
     ))
     : matchingEntries;
   const selector = String(marker.partSelector || "").trim();
-  const targetKind = String(marker.targetKind || "").trim();
   if (selector && targetKind !== "named-renderable-part") return null;
   if (!selector && targetKind !== "standalone-glb") return null;
   if (selector && !runtimeAttentionSelectorIsExact(selector)) return null;
@@ -2470,6 +2544,7 @@ function resolveRuntimeAttentionTarget(attentionScene, marker) {
     key: attentionCompletionKey(attentionScene, marker),
     scene: attentionScene,
     marker,
+    targetKind,
     modelEntry: groups[0].modelEntry,
     modelEntries: groups.map((group) => group.modelEntry),
     root: groups[0].root,
@@ -2487,6 +2562,18 @@ function runtimeAttentionTargetBounds(target, visibleMeshes) {
   const bounds = target?.bounds;
   if (!bounds) return null;
   bounds.makeEmpty();
+  if (
+    target?.targetKind === "spatial-point"
+    && target.localPoint?.isVector3
+    && target.worldPoint?.isVector3
+  ) {
+    target.worldPoint.copy(target.localPoint);
+    modelRoot.localToWorld(target.worldPoint);
+    bounds.min.copy(target.worldPoint);
+    bounds.max.copy(target.worldPoint);
+    if (target.groups?.[0]?.bounds) target.groups[0].bounds.copy(bounds);
+    return bounds;
+  }
   const visibleSet = new Set(visibleMeshes || []);
   const groups = target?.groups?.length
     ? target.groups
@@ -2689,6 +2776,7 @@ function syncRuntimeAttentionSparkle(
   visible,
   deltaSeconds = 1 / 60,
   configuredOpacity = ATTENTION_GLOW_OPACITY,
+  anchorAtBoundsCenter = false,
 ) {
   if (!effect?.root) return;
   effect.root.visible = Boolean(visible);
@@ -2703,11 +2791,15 @@ function syncRuntimeAttentionSparkle(
   );
   const sphere = bounds.getBoundingSphere(new THREE.Sphere());
   const effectScale = THREE.MathUtils.clamp(sphere.radius * 0.52, 0.22, 0.48);
-  effect.root.position.set(
-    sphere.center.x,
-    bounds.max.y + THREE.MathUtils.clamp(sphere.radius * 0.14, 0.05, 0.16),
-    sphere.center.z,
-  );
+  if (anchorAtBoundsCenter) {
+    effect.root.position.copy(sphere.center);
+  } else {
+    effect.root.position.set(
+      sphere.center.x,
+      bounds.max.y + THREE.MathUtils.clamp(sphere.radius * 0.14, 0.05, 0.16),
+      sphere.center.z,
+    );
+  }
   effect.root.scale.setScalar(effectScale);
 
   const bloomScale = 1.55 + pulse * 0.28;
@@ -2757,6 +2849,7 @@ function applyRuntimeAttentionSparkles(target, enabled = true, deltaSeconds = 1 
         visible,
         deltaSeconds,
         configuredOpacity,
+        target?.targetKind === "spatial-point",
       );
     }
   }
@@ -2816,8 +2909,12 @@ function positionRuntimeAttentionArrow(
   if (!arrow || !bounds || bounds.isEmpty() || !indicatorCamera || !viewerCamera) return false;
   if (arrow.parent !== scene) scene.add(arrow);
   indicatorCamera.updateWorldMatrix(true, false);
-  const manualPosition = target.marker?.manual === true ? finiteAttentionPoint(target.marker.position) : null;
-  if (manualPosition) {
+  const manualPosition = target.targetKind !== "spatial-point" && target.marker?.manual === true
+    ? finiteAttentionPoint(target.marker.position)
+    : null;
+  if (target.targetKind === "spatial-point") {
+    bounds.getCenter(runtimeAttentionArrowTarget);
+  } else if (manualPosition) {
     runtimeAttentionArrowTarget.set(manualPosition.x, manualPosition.y, manualPosition.z);
     modelRoot.localToWorld(runtimeAttentionArrowTarget);
   } else bounds.getCenter(runtimeAttentionArrowTarget);
@@ -3021,9 +3118,13 @@ function finiteSpatialArray(value, length, fallback) {
 function normalizedSpatialTransform(value) {
   const source = value && typeof value === "object" ? value : {};
   return {
-    position: finiteSpatialArray(source.position, 3, [0, 0, 0]),
+    position: finiteSpatialArray(source.position, 3, [0, 0, 0]).map((item) => (
+      Math.max(-SPATIAL_TRANSFORM_POSITION_LIMIT, Math.min(SPATIAL_TRANSFORM_POSITION_LIMIT, item))
+    )),
     quaternion: normalizedSpatialQuaternion(source.quaternion, [0, 0, 0, 1]),
-    scale: finiteSpatialArray(source.scale, 3, [1, 1, 1]).map((item) => Math.max(0.001, Math.min(100, item))),
+    scale: finiteSpatialArray(source.scale, 3, [1, 1, 1]).map((item) => (
+      Math.max(0.001, Math.min(SPATIAL_TRANSFORM_SCALE_LIMIT, item))
+    )),
   };
 }
 
@@ -3036,34 +3137,6 @@ function normalizedSpatialQuaternion(value, fallback = [0, 0, 0, 1]) {
 
 function effectiveSpatialEntityTransform(entity) {
   return normalizedSpatialTransform(entity?.transform || entity?.effectiveTransform || entity?.inferredTransform);
-}
-
-function sourceLockedSpatialMatrix(entity) {
-  if (
-    entity?.placementPolicy !== "source-locked"
-    || spatialRenderableEntityKind(entity) !== "model"
-  ) return null;
-  const matrix = Array.isArray(entity.sourceMatrix) ? entity.sourceMatrix.map(Number) : null;
-  return matrix?.length === 16 && matrix.every(Number.isFinite) ? matrix : null;
-}
-
-function runtimeSpatialEntityUsesSourceLockedPlacement(entity) {
-  return Boolean(sourceLockedSpatialMatrix(entity));
-}
-
-function sourceLockedSpatialScene(sceneRecord) {
-  return sceneRecord?.placementPolicy === "source-locked"
-    && sceneRecord?.sourceComposition?.placementPolicy === "source-locked"
-    ? sceneRecord.sourceComposition
-    : null;
-}
-
-function sourceCompositionRootEntity(sceneRecord, sourceComposition = sourceLockedSpatialScene(sceneRecord)) {
-  if (!sourceComposition) return null;
-  return Object.values(spatialEntityIndex(sceneRecord?.entities)).find((entity) => (
-    String(entity?.id || entity?.entityId || "") === String(sourceComposition.rootEntityId || "")
-    && String(entity?.kind || entity?.type || "") === "composition-root"
-  )) || null;
 }
 
 function spatialTextEntityForBeat(
@@ -6535,45 +6608,9 @@ function supplementalSpatialTransitionPlayback(entry, primaryModelEntry, primary
     : null;
 }
 
-function sourceCompositionBounds(value) {
-  const minimum = Array.isArray(value?.min) ? value.min.map(Number) : null;
-  const maximum = Array.isArray(value?.max) ? value.max.map(Number) : null;
-  if (
-    minimum?.length !== 3
-    || maximum?.length !== 3
-    || ![...minimum, ...maximum].every(Number.isFinite)
-  ) return null;
-  return new THREE.Box3(
-    new THREE.Vector3(...minimum),
-    new THREE.Vector3(...maximum),
-  );
-}
-
-function frameSourceLockedComposition(frameRoot, sourceComposition) {
-  const bounds = sourceCompositionBounds(
-    sourceComposition?.framing?.compositionBounds
-      || sourceComposition?.framing?.anchorBounds,
-  );
-  if (!frameRoot || !bounds || bounds.isEmpty()) return false;
-  const center = bounds.getCenter(new THREE.Vector3());
-  const size = bounds.getSize(new THREE.Vector3());
-  const maxAxis = Math.max(size.x, size.y, size.z) || 1;
-  const scale = modelFrameTarget() / maxAxis;
-  const groundAligned = String(sourceComposition?.framing?.verticalAlignment || "").toLowerCase() === "ground";
-  frameRoot.scale.setScalar(scale);
-  frameRoot.position.set(
-    -center.x * scale,
-    -(groundAligned ? bounds.min.y : center.y) * scale,
-    -center.z * scale,
-  );
-  frameRoot.updateWorldMatrix(true, true);
-  return true;
-}
-
-function applySourceLockedLoaderTransformPolicy(root, entity) {
+function applySpatialLoaderTransformPolicy(root, entity) {
   if (
     !root
-    || !runtimeSpatialEntityUsesSourceLockedPlacement(entity)
     || entity.loaderTransformPolicy !== "reset-immediate-child-scale"
   ) return false;
   const target = String(entity.loaderTransformTarget || "").trim().toLowerCase().replace(/_/g, "-");
@@ -6588,12 +6625,12 @@ function applySourceLockedLoaderTransformPolicy(root, entity) {
   return true;
 }
 
-function sourceLockedEntityNeedsMaterialCompatibility(entity) {
-  return runtimeSpatialEntityUsesSourceLockedPlacement(entity)
+function preservedGeometryNeedsMaterialCompatibility(entity) {
+  return entity?.preserveSourceGeometry === true
     && String(entity?.sourceRole || "").trim().toLowerCase() === "framing-anchor";
 }
 
-function sourceLockedMaterialNeedsNeutralEnvironment(material, activeEnvironment = null) {
+function preservedGeometryMaterialNeedsNeutralEnvironment(material, activeEnvironment = null) {
   return Boolean(
     material?.isMeshStandardMaterial
     && material.map
@@ -6603,39 +6640,39 @@ function sourceLockedMaterialNeedsNeutralEnvironment(material, activeEnvironment
   );
 }
 
-function getSourceCompositionNeutralEnvironmentMap() {
-  if (sourceCompositionNeutralEnvironmentMap) return sourceCompositionNeutralEnvironmentMap;
+function getPreservedGeometryNeutralEnvironmentMap() {
+  if (preservedGeometryNeutralEnvironmentMap) return preservedGeometryNeutralEnvironmentMap;
   const environment = new RoomEnvironment();
   const generator = new THREE.PMREMGenerator(renderer);
-  sourceCompositionNeutralEnvironmentTarget = generator.fromScene(environment, 0.04);
-  sourceCompositionNeutralEnvironmentMap = sourceCompositionNeutralEnvironmentTarget.texture;
-  sourceCompositionNeutralEnvironmentMap.name = "storyvr-source-composition-neutral-environment";
+  preservedGeometryNeutralEnvironmentTarget = generator.fromScene(environment, 0.04);
+  preservedGeometryNeutralEnvironmentMap = preservedGeometryNeutralEnvironmentTarget.texture;
+  preservedGeometryNeutralEnvironmentMap.name = "storyvr-preserved-geometry-neutral-environment";
   environment.dispose();
   generator.dispose();
-  return sourceCompositionNeutralEnvironmentMap;
+  return preservedGeometryNeutralEnvironmentMap;
 }
 
-function disposeSourceCompositionNeutralEnvironment() {
-  sourceCompositionNeutralEnvironmentTarget?.dispose();
-  sourceCompositionNeutralEnvironmentTarget = null;
-  sourceCompositionNeutralEnvironmentMap = null;
+function disposePreservedGeometryNeutralEnvironment() {
+  preservedGeometryNeutralEnvironmentTarget?.dispose();
+  preservedGeometryNeutralEnvironmentTarget = null;
+  preservedGeometryNeutralEnvironmentMap = null;
 }
 
-function applySourceLockedMaterialCompatibility(root, entity) {
-  if (!root || !sourceLockedEntityNeedsMaterialCompatibility(entity)) return 0;
+function applyPreservedGeometryMaterialCompatibility(root, entity) {
+  if (!root || !preservedGeometryNeedsMaterialCompatibility(entity)) return 0;
   let adjusted = 0;
   let environmentMap = null;
   root.traverse((node) => {
     if (!node.isMesh || !node.material) return;
     const sourceMaterials = Array.isArray(node.material) ? node.material : [node.material];
     const compatibleMaterials = sourceMaterials.map((material) => {
-      if (!sourceLockedMaterialNeedsNeutralEnvironment(material, scene.environment)) return material;
-      environmentMap ||= getSourceCompositionNeutralEnvironmentMap();
+      if (!preservedGeometryMaterialNeedsNeutralEnvironment(material, scene.environment)) return material;
+      environmentMap ||= getPreservedGeometryNeutralEnvironmentMap();
       const compatibleMaterial = material.clone();
       compatibleMaterial.envMap = environmentMap;
       compatibleMaterial.userData = {
         ...compatibleMaterial.userData,
-        storyVrSourceCompositionMaterialClone: true,
+        storyVrPreservedGeometryMaterialClone: true,
       };
       compatibleMaterial.needsUpdate = true;
       adjusted += 1;
@@ -6646,14 +6683,14 @@ function applySourceLockedMaterialCompatibility(root, entity) {
   return adjusted;
 }
 
-function disposeSourceLockedMaterialCompatibility(root) {
+function disposePreservedGeometryMaterialCompatibility(root) {
   if (!root) return;
   const disposed = new Set();
   root.traverse((node) => {
     const materials = Array.isArray(node.material) ? node.material : [node.material].filter(Boolean);
     for (const material of materials) {
       if (
-        material?.userData?.storyVrSourceCompositionMaterialClone !== true
+        material?.userData?.storyVrPreservedGeometryMaterialClone !== true
         || disposed.has(material)
       ) continue;
       disposed.add(material);
@@ -6662,43 +6699,14 @@ function disposeSourceLockedMaterialCompatibility(root) {
   });
 }
 
-function sourceCompositionRenderableEntries(entries, sourceComposition) {
-  if (!sourceComposition) return entries;
-  const memberEntityIds = new Set(
-    (sourceComposition.memberEntityIds || []).map((value) => String(value || "")).filter(Boolean),
-  );
-  if (!memberEntityIds.size) return [];
-  return entries.filter((entry) => memberEntityIds.has(String(entry?.entity?.id || "")));
-}
-
 async function showSpatialSceneAssets(entries, beat, previousIndex, options = {}) {
   clearModel();
-  const sourceComposition = sourceLockedSpatialScene(options.spatialScene);
-  if (sourceComposition) modelRoot.position.copy(modelRootPositionForBeat(beat));
-  else modelRoot.position.set(0, 0, 0);
-  const renderEntries = sourceCompositionRenderableEntries(entries, sourceComposition);
-  if (sourceComposition) {
-    activeSourceCompositionRoot = new THREE.Group();
-    activeSourceCompositionRoot.name = `storyvr-source-composition:${sourceComposition.compositionId || "assembly"}`;
-    activeSourceCompositionFrameRoot = new THREE.Group();
-    activeSourceCompositionFrameRoot.name = "storyvr-source-composition-frame";
-    activeSourceCompositionRoot.add(activeSourceCompositionFrameRoot);
-    modelRoot.add(activeSourceCompositionRoot);
-    const rootEntity = sourceCompositionRootEntity(options.spatialScene, sourceComposition);
-    applyRuntimeSpatialEntityTransform(
-      activeSourceCompositionRoot,
-      rootEntity,
-      sourceComposition.rootEntityId || null,
-    );
-    modelAuthorTransformRoot.removeFromParent();
-    activeSourceCompositionFrameRoot.add(modelAuthorTransformRoot);
-  }
   const primaryModelEntry = options.primaryModelEntry || null;
-  const tasks = renderEntries.map((entry) => {
+  modelRoot.position.set(0, 0, 0);
+  const tasks = entries.map((entry) => {
     if (entry.kind === "image") {
       return showSpatialImage(entry, {
         loadRevision: options.loadRevision,
-        sourceCompositionFrameRoot: activeSourceCompositionFrameRoot,
       });
     }
     if (entry === primaryModelEntry) {
@@ -6706,14 +6714,12 @@ async function showSpatialSceneAssets(entries, beat, previousIndex, options = {}
         clear: false,
         directSpatialPlacement: true,
         spatialEntity: entry.entity,
-        sourceCompositionFrameRoot: activeSourceCompositionFrameRoot,
         loadRevision: options.loadRevision,
       });
     }
       return showSupplementalModel(entry, beat, previousIndex, {
         loadRevision: options.loadRevision,
         route: options.route,
-        sourceCompositionFrameRoot: activeSourceCompositionFrameRoot,
         transitionPlayback: supplementalSpatialTransitionPlayback(
           entry,
           primaryModelEntry,
@@ -6722,9 +6728,6 @@ async function showSpatialSceneAssets(entries, beat, previousIndex, options = {}
       });
   });
   const results = await Promise.allSettled(tasks);
-  if (sourceComposition && options.loadRevision === activeSceneLoadRevision) {
-    frameSourceLockedComposition(activeSourceCompositionFrameRoot, sourceComposition);
-  }
   return results.reduce((summary, result) => {
     if (result.status === "fulfilled" && result.value !== false) summary.loaded += 1;
     else if (!(result.status === "fulfilled" && result.value === false && options.loadRevision !== activeSceneLoadRevision)) summary.failed += 1;
@@ -6741,15 +6744,15 @@ async function showModel(asset, beat, transitionPlayback = null, options = {}) {
   activeModelAsset = asset;
   activeModelSpatialEntity = options.spatialEntity || null;
   activeModelAnimations = Array.isArray(model.animations) ? model.animations : [];
-  applySourceLockedLoaderTransformPolicy(activeModel, options.spatialEntity);
-  applySourceLockedMaterialCompatibility(activeModel, options.spatialEntity);
+  applySpatialLoaderTransformPolicy(activeModel, options.spatialEntity);
+  applyPreservedGeometryMaterialCompatibility(activeModel, options.spatialEntity);
   activeModel.traverse((node) => {
     if (node.isMesh) {
       node.castShadow = true;
       node.receiveShadow = true;
     }
   });
-  if (options.directSpatialPlacement && !options.sourceCompositionFrameRoot) {
+  if (options.directSpatialPlacement) {
     modelRoot.position.set(0, 0, 0);
   }
   else modelRoot.position.copy(modelRootPositionForBeat(beat, asset));
@@ -6757,7 +6760,7 @@ async function showModel(asset, beat, transitionPlayback = null, options = {}) {
   else applyRuntimeGlbSpatialTransform(asset, beat);
   const sharedTimelineContract = sharedTimelineContractForAsset(asset.id);
   const contractedTimeline = Boolean(sharedTimelineContract);
-  if (!runtimeSpatialEntityUsesSourceLockedPlacement(options.spatialEntity)) {
+  if (options.spatialEntity?.preserveSourceGeometry !== true) {
     frameModel(activeModel, {
       groundAligned: runtimeSpatialEntityGroundAligned(
         options.spatialEntity,
@@ -6815,9 +6818,8 @@ async function showSupplementalModel(entry, beat, previousIndex, options = {}) {
   const loaded = await loadModel(source);
   if (options.loadRevision && options.loadRevision !== activeSceneLoadRevision) return false;
   const model = loaded.scene.clone(true);
-  const sourceLocked = runtimeSpatialEntityUsesSourceLockedPlacement(entry.entity);
-  applySourceLockedLoaderTransformPolicy(model, entry.entity);
-  applySourceLockedMaterialCompatibility(model, entry.entity);
+  applySpatialLoaderTransformPolicy(model, entry.entity);
+  applyPreservedGeometryMaterialCompatibility(model, entry.entity);
   model.traverse((node) => {
     if (node.isMesh) {
       node.castShadow = true;
@@ -6826,7 +6828,7 @@ async function showSupplementalModel(entry, beat, previousIndex, options = {}) {
   });
   const sharedTimelineContract = sharedTimelineContractForAsset(entry.asset.id);
   const contractedTimeline = Boolean(sharedTimelineContract);
-  if (!sourceLocked) {
+  if (entry.entity?.preserveSourceGeometry !== true) {
     frameModel(model, {
       groundAligned: runtimeSpatialEntityGroundAligned(
         entry.entity,
@@ -6839,9 +6841,7 @@ async function showSupplementalModel(entry, beat, previousIndex, options = {}) {
   authorTransformRoot.name = `storyvr-spatial-relations-author-transform:${entry.asset.id}`;
   applyRuntimeSpatialEntityTransform(authorTransformRoot, entry.entity, `glb:${entry.asset.id}`);
   authorTransformRoot.add(model);
-  (sourceLocked && options.sourceCompositionFrameRoot
-    ? options.sourceCompositionFrameRoot
-    : modelRoot).add(authorTransformRoot);
+  modelRoot.add(authorTransformRoot);
 
   const sourcePartState = sourcePartStateForBeatAsset(beat.id, entry.asset.id);
   const destinationPartSelectors = sourcePartSelectorsForBeatAsset(beat.id, entry.asset.id);
@@ -6932,10 +6932,13 @@ async function showSpatialImage(entry, options = {}) {
   authorTransformRoot.name = `storyvr-spatial-relations-author-transform:${entry.asset.id}`;
   applyRuntimeSpatialEntityTransform(authorTransformRoot, entry.entity, `image:${entry.asset.id}`);
   authorTransformRoot.add(plane);
-  (runtimeSpatialEntityUsesSourceLockedPlacement(entry.entity) && options.sourceCompositionFrameRoot
-    ? options.sourceCompositionFrameRoot
-    : modelRoot).add(authorTransformRoot);
-  activeSpatialImageEntries.push({ asset: entry.asset, plane, authorTransformRoot });
+  modelRoot.add(authorTransformRoot);
+  activeSpatialImageEntries.push({
+    asset: entry.asset,
+    entity: entry.entity,
+    plane,
+    authorTransformRoot,
+  });
   return true;
 }
 
@@ -6950,7 +6953,7 @@ function clearModel() {
     activeSourceAnimation = null;
   }
   if (activeModel) {
-    disposeSourceLockedMaterialCompatibility(activeModel);
+    disposePreservedGeometryMaterialCompatibility(activeModel);
     modelAuthorTransformRoot.remove(activeModel);
   }
   for (const entry of activeSupplementalModelEntries.splice(0)) {
@@ -6959,20 +6962,13 @@ function clearModel() {
       entry.playback.mixer.stopAllAction();
       entry.playback.mixer.uncacheRoot(entry.model);
     }
-    disposeSourceLockedMaterialCompatibility(entry.model);
+    disposePreservedGeometryMaterialCompatibility(entry.model);
     entry.authorTransformRoot.removeFromParent();
   }
   for (const entry of activeSpatialImageEntries.splice(0)) {
     entry.authorTransformRoot.removeFromParent();
     entry.plane.geometry?.dispose?.();
     entry.plane.material?.dispose?.();
-  }
-  if (activeSourceCompositionRoot) {
-    modelAuthorTransformRoot.removeFromParent();
-    activeSourceCompositionRoot.removeFromParent();
-    modelRoot.add(modelAuthorTransformRoot);
-    activeSourceCompositionRoot = null;
-    activeSourceCompositionFrameRoot = null;
   }
   activeModel = null;
   activeModelAsset = null;
@@ -6993,20 +6989,10 @@ function applyRuntimeGlbSpatialTransform(asset, beat, declaredEntity = null) {
 
 function applyRuntimeSpatialEntityTransform(target, entity, fallbackEntityId = null) {
   if (!target) return;
-  const sourceMatrix = entity?.manual === true ? null : sourceLockedSpatialMatrix(entity);
-  if (sourceMatrix) {
-    new THREE.Matrix4().fromArray(sourceMatrix).decompose(
-      target.position,
-      target.quaternion,
-      target.scale,
-    );
-    target.quaternion.normalize();
-  } else {
-    const transform = effectiveSpatialEntityTransform(entity);
-    target.position.fromArray(transform.position);
-    target.quaternion.fromArray(transform.quaternion).normalize();
-    target.scale.fromArray(transform.scale);
-  }
+  const transform = effectiveSpatialEntityTransform(entity);
+  target.position.fromArray(transform.position);
+  target.quaternion.fromArray(transform.quaternion).normalize();
+  target.scale.fromArray(transform.scale);
   target.userData.spatialEntityId = entity?.id || entity?.entityId || fallbackEntityId;
   target.userData.assetId = spatialAssetIdFromEntity(entity) || null;
 }

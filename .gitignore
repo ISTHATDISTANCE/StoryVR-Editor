@@ -35,6 +35,8 @@ out/
 **/out/
 out-build/
 **/out-build/
+out-single/
+**/out-single/
 output/
 **/output/
 outputs/
@@ -43,6 +45,8 @@ dist-webxr-adaptation/
 **/dist-webxr-adaptation/
 .vite/
 .cache/
+.lab-data/
+**/.lab-data/
 .parcel-cache/
 .playwright-cli/
 coverage/
@@ -50,6 +54,14 @@ test-results/
 **/test-results/
 playwright-report/
 **/playwright-report/
+
+# Excluded test-only material
+tests/
+**/tests/
+test-fixtures/
+**/test-fixtures/
+*.test.*
+test_*
 
 # Logs
 *.log

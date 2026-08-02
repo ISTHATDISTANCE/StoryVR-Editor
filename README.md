@@ -97,8 +97,9 @@ Work through the checkpoints in order:
 8. Final Review
 
 Use **Save checkpoint** before moving downstream. If an upstream checkpoint is
-changed later, StoryVR marks affected downstream work stale so it can be
-reviewed and saved again. Final Review compiles the current authored decisions
+changed later, StoryVR revalidates previously completed downstream work in
+order, preserves steps that are still safe, and stops at the first scene or
+field that needs review. Final Review compiles the current authored decisions
 into:
 
 ```text
@@ -115,11 +116,17 @@ semantic progress strip for the saved Source Graph. Missing or stale grouping
 is refreshed in the background after the story order is saved; the continuous
 beat and variant graph remains the source of truth.
 
-Spatial Relations preserves probe-verified source GLB assemblies as one
-editable composition with the captured member transforms and beat-specific
-visibility intact. Ordinary or manually customized assets remain independent.
-The object list also supports Shift range selection and Command/Ctrl additive
-selection for moving related objects together.
+Spatial Relations flattens probe-verified source layouts into independent GLB
+placements while preserving their shared framing, relative transforms, and
+beat-specific visibility. Each object can then be edited and reset on its own.
+The canvas supports drag-box selection, Shift additive selection, Command/Ctrl
+toggling, right-drag orbiting, and middle-drag panning.
+
+Environment Enhancement is a Generate-only flow that uses the signed-in Codex
+CLI to create a beat-scoped panorama and matching near-ground texture. Attention
+Guidance can target a visible GLB, named part, image plane, or a manually placed
+scene point; the compiled reader uses a sparkle plus an edge arrow until the
+reader reaches the target.
 
 Interaction Control uses one shared Quest controller mapping across
 controller-button transitions. Its defaults keep A/X for next/back, use the

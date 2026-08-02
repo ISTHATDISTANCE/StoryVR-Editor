@@ -20,7 +20,7 @@ It returns a `StoryVRRuntimeInstance` payload with:
 - `sceneTopology`: normalized route stops, regions, countries, markers, model groups, sections and camera presets.
 - `assets`: normalized model, texture, data, media and remote asset references.
 - `pointCloudEffects` (optional): explicit model-plus-PCD composite effects reconstructed from analyzer evidence.
-- `sourceSpatialCompositions` (optional): accepted source-local GLB assemblies with immutable member matrices and beat-specific active sets.
+- `sourceSpatialPlacements` (optional): independent per-object transforms flattened from captured source layout evidence.
 - `assetRoot`: centralized original/dev/hosted/build/filesystem path conventions.
 - `interactions`: controls, lifecycle, trigger and hotspot metadata.
 - `diagnostics`: non-fatal compatibility findings.
@@ -28,7 +28,7 @@ It returns a `StoryVRRuntimeInstance` payload with:
 ## Commands
 
 ```sh
-npm run storyvr:story -- --resource-folder <story-slug>/captures/active
+npm run storyvr:story -- --resource-folder ../<story-slug>/captures/active
 npm run storyvr:scan
 npm run storyvr:migrate
 npm run storyvr:migrate:build
@@ -36,17 +36,19 @@ npm run storyvr:migrate:build
 
 ## Single Story Workflow
 
-### Normalize A Prepared Folder
+### Normalize a prepared folder
 
-If the fetched resource folder already exists:
+Run the single-story command from the standalone StoryVR repository after the
+story's prepared resource folder exists:
 
 ```sh
 npm run storyvr:story -- \
-  --resource-folder <story-slug>/captures/active \
-  --out <story-slug>/discovery/storyvr-runtime.json
+  --resource-folder ../<story-slug>/captures/active \
+  --out ../<story-slug>/discovery/storyvr-runtime.json
 ```
 
-This skips fetching and only normalizes the one resource folder supplied.
+This normalizes only the supplied resource folder and keeps the resulting
+runtime inside the sibling story container.
 
 ## Repository Compatibility Commands
 
@@ -90,6 +92,6 @@ Skipped stories are listed in the migration report with an explicit reason and n
 
 PCD files remain ordinary captured assets unless `story_structure_candidates.json` also declares a valid `storyvr-pointcloud-composite-effect/v1` record with `scope.activation: "explicit-source-ptcloud-link-only"`. The adapter never infers a point-cloud effect from a `.pcd` file or from missing story data. Unsupported, incomplete, or unrelated records leave `pointCloudEffects` absent, preserving the existing runtime shape for other stories.
 
-GLBs also remain independent unless author input contains a valid accepted `storyvr-source-spatial-composition/v1` record. The adapter carries that optional record forward without inventing groups from co-loading, shared beats, proximity, or filenames; when it is missing or invalid, `sourceSpatialCompositions` is omitted so existing stories keep their previous runtime shape.
+GLBs remain independent spatial assets. When captured source layout evidence is available, the adapter bakes its shared framing into each object's position, rotation, and scale; it never emits an authoring or runtime assembly.
 
 Existing per-story runtimes remain untouched. This adapter creates the normalized StoryVR payload that a shared `createScene(...)` renderer can consume next.

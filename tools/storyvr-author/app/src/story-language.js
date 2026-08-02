@@ -91,6 +91,13 @@ export function storyShortName(data) {
   return String(data?.project?.story?.title || data?.project?.story?.slug || "Current story");
 }
 
+export function storyHeaderEyebrow(data) {
+  const storyTitle = String(data?.project?.story?.title || data?.project?.story?.slug || "");
+  const storyName = storyShortName(data).trim();
+  const comparableLabel = (value) => String(value).trim().replace(/\s+/g, " ").toLocaleLowerCase();
+  return comparableLabel(storyName) === comparableLabel(storyTitle) ? "" : storyName;
+}
+
 export function participantComponentLabel(componentId, fallback = "") {
   return COMPONENT_LABELS[componentId] || String(fallback || componentId || "Story step");
 }

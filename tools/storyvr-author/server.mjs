@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import http from "node:http";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -17,14 +18,12 @@ import {
   generateProceduralDynamicsPlan,
   generateStoryCanvasSegments,
   generateStoryCanvasSegmentsWithCodex,
-  environmentSearchRecommendationSignature,
   loadAuthorProject,
-  loadEnvironmentSearchRecommendation,
-  recommendEnvironmentSearchKeywords,
   regenerateStoryGraph,
   removeProceduralDynamicsPlan,
   resolveAuthorPaths,
   saveCheckpointDecision,
+  saveCheckpointDecisionDraft,
   saveEnvironmentEnhancementCheckpoint,
   saveEnvironmentEnhancementDecisionDraft,
   saveNoEnvironmentEnhancementCheckpoint,
@@ -33,7 +32,6 @@ import {
   saveStoryGraph,
   saveSourceMotionLinks,
 } from "./engine.mjs";
-import { searchEnvironmentCandidates } from "./environment/providers.mjs";
 import {
   decodeEnvironmentGenerationReferenceImages,
   generateEnvironmentImageWithCodex,
@@ -43,8 +41,6 @@ import {
 import {
   createEnvironmentStore,
   DEFAULT_ENVIRONMENT_MOVEMENT_CUE,
-  effectiveEnvironmentAssignment,
-  MAX_ENVIRONMENT_UPLOAD_BYTES,
   normalizeEnvironmentMovementCue,
 } from "./environment/store.mjs";
 import { createHistoryCheckpointStore } from "./history-store.mjs";
@@ -75,18 +71,19 @@ const historyStore = createHistoryCheckpointStore({
   paths: environmentPaths,
   environmentAssetRoot: environmentStore.paths.assetRoot,
 });
+const pendingEnvironmentGenerations = new Map();
+const PENDING_ENVIRONMENT_GENERATION_TTL_MS = 30 * 60 * 1000;
+const MAX_PENDING_ENVIRONMENT_GENERATIONS = 4;
 const historySweepTimer = setInterval(() => {
   historyStore.sweepExpiredSessions().catch(() => {});
+  sweepPendingEnvironmentGenerations();
 }, 15 * 60 * 1000);
 historySweepTimer.unref();
-const environmentCandidateCache = new Map();
-let manualEnvironmentUploadCounter = 0;
 let environmentGenerationBusy = false;
 const MAX_ENVIRONMENT_JSON_BYTES = 64 * 1024;
 const MAX_ENVIRONMENT_GENERATION_JSON_BYTES = 32 * 1024 * 1024;
 const MAX_DYNAMICS_JSON_BYTES = 512 * 1024;
 const MAX_STORY_CANVAS_SEGMENTS_JSON_BYTES = 16 * 1024;
-let environmentProviderStatus = initialEnvironmentProviderStatus();
 
 if (!options.resourceFolder && !options.storyFolder) {
   console.error("Usage: npm run storyvr:author -- --resource-folder <story-slug>/captures/active");
@@ -98,8 +95,12 @@ const host = args.values.host;
 const port = Number(args.values.port);
 const appRoot = path.join(import.meta.dirname, "app");
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
+const CODEX_STATUS_TTL_MS = 30_000;
 
 let cachedCodexVersion = null;
+let cachedCodexStatus = null;
+let cachedCodexStatusExpiresAt = 0;
+let codexStatusInFlight = null;
 let loginProcess = null;
 let loginState = {
   running: false,
@@ -145,6 +146,7 @@ const server = http.createServer(async (req, res) => {
 
 server.on("close", () => {
   clearInterval(historySweepTimer);
+  pendingEnvironmentGenerations.clear();
   historyStore.dispose().catch(() => {});
 });
 
@@ -176,7 +178,6 @@ async function handleApi(req, res) {
     if (historyRestoreMatch) {
       const body = await readLimitedJsonBody(req, MAX_ENVIRONMENT_JSON_BYTES);
       const restored = await historyStore.restoreCheckpoint(historyRestoreMatch[1], body.checkpointId);
-      environmentCandidateCache.clear();
       writeJsonResponse(res, 200, restored);
       return;
     }
@@ -189,20 +190,11 @@ async function handleApi(req, res) {
     }
 
     if (route === "GET /api/state") {
-      const [projectState, environmentState] = await Promise.all([
-        loadAuthorProject(authorOptions()),
-        environmentStore.getState(),
-      ]);
-      const recommendation = await loadEnvironmentSearchRecommendation(authorOptions(), {
-        project: projectState.project,
-        graph: projectState.graph,
-      });
-      const environmentEnhancement = decorateEnvironmentState(
-        environmentState,
-        projectState.project,
-        projectState.graph,
-        recommendation,
+      const projectState = await loadAuthorProject(authorOptions());
+      const { state: environmentState } = await environmentStore.reconcileBeatAssignments(
+        (projectState.graph?.beats || []).map((beat) => beat.id),
       );
+      const environmentEnhancement = decorateEnvironmentState(environmentState);
       writeJsonResponse(res, 200, { ...projectState, environmentEnhancement });
       return;
     }
@@ -212,54 +204,20 @@ async function handleApi(req, res) {
       return;
     }
 
-    if (route === "GET /api/environment-enhancement/search") {
-      const query = sanitizeEnvironmentQuery(url.searchParams.get("q"));
-      if (!query) throw httpError(400, "Enter an environment search phrase first.");
-      const providers = sanitizeEnvironmentProviders(url.searchParams.get("providers"));
-      const result = await searchEnvironmentCandidates({ query, providers });
-      environmentCandidateCache.clear();
-      for (const candidate of result.candidates || []) environmentCandidateCache.set(candidate.id, candidate);
-      environmentProviderStatus = result.providerStatus || initialEnvironmentProviderStatus();
-      writeJsonResponse(res, 200, {
-        query,
-        candidates: result.candidates || [],
-        providerStatus: environmentProviderStatus,
-      });
-      return;
-    }
-
-    if (route === "POST /api/environment-enhancement/recommend-search") {
-      const projectState = await assertEnvironmentEnhancementReady();
-      const body = await readLimitedJsonBody(req, MAX_ENVIRONMENT_JSON_BYTES);
-      const recommendation = await recommendEnvironmentSearchKeywords(await proposalAuthorOptions(), {
-        project: projectState.project,
-        graph: projectState.graph,
-        force: body.force === true,
-      });
-      const environmentState = await environmentStore.getState();
-      const environmentEnhancement = decorateEnvironmentState(
-        environmentState,
-        projectState.project,
-        projectState.graph,
-        recommendation,
-      );
-      writeJsonResponse(res, 200, { environmentEnhancement, recommendation });
-      return;
-    }
-
     if (route === "POST /api/environment-enhancement/generate") {
       const projectState = await assertEnvironmentEnhancementReady();
       const body = await readLimitedJsonBody(req, MAX_ENVIRONMENT_GENERATION_JSON_BYTES);
       const beatId = requireAuthoredEnvironmentBeat(projectState, body.beatId);
       const prompt = sanitizeEnvironmentGenerationPrompt(body.prompt);
       const referenceImages = decodeEnvironmentGenerationReferenceImages(body.referenceImages);
+      sweepPendingEnvironmentGenerations();
       if (environmentGenerationBusy) {
         throw httpError(409, "An environment panorama and matching ground are already being prepared.");
       }
 
       environmentGenerationBusy = true;
       try {
-        const codexStatus = await getCodexStatus();
+        const codexStatus = await getCodexStatus({ force: true });
         if (!codexStatus.codexAvailable) {
           throw httpError(503, "Codex CLI is not available on this authoring server.");
         }
@@ -279,155 +237,84 @@ async function handleApi(req, res) {
           codexBin: CODEX_BIN,
           codexVersion: codexStatus.version,
         });
-        const result = await serializeAuthorMutation(async () => {
-          await assertEnvironmentEnhancementReady();
-          const currentEnvironment = await environmentStore.getState();
-          if (currentEnvironment.revision !== baselineEnvironment.revision) {
-            throw httpError(
-              409,
-              "Environment Enhancement changed while the image was generating. Generate again from the current draft.",
-            );
-          }
-          const candidate = createGeneratedEnvironmentCandidate(generated);
-          const environmentState = await environmentStore.importGenerated({
-            beatId,
-            candidate,
-            filename: generated.filename,
-            body: generated.image,
-            expectedBytes: generated.image.byteLength,
-            sourceMetadata: {
-              selectionMode: "codex-cli-generation",
-              ...generated.metadata,
-            },
-            ground: {
-              filename: ground.filename,
-              body: ground.image,
-              expectedBytes: ground.image.byteLength,
-              metadata: {
-                generationId: ground.generationId,
-                prompt: ground.prompt,
-                ...ground.metadata,
-              },
-            },
-          });
-          const decision = await saveEnvironmentEnhancementDecisionDraft(authorOptions(), environmentState);
-          const environmentEnhancement = await decorateEnvironmentStateFromDisk(environmentState);
-          return {
-            environmentEnhancement,
-            decision,
-            generation: {
-              generationId: generated.generationId,
-              prompt: generated.prompt,
-              ...generated.metadata,
-              ground: {
-                generationId: ground.generationId,
-                prompt: ground.prompt,
-                ...ground.metadata,
-              },
-            },
-          };
+        const generationToken = stageEnvironmentGeneration({
+          beatId,
+          baselineRevision: baselineEnvironment.revision,
+          baselineSignature: environmentStateSignature(baselineEnvironment),
+          generated,
+          ground,
         });
-        writeJsonResponse(res, 200, result);
+        writeJsonResponse(res, 202, {
+          generationToken,
+          beatId,
+          generation: environmentGenerationMetadata(generated, ground),
+        });
       } finally {
         environmentGenerationBusy = false;
       }
       return;
     }
 
-    if (route === "POST /api/environment-enhancement/source") {
-      const projectState = await assertEnvironmentEnhancementReady();
+    if (route === "POST /api/environment-enhancement/install-generated") {
       const body = await readLimitedJsonBody(req, MAX_ENVIRONMENT_JSON_BYTES);
-      const beatId = requireAuthoredEnvironmentBeat(projectState, body.beatId);
-      const candidateId = String(body.candidateId || "").trim();
-      const candidate = environmentCandidateCache.get(candidateId);
-      if (!candidate) throw httpError(409, "Search again before selecting this environment source.");
-      const environmentState = await environmentStore.selectSource(candidate, { beatId });
-      const decision = await saveEnvironmentEnhancementDecisionDraft(authorOptions(), environmentState);
-      const environmentEnhancement = await decorateEnvironmentStateFromDisk(environmentState);
-      writeJsonResponse(res, 200, { environmentEnhancement, decision });
-      return;
-    }
-
-    if (route === "POST /api/environment-enhancement/upload") {
-      const projectState = await assertEnvironmentEnhancementReady();
-      const beatId = requireAuthoredEnvironmentBeat(projectState, url.searchParams.get("beatId"));
-      if (environmentGenerationBusy) {
-        throw httpError(409, "An environment panorama and matching ground are already being prepared.");
+      const generationToken = String(body.generationToken || "").trim();
+      sweepPendingEnvironmentGenerations();
+      const pending = pendingEnvironmentGenerations.get(generationToken);
+      if (!pending) {
+        throw httpError(404, "The generated environment is no longer available. Generate it again.");
       }
-      const filename = url.searchParams.get("filename") || "";
-      const candidateId = String(url.searchParams.get("candidateId") || "").trim();
-      const manual = url.searchParams.get("manual") === "true";
-      environmentGenerationBusy = true;
-      try {
-        const codexStatus = await getCodexStatus();
-        if (!codexStatus.codexAvailable) {
-          throw httpError(503, "Codex CLI is not available on this authoring server.");
-        }
-        if (!codexStatus.authenticated) {
-          throw httpError(409, "Sign in to Codex CLI before generating a matching ground.");
-        }
-        let candidate = null;
-        if (candidateId) {
-          candidate = environmentCandidateCache.get(candidateId);
-          if (!candidate) throw httpError(409, "Search again before uploading a file for this environment source.");
-          await environmentStore.selectSource(candidate, { beatId });
-        } else if (manual) {
-          candidate = createManualEnvironmentCandidate(filename, ++manualEnvironmentUploadCounter);
-        } else {
-          const current = await environmentStore.getState();
-          const currentAssignment = effectiveEnvironmentAssignment(current, beatId);
-          if (!currentAssignment?.pendingSource && !currentAssignment?.selectedSource) {
-            candidate = createManualEnvironmentCandidate(filename, ++manualEnvironmentUploadCounter);
-          }
-        }
-        const selectionMode = candidate?.provider === "manual-upload" ? "manual-upload" : "search-result";
-        const environmentState = await environmentStore.importUpload({
+      pendingEnvironmentGenerations.delete(generationToken);
+
+      const projectState = await assertEnvironmentEnhancementReady();
+      const beatId = requireAuthoredEnvironmentBeat(projectState, pending.beatId);
+      const currentEnvironment = await environmentStore.getState();
+      if (
+        currentEnvironment.revision !== pending.baselineRevision
+        || environmentStateSignature(currentEnvironment) !== pending.baselineSignature
+      ) {
+        throw httpError(
+          409,
+          "Environment Enhancement changed while the image was generating. Generate again from the current draft.",
+        );
+      }
+
+      const { generated, ground } = pending;
+      const candidate = createGeneratedEnvironmentCandidate(generated);
+      const installed = await withAuthorArtifactRollback(async () => {
+        const environmentState = await environmentStore.importGenerated({
           beatId,
           candidate,
-          filename,
-          body: req,
-          expectedBytes: parseEnvironmentUploadLength(req.headers["content-length"]),
+          filename: generated.filename,
+          body: generated.image,
+          expectedBytes: generated.image.byteLength,
           sourceMetadata: {
-            selectedCandidateId: candidateId || null,
-            selectionMode,
+            selectionMode: "codex-cli-generation",
+            ...generated.metadata,
           },
-          generateGround: async ({ sourcePath, candidate: installedCandidate }) => {
-            const ground = await generateMatchingGroundTextureWithCodex({
-              prompt: matchingGroundSceneDescription(installedCandidate, filename),
-              referenceImagePath: sourcePath,
-              codexBin: CODEX_BIN,
-              codexVersion: codexStatus.version,
-            });
-            return {
-              filename: ground.filename,
-              body: ground.image,
-              expectedBytes: ground.image.byteLength,
-              metadata: {
-                generationId: ground.generationId,
-                prompt: ground.prompt,
-                ...ground.metadata,
-              },
-            };
+          ground: {
+            filename: ground.filename,
+            body: ground.image,
+            expectedBytes: ground.image.byteLength,
+            metadata: {
+              generationId: ground.generationId,
+              prompt: ground.prompt,
+              ...ground.metadata,
+            },
           },
         });
-        const result = await serializeAuthorMutation(async () => {
-          const currentEnvironment = await environmentStore.getState();
-          const currentAssignment = effectiveEnvironmentAssignment(currentEnvironment, beatId);
-          const installedAssignment = effectiveEnvironmentAssignment(environmentState, beatId);
-          if (currentAssignment?.asset?.sha256 !== installedAssignment?.asset?.sha256) {
-            throw httpError(
-              409,
-              "Environment Enhancement changed while the matching ground was being installed. Upload again from the current draft.",
-            );
-          }
-          const decision = await saveEnvironmentEnhancementDecisionDraft(authorOptions(), currentEnvironment);
-          const environmentEnhancement = await decorateEnvironmentStateFromDisk(currentEnvironment);
-          return { environmentEnhancement, decision };
-        });
-        writeJsonResponse(res, 200, result);
-      } finally {
-        environmentGenerationBusy = false;
-      }
+        const decision = await saveEnvironmentEnhancementDecisionDraft(authorOptions(), environmentState);
+        const refreshedProject = await loadAuthorProject(authorOptions());
+        return {
+          environmentEnhancement: await decorateEnvironmentStateFromDisk(environmentState),
+          decision,
+          decisions: refreshedProject.decisions,
+          readiness: refreshedProject.readiness,
+        };
+      });
+      writeJsonResponse(res, 200, {
+        ...installed,
+        generation: environmentGenerationMetadata(generated, ground),
+      });
       return;
     }
 
@@ -481,9 +368,6 @@ async function handleApi(req, res) {
       await assertEnvironmentEnhancementReady();
       await readLimitedJsonBody(req, MAX_ENVIRONMENT_JSON_BYTES);
       const current = await environmentStore.getState();
-      if (environmentStateHasPendingSource(current)) {
-        throw httpError(409, "Upload the file for the selected environment source before saving it.");
-      }
       const decision = await saveEnvironmentEnhancementCheckpoint(authorOptions(), current);
       const environmentEnhancement = await decorateEnvironmentStateFromDisk(current);
       writeJsonResponse(res, 200, { environmentEnhancement, decision });
@@ -533,7 +417,9 @@ async function handleApi(req, res) {
     }
 
     if (route === "POST /api/story-graph") {
-      writeJsonResponse(res, 200, await saveStoryGraph(authorOptions(), await readJsonBody(req)));
+      const graph = await saveStoryGraph(authorOptions(), await readJsonBody(req));
+      await environmentStore.reconcileBeatAssignments((graph.beats || []).map((beat) => beat.id));
+      writeJsonResponse(res, 200, graph);
       return;
     }
 
@@ -548,7 +434,7 @@ async function handleApi(req, res) {
         storyCanvasSegmentsSnapshot: serializeAuthorMutation,
         storyCanvasSegmentsFinalize: serializeAuthorMutation,
         storyCanvasSegmentsGenerator: async (context, generationOptions) => {
-          const codexStatus = await getCodexStatus();
+          const codexStatus = await getCodexStatus({ force: true });
           if (!codexStatus.codexAvailable) {
             throw httpError(503, "Codex CLI is not available on this authoring server.");
           }
@@ -590,7 +476,7 @@ async function handleApi(req, res) {
     }
 
     if (route === "POST /api/compile") {
-      const codexStatus = await getCodexStatus().catch(() => ({
+      const codexStatus = await getCodexStatus({ force: true }).catch(() => ({
         authenticated: false,
         codexAvailable: false,
         version: null,
@@ -622,6 +508,13 @@ async function handleApi(req, res) {
     if (route === "POST /api/decisions/attention-guidance/draft") {
       const payload = await readJsonBody(req);
       writeJsonResponse(res, 200, await saveAttentionGuidanceDecisionDraft(authorOptions(), payload));
+      return;
+    }
+
+    const draftDecisionMatch = route.match(/^POST \/api\/decisions\/([^/]+)\/draft$/);
+    if (draftDecisionMatch) {
+      const payload = await readJsonBody(req);
+      writeJsonResponse(res, 200, await saveCheckpointDecisionDraft(authorOptions(), draftDecisionMatch[1], payload));
       return;
     }
 
@@ -665,9 +558,7 @@ function serializedAuthorRequest(req) {
     || pathname.startsWith("/api/decisions/")
     || (
       pathname.startsWith("/api/environment-enhancement/")
-      && pathname !== "/api/environment-enhancement/recommend-search"
       && pathname !== "/api/environment-enhancement/generate"
-      && pathname !== "/api/environment-enhancement/upload"
     );
 }
 
@@ -675,6 +566,30 @@ function serializeAuthorMutation(operation) {
   const result = authorMutation.then(operation, operation);
   authorMutation = result.catch(() => {});
   return result;
+}
+
+async function withAuthorArtifactRollback(operation) {
+  const rollback = await historyStore.createSession();
+  try {
+    return await operation();
+  } catch (error) {
+    try {
+      await historyStore.restoreCheckpoint(rollback.sessionId, rollback.checkpointId);
+    } catch (rollbackError) {
+      error.statusCode = 500;
+      error.diagnostics = [
+        ...(Array.isArray(error.diagnostics) ? error.diagnostics : []),
+        {
+          code: "ENVIRONMENT_INSTALL_ROLLBACK_FAILED",
+          message: `Automatic rollback failed: ${rollbackError.message}`,
+        },
+      ];
+      error.message = `${error.message} Automatic rollback also failed; reload StoryVR before continuing.`;
+    }
+    throw error;
+  } finally {
+    await historyStore.deleteSession(rollback.sessionId).catch(() => {});
+  }
 }
 
 async function serveStoryAsset(req, res, url) {
@@ -686,10 +601,16 @@ async function serveStoryAsset(req, res, url) {
     return;
   }
   try {
+    const info = await stat(assetPath);
+    if (!info.isFile()) throw new Error("not a file");
+    res.setHeader("cache-control", "private, no-cache");
+    res.setHeader("etag", fileEntityTag(info));
+    res.setHeader("last-modified", info.mtime.toUTCString());
+    if (requestHasCurrentEntity(req, res)) return;
     const data = await readFile(assetPath);
     res.statusCode = 200;
     res.setHeader("content-type", mimeTypeFor(assetPath));
-    res.setHeader("cache-control", "no-store");
+    res.setHeader("content-length", String(data.byteLength));
     res.end(data);
   } catch {
     writeJsonResponse(res, 404, { error: "Asset not found." });
@@ -712,9 +633,12 @@ async function serveEnvironmentAsset(req, res) {
     if (!info.isFile()) throw new Error("not a file");
     res.statusCode = 200;
     res.setHeader("content-type", mimeTypeFor(assetPath));
-    res.setHeader("content-length", String(info.size));
-    res.setHeader("cache-control", "no-store");
+    res.setHeader("cache-control", "private, no-cache");
+    res.setHeader("etag", fileEntityTag(info));
+    res.setHeader("last-modified", info.mtime.toUTCString());
     res.setHeader("x-content-type-options", "nosniff");
+    if (requestHasCurrentEntity(req, res)) return;
+    res.setHeader("content-length", String(info.size));
     if (req.method === "HEAD") {
       res.end();
       return;
@@ -724,6 +648,26 @@ async function serveEnvironmentAsset(req, res) {
     if (!res.headersSent) writeJsonResponse(res, 404, { error: "Environment asset not found." });
     else res.destroy();
   }
+}
+
+function fileEntityTag(info) {
+  const parts = [
+    info.dev,
+    info.ino,
+    info.size,
+    Number(info.mtimeMs) * 1000,
+    Number(info.ctimeMs) * 1000,
+  ].map((value) => Math.trunc(Number(value) || 0).toString(16));
+  return `W/"${parts.join("-")}"`;
+}
+
+function requestHasCurrentEntity(req, res) {
+  const supplied = String(req.headers["if-none-match"] || "").trim();
+  const current = String(res.getHeader("etag") || "");
+  if (!supplied || !current || !supplied.split(",").map((value) => value.trim()).includes(current)) return false;
+  res.statusCode = 304;
+  res.end();
+  return true;
 }
 
 function mimeTypeFor(filePath) {
@@ -741,13 +685,6 @@ function mimeTypeFor(filePath) {
   if (ext === ".wasm") return "application/wasm";
   if (ext === ".json") return "application/json; charset=utf-8";
   return "application/octet-stream";
-}
-
-function initialEnvironmentProviderStatus() {
-  return Object.fromEntries(["polyhaven", "ambientcg"].map((provider) => [provider, {
-    status: "idle",
-    count: 0,
-  }]));
 }
 
 function decorateEnvironmentAssignment(value) {
@@ -780,13 +717,12 @@ function decorateEnvironmentAssignment(value) {
       rendering: source.rendering || { exposure: 1, fogColor: "#dce8e2", fogDensity: 0, backgroundMode: "asset" },
       movementCue,
     },
-    selectedSource: source.pendingSource || source.selectedSource || null,
-    pendingSource: source.pendingSource || null,
+    selectedSource: source.selectedSource || null,
     skipped: source.skipped === true,
   };
 }
 
-function decorateEnvironmentState(state, project, graph, recommendation = null) {
+function decorateEnvironmentState(state) {
   const source = state && typeof state === "object" ? state : {};
   const projection = decorateEnvironmentAssignment(source) || {};
   const defaultAssignment = decorateEnvironmentAssignment(source.defaultAssignment);
@@ -799,44 +735,17 @@ function decorateEnvironmentState(state, project, graph, recommendation = null) 
   return {
     schemaVersion: source.schemaVersion || "storyvr-environment-enhancement/v1",
     revision: Number(source.revision) || 0,
-    brief: recommendation,
-    storySignature: environmentSearchRecommendationSignature(project, graph),
-    storyBeatCount: Array.isArray(graph?.beats) ? graph.beats.length : 0,
     selection: projection.selection || null,
     draft: projection.draft || decorateEnvironmentAssignment({}).draft,
     selectedSource: projection.selectedSource || null,
-    pendingSource: projection.pendingSource || null,
     skipped: projection.skipped === true,
     defaultAssignment,
     assignmentsByBeat,
-    providerStatus: environmentProviderStatus,
   };
 }
 
-async function decorateEnvironmentStateFromDisk(state) {
-  const [project, graph] = await Promise.all([
-    readJsonFileIfExists(environmentPaths.projectPath),
-    readJsonFileIfExists(environmentPaths.storyGraphPath),
-  ]);
-  const recommendation = await loadEnvironmentSearchRecommendation(authorOptions(), { project, graph });
-  return decorateEnvironmentState(state, project, graph, recommendation);
-}
-
-async function readJsonFileIfExists(filePath) {
-  try {
-    return JSON.parse(await readFile(filePath, "utf8"));
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
-  }
-}
-
-function sanitizeEnvironmentQuery(value) {
-  return String(value || "")
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 180);
+function decorateEnvironmentStateFromDisk(state) {
+  return decorateEnvironmentState(state);
 }
 
 async function assertEnvironmentEnhancementReady() {
@@ -861,50 +770,50 @@ function requireAuthoredEnvironmentBeat(projectState, value, label = "beatId") {
   return beatId;
 }
 
-function environmentStateHasPendingSource(state) {
-  return [
-    state,
-    state?.defaultAssignment,
-    ...Object.values(state?.assignmentsByBeat || {}),
-  ].some((assignment) => assignment?.pendingSource);
+function stageEnvironmentGeneration({ beatId, baselineRevision, baselineSignature, generated, ground }) {
+  sweepPendingEnvironmentGenerations();
+  while (pendingEnvironmentGenerations.size >= MAX_PENDING_ENVIRONMENT_GENERATIONS) {
+    const oldestToken = pendingEnvironmentGenerations.keys().next().value;
+    if (!oldestToken) break;
+    pendingEnvironmentGenerations.delete(oldestToken);
+  }
+  const generationToken = randomUUID();
+  pendingEnvironmentGenerations.set(generationToken, {
+    createdAt: Date.now(),
+    beatId,
+    baselineRevision,
+    baselineSignature,
+    generated,
+    ground,
+  });
+  return generationToken;
 }
 
-function sanitizeEnvironmentProviders(value) {
-  if (!value) return undefined;
-  const allowed = new Set(["polyhaven", "ambientcg"]);
-  return String(value)
-    .split(",")
-    .map((item) => item.trim().toLowerCase())
-    .filter((item) => allowed.has(item));
+function environmentStateSignature(value) {
+  return createHash("sha256")
+    .update(JSON.stringify(value ?? null))
+    .digest("hex");
 }
 
-function createManualEnvironmentCandidate(filename, sequence) {
-  const basename = path.basename(String(filename || "environment"));
-  const title = path.basename(basename, path.extname(basename)) || "Uploaded environment";
-  const providerAssetId = `${title}-${Date.now().toString(36)}-${sequence}`;
+function sweepPendingEnvironmentGenerations(now = Date.now()) {
+  for (const [generationToken, pending] of pendingEnvironmentGenerations) {
+    if (now - pending.createdAt >= PENDING_ENVIRONMENT_GENERATION_TTL_MS) {
+      pendingEnvironmentGenerations.delete(generationToken);
+    }
+  }
+}
+
+function environmentGenerationMetadata(generated, ground) {
   return {
-    id: `manual-upload:${providerAssetId}`,
-    provider: "manual-upload",
-    providerAssetId,
-    sourceId: providerAssetId,
-    title,
-    sourceUrl: null,
-    license: null,
-    provenance: { source: "user-upload" },
+    generationId: generated.generationId,
+    prompt: generated.prompt,
+    ...generated.metadata,
+    ground: {
+      generationId: ground.generationId,
+      prompt: ground.prompt,
+      ...ground.metadata,
+    },
   };
-}
-
-function matchingGroundSceneDescription(candidate, filename) {
-  const title = typeof candidate?.title === "string" ? candidate.title.trim() : "";
-  const description = typeof candidate?.description === "string" ? candidate.description.trim() : "";
-  const filenameLabel = path.basename(
-    String(filename || "360-degree environment"),
-    path.extname(String(filename || "")),
-  ).replace(/[-_]+/g, " ").trim();
-  return [title, description, filenameLabel, "360-degree environment"]
-    .find((value) => typeof value === "string" && value.trim())
-    .trim()
-    .slice(0, 1000);
 }
 
 function createGeneratedEnvironmentCandidate(generated) {
@@ -926,18 +835,6 @@ function createGeneratedEnvironmentCandidate(generated) {
       ...generated.metadata,
     },
   };
-}
-
-function parseEnvironmentUploadLength(value) {
-  if (value === undefined) return null;
-  const contentLength = Number(Array.isArray(value) ? value[0] : value);
-  if (!Number.isSafeInteger(contentLength) || contentLength < 0) {
-    throw httpError(400, "Upload Content-Length must be a non-negative integer.");
-  }
-  if (contentLength > MAX_ENVIRONMENT_UPLOAD_BYTES) {
-    throw httpError(413, `Environment upload exceeds the ${MAX_ENVIRONMENT_UPLOAD_BYTES}-byte limit.`);
-  }
-  return contentLength;
 }
 
 function normalizeEnvironmentDraft(body) {
@@ -980,6 +877,7 @@ function normalizeEnvironmentDraft(body) {
       movementCue: {
         ...(movementCue.enabled !== undefined ? { enabled: normalizedMovementCue.enabled } : {}),
         ...(movementCue.style !== undefined ? { style: normalizedMovementCue.style } : {}),
+        ...(movementCue.coverage !== undefined ? { coverage: normalizedMovementCue.coverage } : {}),
         ...(movementCue.position !== undefined ? { position: normalizedMovementCue.position } : {}),
         ...(movementCue.widthMeters !== undefined ? { widthMeters: normalizedMovementCue.widthMeters } : {}),
         ...(movementCue.depthMeters !== undefined ? { depthMeters: normalizedMovementCue.depthMeters } : {}),
@@ -1032,8 +930,7 @@ function assertSameOriginJsonRequest(req) {
 
 function environmentErrorStatus(error) {
   const message = String(error?.message || "");
-  if (/^Environment upload exceeds/.test(message)) return 413;
-  if (/^Upload an environment asset before|Search again/.test(message)) return 409;
+  if (/^Generated environment asset exceeds/.test(message)) return 413;
   if (error instanceof TypeError || /must|invalid|unsafe|does not contain|missing dependency|empty|exceeds|unsupported/i.test(message)) return 400;
   return 500;
 }
@@ -1048,7 +945,7 @@ function authorOptions() {
 }
 
 async function proposalAuthorOptions() {
-  const status = await getCodexStatus().catch(() => ({ authenticated: false }));
+  const status = await getCodexStatus({ force: true }).catch(() => ({ authenticated: false }));
   return {
     ...authorOptions(),
     aiProvider: status.authenticated ? "codex" : "openai",
@@ -1078,25 +975,47 @@ function runCodexCommand(commandArgs, commandOptions = {}) {
   });
 }
 
-async function getCodexStatus() {
-  const [versionResult, loginResult] = await Promise.all([
-    runCodexCommand(["--version"], { timeoutMs: 5000 }),
-    runCodexCommand(["login", "status"], { timeoutMs: 8000 }),
-  ]);
-  if (versionResult.ok && versionResult.stdout.trim()) cachedCodexVersion = versionResult.stdout.trim();
-  const loginText = `${loginResult.stdout}${loginResult.stderr}`.trim();
-  return {
-    codexAvailable: versionResult.ok,
-    version: cachedCodexVersion,
-    authenticated: loginResult.ok && /logged in/i.test(loginText),
-    authText: loginText || loginResult.error || "Not logged in",
-    authMethod: "codex-cli-device-auth",
-  };
+async function getCodexStatus({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && cachedCodexStatus && now < cachedCodexStatusExpiresAt) {
+    return cachedCodexStatus;
+  }
+  if (codexStatusInFlight) return codexStatusInFlight;
+
+  const request = (async () => {
+    const [versionResult, loginResult] = await Promise.all([
+      runCodexCommand(["--version"], { timeoutMs: 5000 }),
+      runCodexCommand(["login", "status"], { timeoutMs: 8000 }),
+    ]);
+    if (versionResult.ok && versionResult.stdout.trim()) cachedCodexVersion = versionResult.stdout.trim();
+    const loginText = `${loginResult.stdout}${loginResult.stderr}`.trim();
+    const status = {
+      codexAvailable: versionResult.ok,
+      version: cachedCodexVersion,
+      authenticated: loginResult.ok && /logged in/i.test(loginText),
+      authText: loginText || loginResult.error || "Not logged in",
+      authMethod: "codex-cli-device-auth",
+    };
+    cachedCodexStatus = Object.freeze(status);
+    cachedCodexStatusExpiresAt = Date.now() + CODEX_STATUS_TTL_MS;
+    return cachedCodexStatus;
+  })();
+  codexStatusInFlight = request;
+  try {
+    return await request;
+  } finally {
+    if (codexStatusInFlight === request) codexStatusInFlight = null;
+  }
+}
+
+function invalidateCodexStatusCache() {
+  cachedCodexStatus = null;
+  cachedCodexStatusExpiresAt = 0;
 }
 
 async function startCodexLogin() {
   if (loginProcess) return loginState;
-  const status = await getCodexStatus().catch(() => ({ authenticated: false }));
+  const status = await getCodexStatus({ force: true }).catch(() => ({ authenticated: false }));
   if (status.authenticated) {
     loginState = {
       running: false,
@@ -1139,7 +1058,8 @@ async function startCodexLogin() {
     loginState.finishedAt = new Date().toISOString();
     loginState.exitCode = code;
     loginProcess = null;
-    getCodexStatus()
+    invalidateCodexStatusCache();
+    getCodexStatus({ force: true })
       .then((nextStatus) => {
         loginState.authenticated = nextStatus.authenticated;
         loginState.authText = nextStatus.authText;
@@ -1215,7 +1135,10 @@ async function readJsonBody(req) {
 }
 
 function writeJsonResponse(res, status, value) {
+  const body = `${JSON.stringify(value)}\n`;
   res.statusCode = status;
   res.setHeader("content-type", "application/json; charset=utf-8");
-  res.end(`${JSON.stringify(value, null, 2)}\n`);
+  res.setHeader("cache-control", "no-store");
+  res.setHeader("content-length", String(Buffer.byteLength(body)));
+  res.end(body);
 }
