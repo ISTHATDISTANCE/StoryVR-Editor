@@ -55,6 +55,7 @@ import {
   AuthorHistory,
   historyShortcutForEvent,
 } from "./author-history.js";
+import { createInteractionLogger } from "./interaction-log.js";
 import {
   createGroundMovementCue,
   normalizeGroundMovementCue,
@@ -162,8 +163,8 @@ const INTERACTION_CONTROLLER_PROFILES = Object.freeze({
 });
 const INTERACTION_ACTION_OPTIONS = Object.freeze([
   Object.freeze({ id: "unmapped", label: "Not mapped" }),
-  Object.freeze({ id: "next-beat", label: "Go to next beat" }),
-  Object.freeze({ id: "previous-beat", label: "Go to previous beat" }),
+  Object.freeze({ id: "next-beat", label: "Go to next story part" }),
+  Object.freeze({ id: "previous-beat", label: "Go to previous story part" }),
   Object.freeze({ id: "move-forward", label: "Move forward", locomotion: true }),
   Object.freeze({ id: "move-backward", label: "Move backward", locomotion: true }),
   Object.freeze({ id: "strafe-left", label: "Strafe left", locomotion: true }),
@@ -301,6 +302,7 @@ const state = {
   selectedTopologySwapIndex: 0,
   topologySwapPlaying: true,
   sharedPreviewCameraState: null,
+  authoringSpatialCameraStates: {},
   topologyViewerCameraState: null,
   selectedDynamicBeatIndex: 0,
   dynamicPreviewPlaying: true,
@@ -308,6 +310,7 @@ const state = {
   dynamicPreviewRestartToken: 0,
   dynamicViewerCameraState: null,
   dynamicEditorScene: null,
+  selectedDynamicEntityId: null,
   dynamicCanvasReturnScroll: null,
   proceduralDynamicsUi: {
     promptsByScene: {},
@@ -381,7 +384,7 @@ const state = {
   spatialTransformMode: "translate",
   spatialScaleRatioLocked: true,
   spatialClipboard: null,
-  spatialClipboardStatus: "Select a GLB model to copy.",
+  spatialClipboardStatus: "Select a 3D model to copy.",
   spatialPropagationSelectionId: null,
   spatialPropagationTargetsOpen: false,
   spatialPropagationTargetBeatIds: [],
@@ -399,6 +402,8 @@ const state = {
   attentionGuidanceDraftKey: "",
   attentionEditorScene: null,
   selectedAttentionMarkerId: null,
+  selectedAttentionTargetCandidateId: null,
+  selectedAttentionTargetCandidateIds: [],
   attentionDraftRevision: 0,
   attentionDraftDirty: false,
   attentionAutosaveTimer: null,
@@ -543,6 +548,108 @@ const api = {
     return readResponse(response);
   },
 };
+
+const interactionLogger = createInteractionLogger({
+  getContext: interactionLogContext,
+});
+interactionLogger.start();
+interactionLogger.subscribe(updateInteractionLogControlsDom);
+
+function interactionLogContext() {
+  const story = state.data?.project?.story;
+  const navigation = state.data ? currentStoryvrBrowserNavigation() : null;
+  const editorScene = navigation?.editorScene;
+  return {
+    story: story ? {
+      slug: String(story.slug || ""),
+      title: String(story.title || story.slug || ""),
+    } : {},
+    workspace: {
+      componentId: String(state.activeId || ""),
+      mode: String(app.dataset.workspaceMode || ""),
+      editorScene: editorScene ? Object.fromEntries([
+        "kind",
+        "type",
+        "mode",
+        "beatId",
+        "variantGroupId",
+        "variantOptionId",
+        "sceneKey",
+        "targetId",
+      ].filter((key) => editorScene[key] != null).map((key) => [key, String(editorScene[key])])) : null,
+    },
+    page: {
+      pathname: window.location.pathname,
+      hash: window.location.hash,
+    },
+  };
+}
+
+function renderInteractionLogControl() {
+  const snapshot = interactionLogger.snapshot();
+  const status = interactionLogStatusText(snapshot);
+  const savedFileName = snapshot.lastSaved?.fileName || "";
+  return `
+    <div class="interaction-log-control ${interactionLogControlStateClass(snapshot)}" data-interaction-log-control>
+      <span class="interaction-log-copy">
+        <strong>Data collection</strong>
+        <small data-interaction-log-status role="status" aria-live="polite" ${savedFileName ? `title="${escapeHtml(savedFileName)}"` : ""}>${escapeHtml(status)}</small>
+      </span>
+      <button
+        type="button"
+        class="interaction-log-switch"
+        role="switch"
+        aria-checked="${snapshot.enabled}"
+        aria-label="${snapshot.enabled ? "Turn off" : "Turn on"} interaction data collection"
+        aria-describedby="interaction-log-switch-state"
+        data-interaction-log-toggle
+        ${snapshot.saving ? "disabled" : ""}
+      >
+        <span class="interaction-log-switch-track" aria-hidden="true"><span></span></span>
+        <span class="sr-only" id="interaction-log-switch-state">${escapeHtml(status)}</span>
+      </button>
+    </div>
+  `;
+}
+
+function interactionLogControlStateClass(snapshot) {
+  if (snapshot.saving) return "is-saving";
+  if (["canceled", "error", "limit-reached"].includes(snapshot.status)) return "is-error";
+  if (snapshot.enabled) return "is-on";
+  if (snapshot.status === "saved") return "is-saved";
+  return "is-off";
+}
+
+function interactionLogStatusText(snapshot) {
+  if (snapshot.saving) return "Saving…";
+  if (snapshot.status === "canceled") return "Save canceled · collection remains on";
+  if (snapshot.status === "error") return "Save failed · collection remains on";
+  if (snapshot.status === "limit-reached") return "Cache full · save to continue";
+  if (snapshot.enabled) return "On";
+  if (snapshot.status === "saved") return "Saved";
+  return "Off";
+}
+
+function updateInteractionLogControlsDom(snapshot = interactionLogger.snapshot()) {
+  const control = document.querySelector("[data-interaction-log-control]");
+  if (!control) return;
+  control.classList.remove("is-off", "is-on", "is-saving", "is-saved", "is-error");
+  control.classList.add(interactionLogControlStateClass(snapshot));
+  const toggle = control.querySelector("[data-interaction-log-toggle]");
+  if (toggle) {
+    toggle.disabled = snapshot.saving;
+    toggle.setAttribute("aria-checked", String(snapshot.enabled));
+    toggle.setAttribute("aria-label", `${snapshot.enabled ? "Turn off" : "Turn on"} interaction data collection`);
+  }
+  const status = interactionLogStatusText(snapshot);
+  const statusNode = control.querySelector("[data-interaction-log-status]");
+  if (statusNode) {
+    statusNode.textContent = status;
+    statusNode.title = snapshot.lastSaved?.fileName || snapshot.error || "";
+  }
+  const accessibleState = control.querySelector("#interaction-log-switch-state");
+  if (accessibleState) accessibleState.textContent = status;
+}
 
 function renderHistoryControls() {
   const undoLabel = authorHistory.undoLabel;
@@ -872,7 +979,7 @@ async function performHistoryAction(action) {
       }
       restoreAuthorHistoryUi(target.ui);
       const verb = direction === "undo" ? "Undid" : "Redid";
-      state.historyStatus = `${verb} ${entry.label}.${persistent ? " Recompile to update the reader output." : ""}`;
+      state.historyStatus = `${verb} ${entry.label}.${persistent ? " Build the reader again to update it." : ""}`;
       state.output = {
         history: state.historyStatus,
         stale: persistent,
@@ -1248,7 +1355,7 @@ async function synchronizeActiveStoryvrAuthoringControl() {
   }
   if (state.activeId === "environment-enhancement") {
     if (state.environmentUi.operationBusy) {
-      throw new Error("Wait for the current environment operation to finish before leaving this page.");
+      throw new Error("Wait for the current setting operation to finish before leaving this page.");
     }
   }
   finalizeActiveStoryvrCanvasGesture();
@@ -1276,7 +1383,7 @@ async function prepareStoryvrRouteExit(fromRoute, toRoute) {
 
   if (componentId === "source-graph") {
     if (!state.graphDirty) return false;
-    await withAuthorHistory("Save story order", () => saveStoryGraphCore({ silent: true }), {
+    await withAuthorHistory("Finish Story order", () => saveStoryGraphCore({ silent: true }), {
       persistent: true,
       componentId,
     });
@@ -1432,6 +1539,7 @@ function applyStoryvrBrowserNavigation(route, options = {}) {
   if (navigation.componentId !== "dynamic-geometry") {
     state.dynamicEditorScene = null;
     state.dynamicViewerCameraState = null;
+    state.selectedDynamicEntityId = null;
   }
   if (navigation.componentId !== "inter-beat-dynamics") {
     state.interBeatEditorScene = null;
@@ -1513,6 +1621,8 @@ function applyStoryvrBrowserNavigation(route, options = {}) {
     state.spatialEditorScene = null;
     state.attentionEditorScene = navigation.editorScene;
     state.selectedAttentionMarkerId = null;
+    state.selectedAttentionTargetCandidateId = null;
+    state.selectedAttentionTargetCandidateIds = [];
     state.attentionViewerCameraState = null;
     ensureAttentionGuidanceDraft();
     state.output = null;
@@ -1527,6 +1637,7 @@ function applyStoryvrBrowserNavigation(route, options = {}) {
       };
     }
     state.dynamicEditorScene = navigation.editorScene;
+    state.selectedDynamicEntityId = null;
     const beats = spatialPreviewBeats();
     const beatIndex = beats.findIndex((beat) => beat.id === navigation.editorScene.beatId);
     if (beatIndex >= 0) state.selectedDynamicBeatIndex = beatIndex;
@@ -1601,6 +1712,7 @@ function applyStoryvrBrowserNavigation(route, options = {}) {
     state.contextViewerCameraState = null;
     state.dynamicEditorScene = null;
     state.dynamicViewerCameraState = null;
+    state.selectedDynamicEntityId = null;
     state.interBeatEditorScene = null;
     state.interBeatViewerCameraState = null;
     state.spatialEditorScene = null;
@@ -1610,6 +1722,8 @@ function applyStoryvrBrowserNavigation(route, options = {}) {
     state.spatialSelectionClearedSceneKey = "";
     state.attentionEditorScene = null;
     state.selectedAttentionMarkerId = null;
+    state.selectedAttentionTargetCandidateId = null;
+    state.selectedAttentionTargetCandidateIds = [];
     state.interactionEditorScene = null;
     state.interactionSelectedDirectTargetKey = null;
     state.interactionSelectedInBeatTargetKey = null;
@@ -1757,6 +1871,8 @@ function render() {
   const isInterBeatDynamics = active.id === "inter-beat-dynamics";
   const isInteractionControl = active.id === "interaction-control";
   const isFinalReview = active.id === "transition-pacing";
+  const spatialWorkspaceActive = Boolean(currentStoryvrBrowserNavigation().editorScene) || isFinalReview;
+  app.dataset.workspaceMode = spatialWorkspaceActive ? "spatial" : "canvas";
   const showCompiler = isFinalReview && !activeBlocked;
   const showCodexAuth = !Boolean(state.codexStatus?.authenticated);
   const showSidebar = !isFinalReview && !isSpatialRelations && !isEnvironmentEnhancement && !isAttentionGuidance && !isDynamicGeometry && !isInterBeatDynamics && !isInteractionControl && showCodexAuth;
@@ -1778,7 +1894,10 @@ function render() {
           </span>
           <span class="product-title">StoryVR</span>
         </div>
-        ${renderHistoryControls()}
+        <div class="product-actions">
+          ${renderHistoryControls()}
+          ${renderInteractionLogControl()}
+        </div>
       </div>
       <div class="story-summary">
         ${storyName ? `<p class="eyebrow">${escapeHtml(storyName)}</p>` : ""}
@@ -1934,7 +2053,7 @@ function activeStageSceneContext(componentId) {
 }
 
 function participantStageErrorMessage(error) {
-  const text = String(error || "")
+  let text = String(error || "")
     .replace(/^(?:scene|attention scene|environment|dynamics|transition) (?:auto)?save failed(?: before browser navigation)?:\s*/i, "")
     .trim();
   if (/at least one transform component/i.test(text)) {
@@ -1946,10 +2065,41 @@ function participantStageErrorMessage(error) {
   if (/in-beat interactable/i.test(text)) {
     return "Choose a grabbable object in this scene first.";
   }
+  const participantReplacements = [
+    [/\bSource Graph\b/g, "Story order"],
+    [/\bSpatial Relations\b/g, "Place objects"],
+    [/\bEnvironment Enhancement\b/g, "Set the scene"],
+    [/\bAttention Guidance\b/g, "Guide attention"],
+    [/\bInteraction Control\b/g, "Reader actions"],
+    [/\bFinal Review\b/g, "Review story"],
+    [/\bDynamics\b/g, "Object movement"],
+    [/\bTransition\b/g, "Scene changes"],
+    [/\bcompiled\b/gi, "built"],
+    [/\bcompiling\b/gi, "building"],
+    [/\bcompile\b/gi, "build"],
+    [/\bcheckpoints\b/gi, "steps"],
+    [/\bcheckpoint\b/gi, "step"],
+    [/\bboundaries\b/gi, "scene changes"],
+    [/\bboundary\b/gi, "scene change"],
+    [/\btransitions\b/gi, "scene changes"],
+    [/\btransition\b/gi, "scene change"],
+    [/\bvariants\b/gi, "choices"],
+    [/\bvariant\b/gi, "choice"],
+    [/\boptions\b/gi, "choices"],
+    [/\boption\b/gi, "choice"],
+    [/\bbeats\b/gi, "story parts"],
+    [/\bbeat\b/gi, "story part"],
+    [/\bGLBs\b/gi, "3D models"],
+    [/\bGLB\b/gi, "3D model"],
+    [/\bentities\b/gi, "objects"],
+    [/\bentity\b/gi, "object"],
+    [/\binference\b/gi, "suggestion"],
+  ];
+  for (const [pattern, replacement] of participantReplacements) text = text.replace(pattern, replacement);
   if (
     text
     && text.length <= 180
-    && !/\/Users\/|\\Users\\|(?:^|\s)at\s+\S+\s*\(|\b(?:ENOENT|EACCES|JSON|schema|checkpoint|canonical|contract|checksum|stack)\b/i.test(text)
+    && !/\/Users\/|\\Users\\|(?:^|\s)at\s+\S+\s*\(|\b(?:ENOENT|EACCES|JSON|schema|canonical|contract|checksum|stack|(?:beat|variant|option|entity)[A-Z]\w*)\b/i.test(text)
   ) return text;
   return "StoryVR could not complete this action.";
 }
@@ -1988,10 +2138,10 @@ function stageErrorLocation(componentId, output = state.output) {
   if (sceneContext?.beatId) {
     const scene = spatialSceneBeat(sceneContext);
     if (scene) parts.push(`Scene: ${scene.title || sceneContext.beatId}`);
-    else if (diagnosticBeatId) parts.push(`Removed card: ${diagnosticBeatId}`);
+    else if (diagnosticBeatId) parts.push(`Removed story part: ${diagnosticBeatId}`);
   } else if (locatedComponentId === "source-graph") {
     const beat = selectedBeat();
-    if (beat) parts.push(`Card: ${beat.title || beat.id}`);
+    if (beat) parts.push(`Story part: ${beat.title || beat.id}`);
   }
 
   const field = String(
@@ -2027,7 +2177,7 @@ function stageErrorRecovery(componentId, output = state.output) {
     diagnostic?.variantGroupId,
     diagnostic?.variantOptionId,
   ))) {
-    return "This saved work belongs to a card that was removed. Save Story order again so StoryVR can recheck later steps, then try this action again.";
+    return "This saved work belongs to a story part that was removed. Finish Story order again so StoryVR can recheck later steps, then try this action again.";
   }
   if (locatedComponentId !== requestedComponentId) {
     const component = componentById(locatedComponentId);
@@ -2036,8 +2186,8 @@ function stageErrorRecovery(componentId, output = state.output) {
   }
   if (locatedComponentId === "source-graph") {
     return selectedBeat()
-      ? "Correct the selected card, then select “Save story order” again."
-      : "Review the story cards, then select “Save story order” again.";
+      ? "Correct the selected story part, then select “Finish this step” again."
+      : "Review the story parts, then select “Finish this step” again.";
   }
   if (locatedComponentId === "transition-pacing") {
     return "Open the named step, correct it, then select “Build reader” again.";
@@ -2298,8 +2448,7 @@ function participantBlockingDependencyLabel(componentId) {
 }
 
 function checkpointSaveActionLabel(componentId) {
-  if (componentId === "source-graph") return "Save story order";
-  if (componentId === "transition-pacing") return "Finish review";
+  void componentId;
   return "Finish this step";
 }
 
@@ -2456,7 +2605,7 @@ function renderGraphEditor() {
           <h2>${escapeHtml(participantComponentLabel("source-graph"))}</h2>
         </div>
         <div class="actions">
-          <button class="primary" data-action="save-graph">Save story order</button>
+          <button class="primary" data-action="save-graph">Finish this step</button>
         </div>
       </div>
       <p class="story-stage-instruction">${escapeHtml(storyStageInstruction(state.data, "source-graph"))}</p>
@@ -2496,7 +2645,7 @@ function renderSourceGraphStatus() {
         ? ` ${kept} later step${kept === 1 ? " was" : "s were"} kept; ${needsReview} needs review.`
         : ` ${kept} completed later step${kept === 1 ? " was" : "s were"} checked automatically.`
       : "";
-    return `<p class="source-graph-status">Story order saved.${escapeHtml(followUp)}</p>`;
+    return `<p class="source-graph-status">Story order complete.${escapeHtml(followUp)}</p>`;
   }
   if (state.output.regenerated) return `<p class="source-graph-status">Regenerated ${escapeHtml(state.output.regenerated)}</p>`;
   return "";
@@ -2522,7 +2671,7 @@ function renderBeatTimeline() {
           <h3>Story canvas</h3>
           <p class="muted">Select a card to edit it. Drag its six-dot grip to reorder it.</p>
         </div>
-        <span>${beats.length} card${beats.length === 1 ? "" : "s"}${textOnlyCount ? ` · ${visualBeatCount} with visuals · ${textOnlyCount} text card${textOnlyCount === 1 ? "" : "s"}` : ""}</span>
+        <span>${beats.length} story part${beats.length === 1 ? "" : "s"}${textOnlyCount ? ` · ${visualBeatCount} with visuals · ${textOnlyCount} text-only story part${textOnlyCount === 1 ? "" : "s"}` : ""}</span>
       </div>
       ${progressStrip}
       <div class="source-graph-canvas-toolbar source-graph-arrow-toolbar">
@@ -2866,14 +3015,14 @@ function sourceGraphProgressRangeLabel(segment, totalBeats) {
   const start = Math.max(0, Number(segment?.startIndex) || 0) + 1;
   const end = Math.max(start, Number(segment?.endIndex) + 1 || start);
   return start === end
-    ? `Card ${start} of ${totalBeats}`
-    : `Cards ${start}–${end} of ${totalBeats}`;
+    ? `Story part ${start} of ${totalBeats}`
+    : `Story parts ${start}–${end} of ${totalBeats}`;
 }
 
 function sourceGraphProgressButtonLabel(segment) {
   const start = Math.max(0, Number(segment?.startIndex) || 0) + 1;
   const end = Math.max(start, Number(segment?.endIndex) + 1 || start);
-  const range = start === end ? `card ${start}` : `cards ${start} through ${end}`;
+  const range = start === end ? `story part ${start}` : `story parts ${start} through ${end}`;
   return `Jump to ${segment?.label || "story section"}, ${range}`;
 }
 
@@ -2948,7 +3097,7 @@ function renderSourceGraphSpatialPreview() {
         data-source-graph-spatial-preview-viewer
         tabindex="0"
         role="application"
-        aria-label="Read-only spatial scene preview for ${escapeHtml(title)}"
+        aria-label="Read-only 3D scene preview for ${escapeHtml(title)}"
       ><div class="source-graph-spatial-preview-status">Loading scene…</div></div>
     </aside>
   `;
@@ -3005,7 +3154,7 @@ function renderSourceGraphFullTextDetail() {
             />
           </label>
         </div>
-        <small>Save story order to keep changes · select empty canvas space to close.</small>
+        <small>Finish this step to keep changes · select empty canvas space to close.</small>
       </div>
       <label class="source-graph-full-text-editor-label">
         <span class="sr-only">Full text for ${escapeHtml(detail.title)}</span>
@@ -3297,6 +3446,10 @@ function renderStoryVariantCardAttributes(context) {
       data-story-variant-option-id="${escapeHtml(context.variantOptionId)}"` : ""}`;
 }
 
+function renderStoryCanvasChangedIndicator(changed) {
+  return changed ? `<em class="story-canvas-changed-indicator">Changed</em>` : "";
+}
+
 function renderStoryVariantLinkLayer(scope, proposal = null, interactionContext = null) {
   const edges = sourceGraphTransitionEdges(state.data?.graph)
     .filter((edge) => sourceGraphIsDownstreamVariantEdge(edge));
@@ -3317,9 +3470,9 @@ function renderStoryVariantLinkLayer(scope, proposal = null, interactionContext 
       class="source-graph-link-layer story-variant-link-layer ${interactiveTransitions ? "has-transition-previews" : ""} ${interactionLabels ? "has-interaction-labels" : ""}"
       data-story-variant-link-layer="${escapeHtml(scope)}"
       ${interactiveTransitions
-        ? `aria-label="Variant transitions"`
+        ? `aria-label="Choice scene changes"`
         : interactionLabels
-          ? `aria-label="Variant interaction assignments"`
+          ? `aria-label="Choice reader actions"`
           : `aria-hidden="true"`}
       focusable="false"
     >
@@ -3406,7 +3559,7 @@ function renderStoryVariantLinkLayer(scope, proposal = null, interactionContext 
               sceneContext,
               effectiveKind,
               options: directAvailable ? options : options.filter((kind) => kind !== "direct"),
-              accessibleLabel: `Interaction options from ${fromLabel} to ${toLabel}`,
+              accessibleLabel: `Reader actions from ${fromLabel} to ${toLabel}`,
               disabled: progression && !record?.configurationAvailable,
             })}
             <select
@@ -3414,18 +3567,18 @@ function renderStoryVariantLinkLayer(scope, proposal = null, interactionContext 
               ${progression
                 ? `data-interaction-boundary-policy-select data-interaction-boundary-id="${escapeHtml(targetId)}"`
                 : `data-story-variant-interaction-policy-select data-interaction-variant-edge-policy-select data-interaction-variant-edge-id="${escapeHtml(edge.id)}"`}
-              aria-label="${escapeHtml(`Interaction from ${fromLabel} to ${toLabel}`)}"
+              aria-label="${escapeHtml(`Reader action from ${fromLabel} to ${toLabel}`)}"
               ${progression && !record?.configurationAvailable ? "disabled" : ""}
             >
               ${progression && !record?.configurationAvailable
                 ? `<option value="" selected disabled>Unavailable</option>`
                 : progression && !effectiveKind
-                  ? `<option value="" selected disabled>Assign interaction</option>`
+                  ? `<option value="" selected disabled>Assign reader action</option>`
                   : ""}
               ${progression
                 ? `<option value="button-step" ${effectiveKind === "button-step" ? "selected" : ""}>Controller button press</option>`
                 : `<option value="ui-button-press" ${effectiveKind === "ui-button-press" ? "selected" : ""}>UI button press</option>`}
-              <option value="direct" ${effectiveKind === "direct" ? "selected" : ""} ${directAvailable ? "" : "disabled"}>${directAvailable ? "Direct manipulation" : "Direct manipulation — add interactable"}</option>
+              <option value="direct" ${effectiveKind === "direct" ? "selected" : ""} ${directAvailable ? "" : "disabled"}>${directAvailable ? "Move an object" : "Move an object — add an interactive object first"}</option>
               <option value="embodied-control" ${effectiveKind === "embodied-control" ? "selected" : ""}>Reader locomotion</option>
             </select>
             ${needsAssignment ? `<span class="interaction-assignment-flag" aria-hidden="true">Required</span>` : ""}
@@ -4767,7 +4920,7 @@ function makeCombinedBeat(beats) {
     originalField: "authored_beat_group",
     isTextOnly: textOnly,
     isCombined: true,
-    title: `${first?.title || first?.id || "Beat"} to ${last?.title || last?.id || "Beat"}`,
+    title: `${first?.title || first?.id || "Story part"} to ${last?.title || last?.id || "Story part"}`,
     text: beats.map((beat) => beat.text || beat.section || beat.title || "").filter(Boolean).join("\n\n"),
     section: sectionSet.size === 1 ? [...sectionSet][0] : "Authored grouping",
     sectionHeading: sectionHeadingSet.size === 1 ? [...sectionHeadingSet][0] : "",
@@ -4874,7 +5027,7 @@ function resetGraphDependentPreviewState() {
   state.spatialSelectionAnchorEntityId = null;
   state.spatialSelectionClearedSceneKey = "";
   state.spatialClipboard = null;
-  state.spatialClipboardStatus = "Select a GLB model to copy.";
+  state.spatialClipboardStatus = "Select a 3D model to copy.";
   state.spatialPropagationSelectionId = null;
   state.spatialPropagationTargetsOpen = false;
   state.spatialPropagationTargetBeatIds = [];
@@ -5620,11 +5773,11 @@ function renderComponentWorkspace(component) {
         </div>
         <div class="actions">
           ${renderGenerateOptionsButton(component, ready)}
-          <button data-action="save-graph">Save story order</button>
+          <button data-action="save-graph">Finish this step</button>
           ${renderCheckpointActions(component, decision, { canCommit: state.selectedOptionId || decision })}
         </div>
       </div>
-      ${ready ? "" : `<p class="blocked-note">Save earlier checkpoints before generating this component.</p>`}
+      ${ready ? "" : `<p class="blocked-note">Finish the earlier steps before generating choices here.</p>`}
       <div class="option-grid">
         ${(proposalBundle?.proposals || []).map((proposal) => renderOptionCard(component, proposal, decision)).join("") || renderEmptyOptions(component)}
       </div>
@@ -5669,7 +5822,7 @@ function renderAssetTopologyWorkspace(component) {
         </div>
       </div>
       <p class="muted">Choose how the story’s spatial assets are organized.</p>
-      ${ready ? "" : `<p class="blocked-note">Save earlier checkpoints before generating this component.</p>`}
+      ${ready ? "" : `<p class="blocked-note">Finish the earlier steps before generating choices here.</p>`}
       ${proposals.length || selectedProposal ? `
         <div class="asset-topology-workbench topology-matrix-workbench">
           ${renderTopologyOptionMatrix(component, proposals, selectedProposal, decision)}
@@ -5692,7 +5845,7 @@ function renderTopologyEmptyState(component) {
       </div>
       <div>
         <h3>No ${escapeHtml(component.label)} proposals yet</h3>
-        <p class="muted">Generate options to compare single-anchor, constellation, and map/network layouts using the current Source Graph.</p>
+        <p class="muted">Generate options to compare single-anchor, constellation, and map/network layouts using the current Story order.</p>
       </div>
     </div>
   `;
@@ -5708,7 +5861,7 @@ function renderTopologyOptionMatrix(component, proposals, selectedProposal, deci
     <aside class="topology-option-rail topology-matrix-rail ${visibleColumns.length === 1 ? "single-column" : ""}">
       <div class="visual-card-head">
         <h3>Topology options</h3>
-        <span>${modelAssetCount} GLB/model${modelAssetCount === 1 ? "" : "s"}</span>
+        <span>${modelAssetCount} 3D model${modelAssetCount === 1 ? "" : "s"}</span>
       </div>
       <div class="topology-matrix ${visibleColumns.length === 1 ? "single-column" : ""}" role="list" aria-label="Asset Topology options">
         ${visibleColumns.map((column) => {
@@ -5747,7 +5900,7 @@ function topologyModelAssetCount() {
 
 function topologyCellDisabledReason(kind, proposal) {
   if (kind !== "single" && topologyModelAssetCount() <= 1) {
-    return "Disabled for one-GLB stories; this topology needs multiple model anchors.";
+    return "Disabled for stories with one 3D model; this layout needs multiple model anchors.";
   }
   if (!proposal) return "Generate options to enable this topology column.";
   return "";
@@ -5904,11 +6057,11 @@ function renderTopologyInspector(proposal) {
       </section>
       ${selectedModelAsset ? renderModelPreviewPanel(selectedModelAsset) : ""}
       <section class="topology-inspector-section">
-        <h3>Evidence beats</h3>
+        <h3>Evidence story parts</h3>
         <div class="topology-evidence-list">
           ${(proposal.sourceEvidence || []).map((item) => `
             <article>
-              <strong>${escapeHtml(item.beatId || "source beat")}</strong>
+              <strong>${escapeHtml(item.beatId || "source story part")}</strong>
               <p>${escapeHtml(shortText(item.quote || item.reason || JSON.stringify(item), 170))}</p>
               ${item.reason ? `<span>${escapeHtml(item.reason)}</span>` : ""}
             </article>
@@ -5980,7 +6133,7 @@ function renderDynamicGeometryCanvasWorkspace(component, proposal, ready) {
       </div>
       ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before checking object movement.</p>`}
       ${renderDynamicGeometryStatus()}
-      <div class="dynamic-canvas-summary" aria-label="Current mapped Dynamics scenes">
+      <div class="dynamic-canvas-summary" aria-label="Current object movement by scene">
         <span>Object movement</span>
         <strong>${motionSceneCount ? `${motionSceneCount} of ${scenes.length} scene${scenes.length === 1 ? "" : "s"} have movement` : "No extra movement"}</strong>
         <small>${staticSceneCount ? `${staticSceneCount} scene${staticSceneCount === 1 ? "" : "s"} stay${staticSceneCount === 1 ? "s" : ""} still` : "Every scene has movement"}</small>
@@ -5992,50 +6145,37 @@ function renderDynamicGeometryCanvasWorkspace(component, proposal, ready) {
 
 function renderDynamicGeometryEditorWorkspace(component, proposal, ready, sceneContext) {
   const beat = dynamicPreviewBeatForSceneContext(proposal, sceneContext);
-  const noDynamics = inferDynamicGeometryKind(proposal) === "none";
-  const mappedTracks = noDynamics ? [] : dynamicMotionTracksForSceneContext(sceneContext);
-  const sharedTimelineStates = noDynamics ? [] : dynamicSharedTimelineStatesForSceneContext(sceneContext);
-  const proceduralPlan = activeProceduralDynamicsPlan(sceneContext);
+  const sceneEntities = dynamicSceneObjectEntities(sceneContext);
+  ensureDynamicSceneObjectSelection(sceneEntities);
   const proceduralBusy = Boolean(
     state.proceduralDynamicsUi.busyByScene[proceduralDynamicsSceneKey(sceneContext)],
   );
   const blockingDependencyLabel = participantBlockingDependencyLabel(component.id);
   const transmissionStory = storyProfileId(state.data) === "transmission";
-  const motionStatus = proceduralPlan
-    ? proceduralDynamicsPlanCountLabel(proceduralPlan)
-    : noDynamics
-      ? "No extra movement"
-      : sharedTimelineStates.length
-      ? "Saved movement"
-      : mappedTracks.length
-        ? "Saved movement"
-        : "Scene stays still";
   return `
-    <section class="panel asset-topology-panel dynamic-geometry-panel dynamic-editor-mode" data-dynamic-workspace-mode="editor">
+    <section class="panel asset-topology-panel spatial-relations-panel spatial-editor-mode dynamic-geometry-panel dynamic-editor-mode" data-dynamic-workspace-mode="editor">
       <div class="panel-head">
         <div>
           <p class="eyebrow">${escapeHtml(participantComponentLabel(component.id, component.label))} · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
           <h2>${escapeHtml(beat?.title || sceneContext.beatId)}</h2>
         </div>
-        <div class="actions">
-          <span class="dynamic-scene-motion-pill ${proceduralPlan || sharedTimelineStates.length || mappedTracks.length ? "mapped" : "static"}">${escapeHtml(motionStatus)}</span>
+        <div class="actions spatial-editor-head-actions">
           <button class="primary" type="button" data-dynamic-close-save ${proceduralBusy ? "disabled" : ""}>Save scene and return</button>
         </div>
       </div>
-      <p class="muted">${transmissionStory
-        ? "This story needs no extra object movement here. Check the cough and droplet timing in Scene changes."
-        : "Play the scene and check whether its movement helps tell the story."}</p>
       ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before checking object movement.</p>`}
       ${renderDynamicGeometryStatus()}
-      ${proposal ? `
-        <div class="asset-topology-workbench dynamic-geometry-workbench source-dynamics-workbench dynamic-editor-workbench">
-          ${renderDynamicPreview(proposal, sceneContext)}
-        </div>
-      ` : renderDynamicEmptyState(component)}
-      <details class="facilitator-details dynamic-optional-tools">
-        <summary>${transmissionStory ? "Optional movement tools — not needed for this story" : "Optional: add or link movement"}</summary>
-        <div class="facilitator-details-content">
+      <div class="spatial-relations-workbench storyvr-spatial-workbench dynamic-geometry-workbench dynamic-editor-workbench">
+        <div class="spatial-workbench-sidebar storyvr-spatial-sidebar dynamic-workbench-sidebar">
+          ${renderDynamicSceneObjectHierarchy(sceneEntities)}
           ${renderProceduralDynamicsAuthoring(sceneContext, ready)}
+        </div>
+        ${proposal ? renderDynamicPreview(proposal, sceneContext) : renderDynamicEmptyState(component)}
+      </div>
+      <details class="facilitator-details dynamic-optional-tools">
+        <summary>${transmissionStory ? "Optional: link saved movement — not needed for this story" : "Optional: link saved movement"}</summary>
+        <div class="facilitator-details-content">
+          ${transmissionStory ? `<p class="muted">This story needs no extra object movement here. Check the cough and droplet timing in Scene changes.</p>` : ""}
           ${renderSourceMotionLinkingEditor(component.id)}
         </div>
       </details>
@@ -6047,6 +6187,32 @@ function renderDynamicGeometryStatus() {
   if (!state.output?.error && !state.output?.sourceMotionLinksSaved && !state.output?.dynamic) return "";
   if (state.output?.error) return renderStageErrorNotice("dynamic-geometry");
   return `<p class="source-graph-status">${escapeHtml(state.output.sourceMotionLinksSaved || state.output.dynamic)}</p>`;
+}
+
+function dynamicSceneObjectEntities(sceneContext = activeDynamicSceneContext()) {
+  return spatialEditorSceneEntities(lockedSpatialRelationsContract(), sceneContext);
+}
+
+function ensureDynamicSceneObjectSelection(entities = dynamicSceneObjectEntities()) {
+  const available = Array.isArray(entities) ? entities : [];
+  if (available.some((entity) => entity.id === state.selectedDynamicEntityId)) {
+    return state.selectedDynamicEntityId;
+  }
+  state.selectedDynamicEntityId = available.find((entity) => spatialEntityType(entity) === "reader")?.id
+    || available[0]?.id
+    || null;
+  return state.selectedDynamicEntityId;
+}
+
+function renderDynamicSceneObjectHierarchy(entities) {
+  const selectedEntityId = ensureDynamicSceneObjectSelection(entities);
+  return renderSpatialHierarchy(entities, {
+    selectedEntityIds: selectedEntityId ? [selectedEntityId] : [],
+    primaryEntityId: selectedEntityId,
+    selectionAttribute: "data-dynamic-select-entity",
+    ariaLabel: "Dynamics scene object hierarchy",
+    className: "dynamic-scene-object-hierarchy",
+  });
 }
 
 function proceduralDynamicsScope(sceneContext) {
@@ -6128,11 +6294,11 @@ function proceduralDynamicsLockedSceneTargets(sceneContext) {
 
 function proceduralDynamicsCandidateMotionOnlyViolation(candidate, sceneContext) {
   if (!candidate || candidate.schemaVersion !== "storyvr-dynamics-scene-candidate/v3") {
-    return "Dynamics generation returned an outdated scene-change candidate.";
+    return "Movement generation returned an outdated scene-change suggestion.";
   }
   const patch = candidate.scenePatch;
   if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
-    return "Dynamics generation did not return a motion-only patch.";
+    return "Movement generation did not return a movement-only change.";
   }
   const forbiddenPatchKeys = Object.keys(patch).filter((key) => (
     !["schemaVersion", "motionPlan"].includes(key) && patch[key] != null
@@ -6144,15 +6310,15 @@ function proceduralDynamicsCandidateMotionOnlyViolation(candidate, sceneContext)
     || candidate.spatialScene
     || candidate.projectedSpatialScene
   ) {
-    return "Dynamics generation attempted to change linked assets or Spatial Relations.";
+    return "Movement generation attempted to change linked assets or saved object placement.";
   }
   const impact = proceduralDynamicsCandidateImpact(candidate);
   if (impact.sourceGraphChanged || impact.spatialRelationsChanged || impact.attentionGuidanceChanged) {
-    return "Dynamics generation attempted to change an upstream scene checkpoint.";
+    return "Movement generation attempted to change an earlier saved step.";
   }
   const plan = proceduralDynamicsCandidateMotionPlan(candidate);
   if (!plan || !Array.isArray(plan.actors) || !plan.actors.length) {
-    return "Dynamics generation did not assign motion to an existing scene model.";
+    return "Movement generation did not assign movement to an existing scene object.";
   }
   if (
     plan.sceneComposition
@@ -6160,7 +6326,7 @@ function proceduralDynamicsCandidateMotionOnlyViolation(candidate, sceneContext)
     || plan.hiddenAssetIds
     || plan.assetVisibility
   ) {
-    return "Dynamics generation attempted to hide or replace an existing scene model.";
+    return "Movement generation attempted to hide or replace an existing scene object.";
   }
   const targetByEntityId = new Map(
     proceduralDynamicsLockedSceneTargets(sceneContext)
@@ -6171,11 +6337,11 @@ function proceduralDynamicsCandidateMotionOnlyViolation(candidate, sceneContext)
     const entityId = String(actor?.entityId || actor?.targetEntityId || "").trim();
     const target = targetByEntityId.get(entityId);
     if (!target || seenEntityIds.has(entityId)) {
-      return "Dynamics generation targeted a missing or duplicate scene model instance.";
+      return "Movement generation targeted a missing or duplicate scene object.";
     }
     seenEntityIds.add(entityId);
     if (actor?.assetId && String(actor.assetId) !== String(target.assetId)) {
-      return "Dynamics generation attempted to replace a scene model's linked asset.";
+      return "Movement generation attempted to replace a scene object's linked asset.";
     }
     if (
       Object.hasOwn(actor || {}, "instanceCount")
@@ -6188,7 +6354,7 @@ function proceduralDynamicsCandidateMotionOnlyViolation(candidate, sceneContext)
       || Object.hasOwn(actor || {}, "rotation")
       || Object.hasOwn(actor || {}, "quaternion")
     ) {
-      return "Dynamics generation attempted to change a model transform, size, or instance count.";
+      return "Movement generation attempted to change an object's placement, size, or instance count.";
     }
   }
   return "";
@@ -6200,7 +6366,7 @@ function proceduralDynamicsCandidateMatchesLocalScene(candidate, sceneContext) {
 
 function proceduralDynamicsActorParameterSummary(actor, index, sceneContext = null) {
   const trajectory = actor?.trajectory || actor?.motion || {};
-  const kind = String(trajectory.kind || trajectory.type || "motion").replace(/-/g, " ");
+  const kind = String(trajectory.kind || trajectory.type || "movement").replace(/-/g, " ");
   const details = [];
   if (Number.isFinite(Number(trajectory.radiusMeters))) details.push(`radius ${Number(trajectory.radiusMeters).toFixed(1)} m`);
   if (Number.isFinite(Number(trajectory.heightMeters))) details.push(`height ${Number(trajectory.heightMeters).toFixed(1)} m`);
@@ -6233,30 +6399,30 @@ function renderProceduralDynamicsCandidateImpact(candidate, sceneContext) {
     <section class="procedural-dynamics-impact" data-procedural-dynamics-impact>
       <div class="procedural-dynamics-impact-head">
         <div>
-          <p class="eyebrow">Motion-only preview</p>
+          <p class="eyebrow">Movement-only preview</p>
           <h4>Saved scene inputs stay locked</h4>
         </div>
-        <span>Assets, transforms &amp; count locked</span>
+        <span>Assets, placement &amp; count locked</span>
       </div>
       <div class="procedural-dynamics-impact-grid">
         <article>
           <span>Locked scene inputs</span>
-          <strong>${linkedAssetCount} linked asset${linkedAssetCount === 1 ? "" : "s"} · ${placedModelCount} placed model instance${placedModelCount === 1 ? "" : "s"}</strong>
+          <strong>${linkedAssetCount} linked asset${linkedAssetCount === 1 ? "" : "s"} · ${placedModelCount} placed 3D model${placedModelCount === 1 ? "" : "s"}</strong>
           <p>Apply cannot add, remove, replace, hide, resize, or rewrite any saved position, rotation, or scale.</p>
         </article>
         <article>
-          <span>Generated motion</span>
-          <strong>${motionPlan ? `${motionTargetCount} existing model instance${motionTargetCount === 1 ? "" : "s"} assigned motion` : "No valid motion plan"}</strong>
+          <span>Generated movement</span>
+          <strong>${motionPlan ? `${motionTargetCount} existing 3D model${motionTargetCount === 1 ? "" : "s"} assigned movement` : "No valid movement plan"}</strong>
           <ul>
             ${(motionPlan?.actors || []).map((actor, index) => `<li>${escapeHtml(proceduralDynamicsActorParameterSummary(actor, index, sceneContext))}</li>`).join("")
-              || "<li>No actor motion parameters supplied.</li>"}
+              || "<li>No object movement details supplied.</li>"}
           </ul>
         </article>
       </div>
       ${checkpointDrafts.length || checkpointStale.length ? `
         <div class="procedural-dynamics-checkpoint-impact">
-          ${checkpointDrafts.length ? `<span>Draft after Apply: ${escapeHtml(checkpointDrafts.join(", "))}</span>` : ""}
-          ${checkpointStale.length ? `<span>Needs review: ${escapeHtml(checkpointStale.join(", "))}</span>` : ""}
+          ${checkpointDrafts.length ? `<span>Changes after Apply: ${escapeHtml(checkpointDrafts.map((id) => participantComponentLabel(id, id)).join(", "))}</span>` : ""}
+          ${checkpointStale.length ? `<span>Needs review: ${escapeHtml(checkpointStale.map((id) => participantComponentLabel(id, id)).join(", "))}</span>` : ""}
         </div>
       ` : ""}
       ${impact.materiallyChanged === false ? `
@@ -6314,7 +6480,7 @@ function proceduralDynamicsPlanCountLabel(plan) {
 
 function proceduralDynamicsPlanMotionLabels(plan) {
   return [...new Set((plan?.actors || []).map((actor) => (
-    actor?.trajectory?.kind || actor?.trajectory?.type || actor?.motion?.type || "motion"
+    actor?.trajectory?.kind || actor?.trajectory?.type || actor?.motion?.type || "movement"
   )).filter(Boolean))];
 }
 
@@ -6326,11 +6492,11 @@ function renderProceduralDynamicsPlanSummary(plan, source) {
   return `
     <article class="procedural-dynamics-plan-summary" data-procedural-dynamics-plan-source="${escapeHtml(source)}">
       <div>
-        <span>${source === "candidate" ? "Generated preview" : "Applied motion"}</span>
-        <strong>${targetCount} existing model instance${targetCount === 1 ? "" : "s"} assigned motion</strong>
+        <span>${source === "candidate" ? "Generated preview" : "Applied movement"}</span>
+        <strong>${targetCount} existing 3D model${targetCount === 1 ? "" : "s"} assigned movement</strong>
       </div>
       ${summary ? `<p>${escapeHtml(summary)}</p>` : ""}
-      <small>${escapeHtml(labels.length ? labels.join(" · ") : "Validated procedural motion")}</small>
+      <small>${escapeHtml(labels.length ? labels.join(" · ") : "Validated generated movement")}</small>
     </article>
   `;
 }
@@ -6368,9 +6534,9 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
   const status = state.proceduralDynamicsUi.statusByScene[sceneKey] || "";
   const error = state.proceduralDynamicsUi.errorsByScene[sceneKey] || "";
   const staleMessage = candidateIsStale
-    ? "The description changed. Generate a new preview before applying motion."
+    ? "The description changed. Generate a new preview before applying movement."
     : candidateMotionOnlyViolation || candidateSceneChanged
-      ? candidateMotionOnlyViolation || "This scene's locked assets or Spatial Relations changed after generation. Generate a new preview before applying."
+      ? candidateMotionOnlyViolation || "This scene's locked assets or saved object placement changed after generation. Generate a new preview before applying."
       : candidateHasUnmetRequirements
         ? "Resolve the unmet prompt requirements by revising and regenerating before applying."
         : candidateLacksMaterialChange
@@ -6379,7 +6545,7 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
   const canGenerate = ready && !busy && Boolean(prompt.trim());
   return `
     <section
-      class="procedural-dynamics-authoring"
+      class="procedural-dynamics-authoring dynamic-generation-sidebar-card storyvr-spatial-sidebar-card"
       data-procedural-dynamics-authoring
       data-procedural-dynamics-scene-key="${escapeHtml(sceneKey)}"
       aria-busy="${busy ? "true" : "false"}"
@@ -6393,7 +6559,7 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
         <span class="procedural-dynamics-scope">${escapeHtml(spatialSceneContextLabel(sceneContext))}</span>
       </div>
       <label class="procedural-dynamics-prompt" for="procedural-dynamics-prompt">
-        <span>Motion description</span>
+        <span>Movement description</span>
         <textarea
           id="procedural-dynamics-prompt"
           data-procedural-dynamics-prompt
@@ -6415,7 +6581,7 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
             type="button"
             data-procedural-dynamics-apply
             ${busy || applyBlocked ? "disabled" : ""}
-          >Apply motion</button>
+          >Apply movement</button>
           <button
             type="button"
             data-procedural-dynamics-discard
@@ -6428,7 +6594,7 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
             type="button"
             data-procedural-dynamics-remove
             ${busy ? "disabled" : ""}
-          >Remove generated motion</button>
+          >Remove generated movement</button>
         ` : ""}
       </div>
       ${renderProceduralDynamicsPlanSummary(previewPlan, candidate ? "candidate" : "stored")}
@@ -6445,7 +6611,7 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
 function renderDynamicStoryCanvas(proposal) {
   const beats = state.data?.graph?.beats || [];
   if (!beats.length) {
-    return `<section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell dynamic-story-canvas-shell"><h3>Story canvas</h3><p class="muted">No Source Graph beats are available.</p></section>`;
+    return `<section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell dynamic-story-canvas-shell"><h3>Story canvas</h3><p class="muted">No story parts are available.</p></section>`;
   }
   return `
     <section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell dynamic-story-canvas-shell" data-dynamic-story-canvas>
@@ -6454,7 +6620,7 @@ function renderDynamicStoryCanvas(proposal) {
         <span>${beats.length} story part${beats.length === 1 ? "" : "s"}</span>
       </div>
       <div class="source-graph-canvas-stage spatial-story-canvas-stage dynamic-story-canvas-stage">
-        <div class="source-graph-canvas-viewport spatial-story-canvas-viewport dynamic-story-canvas-viewport story-variant-links-canvas" data-dynamic-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Dynamics story canvas">
+        <div class="source-graph-canvas-viewport spatial-story-canvas-viewport dynamic-story-canvas-viewport story-variant-links-canvas" data-dynamic-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Object movement story canvas">
           ${renderStoryVariantLinkLayer("dynamic")}
           <ol class="source-graph-canvas-track spatial-story-canvas-track dynamic-story-canvas-track">
             ${beats.map((beat, index) => renderDynamicStoryBeat(beat, index, beats.length, proposal)).join("")}
@@ -6474,7 +6640,7 @@ function renderDynamicStoryBeat(beat, index, total, proposal) {
     <li class="source-graph-beat-item spatial-story-beat-item dynamic-story-beat-item ${group ? "has-variants" : ""} ${index < total - 1 ? "has-connector" : ""}">
       ${renderDynamicStoryCard(beat, defaultOption, primaryContext, index, proposal, true)}
       ${alternatives.length ? `
-        <ol class="source-graph-variant-alternatives spatial-story-variant-alternatives dynamic-story-variant-alternatives" aria-label="Parallel Dynamics scenes for ${escapeHtml(beat.title || beat.id)}">
+        <ol class="source-graph-variant-alternatives spatial-story-variant-alternatives dynamic-story-variant-alternatives" aria-label="Parallel choices for ${escapeHtml(beat.title || beat.id)}">
           ${alternatives.map((option) => `<li>${renderDynamicStoryCard(beat, option, spatialSceneContext(beat.id, group.id, option.id), index, proposal, false)}</li>`).join("")}
         </ol>
       ` : ""}
@@ -6492,14 +6658,14 @@ function renderDynamicStoryCard(beat, option, context, index, proposal, primary)
   const title = option?.label || beat.title || beat.id;
   const text = option?.text || beat.text || beat.excerpt || beat.section || "";
   const status = proceduralPlan
-    ? { className: "mapped", label: proceduralDynamicsPlanCountLabel(proceduralPlan) }
+    ? { className: "mapped", changed: true }
     : inferDynamicGeometryKind(proposal) === "none"
-      ? { className: "no-dynamics", label: "No extra movement" }
+      ? { className: "no-dynamics", changed: false }
       : sharedTimelineStates.length
-      ? { className: "mapped", label: "Saved movement" }
+      ? { className: "mapped", changed: true }
       : mappedTracks.length
-        ? { className: "mapped", label: "Saved movement" }
-        : { className: "static", label: "Scene stays still" };
+        ? { className: "mapped", changed: true }
+        : { className: "static", changed: false };
   return `
     <button
       type="button"
@@ -6509,11 +6675,11 @@ function renderDynamicStoryCard(beat, option, context, index, proposal, primary)
       ${context.variantGroupId ? `data-dynamic-variant-group-id="${escapeHtml(context.variantGroupId)}"` : ""}
       ${context.variantOptionId ? `data-dynamic-variant-option-id="${escapeHtml(context.variantOptionId)}"` : ""}
       ${renderStoryVariantCardAttributes(context)}
-      aria-label="Open Dynamics editor for ${escapeHtml(title)}"
+      aria-label="Open object movement editor for ${escapeHtml(title)}"
     >
       <span class="source-graph-beat-card-head">
         <span class="beat-number">${String(index + 1).padStart(2, "0")}</span>
-        ${option ? `<span class="spatial-variant-badge">Variant</span>` : ""}
+        ${option ? `<span class="spatial-variant-badge">Choice</span>` : ""}
       </span>
       <span class="source-graph-beat-summary spatial-story-beat-summary">
         <strong>${escapeHtml(title)}</strong>
@@ -6522,7 +6688,7 @@ function renderDynamicStoryCard(beat, option, context, index, proposal, primary)
       <span class="source-graph-beat-assets spatial-story-beat-assets" aria-label="${linkedAssetIds.length} scene assets">
         ${linkedAssetIds.map((assetId) => renderDynamicStoryAsset(assetId, context, proposal, mappedTracks)).join("") || `<span class="muted">No linked visual</span>`}
       </span>
-      <span class="spatial-scene-card-footer dynamic-scene-card-footer"><span>${linkedAssetIds.length} scene asset${linkedAssetIds.length === 1 ? "" : "s"}</span><em>${escapeHtml(status.label)}</em></span>
+      <span class="spatial-scene-card-footer dynamic-scene-card-footer"><span>${linkedAssetIds.length} scene asset${linkedAssetIds.length === 1 ? "" : "s"}</span>${renderStoryCanvasChangedIndicator(status.changed)}</span>
     </button>
   `;
 }
@@ -6554,13 +6720,13 @@ function renderDynamicEmptyState(component) {
   return `
     <div class="topology-empty-state dynamic-empty-state">
       <div class="topology-empty-diagram">
-        <span class="empty-reader">Motion</span>
+        <span class="empty-reader">Movement</span>
         <span class="empty-node one">Flow</span>
         <span class="empty-node two">Zoom</span>
         <span class="empty-node three">Focus</span>
       </div>
       <div>
-        <h3>No ${escapeHtml(component.label)} classification available</h3>
+        <h3>No object movement available</h3>
         <p class="muted">No saved movement is available for this scene.</p>
       </div>
     </div>
@@ -6585,7 +6751,7 @@ function renderDynamicOptionRail(component, proposals, selectedProposal) {
             <strong>${escapeHtml(proposal.label || component.label)}</strong>
             <p>${escapeHtml(shortText(proposal.description, 130))}</p>
             <div class="topology-card-meta">
-              <span>${beatCount} active beat${beatCount === 1 ? "" : "s"}</span>
+              <span>${beatCount} active story part${beatCount === 1 ? "" : "s"}</span>
               <span>${Math.round(Number(proposal.confidence || 0) * 100)}%</span>
             </div>
             <button data-select-option="${escapeHtml(proposal.optionId)}">${selected ? "Selected" : "Select"}</button>
@@ -6600,8 +6766,8 @@ function renderDynamicPreview(proposal, sceneContext = null) {
   if (!proposal) {
     return `
       <section class="topology-diagram-card">
-        <h3>Dynamics preview</h3>
-        <p class="muted">Apply animation-probe classifications to preview source dynamics.</p>
+        <h3>Object movement preview</h3>
+        <p class="muted">No saved object movement is available to preview.</p>
       </section>
     `;
   }
@@ -6622,11 +6788,6 @@ function renderDynamicPreview(proposal, sceneContext = null) {
     : hasSourceAnimation
       ? "Saved movement"
       : "Still";
-  const previewDescription = hasProceduralMotion
-    ? hasSourceAnimation
-      ? "Generated motion is layered on the existing placed models while mapped GLB clips continue to animate their meshes."
-      : "The validated motion plan moves the existing placed models without changing their saved transform, size, or count."
-    : proposal.description;
   const linkedCount = beat?.linkedAssetIds?.length || 0;
   const mappedMotionCount = sceneContext
     ? dynamicMotionTracksForSceneContext(sceneContext).length
@@ -6642,26 +6803,25 @@ function renderDynamicPreview(proposal, sceneContext = null) {
         ? "This scene stays still."
         : "Play the preview to check the movement already saved with this scene.";
   return `
-    <section class="topology-diagram-card topology-3d-card dynamic-preview-card">
-      <div class="visual-card-head">
+    <section class="topology-diagram-card topology-3d-card spatial-preview-card dynamic-preview-card storyvr-spatial-surface">
+      <div class="visual-card-head storyvr-spatial-surface-head">
         <div>
           <h3>Movement preview</h3>
           <p class="muted">${escapeHtml(previewHelp)}</p>
         </div>
         <span class="topology-kind-pill ${kind}">${escapeHtml(previewModeLabel)}</span>
       </div>
-      <div class="spatial-scene-context-bar dynamic-scene-context-bar">
+      <div class="spatial-scene-context-bar dynamic-scene-context-bar storyvr-spatial-context">
         <div>
-          <span>${escapeHtml(sceneContext ? spatialSceneContextLabel(sceneContext) : "Active beat")}</span>
-          <strong>${escapeHtml(beat?.title || beat?.id || "No beat selected")}</strong>
-          <span>${linkedCount} object${linkedCount === 1 ? "" : "s"}${hasProceduralMotion ? ` · ${proceduralInstanceCount} with added movement` : mappedMotionCount ? ` · ${mappedMotionCount} with saved movement` : ""}</span>
+          <span>${escapeHtml(sceneContext ? spatialSceneContextLabel(sceneContext) : "Active story part")}</span>
+          <strong>${escapeHtml(beat?.title || beat?.id || "No story part selected")}</strong>
         </div>
-        <p>${escapeHtml(shortText(beat?.text || beat?.quote || "No beat text available.", 220))}</p>
+        <span>${linkedCount} object${linkedCount === 1 ? "" : "s"}${hasProceduralMotion ? ` · ${proceduralInstanceCount} with added movement` : mappedMotionCount ? ` · ${mappedMotionCount} with saved movement` : ""}</span>
       </div>
       ${noDynamics && !hasProceduralMotion ? `
-        <p class="topology-swap-note">This scene has no extra movement.</p>
+        <div class="dynamic-playback-controls dynamic-playback-status storyvr-spatial-toolbar" role="status"><span>This scene has no extra movement.</span></div>
       ` : hasPlayback ? `
-        <div class="dynamic-playback-controls">
+        <div class="dynamic-playback-controls storyvr-spatial-toolbar" role="toolbar" aria-label="Movement preview controls">
           <button data-dynamic-play>${state.dynamicPreviewPlaying ? "Pause" : "Play"}</button>
           <button data-dynamic-restart>Restart</button>
           <label>
@@ -6672,16 +6832,11 @@ function renderDynamicPreview(proposal, sceneContext = null) {
           </label>
         </div>
       ` : `
-        <p class="topology-swap-note">This scene has no saved movement.</p>
+        <div class="dynamic-playback-controls dynamic-playback-status storyvr-spatial-toolbar" role="status"><span>This scene has no saved movement.</span></div>
       `}
-      <div class="topology-viewer-shell dynamic-viewer-shell" data-dynamic-viewer="${escapeHtml(proposal.optionId)}" tabindex="0" role="application" aria-label="Interactive 3D dynamics preview">
-        <div class="topology-viewer-status">Loading dynamics preview...</div>
+      <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell dynamic-viewer-shell storyvr-spatial-viewer" data-dynamic-viewer="${escapeHtml(proposal.optionId)}" tabindex="0" role="application" aria-label="Interactive 3D object-movement preview">
+        <div class="topology-viewer-status">Loading object-movement preview...</div>
       </div>
-      <p class="topology-viewer-hint">Drag to look around. Select the scene and use WASD to move the preview camera.</p>
-      <details class="facilitator-details preview-diagnostics">
-        <summary>Movement details for facilitator</summary>
-        <p class="topology-description">${escapeHtml(previewDescription)}</p>
-      </details>
     </section>
   `;
 }
@@ -6724,29 +6879,37 @@ function renderInterBeatDynamicsEditorWorkspace(component, proposal, ready, scen
   const blockingDependencyLabel = participantBlockingDependencyLabel(component.id);
   const manualVariantSwitch = boundary.authoredTransition?.manualVariantSwitch === true;
   const incomingLabel = manualVariantSwitch
-    ? `Change from ${interBeatTransitionEndpointTitle(boundary.authoredTransition.from, boundary.authoredTransition.fromContext)}`
+    ? `Scene change from ${interBeatTransitionEndpointTitle(boundary.authoredTransition.from, boundary.authoredTransition.fromContext)}`
     : boundary.authoredTransition
-      ? `Change from ${interBeatTransitionEndpointTitle(boundary.authoredTransition.from, boundary.authoredTransition.fromContext)}`
+      ? `Scene change from ${interBeatTransitionEndpointTitle(boundary.authoredTransition.from, boundary.authoredTransition.fromContext)}`
     : boundary.transition
     ? `From ${interBeatBeatDisplayTitle(boundary.transition.from, boundary.beats)}`
     : boundary.beatIndex > 0 ? "The previous scene stays visible" : "The story starts here";
   return `
-    <section class="panel asset-topology-panel inter-beat-panel dynamic-editor-mode inter-beat-editor-mode transition-editor-mode" data-inter-beat-workspace-mode="editor">
+    <section class="panel asset-topology-panel spatial-relations-panel spatial-editor-mode inter-beat-panel dynamic-editor-mode inter-beat-editor-mode transition-editor-mode" data-inter-beat-workspace-mode="editor">
       <div class="panel-head">
         <div>
           <p class="eyebrow">${escapeHtml(participantComponentLabel(component.id, component.label))} · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
           <h2>${escapeHtml(beat?.title || sceneContext.beatId)}</h2>
         </div>
-        <div class="actions">
-          <span class="dynamic-scene-motion-pill ${status.className === "mapped" ? "mapped" : "static"} ${manualVariantSwitch ? "manual-variant-switch" : ""}">${escapeHtml(status.label)}</span>
+        <div class="actions spatial-editor-head-actions">
           <button class="primary" type="button" data-inter-beat-close-save>Save scene and return</button>
         </div>
       </div>
-      <p class="muted">${escapeHtml(incomingLabel)}. Play the preview to check the change.</p>
       ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before checking scene changes.</p>`}
       ${renderInterBeatDynamicsStatus()}
       ${proposal ? `
-        <div class="asset-topology-workbench dynamic-geometry-workbench source-dynamics-workbench dynamic-editor-workbench transition-editor-workbench">
+        <div class="spatial-relations-workbench storyvr-spatial-workbench dynamic-geometry-workbench dynamic-editor-workbench transition-editor-workbench">
+          <div class="spatial-workbench-sidebar storyvr-spatial-sidebar transition-workbench-sidebar">
+            <aside class="topology-inspector spatial-inspector transition-scene-inspector storyvr-spatial-sidebar-card">
+              <div class="spatial-inspector-head">
+                <div><p class="eyebrow">Scene status</p><h3>Scene change</h3></div>
+                <span class="dynamic-scene-motion-pill ${status.className === "mapped" ? "mapped" : "static"} ${manualVariantSwitch ? "manual-variant-switch" : ""}">${escapeHtml(status.label)}</span>
+              </div>
+              <p class="muted">${escapeHtml(incomingLabel)}.</p>
+              <p class="muted">Play the preview to check the scene change.</p>
+            </aside>
+          </div>
           ${renderInterBeatPreview(proposal, sceneContext)}
         </div>
       ` : renderInterBeatEmptyState(component)}
@@ -6764,7 +6927,7 @@ function renderInterBeatStoryCanvas(proposal) {
   const beats = state.data?.graph?.beats || [];
   const boundaryTransitions = authoredMotionTransitions({ preserveParallel: true });
   if (!beats.length) {
-    return `<section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell dynamic-story-canvas-shell transition-story-canvas-shell"><h3>Story canvas</h3><p class="muted">No Source Graph beats are available.</p></section>`;
+    return `<section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell dynamic-story-canvas-shell transition-story-canvas-shell"><h3>Story canvas</h3><p class="muted">No story parts are available.</p></section>`;
   }
   return `
     <section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell dynamic-story-canvas-shell transition-story-canvas-shell" data-inter-beat-story-canvas>
@@ -6773,7 +6936,7 @@ function renderInterBeatStoryCanvas(proposal) {
         <span>${beats.length} story part${beats.length === 1 ? "" : "s"}</span>
       </div>
       <div class="source-graph-canvas-stage spatial-story-canvas-stage dynamic-story-canvas-stage transition-story-canvas-stage">
-        <div class="source-graph-canvas-viewport spatial-story-canvas-viewport dynamic-story-canvas-viewport transition-story-canvas-viewport story-variant-links-canvas" data-inter-beat-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Transition story canvas">
+        <div class="source-graph-canvas-viewport spatial-story-canvas-viewport dynamic-story-canvas-viewport transition-story-canvas-viewport story-variant-links-canvas" data-inter-beat-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Scene changes story canvas">
           ${renderStoryVariantLinkLayer("transition", proposal)}
           <ol class="source-graph-canvas-track spatial-story-canvas-track dynamic-story-canvas-track transition-story-canvas-track">
             ${beats.map((beat, index) => renderInterBeatStoryBeat(beat, index, proposal, boundaryTransitions)).join("")}
@@ -6799,12 +6962,12 @@ function renderInterBeatStoryBeat(beat, index, proposal, boundaryTransitions) {
     <li class="source-graph-beat-item spatial-story-beat-item dynamic-story-beat-item transition-story-beat-item ${group ? "has-variants" : ""} ${hasOutgoingProgression ? "has-connector" : ""}">
       ${renderInterBeatStoryCard(beat, defaultOption, primaryContext, index, proposal, true)}
       ${alternatives.length ? `
-        <ol class="source-graph-variant-alternatives spatial-story-variant-alternatives transition-story-variant-alternatives" aria-label="Parallel Transition scenes for ${escapeHtml(beat.title || beat.id)}">
+        <ol class="source-graph-variant-alternatives spatial-story-variant-alternatives transition-story-variant-alternatives" aria-label="Parallel choices for ${escapeHtml(beat.title || beat.id)}">
           ${alternatives.map((option) => `<li>${renderInterBeatStoryCard(beat, option, spatialSceneContext(beat.id, group.id, option.id), index, proposal, false)}</li>`).join("")}
         </ol>
       ` : ""}
       ${outgoingTransitions.length ? `
-        <div class="transition-boundary-stack" aria-label="Outgoing Transition boundaries">
+        <div class="transition-boundary-stack" aria-label="Outgoing scene changes">
           ${outgoingTransitions.map((transition) => renderInterBeatBoundaryConnector(proposal, transition)).join("")}
         </div>
       ` : ""}
@@ -6826,7 +6989,7 @@ function renderInterBeatBoundaryConnector(proposal, transition) {
     <div
       class="transition-boundary-connector ${className}"
       role="group"
-      aria-label="${escapeHtml(`Transition from ${fromTitle} to ${toTitle}: ${accessibleStatus}`)}"
+      aria-label="${escapeHtml(`Scene change from ${fromTitle} to ${toTitle}: ${accessibleStatus}`)}"
     >
       <span class="transition-boundary-arrow" ${thumbnailSpec ? `aria-hidden="true"` : ""}>
         ${!thumbnailSpec ? renderInterBeatUnmappedTransitionButton(context, fromTitle, toTitle) : ""}
@@ -6837,7 +7000,7 @@ function renderInterBeatBoundaryConnector(proposal, transition) {
 }
 
 function interBeatTransitionEndpointTitle(beat, context) {
-  if (!context?.variantOptionId) return beat?.title || beat?.id || "Beat";
+  if (!context?.variantOptionId) return beat?.title || beat?.id || "Story part";
   const option = sourceGraphVariantOption(context);
   return option?.label || beat?.title || context.variantOptionId;
 }
@@ -6852,14 +7015,14 @@ function renderInterBeatUnmappedTransitionButton(context, fromTitle, toTitle) {
       ${context.transitionEdgeId ? `data-inter-beat-edge-id="${escapeHtml(context.transitionEdgeId)}"` : ""}
       ${context.variantGroupId ? `data-inter-beat-variant-group-id="${escapeHtml(context.variantGroupId)}"` : ""}
       ${context.variantOptionId ? `data-inter-beat-variant-option-id="${escapeHtml(context.variantOptionId)}"` : ""}
-      aria-label="${escapeHtml(`Open scene change from ${fromTitle} to ${toTitle}: no saved change`)}"
-    ><span class="transition-boundary-status">No saved change</span></button>
+      aria-label="${escapeHtml(`Open scene change from ${fromTitle} to ${toTitle}: no saved scene change`)}"
+    ><span class="transition-boundary-status">No saved scene change</span></button>
   `;
 }
 
 function renderInterBeatBoundaryThumbnail(playback, context, fromTitle, toTitle, thumbnailSpec = transitionModelThumbnailAnimationSpec(playback)) {
   if (!thumbnailSpec) return "";
-  const transitionLabel = `transition from ${fromTitle} to ${toTitle}`;
+  const transitionLabel = `scene change from ${fromTitle} to ${toTitle}`;
   return `
     <button
       class="transition-boundary-thumbnail"
@@ -6921,15 +7084,16 @@ function renderInterBeatStoryCard(beat, option, context, index, proposal, primar
   const linkedAssetIds = previewBeat?.linkedAssetIds || [];
   const title = option?.label || beat.title || beat.id;
   const text = option?.text || beat.text || beat.excerpt || beat.section || "";
+  const changed = interBeatBoundaryStatus(proposal, context).className === "mapped";
   return `
     <article
       class="source-graph-beat-card spatial-story-beat-card dynamic-story-beat-card transition-story-beat-card ${primary ? "" : "source-graph-parallel-variant-card"}"
       ${renderStoryVariantCardAttributes(context)}
-      aria-label="${escapeHtml(title)} Transition scene"
+      aria-label="${escapeHtml(title)} scene change"
     >
       <span class="source-graph-beat-card-head">
         <span class="beat-number">${String(index + 1).padStart(2, "0")}</span>
-        ${option ? `<span class="spatial-variant-badge">Variant</span>` : ""}
+        ${option ? `<span class="spatial-variant-badge">Choice</span>` : ""}
       </span>
       <span class="source-graph-beat-summary spatial-story-beat-summary">
         <strong>${escapeHtml(title)}</strong>
@@ -6938,7 +7102,7 @@ function renderInterBeatStoryCard(beat, option, context, index, proposal, primar
       <span class="source-graph-beat-assets spatial-story-beat-assets" aria-label="${linkedAssetIds.length} scene assets">
         ${linkedAssetIds.slice(0, 4).map((assetId) => renderSpatialStoryAsset(assetId)).join("") || `<span class="muted">No linked visual</span>`}
       </span>
-      <span class="spatial-scene-card-footer dynamic-scene-card-footer"><span>${linkedAssetIds.length} scene asset${linkedAssetIds.length === 1 ? "" : "s"}</span></span>
+      <span class="spatial-scene-card-footer dynamic-scene-card-footer"><span>${linkedAssetIds.length} scene asset${linkedAssetIds.length === 1 ? "" : "s"}</span>${renderStoryCanvasChangedIndicator(changed)}</span>
     </article>
   `;
 }
@@ -6946,11 +7110,11 @@ function renderInterBeatStoryCard(beat, option, context, index, proposal, primar
 function renderInterBeatBeatRail(proposal) {
   const context = selectedInterBeatBeatContext(proposal);
   return `
-    <aside class="inter-beat-beat-rail" aria-label="Story beats">
+    <aside class="inter-beat-beat-rail" aria-label="Story parts">
       <div class="visual-card-head">
         <div>
-          <h3>Story beats</h3>
-          <p class="muted">Choose a beat to inspect its active model parts.</p>
+          <h3>Story parts</h3>
+          <p class="muted">Choose a story part to inspect its active model parts.</p>
         </div>
         <span>${context.beats.length}</span>
       </div>
@@ -6971,12 +7135,12 @@ function renderInterBeatBeatRail(proposal) {
               <span class="beat-number">${String(index + 1).padStart(2, "0")}</span>
               <span class="beat-copy">
                 <strong>${escapeHtml(displayTitle)}</strong>
-                <small>${escapeHtml(shortText(beat.text || "No beat text available.", 118))}</small>
+                <small>${escapeHtml(shortText(beat.text || "No story-part text available.", 118))}</small>
                 <span class="inter-beat-part-summary">${parts.length} active selector${parts.length === 1 ? "" : "s"} · ${animations.length} animation${animations.length === 1 ? "" : "s"} · ${escapeHtml(stateMode)}</span>
               </span>
             </button>
           `;
-        }).join("") || `<p class="muted">No model-linked beats available.</p>`}
+        }).join("") || `<p class="muted">No story parts with linked 3D models are available.</p>`}
       </div>
     </aside>
   `;
@@ -6986,8 +7150,8 @@ function renderInterBeatStaleNotice(hiddenLegacyCount, staleDecision) {
   if (!hiddenLegacyCount && !staleDecision) return "";
   return `
     <p class="blocked-note">
-      ${staleDecision ? "The current transition decision is stale. Save Spatial Relations to refresh the source-transition preview." : ""}
-      ${hiddenLegacyCount ? `${hiddenLegacyCount} legacy transition option${hiddenLegacyCount === 1 ? "" : "s"} hidden because Transition now uses source classifications.` : ""}
+      ${staleDecision ? "The current scene-change choice is out of date. Finish Place objects to refresh this preview." : ""}
+      ${hiddenLegacyCount ? `${hiddenLegacyCount} older scene-change choice${hiddenLegacyCount === 1 ? "" : "s"} hidden because the Scene changes step now uses the saved source behavior.` : ""}
     </p>
   `;
 }
@@ -6997,12 +7161,12 @@ function renderInterBeatEmptyState(component) {
     <div class="topology-empty-state dynamic-empty-state">
       <div class="topology-empty-diagram">
         <span class="empty-reader">A -> B</span>
-        <span class="empty-node one">Motion</span>
+        <span class="empty-node one">Movement</span>
         <span class="empty-node two">Flow</span>
         <span class="empty-node three">Zoom</span>
       </div>
       <div>
-        <h3>No ${escapeHtml(component.label)} classification available</h3>
+        <h3>No saved scene change available</h3>
         <p class="muted">No saved scene change is available here.</p>
       </div>
     </div>
@@ -7018,7 +7182,7 @@ function renderInterBeatOptionRail(component, proposals, selectedProposal) {
   return `
     <aside class="topology-option-rail dynamic-option-rail inter-beat-option-rail">
       <div class="visual-card-head">
-        <h3>Transition options</h3>
+        <h3>Scene-change choices</h3>
         <span>${proposals.length || 0}</span>
       </div>
       ${groups.map((group) => `
@@ -7041,7 +7205,7 @@ function renderInterBeatOptionRail(component, proposals, selectedProposal) {
                 <strong>${escapeHtml(proposal.label || component.label)}</strong>
                 <p>${escapeHtml(shortText(proposal.description, 130))}</p>
                 <div class="topology-card-meta">
-                  <span>${transitionCount} transition${transitionCount === 1 ? "" : "s"}</span>
+                  <span>${transitionCount} scene change${transitionCount === 1 ? "" : "s"}</span>
                   <span>${Math.round(Number(proposal.confidence || 0) * 100)}%</span>
                 </div>
                 <button data-select-option="${escapeHtml(proposal.optionId)}">${selected ? "Selected" : "Select"}</button>
@@ -7058,8 +7222,8 @@ function renderInterBeatPreview(proposal, sceneContext = activeInterBeatSceneCon
   if (!proposal) {
     return `
       <section class="topology-diagram-card">
-        <h3>Transition preview</h3>
-        <p class="muted">Apply animation-probe classifications to preview beat-to-beat transitions.</p>
+        <h3>Scene-change preview</h3>
+        <p class="muted">No saved scene change is available to preview.</p>
       </section>
     `;
   }
@@ -7071,10 +7235,8 @@ function renderInterBeatPreview(proposal, sceneContext = activeInterBeatSceneCon
     ? cumulativeSingleAnchorTransitionContext(transitions, Math.max(0, index - 1))
     : null;
   const partStates = beat?.sourcePartStates || sourcePartStatesForPreviewBeat(beat?.id);
-  const activeParts = uniqueStrings(partStates.flatMap((item) => sourcePartSelectorsForState(item)));
-  const activeAnimations = uniqueStrings(partStates.flatMap((item) => item.animations || []).map((item) => item.clipName || (Number.isInteger(item.clipIndex) ? `Clip ${item.clipIndex}` : "")));
   const frozenState = partStates.find((item) => item.playbackMode === "frozen");
-  const { sourcePlaybackSummary, canScrub: sourcePlaybackCanScrub } = playback;
+  const { canScrub: sourcePlaybackCanScrub } = playback;
   const boundaryStatus = interBeatBoundaryStatus(proposal, sceneContext);
   const beatStateMeta = frozenState
     ? frozenState.stateMode === "pre-animation"
@@ -7082,45 +7244,24 @@ function renderInterBeatPreview(proposal, sceneContext = activeInterBeatSceneCon
       : `holds ${frozenState.inheritedFromBeatId || "previous visual state"}`
     : transition
       ? `incoming from ${interBeatBeatDisplayTitle(transition.from, context.beats)}`
-      : "opening beat";
+      : "opening story part";
   return `
-    <section class="topology-diagram-card topology-3d-card dynamic-preview-card inter-beat-preview-card">
-      <div class="visual-card-head">
+    <section class="topology-diagram-card topology-3d-card spatial-preview-card dynamic-preview-card inter-beat-preview-card storyvr-spatial-surface">
+      <div class="visual-card-head storyvr-spatial-surface-head">
         <div>
           <h3>Scene-change preview</h3>
-          <p class="muted">${escapeHtml(cumulativeContext ? "Play this change between two scenes." : "Play the preview and check whether the change is clear.")}</p>
+          <p class="muted">${escapeHtml(cumulativeContext ? "Play this scene change between two scenes." : "Play the preview and check whether the scene change is clear.")}</p>
         </div>
         <span class="topology-kind-pill ${kind}">${escapeHtml(interBeatDynamicsKindLabel(kind))}</span>
       </div>
-      <div class="inter-beat-selected-beat">
+      <div class="spatial-scene-context-bar inter-beat-selected-beat storyvr-spatial-context">
         <div>
-          <strong data-inter-beat-transition-title>${escapeHtml(beat ? interBeatBeatDisplayTitle(beat, context.beats) : "No beat selected")}</strong>
-          <span data-inter-beat-transition-meta>${context.beats.length ? `Scene ${index + 1} of ${context.beats.length}` : "No scenes"}</span>
-          <p data-inter-beat-transition-copy>${escapeHtml(shortText(beat?.text || "No linked beat available.", 220))}</p>
+          <span data-inter-beat-transition-meta>${context.beats.length ? `Story part ${index + 1} of ${context.beats.length}` : "No story parts"}</span>
+          <strong data-inter-beat-transition-title>${escapeHtml(beat ? interBeatBeatDisplayTitle(beat, context.beats) : "No story part selected")}</strong>
         </div>
+        <span>${escapeHtml(beatStateMeta)}</span>
       </div>
-      <details class="facilitator-details preview-diagnostics">
-        <summary>Playback details for facilitator</summary>
-        <div class="inter-beat-active-state" aria-label="Source playback details">
-          <span>${sourcePlaybackSummary.contractAvailable
-            ? `${sourcePlaybackSummary.coordinatedClipCount} coordinated source clip${sourcePlaybackSummary.coordinatedClipCount === 1 ? "" : "s"}`
-            : activeParts.length ? `${activeParts.length} active part selector${activeParts.length === 1 ? "" : "s"}` : "Full model fallback"}</span>
-          <span>${escapeHtml(sourcePlaybackSummary.timelineLabel)} · ${escapeHtml(sourcePlaybackSummary.windowLabel)}</span>
-          <span>${sourcePlaybackSummary.contributorCount} material contributor${sourcePlaybackSummary.contributorCount === 1 ? "" : "s"}</span>
-          <span>${sourcePlaybackSummary.contractAvailable
-            ? sourcePlaybackSummary.windowState.mode === "initialize"
-              ? "Initial source state · all coordinated clips seek together"
-              : sourcePlaybackSummary.windowState.mode === "hold"
-                ? "Held source state · no animation replay"
-                : sourcePlaybackSummary.windowState.mode === "scrub"
-                  ? "Shared absolute mixer clock · contributor names are diagnostics only"
-                  : "No source playback on this boundary"
-            : frozenState ? (frozenState.stateMode === "pre-animation" ? "Initial source-timeline state · held" : `Previous source-timeline state from ${escapeHtml(frozenState.inheritedFromBeatId || "earlier beat")} · held`) : (activeAnimations.length ? activeAnimations.map((name) => escapeHtml(name)).join(" · ") : "No active animation metadata")}</span>
-        </div>
-        ${renderSourceCameraEvidence(beat)}
-        <p class="topology-description">${escapeHtml(proposal.description)}</p>
-      </details>
-      <div class="dynamic-playback-controls">
+      <div class="dynamic-playback-controls storyvr-spatial-toolbar" role="toolbar" aria-label="Scene-change preview controls">
         <button data-inter-beat-play ${sourcePlaybackCanScrub ? "" : "disabled"}>${sourcePlaybackCanScrub ? (state.interBeatPreviewPlaying ? "Pause" : "Play") : escapeHtml(boundaryStatus.label)}</button>
         <button data-inter-beat-restart ${sourcePlaybackCanScrub ? "" : "disabled"}>Restart</button>
         <label>
@@ -7130,30 +7271,10 @@ function renderInterBeatPreview(proposal, sceneContext = activeInterBeatSceneCon
           </select>
         </label>
       </div>
-      <div class="topology-viewer-shell dynamic-viewer-shell inter-beat-viewer-shell" data-inter-beat-viewer="${escapeHtml(proposal.optionId)}" tabindex="0" role="application" aria-label="Interactive 3D transition preview">
-        <div class="topology-viewer-status">Loading transition preview...</div>
+      <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell dynamic-viewer-shell inter-beat-viewer-shell storyvr-spatial-viewer" data-inter-beat-viewer="${escapeHtml(proposal.optionId)}" tabindex="0" role="application" aria-label="Interactive 3D scene-change preview">
+        <div class="topology-viewer-status">Loading scene-change preview...</div>
       </div>
-      <p class="topology-viewer-hint">Drag to look around. Select the scene and use WASD to move the preview camera.</p>
     </section>
-  `;
-}
-
-function renderSourceCameraEvidence(beat) {
-  const contract = sourceSpatialCueContract();
-  if (!contract.inferredPath && !(contract.cues || []).length) return "";
-  const cues = sourceSpatialCuesForBeat(beat?.id);
-  const cue = cues[0] || null;
-  const counts = contract.counts || {};
-  const initialStatus = cue ? "Mapped camera cue · evaluating loaded GLB" : "Unverified · no camera cue for this beat";
-  return `
-    <details class="source-camera-evidence">
-      <summary>Camera evidence <span data-source-camera-evidence-status>${escapeHtml(initialStatus)}</span></summary>
-      <div class="source-camera-evidence-grid">
-        <span><strong>Correctness</strong><small data-source-camera-evidence-correctness>${cue ? `${cue.activePartSelectors?.length || 0} linked selector${cue.activePartSelectors?.length === 1 ? "" : "s"} · source ${Math.round((Number(cue.sourceProgress) || 0) * 100)}%` : "No camera sample to compare"}</small></span>
-        <span><strong>Comprehensiveness</strong><small>${counts.mappedVisualBeats || 0}/${counts.visualBeats || 0} visual beats mapped · ${counts.unmappedVisualBeats || 0} unverified</small></span>
-        <span><strong>Use in WebXR</strong><small>Spatial evidence and Path text focus only; headset camera remains viewer-controlled.</small></span>
-      </div>
-    </details>
   `;
 }
 
@@ -7163,13 +7284,13 @@ function renderSourceDynamicsInspector(proposal) {
   if (!assets.length) return "";
   return `
     <section class="topology-inspector-section">
-      <h3>Source dynamics</h3>
+      <h3>Source movement</h3>
       <div class="topology-evidence-list">
         ${assets.slice(0, 5).map((item) => `
           <article>
             <strong>${escapeHtml(item.assetId || "source asset")}</strong>
             <p>${escapeHtml(sourceDynamicsInspectorLabel(item))}</p>
-            <span>${escapeHtml(item.beatIds?.length ? `${item.beatIds.length} beat${item.beatIds.length === 1 ? "" : "s"}` : "probe interpretation")}</span>
+            <span>${escapeHtml(item.beatIds?.length ? `${item.beatIds.length} story part${item.beatIds.length === 1 ? "" : "s"}` : "probe interpretation")}</span>
           </article>
         `).join("")}
       </div>
@@ -7186,15 +7307,15 @@ function sourceDynamicsInspectorLabel(item) {
 
 function sourceDynamicsClassificationLabel(classification) {
   const value = String(classification || "");
-  if (value === "within-beat-dynamics") return "Dynamics";
-  if (value === "inter-beat-dynamics") return "Transition";
-  return "Source dynamics";
+  if (value === "within-beat-dynamics") return "Object movement";
+  if (value === "inter-beat-dynamics") return "Scene change";
+  return "Source movement";
 }
 
 function sourceDynamicsPlaybackLabel(playbackMode) {
   const value = String(playbackMode || "");
-  if (value === "loop-within-beat") return "loops while beat is active";
-  if (value === "segment-at-beat-transition") return "segments at beat boundary";
+  if (value === "loop-within-beat") return "loops while the story part is active";
+  if (value === "segment-at-beat-transition") return "segments at the scene change";
   return value.replace(/-/g, " ");
 }
 
@@ -7786,7 +7907,7 @@ function authoredMotionBeats() {
   return (state.data?.graph?.beats || []).filter((beat) => beat?.id).map((beat, index) => ({
     id: beat.id,
     index,
-    title: beat.title || beat.sectionHeading || `Beat ${index + 1}`,
+    title: beat.title || beat.sectionHeading || `Story part ${index + 1}`,
     text: beat.text || beat.excerpt || beat.summary || "",
   }));
 }
@@ -7957,19 +8078,19 @@ function renderSourceMotionLinkingEditor(componentId) {
             <strong>Manual source mapping</strong>
           </span>
           <span class="motion-linking-summary">
-            <span>0 motions</span>
+            <span>0 movements</span>
             <span class="motion-link-badge provider">${escapeHtml(sourceMotionProviderLabel(linking.provider))}</span>
           </span>
         </summary>
         <div class="motion-linking-content">
           <div class="motion-linking-head">
             <div>
-              <h3>${isTransition ? "Transition motion linking" : "Animation linking"}</h3>
+              <h3>${isTransition ? "Scene-change movement linking" : "Object movement linking"}</h3>
             </div>
           </div>
           <p class="muted">${escapeHtml(isTransition
-            ? "No eligible animation clips or embedded cameras were found for Transition."
-            : "No eligible non-camera animation clips were found. Camera tracks are reviewed only in Transition.")}</p>
+            ? "No eligible animation clips or embedded cameras were found for this scene change."
+            : "No eligible non-camera animation clips were found. Camera tracks are reviewed only in Scene changes.")}</p>
           ${linking.artifactPath ? `<p class="motion-link-artifact">Source: ${escapeHtml(linking.artifactPath)}</p>` : ""}
           ${status}
         </div>
@@ -7981,24 +8102,24 @@ function renderSourceMotionLinkingEditor(componentId) {
       <summary class="motion-linking-fold-summary" aria-label="Toggle manual source mapping">
         <span class="motion-linking-fold-title">
           <span class="motion-linking-fold-chevron" aria-hidden="true"></span>
-          <strong>Manual source mapping</strong>
+          <strong>Manual movement mapping</strong>
         </span>
         <span class="motion-linking-summary">
-          <span>${tracks.length} motion${tracks.length === 1 ? "" : "s"}</span>
+          <span>${tracks.length} movement source${tracks.length === 1 ? "" : "s"}</span>
           ${dirty ? `<span class="motion-link-badge unsaved">Unsaved changes</span>` : `<span class="motion-link-badge saved">Saved</span>`}
         </span>
       </summary>
       <div class="motion-linking-content">
         <div class="motion-linking-head">
           <div>
-            <h3>${isTransition ? "Transition motion linking" : "Animation linking"}</h3>
+            <h3>${isTransition ? "Scene-change movement linking" : "Movement linking"}</h3>
             <p class="muted">${escapeHtml(isTransition
-              ? "Select an animation or source camera, then revise the inferred beat boundary assignments."
-              : "Select an animation, then revise the beats where it should play.")}</p>
+              ? "Select an animation or source camera, then revise the suggested scene-change assignments."
+              : "Select an animation, then revise the story parts where it should play.")}</p>
           </div>
         </div>
         <div class="motion-linking-grid">
-          <aside class="motion-track-list" aria-label="Available source motions">
+          <aside class="motion-track-list" aria-label="Available source movement">
             ${tracks.map((track) => {
               const selectedTrack = track.id === selected?.id;
               const draft = sourceMotionDraftForTrack(track);
@@ -8007,8 +8128,8 @@ function renderSourceMotionLinkingEditor(componentId) {
                 <button class="motion-track-card ${selectedTrack ? "selected" : ""}" data-motion-track-id="${escapeHtml(track.id)}" data-motion-component-id="${escapeHtml(componentId)}" aria-pressed="${selectedTrack ? "true" : "false"}">
                   <span class="motion-track-kind">${track.kind === "camera" ? "Camera" : "Animation"}</span>
                   <strong>${escapeHtml(sourceMotionTrackLabel(track, componentId))}</strong>
-                  <small>${escapeHtml([track.animationName || track.animationNames?.join(", "), track.assetId || "GLB asset"].filter(Boolean).join(" · "))}</small>
-                  <span>${count} ${isTransition ? `transition${count === 1 ? "" : "s"}` : `beat${count === 1 ? "" : "s"}`}</span>
+                  <small>${escapeHtml([track.animationName || track.animationNames?.join(", "), track.assetId || "3D model asset"].filter(Boolean).join(" · "))}</small>
+                  <span>${count} ${isTransition ? `scene change${count === 1 ? "" : "s"}` : `story part${count === 1 ? "" : "s"}`}</span>
                 </button>
               `;
             }).join("")}
@@ -8041,9 +8162,9 @@ function renderSourceMotionTrackEditor(track, componentId) {
     <section class="motion-track-editor">
       <div class="motion-track-editor-head">
         <div>
-          <span class="motion-track-kind">${track.kind === "camera" ? "Embedded camera" : "GLB animation"}</span>
+          <span class="motion-track-kind">${track.kind === "camera" ? "Embedded camera" : "3D model animation"}</span>
           <h4>${escapeHtml(sourceMotionTrackLabel(track, componentId))}</h4>
-          <p>${escapeHtml([track.animationName || track.animationNames?.join(", "), track.assetId || "Source GLB"].filter(Boolean).join(" · "))}</p>
+          <p>${escapeHtml([track.animationName || track.animationNames?.join(", "), track.assetId || "Source 3D model"].filter(Boolean).join(" · "))}</p>
         </div>
         <div class="motion-link-badges">${renderSourceMotionBadges(track, componentId)}</div>
       </div>
@@ -8061,17 +8182,17 @@ function renderSourceMotionTrackEditor(track, componentId) {
           ${(track.visualEvidenceRefs || []).length ? `<small><strong>Visual evidence</strong> ${escapeHtml(track.visualEvidenceRefs.slice(0, 6).join(" · "))}</small>` : ""}
         </section>
       ` : ""}
-      ${targets.length ? `<p class="motion-track-targets"><strong>Targets</strong> ${escapeHtml(targets.slice(0, 10).join(" · "))}</p>` : ""}
+      ${targets.length ? `<p class="motion-track-targets"><strong>Animated parts</strong> ${escapeHtml(targets.slice(0, 10).join(" · "))}</p>` : ""}
       ${isTransition && sourceMotionTrackIsCamera(track) ? `
         <label class="source-camera-toggle">
           <input type="checkbox" data-source-camera-preview ${state.sourceCameraPreviewEnabled ? "checked" : ""}>
-          <span><strong>Preview source camera</strong><small>Temporarily use this GLB camera in the Transition preview.</small></span>
+          <span><strong>Preview source camera</strong><small>Temporarily use this 3D model camera in the Scene changes preview.</small></span>
         </label>
       ` : ""}
       <div class="motion-target-head">
         <div>
-          <h4>${isTransition ? "Beat transitions" : "Story beats"}</h4>
-          <p>${isTransition ? "Assignments target exact Source Graph arrows, including each variant route." : "Every authored beat remains available, including text-only beats."}</p>
+          <h4>${isTransition ? "Scene changes" : "Story parts"}</h4>
+          <p>${isTransition ? "Assignments follow exact Story order arrows, including each choice route." : "Every story part remains available, including text-only story parts."}</p>
         </div>
         <div class="actions compact">
           <button data-motion-target-action="all">Select all</button>
@@ -8086,7 +8207,7 @@ function renderSourceMotionTrackEditor(track, componentId) {
 function renderSourceMotionBeatTargets(draft) {
   const selectedIds = new Set(draft?.beatIds || []);
   const beats = authoredMotionBeats();
-  if (!beats.length) return `<p class="muted">No authored beats are available.</p>`;
+  if (!beats.length) return `<p class="muted">No story parts are available.</p>`;
   return `
     <div class="motion-target-list beat-target-list">
       ${beats.map((beat) => `
@@ -8102,7 +8223,7 @@ function renderSourceMotionBeatTargets(draft) {
 
 function renderSourceMotionTransitionTargets(draft) {
   const transitions = authoredMotionTransitions();
-  if (!transitions.length) return `<p class="muted">At least two authored beats are needed to define a transition.</p>`;
+  if (!transitions.length) return `<p class="muted">At least two story parts are needed to define a scene change.</p>`;
   return `
     <div class="motion-target-list transition-target-list">
       ${transitions.map((transition, index) => {
@@ -8154,7 +8275,7 @@ function renderEnvironmentEnhancementCanvasWorkspace(component) {
       ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before setting the scene.</p>`}
       ${state.output?.error && state.activeId === component.id ? renderStageErrorNotice(component.id) : ""}
       ${state.output?.environment ? `<p class="source-graph-status">${escapeHtml(state.output.environment)}</p>` : ""}
-      <div class="environment-canvas-summary" aria-label="Current reader environments by beat">
+      <div class="environment-canvas-summary" aria-label="Current settings by story part">
         <span>Scene settings</span>
         <strong>${environmentCount ? `${environmentCount} of ${beats.length} use a custom setting` : "Using the current setting"}</strong>
         <small>${neutralCount ? `${neutralCount} scene${neutralCount === 1 ? "" : "s"} keep${neutralCount === 1 ? "s" : ""} the current setting` : "Every scene has a custom setting"}</small>
@@ -8167,7 +8288,7 @@ function renderEnvironmentEnhancementCanvasWorkspace(component) {
 function renderEnvironmentStoryCanvas() {
   const beats = state.data?.graph?.beats || [];
   if (!beats.length) {
-    return `<section class="visual-card source-graph-canvas-shell environment-story-canvas-shell"><h3>Story canvas</h3><p class="muted">No Source Graph beats are available.</p></section>`;
+    return `<section class="visual-card source-graph-canvas-shell environment-story-canvas-shell"><h3>Story canvas</h3><p class="muted">No story parts are available.</p></section>`;
   }
   return `
     <section class="visual-card source-graph-canvas-shell environment-story-canvas-shell" data-environment-story-canvas>
@@ -8176,7 +8297,7 @@ function renderEnvironmentStoryCanvas() {
         <span>${beats.length} story part${beats.length === 1 ? "" : "s"}</span>
       </div>
       <div class="source-graph-canvas-stage environment-story-canvas-stage">
-        <div class="source-graph-canvas-viewport environment-story-canvas-viewport story-variant-links-canvas" data-environment-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Environment Enhancement story canvas">
+        <div class="source-graph-canvas-viewport environment-story-canvas-viewport story-variant-links-canvas" data-environment-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Set the scene story canvas">
           ${renderStoryVariantLinkLayer("environment")}
           <ol class="source-graph-canvas-track environment-story-canvas-track">
             ${beats.map((beat, index) => renderEnvironmentStoryBeat(beat, index, beats.length)).join("")}
@@ -8196,7 +8317,7 @@ function renderEnvironmentStoryBeat(beat, index, total) {
     <li class="source-graph-beat-item environment-story-beat-item ${group ? "has-variants" : ""} ${index < total - 1 ? "has-connector" : ""}">
       ${renderEnvironmentStoryCard(beat, defaultOption, primaryContext, index, true)}
       ${alternatives.length ? `
-        <ol class="source-graph-variant-alternatives environment-story-variant-alternatives" aria-label="Parallel environment scenes for ${escapeHtml(beat.title || beat.id)}">
+        <ol class="source-graph-variant-alternatives environment-story-variant-alternatives" aria-label="Parallel choices for ${escapeHtml(beat.title || beat.id)}">
           ${alternatives.map((option) => `<li>${renderEnvironmentStoryCard(beat, option, spatialSceneContext(beat.id, group.id, option.id), index, false)}</li>`).join("")}
         </ol>
       ` : ""}
@@ -8213,10 +8334,8 @@ function renderEnvironmentStoryCard(beat, option, context, index, primary) {
   const linkedAssetIds = spatialPreview.state === "source-linked fallback"
     ? environmentSourceLinkedFallbackAssetIds(context)
     : uniqueStrings(spatialPreview.entities.map((entity) => entity.assetId).filter(Boolean));
-  const environmentLabel = manifest.skipped
-    ? "Neutral StoryVR scene"
-    : manifest.asset ? environmentSelectionTitle(manifest) : "Choose a real setting";
   const stateClass = manifest.skipped ? "neutral" : manifest.asset ? "has-environment" : "needs-environment";
+  const changed = environmentStorySceneChanged(context);
   return `
     <button
       type="button"
@@ -8226,20 +8345,20 @@ function renderEnvironmentStoryCard(beat, option, context, index, primary) {
       ${context.variantGroupId ? `data-environment-variant-group-id="${escapeHtml(context.variantGroupId)}"` : ""}
       ${context.variantOptionId ? `data-environment-variant-option-id="${escapeHtml(context.variantOptionId)}"` : ""}
       ${renderStoryVariantCardAttributes(context)}
-      aria-label="Open environment editor for ${escapeHtml(title)}"
+      aria-label="Open setting editor for ${escapeHtml(title)}"
     >
       <span class="environment-story-card-backdrop ${stateClass}" data-environment-card-backdrop aria-hidden="true"></span>
       <span class="environment-story-card-shade" aria-hidden="true"></span>
       <span class="environment-story-card-content">
         <span class="source-graph-beat-card-head">
           <span class="beat-number">${String(index + 1).padStart(2, "0")}</span>
-          ${option ? `<span class="spatial-variant-badge">Variant</span>` : ""}
+          ${option ? `<span class="spatial-variant-badge">Choice</span>` : ""}
         </span>
         <span class="source-graph-beat-summary environment-story-beat-summary">
           <strong>${escapeHtml(title)}</strong>
           <span class="source-graph-beat-excerpt">${escapeHtml(shortText(text || "No story text available.", 112))}</span>
         </span>
-        <span class="environment-story-card-footer"><span>${linkedAssetIds.length} scene asset${linkedAssetIds.length === 1 ? "" : "s"}</span><em>${escapeHtml(environmentLabel)}</em></span>
+        <span class="environment-story-card-footer"><span>${linkedAssetIds.length} scene asset${linkedAssetIds.length === 1 ? "" : "s"}</span>${renderStoryCanvasChangedIndicator(changed)}</span>
       </span>
     </button>
   `;
@@ -8255,9 +8374,9 @@ function renderEnvironmentEnhancementEditorWorkspace(component, sceneContext) {
   const storyAssetCount = environmentPreviewStoryAssets().length;
   const spatialPreview = environmentSpatialScenePreview(sceneContext);
   const spatialSceneDescriptor = spatialPreview.state === "saved"
-    ? "saved Spatial Relations"
-    : spatialPreview.state === "draft" ? "available draft Spatial Relations" : "source-linked fallback";
-  const spatialAssetDescriptor = spatialPreview.state === "saved" ? "saved" : spatialPreview.state === "draft" ? "draft" : "source-linked";
+    ? "saved object placement"
+    : spatialPreview.state === "draft" ? "current object placement" : "linked source content";
+  const spatialAssetDescriptor = spatialPreview.state === "saved" ? "saved" : spatialPreview.state === "draft" ? "current" : "linked";
   const controlsDisabled = !ready || !hasAsset || state.environmentUi.operationBusy || state.environmentUi.generationBusy;
   const checkpointStatus = checkpointFlowStatus(component.id);
   const beat = spatialSceneBeat(sceneContext);
@@ -8281,18 +8400,18 @@ function renderEnvironmentEnhancementEditorWorkspace(component, sceneContext) {
         <div class="spatial-workbench-sidebar environment-workbench-sidebar">
           <form
             id="environment-generation-form"
-            class="environment-scene-description-form"
+            class="environment-scene-description-form storyvr-spatial-sidebar-card"
             data-environment-generation-form
           >
             <div class="visual-card-head environment-scene-description-head">
-              <h3>Scene description</h3>
+              <h3>360° setting description</h3>
             </div>
             <textarea
               id="environment-generation-prompt"
               class="environment-scene-description-input"
               rows="8"
               maxlength="1000"
-              aria-label="Scene description"
+              aria-label="360° setting description"
               placeholder="Describe the full 360° place, lighting, weather, and mood"
               required
               ${!ready || state.environmentUi.generationBusy ? "disabled" : ""}
@@ -8312,34 +8431,34 @@ function renderEnvironmentEnhancementEditorWorkspace(component, sceneContext) {
               type="submit"
               data-environment-generate-button
               ${!ready || state.environmentUi.generationBusy || !generationPrompt ? "disabled" : ""}
-            >${state.environmentUi.generationBusy ? "Generating…" : "Generate environment"}</button>
+            >${state.environmentUi.generationBusy ? "Generating…" : "Generate setting"}</button>
           </form>
         </div>
 
-        <section class="topology-diagram-card topology-3d-card spatial-preview-card environment-preview-card">
-          <div class="visual-card-head environment-preview-head">
+        <section class="topology-diagram-card topology-3d-card spatial-preview-card environment-preview-card storyvr-spatial-surface">
+          <div class="visual-card-head environment-preview-head storyvr-spatial-surface-head">
             <div>
               <h3>Set the scene</h3>
-              <p class="muted">Review the generated surrounding with the story's saved spatial scene.</p>
+              <p class="muted">Review the generated setting with this story part's saved scene.</p>
             </div>
-            <span class="topology-kind-pill object-attached">${selectedNone ? "Current setting" : "360° environment"}</span>
+            <span class="topology-kind-pill object-attached">${selectedNone ? "Current setting" : "360° setting"}</span>
           </div>
-          <div class="spatial-scene-context-bar environment-scene-context-bar">
+          <div class="spatial-scene-context-bar environment-scene-context-bar storyvr-spatial-context">
             <div><span>${escapeHtml(spatialSceneContextLabel(sceneContext))}</span><strong>${escapeHtml(beat?.title || sceneContext.beatId)}</strong></div>
             <span>${storyAssetCount} story object${storyAssetCount === 1 ? "" : "s"}</span>
           </div>
-          <div class="spatial-transform-toolbar environment-preview-toolbar" role="toolbar" aria-label="Environment tools">
+          <div class="spatial-transform-toolbar environment-preview-toolbar storyvr-spatial-toolbar" role="toolbar" aria-label="Setting tools">
             <span data-environment-xr-slot></span>
             <button type="button" data-environment-reset-view ${hasAsset ? "" : "disabled"}>Reset view</button>
             <span class="spatial-toolbar-divider" aria-hidden="true"></span>
             ${renderEnvironmentApplyTargets(sceneContext, manifest, controlsDisabled)}
           </div>
-          <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell environment-viewer-shell" data-environment-viewer tabindex="0" role="application" aria-label="Environment Enhancement spatial editor for ${escapeHtml(beat?.title || sceneContext.beatId)}">
+          <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell environment-viewer-shell storyvr-spatial-viewer" data-environment-viewer tabindex="0" role="application" aria-label="Setting editor for ${escapeHtml(beat?.title || sceneContext.beatId)}">
             <div class="environment-viewer-empty" data-environment-viewer-empty>
-              <strong>${selectedNone ? "No added environment" : hasAsset ? "Loading 360° environment…" : "Choose a 360° environment"}</strong>
-              <span>${selectedNone ? "StoryVR's standard neutral scene remains active around the authored story assets." : hasAsset ? `${spatialAssetDescriptor[0].toUpperCase()}${spatialAssetDescriptor.slice(1)} story assets will remain visible inside it.` : `The ${spatialSceneDescriptor} scene will stay visible while you inspect the surrounding.`}</span>
+              <strong>${selectedNone ? "No added setting" : hasAsset ? "Loading 360° setting…" : "Choose a 360° setting"}</strong>
+              <span>${selectedNone ? "StoryVR's standard neutral setting remains around the story objects." : hasAsset ? `${spatialAssetDescriptor[0].toUpperCase()}${spatialAssetDescriptor.slice(1)} story objects will remain visible inside it.` : `The scene with ${spatialSceneDescriptor} will stay visible while you inspect the setting.`}</span>
             </div>
-            <div class="topology-viewer-status overlay" data-environment-viewer-status>${selectedNone ? "Using StoryVR's standard neutral scene." : hasAsset ? "Loading environment preview…" : `Loading ${storyAssetCount} upstream story asset${storyAssetCount === 1 ? "" : "s"}…`}</div>
+            <div class="topology-viewer-status overlay" data-environment-viewer-status>${selectedNone ? "Using StoryVR's standard neutral setting." : hasAsset ? "Loading setting preview…" : `Loading ${storyAssetCount} story object${storyAssetCount === 1 ? "" : "s"}…`}</div>
           </div>
         </section>
       </div>
@@ -8376,7 +8495,7 @@ function renderEnvironmentApplyTargets(sceneContext, manifest, controlsDisabled)
         aria-controls="${panelId}"
         aria-expanded="${state.environmentUi.applyTargetsOpen}"
         ${unavailable ? "disabled" : ""}
-      >Apply to other beats…</button>
+      >Apply to other story parts…</button>
       <div
         class="spatial-apply-target-panel environment-apply-target-panel"
         id="${panelId}"
@@ -8385,8 +8504,8 @@ function renderEnvironmentApplyTargets(sceneContext, manifest, controlsDisabled)
       >
         <div class="spatial-apply-target-head environment-apply-target-head">
           <div>
-            <strong>Apply this environment to other beats</strong>
-            <p>Reuse this panorama and matching ground without generating new images.</p>
+            <strong>Apply this setting to other story parts</strong>
+            <p>Reuse this 360° setting and matching ground without generating new images.</p>
           </div>
           <span data-environment-apply-count>${selectedIds.size} selected</span>
         </div>
@@ -8397,7 +8516,7 @@ function renderEnvironmentApplyTargets(sceneContext, manifest, controlsDisabled)
             ${allSelected ? "checked" : ""}
             ${unavailable ? "disabled" : ""}
           >
-          <span>Select all other beats</span>
+          <span>Select all other story parts</span>
         </label>
         <div class="spatial-apply-target-list environment-apply-target-list">
           ${otherBeats.map((beat) => `
@@ -8414,13 +8533,13 @@ function renderEnvironmentApplyTargets(sceneContext, manifest, controlsDisabled)
           `).join("")}
         </div>
         <div class="spatial-apply-target-actions environment-apply-target-actions">
-          <p class="spatial-apply-status environment-apply-status ${state.environmentUi.applyError ? "error" : ""}" data-environment-apply-status aria-live="polite">${escapeHtml(state.environmentUi.applyStatus || "Select one or more other beats.")}</p>
+          <p class="spatial-apply-status environment-apply-status ${state.environmentUi.applyError ? "error" : ""}" data-environment-apply-status aria-live="polite">${escapeHtml(state.environmentUi.applyStatus || "Select one or more other story parts.")}</p>
           <button
             type="button"
             class="primary"
             data-environment-apply-submit
             ${unavailable || !selectedIds.size ? "disabled" : ""}
-          >${state.environmentUi.operationBusy ? "Applying…" : "Apply to selected beats"}</button>
+          >${state.environmentUi.operationBusy ? "Applying…" : "Apply to selected story parts"}</button>
         </div>
       </div>
     </section>
@@ -8430,7 +8549,7 @@ function renderEnvironmentApplyTargets(sceneContext, manifest, controlsDisabled)
 function renderEnvironmentInspector(manifest) {
   const asset = manifest.asset;
   if (!asset) {
-    return `<div class="environment-empty-state environment-inspector-empty"><strong>No generated environment yet</strong><p>Generate a 360° panorama and matching ground to review its provenance, local artifact, and headset-readiness evidence.</p></div>`;
+    return `<div class="environment-empty-state environment-inspector-empty"><strong>No generated setting yet</strong><p>Generate a 360° setting and matching ground to review its provenance, local artifact, and headset-readiness evidence.</p></div>`;
   }
   const source = manifest.assetSource || manifest.selectedSource || manifest.provenance || {};
   const generation = source.provenance || manifest.provenance || {};
@@ -8443,12 +8562,12 @@ function renderEnvironmentInspector(manifest) {
     <section class="topology-inspector-section environment-inspector-hero">
       <span class="environment-format-pill">${escapeHtml(environmentHumanMediaType(asset.mediaType || asset.format))}</span>
       <h3>${escapeHtml(environmentSelectionTitle(manifest))}</h3>
-      <p>${escapeHtml(shortText(source.description || manifest.description || "Generated environment asset.", 210))}</p>
+      <p>${escapeHtml(shortText(source.description || manifest.description || "Generated setting asset.", 210))}</p>
     </section>
     <section class="topology-inspector-section">
       <h3>Generation</h3>
       <dl class="environment-evidence-list">
-        ${environmentEvidenceRow("Method", generatedWithCodex ? "Codex image generation" : "Legacy saved environment")}
+        ${environmentEvidenceRow("Method", generatedWithCodex ? "Codex image generation" : "Legacy saved setting")}
         ${environmentEvidenceRow("Generation ID", environmentSourceId(source) || asset.providerAssetId || "Not reported")}
         ${environmentEvidenceRow("Prompt", generation.prompt || source.prompt || "Not recorded")}
       </dl>
@@ -8457,7 +8576,7 @@ function renderEnvironmentInspector(manifest) {
       <h3>Local artifact</h3>
       <dl class="environment-evidence-list">
         ${environmentEvidenceRow("Media type", asset.mediaType || environmentHumanMediaType(asset.format))}
-        ${environmentEvidenceRow("Runtime path", asset.publicPath || asset.localUrl || asset.entryPath || "Not reported", "path")}
+        ${environmentEvidenceRow("Reader asset path", asset.publicPath || asset.localUrl || asset.entryPath || "Not reported", "path")}
         ${environmentEvidenceRow("Asset size", environmentFormatBytes(asset.bytes || asset.generationSource?.bytes || asset.sourceUpload?.bytes || performance.generatedBytes || performance.uploadBytes))}
         ${environmentEvidenceRow("SHA-256", asset.sha256 || "Not reported", "path")}
       </dl>
@@ -8474,7 +8593,7 @@ function renderEnvironmentInspector(manifest) {
     </section>
     <section class="topology-inspector-section">
       <h3>Save scope</h3>
-      <p class="muted">The 360° image supplies the persistent surrounding. It does not replace source-story assets or take over the reader or headset camera.</p>
+      <p class="muted">The 360° image supplies the persistent setting. It does not replace source-story assets or take over the reader or headset camera.</p>
     </section>
   `;
 }
@@ -8508,6 +8627,16 @@ function environmentAssignmentForContext(context = activeEnvironmentSceneContext
   return raw.defaultAssignment && typeof raw.defaultAssignment === "object"
     ? raw.defaultAssignment
     : null;
+}
+
+function environmentStorySceneChanged(context) {
+  const raw = environmentRawState();
+  const beatId = String(context?.beatId || "").trim();
+  const assignments = raw.assignmentsByBeat && typeof raw.assignmentsByBeat === "object"
+    ? raw.assignmentsByBeat
+    : {};
+  if (beatId && Object.prototype.hasOwnProperty.call(assignments, beatId)) return true;
+  return Boolean(beatId && String(raw.beatId || "").trim() === beatId);
 }
 
 function environmentEnhancementSkipped(context = activeEnvironmentSceneContext(), assignment = environmentAssignmentForContext(context)) {
@@ -8666,12 +8795,12 @@ function restoreEnvironmentGenerationDraft(context = activeEnvironmentSceneConte
 }
 
 function environmentGenerationActivityTitle() {
-  if (state.environmentUi.generationPhase === "generating") return "Creating background environment";
-  if (state.environmentUi.generationPhase === "waiting") return "Background environment is ready to install";
-  if (state.environmentUi.generationPhase === "installing") return "Installing background environment";
-  if (state.environmentUi.generationPhase === "ready") return "Background environment ready";
-  if (state.environmentUi.generationPhase === "error") return "Background environment needs attention";
-  return "Background environment";
+  if (state.environmentUi.generationPhase === "generating") return "Creating setting";
+  if (state.environmentUi.generationPhase === "waiting") return "Setting is ready to install";
+  if (state.environmentUi.generationPhase === "installing") return "Installing setting";
+  if (state.environmentUi.generationPhase === "ready") return "Setting ready";
+  if (state.environmentUi.generationPhase === "error") return "Setting needs attention";
+  return "Setting";
 }
 
 function renderEnvironmentGenerationActivity() {
@@ -8691,7 +8820,7 @@ function renderEnvironmentGenerationActivity() {
       <span class="background-task-indicator" aria-hidden="true"></span>
       <div class="background-task-copy">
         <strong>${escapeHtml(environmentGenerationActivityTitle())}</strong>
-        <span>${escapeHtml(sceneLabel)} · ${escapeHtml(state.environmentUi.generationStatus || "StoryVR is preparing the environment in the background.")}</span>
+        <span>${escapeHtml(sceneLabel)} · ${escapeHtml(state.environmentUi.generationStatus || "StoryVR is preparing the setting in the background.")}</span>
       </div>
       <div class="background-task-actions">
         ${context?.beatId && spatialSceneBeat(context)
@@ -8726,16 +8855,16 @@ function bindEnvironmentGenerationActivityEvents() {
 
 function environmentSelectionTitle(manifest) {
   const source = manifest.assetSource || manifest.selectedSource || {};
-  return source.title || source.name || manifest.asset?.title || manifest.asset?.generationSource?.filename || manifest.asset?.sourceUpload?.filename || "No generated environment";
+  return source.title || source.name || manifest.asset?.title || manifest.asset?.generationSource?.filename || manifest.asset?.sourceUpload?.filename || "No generated setting";
 }
 
 function environmentSelectionSubtitle(manifest) {
-  if (!manifest.asset) return "Generate a 360° panorama and matching ground.";
+  if (!manifest.asset) return "Generate a 360° setting and matching ground.";
   const provenance = manifest.selectedSource?.provenance || manifest.provenance || {};
   const origin = provenance.generated === true || provenance.source === "codex-cli-image-generation" || manifest.asset.generationSource
     ? "Codex generation"
     : "Legacy saved asset";
-  return [origin, environmentHumanMediaType(manifest.asset.mediaType || manifest.asset.format), checkpointIsCurrent("environment-enhancement") ? "Saved checkpoint" : "Generated draft"]
+  return [origin, environmentHumanMediaType(manifest.asset.mediaType || manifest.asset.format), checkpointIsCurrent("environment-enhancement") ? "Saved step" : "Generated changes"]
     .filter(Boolean)
     .join(" · ");
 }
@@ -8745,7 +8874,7 @@ function environmentSourceId(value) {
 }
 
 function environmentCandidateTitle(value) {
-  return String(value?.title || value?.name || value?.label || environmentSourceId(value) || "Untitled environment");
+  return String(value?.title || value?.name || value?.label || environmentSourceId(value) || "Untitled setting");
 }
 
 function environmentEvidenceRow(label, value, className = "") {
@@ -8772,12 +8901,12 @@ function environmentFormatCount(value) {
 
 function environmentHumanMediaType(value) {
   const text = String(value || "").toLowerCase();
-  if (text.includes("gltf-binary") || text === "glb") return "GLB model";
+  if (text.includes("gltf-binary") || text === "glb") return "3D model";
   if (text.includes("gltf+json") || text === "gltf") return "glTF model";
-  if (text.includes("radiance") || text.includes("x-hdr") || text === "hdr") return "HDR panorama";
-  if (text.includes("exr") || text === "exr") return "EXR panorama";
-  if (text === "image/png" || text === "png") return "Generated PNG panorama";
-  return value || "Environment asset";
+  if (text.includes("radiance") || text.includes("x-hdr") || text === "hdr") return "HDR 360° setting";
+  if (text.includes("exr") || text === "exr") return "EXR 360° setting";
+  if (text === "image/png" || text === "png") return "Generated PNG 360° setting";
+  return value || "Setting asset";
 }
 
 function environmentNormalizeMediaType(value, url = "") {
@@ -8889,8 +9018,8 @@ function renderSpatialBeatEdgeNavigation(sceneContext) {
   const button = (direction, beat, context) => {
     const isPrevious = direction === "previous";
     const label = context
-      ? `${isPrevious ? "Previous" : "Next"} beat, Card ${navigation.currentIndex + (isPrevious ? 0 : 2)}: ${beat.title || beat.id}`
-      : `No ${isPrevious ? "previous" : "next"} beat`;
+      ? `${isPrevious ? "Previous" : "Next"} story part, Card ${navigation.currentIndex + (isPrevious ? 0 : 2)}: ${beat.title || beat.id}`
+      : `No ${isPrevious ? "previous" : "next"} story part`;
     return `
       <button
         type="button"
@@ -8907,7 +9036,7 @@ function renderSpatialBeatEdgeNavigation(sceneContext) {
     `;
   };
   return `
-    <nav class="spatial-beat-edge-navigation" aria-label="Move between beat scenes">
+    <nav class="spatial-beat-edge-navigation" aria-label="Move between story parts">
       ${button("previous", navigation.previousBeat, navigation.previousContext)}
       ${button("next", navigation.nextBeat, navigation.nextContext)}
     </nav>
@@ -8919,8 +9048,8 @@ function renderEnvironmentBeatEdgeNavigation(sceneContext) {
   const button = (direction, beat, context) => {
     const isPrevious = direction === "previous";
     const label = context
-      ? `${isPrevious ? "Previous" : "Next"} beat, Card ${navigation.currentIndex + (isPrevious ? 0 : 2)}: ${beat.title || beat.id}`
-      : `No ${isPrevious ? "previous" : "next"} beat`;
+      ? `${isPrevious ? "Previous" : "Next"} story part, Card ${navigation.currentIndex + (isPrevious ? 0 : 2)}: ${beat.title || beat.id}`
+      : `No ${isPrevious ? "previous" : "next"} story part`;
     return `
       <button
         type="button"
@@ -8937,7 +9066,7 @@ function renderEnvironmentBeatEdgeNavigation(sceneContext) {
     `;
   };
   return `
-    <nav class="spatial-beat-edge-navigation environment-beat-edge-navigation" aria-label="Move between beat scenes">
+    <nav class="spatial-beat-edge-navigation environment-beat-edge-navigation" aria-label="Move between story parts">
       ${button("previous", navigation.previousBeat, navigation.previousContext)}
       ${button("next", navigation.nextBeat, navigation.nextContext)}
     </nav>
@@ -8949,8 +9078,8 @@ function renderAttentionBeatEdgeNavigation(sceneContext) {
   const button = (direction, beat, context) => {
     const isPrevious = direction === "previous";
     const label = context
-      ? `${isPrevious ? "Previous" : "Next"} beat, Card ${navigation.currentIndex + (isPrevious ? 0 : 2)}: ${beat.title || beat.id}`
-      : `No ${isPrevious ? "previous" : "next"} beat`;
+      ? `${isPrevious ? "Previous" : "Next"} story part, Card ${navigation.currentIndex + (isPrevious ? 0 : 2)}: ${beat.title || beat.id}`
+      : `No ${isPrevious ? "previous" : "next"} story part`;
     return `
       <button
         type="button"
@@ -8967,7 +9096,7 @@ function renderAttentionBeatEdgeNavigation(sceneContext) {
     `;
   };
   return `
-    <nav class="spatial-beat-edge-navigation attention-beat-edge-navigation" aria-label="Move between beat scenes">
+    <nav class="spatial-beat-edge-navigation attention-beat-edge-navigation" aria-label="Move between story parts">
       ${button("previous", navigation.previousBeat, navigation.previousContext)}
       ${button("next", navigation.nextBeat, navigation.nextContext)}
     </nav>
@@ -9003,7 +9132,7 @@ function renderSpatialStatus() {
 function renderSpatialStoryCanvas(draft) {
   const beats = state.data?.graph?.beats || [];
   if (!beats.length) {
-    return `<section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell"><h3>Story canvas</h3><p class="muted">No Source Graph beats are available.</p></section>`;
+    return `<section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell"><h3>Story canvas</h3><p class="muted">No story parts are available.</p></section>`;
   }
   return `
     <section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell" data-spatial-story-canvas>
@@ -9012,7 +9141,7 @@ function renderSpatialStoryCanvas(draft) {
         <span>${beats.length} story part${beats.length === 1 ? "" : "s"}</span>
       </div>
       <div class="source-graph-canvas-stage spatial-story-canvas-stage">
-        <div class="source-graph-canvas-viewport spatial-story-canvas-viewport story-variant-links-canvas" data-spatial-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Spatial Relations story canvas">
+        <div class="source-graph-canvas-viewport spatial-story-canvas-viewport story-variant-links-canvas" data-spatial-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Place objects story canvas">
           ${renderStoryVariantLinkLayer("spatial")}
           <ol class="source-graph-canvas-track spatial-story-canvas-track">
             ${beats.map((beat, index) => renderSpatialStoryBeat(beat, index, beats.length, draft)).join("")}
@@ -9032,7 +9161,7 @@ function renderSpatialStoryBeat(beat, index, total, draft) {
     <li class="source-graph-beat-item spatial-story-beat-item ${group ? "has-variants" : ""} ${index < total - 1 ? "has-connector" : ""}">
       ${renderSpatialStoryCard(beat, defaultOption, primaryContext, index, draft, true)}
       ${alternatives.length ? `
-        <ol class="source-graph-variant-alternatives spatial-story-variant-alternatives" aria-label="Parallel scenes for ${escapeHtml(beat.title || beat.id)}">
+        <ol class="source-graph-variant-alternatives spatial-story-variant-alternatives" aria-label="Parallel choices for ${escapeHtml(beat.title || beat.id)}">
           ${alternatives.map((option) => `<li>${renderSpatialStoryCard(beat, option, spatialSceneContext(beat.id, group.id, option.id), index, draft, false)}</li>`).join("")}
         </ol>
       ` : ""}
@@ -9056,11 +9185,11 @@ function renderSpatialStoryCard(beat, option, context, index, draft, primary) {
       ${context.variantGroupId ? `data-spatial-variant-group-id="${escapeHtml(context.variantGroupId)}"` : ""}
       ${context.variantOptionId ? `data-spatial-variant-option-id="${escapeHtml(context.variantOptionId)}"` : ""}
       ${renderStoryVariantCardAttributes(context)}
-      aria-label="Open spatial scene for ${escapeHtml(title)}"
+      aria-label="Open 3D scene for ${escapeHtml(title)}"
     >
       <span class="source-graph-beat-card-head">
         <span class="beat-number">${String(index + 1).padStart(2, "0")}</span>
-        ${option ? `<span class="spatial-variant-badge">Variant</span>` : ""}
+        ${option ? `<span class="spatial-variant-badge">Choice</span>` : ""}
       </span>
       <span class="source-graph-beat-summary spatial-story-beat-summary">
         <strong>${escapeHtml(title)}</strong>
@@ -9069,7 +9198,7 @@ function renderSpatialStoryCard(beat, option, context, index, draft, primary) {
       <span class="source-graph-beat-assets spatial-story-beat-assets" aria-label="${linkedAssetIds.length} linked assets">
         ${linkedAssetIds.map((assetId) => renderSpatialStoryAsset(assetId)).join("") || `<span class="muted">Text-only scene</span>`}
       </span>
-      <span class="spatial-scene-card-footer"><span>${linkedAssetIds.length} linked</span><em>${escapeHtml(status.label)}</em></span>
+      <span class="spatial-scene-card-footer"><span>${linkedAssetIds.length} linked</span>${renderStoryCanvasChangedIndicator(status.changed)}</span>
     </button>
   `;
 }
@@ -9088,8 +9217,18 @@ function renderSpatialStoryAssetPreview(value) {
   return renderSourceGraphAssetPreview(value);
 }
 
-function renderSpatialHierarchy(visibleEntities) {
-  const selectedIds = new Set(selectedSpatialRelationEntityIds());
+function renderSpatialHierarchy(visibleEntities, options = {}) {
+  const selectedIds = new Set(
+    Array.isArray(options.selectedEntityIds)
+      ? options.selectedEntityIds
+      : selectedSpatialRelationEntityIds(),
+  );
+  const primaryEntityId = options.primaryEntityId ?? state.selectedSpatialEntityId;
+  const selectionAttribute = options.selectionAttribute === "data-dynamic-select-entity"
+    ? "data-dynamic-select-entity"
+    : "data-spatial-select-entity";
+  const ariaLabel = options.ariaLabel || "Spatial object hierarchy";
+  const className = ["spatial-hierarchy", options.className].filter(Boolean).join(" ");
   const readerEntities = visibleEntities.filter((entity) => (
     spatialEntityType(entity) === "reader"
   ));
@@ -9103,8 +9242,8 @@ function renderSpatialHierarchy(visibleEntities) {
   const renderEntityItem = (entity) => `
     <button
       type="button"
-      class="spatial-hierarchy-item spatial-object-hierarchy-item ${selectedIds.has(entity.id) ? "selected" : ""} ${entity.id === state.selectedSpatialEntityId ? "selection-primary" : ""}"
-      data-spatial-select-entity="${escapeHtml(entity.id)}"
+      class="spatial-hierarchy-item spatial-object-hierarchy-item ${selectedIds.has(entity.id) ? "selected" : ""} ${entity.id === primaryEntityId ? "selection-primary" : ""}"
+      ${selectionAttribute}="${escapeHtml(entity.id)}"
       aria-pressed="${selectedIds.has(entity.id)}"
     >
       <strong>${escapeHtml(spatialRelationEntityLabel(entity))}</strong>
@@ -9112,7 +9251,7 @@ function renderSpatialHierarchy(visibleEntities) {
     </button>
   `;
   return `
-    <aside class="spatial-hierarchy" aria-label="Spatial object hierarchy">
+    <aside class="${escapeHtml(className)}" aria-label="${escapeHtml(ariaLabel)}">
       <div class="visual-card-head"><h3>Scene objects</h3></div>
       <div class="spatial-hierarchy-scroll">
         <div class="spatial-hierarchy-items">
@@ -9150,9 +9289,9 @@ function renderSpatialPropagationTargets(entity, sceneContext) {
         aria-expanded="${state.spatialPropagationTargetsOpen}"
         ${unavailable ? "disabled" : ""}
         title="${escapeHtml(otherBeats.length
-          ? `Choose which of ${otherBeats.length} other matching beat${otherBeats.length === 1 ? "" : "s"} receives this GLB transform.`
-          : "No matching instance of this GLB exists in another beat.")}"
-      >Apply transform to other beats…</button>
+          ? `Choose which of ${otherBeats.length} other matching story part${otherBeats.length === 1 ? "" : "s"} receives this 3D model placement.`
+          : "No matching instance of this 3D model exists in another story part.")}"
+      >Apply placement to other story parts…</button>
       <div
         class="spatial-apply-target-panel"
         id="${panelId}"
@@ -9161,8 +9300,8 @@ function renderSpatialPropagationTargets(entity, sceneContext) {
       >
         <div class="spatial-apply-target-head">
           <div>
-            <strong>Apply this transform to other beats</strong>
-            <p>Copy position, rotation, scale, and placement alignment to matching GLB instances.</p>
+            <strong>Apply this placement to other story parts</strong>
+            <p>Copy position, rotation, scale, and placement alignment to matching 3D model instances.</p>
           </div>
           <span data-spatial-apply-count>${selectedIds.size} selected</span>
         </div>
@@ -9173,7 +9312,7 @@ function renderSpatialPropagationTargets(entity, sceneContext) {
             ${allSelected ? "checked" : ""}
             ${unavailable ? "disabled" : ""}
           >
-          <span>Select all beats</span>
+          <span>Select all story parts</span>
         </label>
         <div class="spatial-apply-target-list">
           ${listedBeats.map((beat) => `
@@ -9190,20 +9329,20 @@ function renderSpatialPropagationTargets(entity, sceneContext) {
               <span>
                 <strong>${escapeHtml(beat.title)}</strong>
                 <small>${beat.current
-                  ? `Current beat · Source transform · ${escapeHtml(shortText(beat.text || beat.id, 72))}`
+                  ? `Current story part · Source placement · ${escapeHtml(shortText(beat.text || beat.id, 72))}`
                   : `${beat.matchingSceneCount} matching scene${beat.matchingSceneCount === 1 ? "" : "s"} · ${escapeHtml(shortText(beat.text || beat.id, 92))}`}</small>
               </span>
             </label>
           `).join("")}
         </div>
         <div class="spatial-apply-target-actions">
-          <p class="spatial-apply-status" data-spatial-propagation-status aria-live="polite">${escapeHtml(state.spatialPropagationStatus || "Select one or more other beats.")}</p>
+          <p class="spatial-apply-status" data-spatial-propagation-status aria-live="polite">${escapeHtml(state.spatialPropagationStatus || "Select one or more other story parts.")}</p>
           <button
             type="button"
             class="primary"
             data-spatial-apply-submit
             ${unavailable || !selectedTargetIds.size ? "disabled" : ""}
-          >Apply to selected beats</button>
+          >Apply to selected story parts</button>
         </div>
       </div>
     </section>
@@ -9221,19 +9360,19 @@ function renderSpatialRelationsViewport(proposal, beat, entity, sceneContext, sc
   const pasteReady = canPasteSpatialGlbInstance(sceneContext);
   const linkedAssetCount = scene?.linkedAssetIds?.length || 0;
   return `
-    <section class="topology-diagram-card topology-3d-card spatial-preview-card">
-      <div class="visual-card-head">
+    <section class="topology-diagram-card topology-3d-card spatial-preview-card storyvr-spatial-surface">
+      <div class="visual-card-head storyvr-spatial-surface-head">
         <div>
           <h3>Place objects</h3>
           <p class="muted">Select one or more objects, then use the buttons below.</p>
         </div>
         <span class="topology-kind-pill object-attached">${escapeHtml(spatialSelectionLabel(selectedEntities))}</span>
       </div>
-      <div class="spatial-scene-context-bar">
+      <div class="spatial-scene-context-bar storyvr-spatial-context">
         <div><span>${escapeHtml(spatialSceneContextLabel(sceneContext))}</span><strong>${escapeHtml(beat?.title || sceneContext.beatId)}</strong></div>
         <span>${linkedAssetCount} linked asset${linkedAssetCount === 1 ? "" : "s"}</span>
       </div>
-      <div class="spatial-transform-toolbar" role="toolbar" aria-label="Transform tools">
+      <div class="spatial-transform-toolbar storyvr-spatial-toolbar" role="toolbar" aria-label="Transform tools">
         <button class="${mode === "translate" ? "selected" : ""}" data-spatial-transform-mode="translate" ${transformBlocked || !selectedEntities.length ? `disabled title="${transformBlocked ? transformBlockReason : "Select an object"}"` : ""}>Move <kbd>W</kbd></button>
         <button class="${mode === "rotate" ? "selected" : ""}" data-spatial-transform-mode="rotate" ${transformBlocked || !selectedEntities.length ? `disabled title="${transformBlocked ? transformBlockReason : "Select an object"}"` : ""}>Rotate <kbd>E</kbd></button>
         <button class="${mode === "scale" ? "selected" : ""}" data-spatial-transform-mode="scale" ${readerSelected || transformBlocked || !selectedEntities.length ? `disabled title="${transformBlocked ? transformBlockReason : readerSelected ? "Reader scale is fixed" : "Select an object"}"` : ""}>Scale <kbd>R</kbd></button>
@@ -9250,10 +9389,10 @@ function renderSpatialRelationsViewport(proposal, beat, entity, sceneContext, sc
           </div>
         </details>
       </div>
-      <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell" data-spatial-viewer="${escapeHtml(proposal?.optionId || "inferred-layout")}" tabindex="0" role="application" aria-label="Interactive Spatial Relations editor">
-        <div class="topology-viewer-status">Loading Spatial Relations editor...</div>
+      <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell storyvr-spatial-viewer" data-spatial-viewer="${escapeHtml(proposal?.optionId || "inferred-layout")}" tabindex="0" role="application" aria-label="Interactive object-placement editor">
+        <div class="topology-viewer-status">Loading object-placement editor...</div>
       </div>
-      <p class="topology-viewer-hint">${multipleSelected
+      <p class="topology-viewer-hint storyvr-spatial-footer">${multipleSelected
           ? "Move, rotate, or scale the selection around its shared center."
         : "Select an object to edit it."}</p>
     </section>
@@ -9313,6 +9452,7 @@ function renderAttentionGuidanceWorkspace(component) {
   const scene = attentionSceneRecordForContext(draft, sceneContext);
   const markers = attentionSceneMarkers(scene);
   ensureAttentionMarkerSelection(scene);
+  ensureAttentionTargetObjectSelection(scene);
   const marker = selectedAttentionMarker(scene);
   return `
     <section class="panel spatial-relations-panel spatial-editor-mode attention-guidance-panel attention-editor-mode" data-attention-workspace-mode="editor">
@@ -9330,8 +9470,8 @@ function renderAttentionGuidanceWorkspace(component) {
       ${ready ? "" : `<p class="blocked-note">Finish Set the scene before adding focus markers.</p>`}
       <div class="spatial-relations-workbench attention-guidance-workbench">
         <div class="spatial-workbench-sidebar attention-workbench-sidebar">
-          ${renderAttentionMarkerHierarchy(markers, beat, scene)}
-          ${renderAttentionGuidanceInspector(marker, scene)}
+          ${renderAttentionMarkerHierarchy(markers, scene)}
+          ${renderAttentionGuidanceInspector(marker)}
         </div>
         ${renderAttentionGuidanceViewport(beat, marker, sceneContext, scene)}
       </div>
@@ -9368,7 +9508,7 @@ function renderAttentionGuidanceStatus() {
 function renderAttentionStoryCanvas() {
   const beats = state.data?.graph?.beats || [];
   if (!beats.length) {
-    return `<section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell attention-story-canvas-shell"><h3>Story canvas</h3><p class="muted">No Source Graph beats are available.</p></section>`;
+    return `<section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell attention-story-canvas-shell"><h3>Story canvas</h3><p class="muted">No story parts are available.</p></section>`;
   }
   return `
     <section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell attention-story-canvas-shell" data-attention-story-canvas>
@@ -9377,7 +9517,7 @@ function renderAttentionStoryCanvas() {
         <span>${beats.length} story part${beats.length === 1 ? "" : "s"}</span>
       </div>
       <div class="source-graph-canvas-stage spatial-story-canvas-stage">
-        <div class="source-graph-canvas-viewport spatial-story-canvas-viewport story-variant-links-canvas" data-attention-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Attention Guidance story canvas">
+        <div class="source-graph-canvas-viewport spatial-story-canvas-viewport story-variant-links-canvas" data-attention-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Guide attention story canvas">
           ${renderStoryVariantLinkLayer("attention")}
           <ol class="source-graph-canvas-track spatial-story-canvas-track">
             ${beats.map((beat, index) => renderAttentionStoryBeat(beat, index, beats.length)).join("")}
@@ -9397,7 +9537,7 @@ function renderAttentionStoryBeat(beat, index, total) {
     <li class="source-graph-beat-item spatial-story-beat-item ${group ? "has-variants" : ""} ${index < total - 1 ? "has-connector" : ""}">
       ${renderAttentionStoryCard(beat, defaultOption, primaryContext, index, true)}
       ${alternatives.length ? `
-        <ol class="source-graph-variant-alternatives spatial-story-variant-alternatives" aria-label="Parallel attention scenes for ${escapeHtml(beat.title || beat.id)}">
+        <ol class="source-graph-variant-alternatives spatial-story-variant-alternatives" aria-label="Parallel choices for ${escapeHtml(beat.title || beat.id)}">
           ${alternatives.map((option) => `<li>${renderAttentionStoryCard(beat, option, spatialSceneContext(beat.id, group.id, option.id), index, false)}</li>`).join("")}
         </ol>
       ` : ""}
@@ -9408,6 +9548,8 @@ function renderAttentionStoryBeat(beat, index, total) {
 
 function renderAttentionStoryCard(beat, option, context, index, primary) {
   const linkedAssetIds = spatialSceneLinkedAssetIds(spatialSceneRecordForContext(lockedSpatialRelationsContract(), context), beat, option);
+  const scene = attentionSceneRecordForContext(ensureAttentionGuidanceDraft(), context);
+  const changed = attentionSceneMarkers(scene).some((marker) => marker.manual);
   const title = option?.label || beat.title || beat.id;
   const text = option?.text || beat.text || beat.excerpt || beat.section || "";
   return `
@@ -9419,11 +9561,11 @@ function renderAttentionStoryCard(beat, option, context, index, primary) {
       ${context.variantGroupId ? `data-attention-variant-group-id="${escapeHtml(context.variantGroupId)}"` : ""}
       ${context.variantOptionId ? `data-attention-variant-option-id="${escapeHtml(context.variantOptionId)}"` : ""}
       ${renderStoryVariantCardAttributes(context)}
-      aria-label="Open attention scene for ${escapeHtml(title)}"
+      aria-label="Open focus-marker scene for ${escapeHtml(title)}"
     >
       <span class="source-graph-beat-card-head">
         <span class="beat-number">${String(index + 1).padStart(2, "0")}</span>
-        ${option ? `<span class="spatial-variant-badge">Variant</span>` : ""}
+        ${option ? `<span class="spatial-variant-badge">Choice</span>` : ""}
       </span>
       <span class="source-graph-beat-summary spatial-story-beat-summary">
         <strong>${escapeHtml(title)}</strong>
@@ -9432,7 +9574,7 @@ function renderAttentionStoryCard(beat, option, context, index, primary) {
       <span class="source-graph-beat-assets spatial-story-beat-assets" aria-label="${linkedAssetIds.length} linked assets">
         ${linkedAssetIds.map((assetId) => renderSpatialStoryAsset(assetId)).join("") || `<span class="muted">No linked visual</span>`}
       </span>
-      <span class="spatial-scene-card-footer"><span>${linkedAssetIds.length} linked</span><em>Open scene</em></span>
+      <span class="spatial-scene-card-footer"><span>${linkedAssetIds.length} linked</span>${renderStoryCanvasChangedIndicator(changed)}</span>
     </button>
   `;
 }
@@ -9453,28 +9595,55 @@ function renderAttentionEmptyTargets(scene) {
   return `<div class="attention-empty-targets"><span aria-hidden="true">○</span><strong>No focus marker needed</strong><p>Readers can explore this scene without one.</p></div>`;
 }
 
-function renderAttentionMarkerHierarchy(markers, beat, scene) {
-  const manualTargetOptions = attentionAvailableManualTargetOptions(scene);
+function renderAttentionMarkerHierarchy(markers, scene) {
+  const targetOptions = attentionManualTargetOptions(scene);
+  const selectedTargetIds = new Set(selectedAttentionTargetObjectCandidateIds(scene));
+  const manualTargetOptions = [
+    ...targetOptions.filter((candidate) => candidate.targetKind === "standalone-glb"),
+    ...targetOptions.filter((candidate) => candidate.targetKind === "standalone-image"),
+  ];
+  const markerIds = new Set(markers.map((marker) => marker.id));
   const manualPositionOption = attentionAvailableManualPositionTarget(scene);
+  const spatialEntityById = new Map(spatialSceneEntities(
+    lockedSpatialRelationsContract(),
+    activeAttentionSceneContext(),
+  ).map((entity) => [entity.id, entity]));
+  const renderObjectItem = (candidate) => {
+    const selected = selectedTargetIds.has(candidate.id);
+    const primary = candidate.id === state.selectedAttentionTargetCandidateId;
+    const alreadyTargeted = markerIds.has(candidate.id);
+    const spatialEntity = spatialEntityById.get(candidate.entityId);
+    return `
+      <button
+        type="button"
+        class="spatial-hierarchy-item spatial-object-hierarchy-item attention-target-object-item ${selected ? "selected" : ""} ${primary ? "selection-primary" : ""}"
+        data-attention-select-object="${escapeHtml(candidate.id)}"
+        aria-pressed="${selected}"
+      >
+        <strong>${escapeHtml(spatialEntity ? spatialRelationEntityLabel(spatialEntity) : attentionManualTargetLabel(candidate))}</strong>
+        ${alreadyTargeted ? `<em class="inferred">focus marker</em>` : ""}
+      </button>
+    `;
+  };
   return `
-    <aside class="spatial-hierarchy attention-marker-hierarchy" aria-label="Attention markers">
-      <div class="visual-card-head"><h3>Attention targets</h3><span>${markers.length}</span></div>
-      <p class="spatial-current-beat">${escapeHtml(beat?.title || "No readable beat")}</p>
+    <aside class="spatial-hierarchy attention-marker-hierarchy" aria-label="Focus markers">
+      <div class="visual-card-head"><h3>Focus markers</h3><span>${markers.length}</span></div>
       <div class="attention-manual-target-controls">
-        <label>
-          <span>Target object</span>
-          <select data-attention-manual-target ${manualTargetOptions.length ? "" : "disabled"}>
-            ${manualTargetOptions.length
-              ? manualTargetOptions.map((candidate) => `<option value="${escapeHtml(candidate.id)}">${escapeHtml(attentionManualTargetLabel(candidate))}</option>`).join("")
-              : `<option value="">No available scene object</option>`}
-          </select>
-        </label>
-        <button type="button" data-attention-add-manual disabled>Add object as target</button>
-        <button type="button" data-attention-place-manual aria-pressed="false" ${manualPositionOption ? "" : "disabled"}>Place target manually</button>
+        <section class="attention-target-object-hierarchy" aria-label="Scene objects available for focus markers">
+          <div class="spatial-hierarchy-group-head"><strong>Scene objects</strong><span>${manualTargetOptions.length}</span></div>
+          <div class="spatial-hierarchy-scroll attention-target-object-scroll">
+            <div class="spatial-hierarchy-items">
+              ${manualTargetOptions.map(renderObjectItem).join("")
+                || `<p class="attention-no-target-objects">No available scene object</p>`}
+            </div>
+          </div>
+        </section>
+        <button type="button" data-attention-add-manual disabled>Add focus marker to object</button>
+        <button type="button" data-attention-place-manual aria-pressed="false" ${manualPositionOption ? "" : "disabled"}>Place focus marker manually</button>
       </div>
       <div class="spatial-hierarchy-scroll">
         <section class="spatial-hierarchy-group">
-          <div class="spatial-hierarchy-group-head"><strong>Visible targets</strong><span>${markers.length}</span></div>
+          <div class="spatial-hierarchy-group-head"><strong>Visible focus markers</strong><span>${markers.length}</span></div>
           <div class="spatial-hierarchy-items">
             ${markers.map((marker) => `
                 <button class="spatial-hierarchy-item attention-marker-item ${marker.id === state.selectedAttentionMarkerId ? "selected" : ""}" data-attention-select-marker="${escapeHtml(marker.id)}">
@@ -9483,7 +9652,7 @@ function renderAttentionMarkerHierarchy(markers, beat, scene) {
                     <strong>${escapeHtml(attentionMarkerLabel(marker))}</strong>
                     <small>${escapeHtml(attentionTargetKindLabel(marker))}</small>
                   </span>
-                  ${marker.manual ? `<em>${escapeHtml(attentionMarkerEditLabel(marker))}</em>` : `<em class="inferred">inferred</em>`}
+                  ${marker.manual ? `<em>${escapeHtml(attentionMarkerEditLabel(marker))}</em>` : `<em class="inferred">suggested</em>`}
                 </button>
               `).join("") || renderAttentionEmptyTargets(scene)}
           </div>
@@ -9496,47 +9665,31 @@ function renderAttentionMarkerHierarchy(markers, beat, scene) {
 function renderAttentionGuidanceViewport(beat, marker, sceneContext, scene) {
   const markerCount = attentionSceneMarkers(scene).length;
   return `
-    <section class="topology-diagram-card topology-3d-card spatial-preview-card attention-preview-card">
-      <div class="visual-card-head">
+    <section class="topology-diagram-card topology-3d-card spatial-preview-card attention-preview-card storyvr-spatial-surface">
+      <div class="visual-card-head storyvr-spatial-surface-head">
         <div>
           <h3>Guide attention</h3>
-          <p class="muted">Story objects and the environment stay fixed. Select a target and move only its position.</p>
         </div>
-        <span class="topology-kind-pill attention-kind-pill">${escapeHtml(marker ? attentionMarkerLabel(marker) : "No target")}</span>
+        <span class="topology-kind-pill attention-kind-pill">${escapeHtml(marker ? attentionMarkerLabel(marker) : "No focus marker")}</span>
       </div>
-      <div class="spatial-scene-context-bar">
+      <div class="spatial-scene-context-bar storyvr-spatial-context">
         <div><span>${escapeHtml(spatialSceneContextLabel(sceneContext))}</span><strong>${escapeHtml(beat?.title || sceneContext.beatId)}</strong></div>
-        <span>${markerCount} validated target${markerCount === 1 ? "" : "s"}</span>
+        <span>${markerCount} focus marker${markerCount === 1 ? "" : "s"}</span>
       </div>
-      <div class="spatial-transform-toolbar attention-transform-toolbar" role="toolbar" aria-label="Attention position tools">
-        <button class="selected" disabled>Move only <kbd>W</kbd></button>
+      <div class="spatial-transform-toolbar attention-transform-toolbar storyvr-spatial-toolbar" role="toolbar" aria-label="Attention guidance actions">
         <button data-attention-undo ${authorHistory.canUndo ? "" : "disabled"}>Undo</button>
         <button data-attention-redo ${authorHistory.canRedo ? "" : "disabled"}>Redo</button>
       </div>
-      <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell attention-viewer-shell" data-attention-viewer tabindex="0" role="application" aria-label="Interactive Attention Guidance editor">
-        <div class="topology-viewer-status">Loading the saved scene and checking visible story targets...</div>
+      <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell attention-viewer-shell storyvr-spatial-viewer" data-attention-viewer tabindex="0" role="application" aria-label="Interactive focus marker editor">
+        <div class="topology-viewer-status">Loading the saved scene and checking visible focus markers...</div>
       </div>
-      <p class="topology-viewer-hint">Orange target markers are authoring indicators only. There are no controls to rotate, scale, add, delete, or move story objects.</p>
+      <p class="topology-viewer-hint storyvr-spatial-footer">Orange focus markers are authoring indicators only.</p>
     </section>
   `;
 }
 
-function renderAttentionGuidanceInspector(marker, scene) {
-  if (!marker) {
-    const reconciliation = attentionSceneReconciliation(scene);
-    const rejectedCount = Number(scene?.evaluation?.rejectedCandidateCount) || 0;
-    const copy = reconciliation.status === "conflict"
-      ? "The suggestions did not match a visible object in this scene."
-      : rejectedCount > 0
-        ? "The suggested focus is not visible, so no marker was added."
-        : "This scene does not need a focus marker.";
-    return `<aside class="topology-inspector spatial-inspector attention-inspector"><h3>Focus marker</h3><p class="muted">${escapeHtml(copy)}</p></aside>`;
-  }
-  const position = attentionPosition(marker.position) || attentionPosition(marker.inferredPosition);
-  const disabled = "";
-  const vectorInputs = ["X", "Y", "Z"].map((axis, index) => `
-    <label><span>${axis}</span><input type="number" step="0.01" value="${formatSpatialNumber([position.x, position.y, position.z][index])}" data-attention-position-field="${index}" ${disabled}></label>
-  `).join("");
+function renderAttentionGuidanceInspector(marker) {
+  if (!marker) return "";
   return `
     <aside class="topology-inspector spatial-inspector attention-inspector">
       <div class="spatial-inspector-head">
@@ -9544,14 +9697,6 @@ function renderAttentionGuidanceInspector(marker, scene) {
         <div class="attention-inspector-badges">
           <span class="text-comfort-badge ${marker.manual ? "warning" : "good"}" data-attention-manual-badge>${escapeHtml(marker.manual ? attentionMarkerEditLabel(marker) : "inferred")}</span>
         </div>
-      </div>
-      <section class="topology-inspector-section">
-        <div class="spatial-inspector-section-head"><h3>Position</h3><span>spatial-scene meters</span></div>
-        <div class="spatial-vector-inputs">${vectorInputs}</div>
-      </section>
-      <div class="spatial-inspector-actions">
-        <button data-attention-reset-selected ${disabled}>${escapeHtml(attentionMarkerResetLabel(marker))}</button>
-        <span data-attention-autosave-status>${escapeHtml(state.attentionAutosaveStatus)} · revision ${state.attentionDraftRevision}</span>
       </div>
     </aside>
   `;
@@ -9588,8 +9733,8 @@ function renderTextComfortWorkspace(component) {
           ${renderCheckpointActions(component, decision, { canCommit: selectedProposal || decision })}
         </div>
       </div>
-      <p class="muted">Choose where readable story text lives in the VR scene. Move the panel in the preview; its placement is stored when you save the checkpoint.</p>
-      ${ready ? "" : `<p class="blocked-note">Save earlier checkpoints before generating this component.</p>`}
+      <p class="muted">Choose where readable story text lives in the VR scene. Move the panel in the preview; its placement is stored when you finish this step.</p>
+      ${ready ? "" : `<p class="blocked-note">Finish the earlier steps before generating choices here.</p>`}
       ${proposals.length || selectedProposal ? `
         <div class="asset-topology-workbench text-comfort-workbench">
           ${renderTextOptionRail(component, proposals, selectedProposal)}
@@ -9638,7 +9783,7 @@ function renderTextOptionRail(component, proposals, selectedProposal) {
             <strong>${escapeHtml(proposal.label || component.label)}</strong>
             <p>${escapeHtml(shortText(proposal.description, 130))}</p>
             <div class="topology-card-meta">
-              <span>${beatCount} readable beat${beatCount === 1 ? "" : "s"}</span>
+              <span>${beatCount} readable story part${beatCount === 1 ? "" : "s"}</span>
               <span>${Math.round(Number(proposal.confidence || 0) * 100)}%</span>
             </div>
             <button data-select-option="${escapeHtml(proposal.optionId)}">${selected ? "Selected" : "Select"}</button>
@@ -9678,20 +9823,20 @@ function renderTextComfortPreview(proposal) {
         <span class="topology-kind-pill ${kind}">${escapeHtml(textComfortKindLabel(kind))}</span>
       </div>
       <div class="narrative-beat-stepper text-beat-stepper">
-        <button data-text-step="prev" ${index <= 0 ? "disabled" : ""}>Previous beat</button>
+        <button data-text-step="prev" ${index <= 0 ? "disabled" : ""}>Previous story part</button>
         <div>
-          <strong data-text-beat-title>${escapeHtml(beat?.title || "No readable beat selected")}</strong>
-          <span data-text-beat-meta>${beats.length ? `${index + 1} of ${beats.length} · ${hasOverride ? "custom placement" : "global placement"}` : "0 beats"}</span>
-          <p data-text-beat-copy>${escapeHtml(shortText(beat?.text || "No story text is available for this beat.", 240))}</p>
+          <strong data-text-beat-title>${escapeHtml(beat?.title || "No readable story part selected")}</strong>
+          <span data-text-beat-meta>${beats.length ? `${index + 1} of ${beats.length} · ${hasOverride ? "custom placement" : "global placement"}` : "0 story parts"}</span>
+          <p data-text-beat-copy>${escapeHtml(shortText(beat?.text || "No story text is available for this story part.", 240))}</p>
         </div>
-        <button data-text-step="next" ${index >= beats.length - 1 ? "disabled" : ""}>Next beat</button>
+        <button data-text-step="next" ${index >= beats.length - 1 ? "disabled" : ""}>Next story part</button>
       </div>
       <div class="topology-viewer-shell text-viewer-shell" data-text-viewer="${escapeHtml(proposal.optionId)}" tabindex="0" role="application" aria-label="Interactive 3D text comfort preview">
         <div class="topology-viewer-status">Loading text comfort preview...</div>
       </div>
       <div class="text-placement-controls">
-        <button data-text-placement-action="reset">Reset current beat</button>
-        <button data-text-placement-action="apply-all">Apply current placement to all beats</button>
+        <button data-text-placement-action="reset">Reset current story part</button>
+        <button data-text-placement-action="apply-all">Apply current placement to all story parts</button>
         <button data-text-placement-action="snap-left">Snap left</button>
         <button data-text-placement-action="snap-right">Snap right</button>
         <button data-text-placement-action="snap-near-body">Snap near body</button>
@@ -9699,7 +9844,7 @@ function renderTextComfortPreview(proposal) {
       </div>
       <div class="text-comfort-badges">
         ${kind === "object-attached" && sourceCue ? `<span class="text-comfort-badge good">source camera focus · ${Math.round((Number(sourceCue.confidence) || 0) * 100)}%</span>` : ""}
-        ${warnings.map((warning) => `<span class="text-comfort-badge ${warning.severity}">${escapeHtml(warning.label)}</span>`).join("") || `<span class="text-comfort-badge good">comfortable draft</span>`}
+        ${warnings.map((warning) => `<span class="text-comfort-badge ${warning.severity}">${escapeHtml(warning.label)}</span>`).join("") || `<span class="text-comfort-badge good">comfortable placement</span>`}
       </div>
       <p class="topology-viewer-hint">Drag the text panel to move it. Click scene, then use WASD to move the editor camera.</p>
       <p class="topology-description">${escapeHtml(proposal.description)}</p>
@@ -9813,10 +9958,10 @@ function renderInteractionControlCanvasWorkspace(component, baseProposal, decisi
       ${renderInteractionTraversalConstraint(interactionSpatialTraversal(baseProposal))}
       ${unassignedCount ? `<p class="blocked-note interaction-assignment-note" data-interaction-assignment-required><span>${unassignedCount} scene change${unassignedCount === 1 ? " needs" : "s need"} a reader action. The ${unassignedCount === 1 ? "problem is" : "problems are"} highlighted below.</span><button type="button" data-interaction-show-problem="${escapeHtml(firstUnassignedBoundaryId)}">Show ${unassignedCount === 1 ? "problem" : "first problem"}</button></p>` : ""}
       ${incompleteConfigurationCount ? `<p class="blocked-note" data-interaction-configuration-required>${incompleteConfigurationCount} reader action${incompleteConfigurationCount === 1 ? " needs" : "s need"} more information before this step can be finished.</p>` : ""}
-      <div class="dynamic-canvas-summary interaction-canvas-summary" aria-label="Current Interaction Control boundary assignments">
+      <div class="dynamic-canvas-summary interaction-canvas-summary" aria-label="Current reader actions for scene changes">
         <span>Reader actions</span>
         <strong>${boundaryContext.boundaries.length ? `${assignedCount} of ${boundaryContext.boundaries.length} scene changes ready` : "Opening scene only"}</strong>
-        <small>${controllerButtonCount} button step${controllerButtonCount === 1 ? "" : "s"} · ${variantCount} choice section${variantCount === 1 ? "" : "s"}</small>
+        <small>${controllerButtonCount} Controller button press action${controllerButtonCount === 1 ? "" : "s"} · ${variantCount} choice section${variantCount === 1 ? "" : "s"}</small>
       </div>
       ${renderInteractionStoryCanvas(baseProposal, boundaryContext)}
     </section>
@@ -9830,7 +9975,7 @@ function renderInteractionControlEditorWorkspace(component, baseProposal, ready,
   const inBeatEditor = editorContext?.targetType === "in-beat";
   const controllerMappingEditor = editorContext?.targetType === "global-controller";
   const boundaryStatus = inBeatEditor
-    ? { className: "in-beat", label: "Object action" }
+    ? { className: "in-beat", label: "Interactive object" }
     : controllerMappingEditor
     ? { className: "button-step", label: "Shared mapping" }
     : editorContext?.kind
@@ -9854,11 +9999,11 @@ function renderInteractionControlEditorWorkspace(component, baseProposal, ready,
         </div>
         <div class="actions">
           <span class="dynamic-scene-motion-pill interaction-scene-control-pill ${escapeHtml(boundaryStatus.className)}">${escapeHtml(boundaryStatus.label)}</span>
-          <button class="primary" type="button" data-interaction-close-editor>Back to story canvas</button>
+          <button class="primary" type="button" data-interaction-close-editor>Save scene and return</button>
         </div>
       </div>
       <p class="muted">${escapeHtml(controllerMappingEditor
-        ? "Set one controller mapping for every transition that uses Controller button press."
+        ? "Set one controller mapping for every scene change that uses Controller button press."
         : inBeatEditor
           ? `Choose which objects in ${editorContext.fromLabel} readers may grab or resize.`
           : editorContext?.kind
@@ -9893,16 +10038,16 @@ function renderInteractionInBeatEditor(editorContext) {
     : constraintModes[0]?.mode || "translate";
   const selectedLabel = selectedTarget
     ? selectedTarget.nodePath || selectedTarget.assetId || selectedTarget.entityId
-    : "No interactable selected";
+    : "No interactive object selected";
   return `
     <div class="interaction-option-editor in-beat" data-interaction-option-editor="in-beat" data-interaction-inbeat-editor>
-      <div class="interaction-editor-toolbar">
-        <div><strong>Objects readers can move</strong><span>${targets.length} object${targets.length === 1 ? "" : "s"} selected in this scene</span></div>
+      <div class="interaction-editor-toolbar storyvr-spatial-context">
+        <div><strong>Interactive objects</strong><span>${targets.length} object${targets.length === 1 ? "" : "s"} selected in this scene</span></div>
         <span class="interaction-default-pill">Grip to grab · two grips to scale</span>
       </div>
       <div class="interaction-option-editor-grid interaction-inbeat-layout">
-        <section class="interaction-config-card interaction-inbeat-stage">
-          <div class="interaction-destination-toolbar interaction-constraint-toolbar" role="group" aria-label="Movement limit tools">
+        <section class="interaction-config-card interaction-inbeat-stage storyvr-spatial-surface">
+          <div class="interaction-destination-toolbar interaction-constraint-toolbar storyvr-spatial-toolbar" role="toolbar" aria-label="Movement limit tools">
             <span>Edit limits</span>
             ${constraintModes.map(({ mode, label }) => `<button type="button" data-interaction-constraint-transform-mode="${mode}" class="${activeMode === mode ? "selected" : ""}" aria-pressed="${activeMode === mode}">${label}</button>`).join("")}
             ${constraintModes.length ? `
@@ -9911,8 +10056,8 @@ function renderInteractionInBeatEditor(editorContext) {
               <span class="interaction-constraint-endpoint-status" data-interaction-constraint-endpoint-status aria-live="polite">${state.interactionConstraintEndpoint === "max" ? "Maximum ghost active" : "Minimum ghost active"}</span>
             ` : `<small>Enable a range below to place its handles.</small>`}
           </div>
-          <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell interaction-viewer-shell interaction-inbeat-viewer-shell" data-interaction-viewer="${escapeHtml(editorContext.targetId)}" tabindex="0" role="application" aria-label="Object action editor" aria-describedby="interaction-inbeat-viewer-hint"><div class="topology-viewer-status">Loading this scene...</div></div>
-          <p class="topology-viewer-hint" id="interaction-inbeat-viewer-hint">${constraintModes.length
+          <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell interaction-viewer-shell interaction-inbeat-viewer-shell storyvr-spatial-viewer" data-interaction-viewer="${escapeHtml(editorContext.targetId)}" tabindex="0" role="application" aria-label="Interactive object editor" aria-describedby="interaction-inbeat-viewer-hint"><div class="topology-viewer-status">Loading this scene...</div></div>
+          <p class="topology-viewer-hint storyvr-spatial-footer" id="interaction-inbeat-viewer-hint">${constraintModes.length
             ? "Select an object. Use the teal minimum and orange maximum shapes to set how far it may move, rotate, or resize."
             : "Select an object from the scene or the list. Turn on a limit below if the object needs one."}</p>
           ${constraintModes.length ? `
@@ -9927,7 +10072,7 @@ function renderInteractionInBeatEditor(editorContext) {
           <p class="muted">Select the whole object or one named part.</p>
           <div class="interaction-inbeat-candidate-list" data-interaction-inbeat-candidates><p class="muted">Loading objects…</p></div>
           <section class="interaction-inbeat-selected ${selectedTarget ? "" : "empty"}" data-interaction-inbeat-selected>
-            <div class="interaction-inbeat-selected-head"><div><small>Selected target</small><strong>${escapeHtml(selectedLabel)}</strong></div>${selectedTarget ? `<button type="button" class="danger-subtle" data-interaction-inbeat-remove-target="${escapeHtml(selectedKey)}">Remove</button>` : ""}</div>
+            <div class="interaction-inbeat-selected-head"><div><small>Selected object</small><strong>${escapeHtml(selectedLabel)}</strong></div>${selectedTarget ? `<button type="button" class="danger-subtle" data-interaction-inbeat-remove-target="${escapeHtml(selectedKey)}">Remove</button>` : ""}</div>
             ${selectedTarget ? renderInteractionInBeatTargetControls(selectedTarget) : `<p class="muted">Choose an object or part that readers may move.</p>`}
           </section>
         </aside>
@@ -10003,9 +10148,9 @@ function renderInteractionControllerBindingSelect(configuration, hand, input) {
   const action = interactionControllerBinding(configuration, hand.id, input.id);
   return `<select aria-label="${escapeHtml(`${input.label} action on ${hand.label}`)}" data-interaction-controller-binding data-interaction-hand="${hand.id}" data-interaction-input="${input.id}">${interactionActionOptionsForInput(input).map((option) => {
     const label = option.id === "next-beat"
-      ? "Next beat"
+      ? "Next story part"
       : option.id === "previous-beat"
-        ? "Previous beat"
+        ? "Previous story part"
         : option.id === "unmapped"
           ? "None"
           : option.label;
@@ -10066,8 +10211,8 @@ function renderInteractionControllerEditor(editorContext) {
   return `
     <div class="interaction-option-editor controller" data-interaction-option-editor="controller-button-press">
       <div class="interaction-editor-toolbar"><div><strong>${escapeHtml(profile.label)}</strong><span>Navigation and locomotion mapping</span></div><span class="interaction-default-pill">${transitionCount
-        ? `Used by ${transitionCount} controller button press transition${transitionCount === 1 ? "" : "s"}`
-        : "Ready for controller button press transitions"}</span></div>
+        ? `Used by ${transitionCount} Controller button press scene change${transitionCount === 1 ? "" : "s"}`
+        : "Ready for Controller button press scene changes"}</span></div>
       <div class="interaction-option-editor-grid controller-mapping-layout">
         <section class="interaction-config-card interaction-controller-stage">
           <div class="interaction-controller-pair">
@@ -10093,10 +10238,10 @@ function renderInteractionUiPanelEditor(editorContext) {
       <div class="interaction-option-editor-grid">
         <section class="interaction-config-card interaction-ui-panel-stage">
           <div class="interaction-ui-panel-preview" data-interaction-ui-panel-preview>
-            <div class="interaction-ui-panel-copy"><small>StoryVR</small><h3>${escapeHtml(title)}</h3><p>${escapeHtml(body || "No story text is available for this variant.")}</p></div>
+            <div class="interaction-ui-panel-copy"><small>StoryVR</small><h3>${escapeHtml(title)}</h3><p>${escapeHtml(body || "No story text is available for this choice.")}</p></div>
             <button type="button" class="interaction-ui-button-preview" data-interaction-ui-button-preview style="${style}" aria-label="Drag button to position it on the text panel">${escapeHtml(button.label)}</button>
           </div>
-          <p class="topology-viewer-hint">This uses the active variant’s exact authored title and story text. Drag the button to place it; the final reader consumes the same normalized position and label.</p>
+          <p class="topology-viewer-hint">This uses the active choice’s exact authored title and story text. Drag the button to place it; the final reader consumes the same normalized position and label.</p>
         </section>
         <aside class="interaction-config-card">
           <h3>Button</h3>
@@ -10236,7 +10381,7 @@ function interactionDirectDestinationRangeMessage(target) {
   const messages = [];
   if (violations.length) {
     const labels = violations.map(({ channel, axis }) => `${channel} ${["X", "Y", "Z"][axis]}`);
-    messages.push(`This destination is outside the authored ${labels.join(", ")} ${labels.length === 1 ? "limit" : "limits"}. Move it inside the range, or return to the source beat and widen its Minimum and Maximum ghosts.`);
+    messages.push(`This destination is outside the authored ${labels.join(", ")} ${labels.length === 1 ? "limit" : "limits"}. Move it inside the range, or return to the source story part and widen its Minimum and Maximum ghosts.`);
   }
   if (!interactionDirectScaleDestinationIsReachable(target)) {
     messages.push("The reader scales evenly in every direction, so use one common X, Y, and Z size ratio from the original model, or place the destination exactly at a Minimum or Maximum scale ghost.");
@@ -10273,13 +10418,13 @@ function renderInteractionSpatialScene(editorContext, heading, hint) {
     state.interactionDestinationTransformMode = allowedModes[0] || "translate";
   }
   return `
-    <section class="interaction-config-card interaction-spatial-config">
-      <div class="visual-card-head"><div><h3>${escapeHtml(heading)}</h3><p class="muted">Previous scene · ${escapeHtml(editorContext.fromLabel)}</p></div><span>${interactionDirectSceneTargets(editorContext.sceneContext).length} interactable target${interactionDirectSceneTargets(editorContext.sceneContext).length === 1 ? "" : "s"}</span></div>
-      <div class="interaction-editor-toolbar interaction-transform-toolbar" role="group" aria-label="Destination transform tool">
+    <section class="interaction-config-card interaction-spatial-config storyvr-spatial-surface">
+      <div class="visual-card-head storyvr-spatial-surface-head"><div><h3>${escapeHtml(heading)}</h3><p class="muted">Previous scene · ${escapeHtml(editorContext.fromLabel)}</p></div><span>${interactionDirectSceneTargets(editorContext.sceneContext).length} interactive object${interactionDirectSceneTargets(editorContext.sceneContext).length === 1 ? "" : "s"}</span></div>
+      <div class="interaction-editor-toolbar interaction-transform-toolbar storyvr-spatial-toolbar" role="toolbar" aria-label="Destination transform tool">
         ${[["translate", "Move"], ["rotate", "Rotate"], ["scale", "Scale"]].map(([mode, label]) => `<button type="button" data-interaction-destination-transform-mode="${mode}" class="${state.interactionDestinationTransformMode === mode ? "selected" : ""}" aria-pressed="${state.interactionDestinationTransformMode === mode}" ${allowedModes.includes(mode) ? "" : "disabled"}>${label}</button>`).join("")}
       </div>
-      <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell interaction-viewer-shell" data-interaction-viewer="${escapeHtml(editorContext.targetId)}" tabindex="0" role="application" aria-label="${escapeHtml(heading)}"><div class="topology-viewer-status">Loading previous-beat spatial scene...</div></div>
-      <p class="topology-viewer-hint">${escapeHtml(hint)} Use WASD after focusing the scene.</p>
+      <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell interaction-viewer-shell storyvr-spatial-viewer" data-interaction-viewer="${escapeHtml(editorContext.targetId)}" tabindex="0" role="application" aria-label="${escapeHtml(heading)}"><div class="topology-viewer-status">Loading previous story-part scene...</div></div>
+      <p class="topology-viewer-hint storyvr-spatial-footer">${escapeHtml(hint)} Use WASD after focusing the scene.</p>
     </section>`;
 }
 
@@ -10290,7 +10435,7 @@ function renderInteractionLocomotionEditor(editorContext) {
     <div class="interaction-option-editor locomotion" data-interaction-option-editor="reader-locomotion">
       <div class="interaction-editor-toolbar"><div><strong>Reader destination</strong><span>The story continues to ${escapeHtml(editorContext.toLabel)} when the reader reaches this area.</span></div><span class="interaction-default-pill">${formatNumber(configuration.tolerance.distanceMeters)} m area</span></div>
       <div class="interaction-option-editor-grid">
-        ${renderInteractionSpatialScene(editorContext, "Reader destination editor", "Move the teal destination marker; the reader model starts at the saved pose for the previous beat.")}
+        ${renderInteractionSpatialScene(editorContext, "Reader destination editor", "Move the teal destination marker; the reader model starts at the saved pose for the previous story part.")}
         <aside class="interaction-config-card">
           <h3>Destination position</h3>
           <div class="interaction-transform-grid" data-interaction-locomotion-transform>${renderInteractionTransformInputs(transform, "locomotion")}</div>
@@ -10321,7 +10466,7 @@ function renderInteractionDirectEditor(editorContext) {
   return `
     <div class="interaction-option-editor direct" data-interaction-option-editor="direct-manipulation">
       <div class="interaction-editor-toolbar"><div><strong>Object goal</strong><span>The story continues when every selected object reaches its destination.</span></div><span class="interaction-default-pill">${configuration.targets.length} object${configuration.targets.length === 1 ? "" : "s"} required</span></div>
-      ${suggestions.length ? `<div class="source-graph-status interaction-transform-suggestion"><span>${suggestions.length} transform-only destination${suggestions.length === 1 ? " is" : "s are"} available from the mapped transition.</span><button type="button" data-interaction-apply-transform-suggestions>Use suggestions</button></div>` : ""}
+      ${suggestions.length ? `<div class="source-graph-status interaction-transform-suggestion"><span>${suggestions.length} placement-only destination${suggestions.length === 1 ? " is" : "s are"} available from the mapped scene change.</span><button type="button" data-interaction-apply-transform-suggestions>Use suggestions</button></div>` : ""}
       <div class="interaction-option-editor-grid">
         ${renderInteractionSpatialScene(editorContext, "Object destination", "Select an object, then move its translucent destination shape.")}
         <aside class="interaction-config-card">
@@ -10342,7 +10487,7 @@ function renderInteractionDirectEditor(editorContext) {
                 ? ` · checks ${interactionDirectTriggerComponents(configuredTarget).join(" + ")}`
                 : "";
               return `<label class="${targetKey === selectedKey ? "selected" : ""} ${outsideRange ? "outside-range" : ""}"><input type="checkbox" data-interaction-direct-target="${escapeHtml(targetKey)}" data-interaction-direct-entity-id="${escapeHtml(target.entityId)}" ${target.nodePath ? `data-interaction-direct-node-path="${escapeHtml(target.nodePath)}"` : ""} ${target.nodeIndex != null ? `data-interaction-direct-node-index="${target.nodeIndex}"` : ""} ${included ? "checked" : ""}/><button type="button" data-interaction-select-direct-target="${escapeHtml(targetKey)}"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(`${target.assetId} · ${capability}${triggerSummary}${outsideRange ? " · outside range" : ""}`)}</small></button></label>`;
-            }).join("") || `<p class="muted">This source scene has no in-beat interactables. Return to its beat card and add one before using Direct manipulation.</p>`}
+            }).join("") || `<p class="muted">This source scene has no objects with reader actions. Return to its story-part card and add one before using Move an object.</p>`}
           </div>
           ${selectedTarget ? `
             <fieldset class="interaction-direct-trigger-components">
@@ -10360,10 +10505,10 @@ function renderInteractionDirectEditor(editorContext) {
             ${selectedTarget.destinationAuthored === false ? `<p class="blocked-note compact">Adjust an enabled trigger component or apply a mapped suggestion to author this destination.</p>` : ""}
             ${interactionDirectDestinationRangeMessage(selectedTarget) ? `<p class="blocked-note compact interaction-direct-range-warning" role="status">${escapeHtml(interactionDirectDestinationRangeMessage(selectedTarget))}</p>` : ""}
             <div class="interaction-transform-grid" data-interaction-direct-transform="${escapeHtml(selectedKey)}">${renderInteractionTransformInputs(selectedTarget.destinationTransform, "direct", { enabledParts: interactionDirectTriggerComponents(selectedTarget), rotationReference: interactionRotationRangeReference(selectedTarget.constraints?.rotation) })}</div>
-          ` : `<p class="muted">Select an interactable target to edit its destination.</p>`}
+          ` : `<p class="muted">Select an interactive object to edit its destination.</p>`}
           <details class="facilitator-details interaction-tolerance-details">
             <summary>Match tolerance for facilitator</summary>
-            <p>The beat changes as soon as all selected objects enter the reasonable-error range. Select one or more transform components; unselected components do not need to match.</p>
+            <p>The story part changes as soon as all selected objects enter the reasonable-error range. Select one or more transform components; unselected components do not need to match.</p>
             <div class="interaction-transform-grid compact">
               <label class="${activeTriggerComponents.has("position") ? "" : "disabled"}">Position (m)<input type="number" min="0.01" max="2" step="0.01" data-interaction-direct-tolerance="positionMeters" value="${formatNumber(configuration.tolerance.positionMeters)}" ${activeTriggerComponents.has("position") ? "" : "disabled"}/></label>
               <label class="${activeTriggerComponents.has("rotation") ? "" : "disabled"}">Rotation (°)<input type="number" min="0.5" max="180" step="0.5" data-interaction-direct-tolerance="rotationDegrees" value="${formatNumber(configuration.tolerance.rotationDegrees)}" ${activeTriggerComponents.has("rotation") ? "" : "disabled"}/></label>
@@ -10387,8 +10532,8 @@ function interactionBoundaryNeedsAssignment(boundary) {
 
 function interactionBoundaryVisualStatus(boundary) {
   if (!boundary) return { className: "opening", label: "Story entry", detail: "No incoming control" };
-  if (!boundary.configurationAvailable) return { className: "unavailable", label: "Unavailable", detail: "Save Transition first" };
-  if (!boundary.effectivePolicy) return { className: "unassigned", label: "Assign interaction", detail: "Mapped transition" };
+  if (!boundary.configurationAvailable) return { className: "unavailable", label: "Unavailable", detail: "Finish Scene changes first" };
+  if (!boundary.effectivePolicy) return { className: "unassigned", label: "Assign reader action", detail: "Mapped scene change" };
   const className = inferInteractionControlKind({ label: boundary.effectivePolicy });
   return {
     className,
@@ -10400,7 +10545,7 @@ function interactionBoundaryVisualStatus(boundary) {
 function renderInteractionStoryCanvas(proposal, boundaryContext) {
   const beats = state.data?.graph?.beats || [];
   if (!beats.length) {
-    return `<section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell interaction-story-canvas-shell"><h3>Story canvas</h3><p class="muted">No Source Graph beats are available.</p></section>`;
+    return `<section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell interaction-story-canvas-shell"><h3>Story canvas</h3><p class="muted">No story parts are available.</p></section>`;
   }
   return `
     <section class="visual-card source-graph-canvas-shell spatial-story-canvas-shell interaction-story-canvas-shell" data-interaction-story-canvas>
@@ -10412,7 +10557,7 @@ function renderInteractionStoryCanvas(proposal, boundaryContext) {
             type="button"
             data-interaction-open-controller-mapping
             aria-label="Open controller mapping"
-            title="Controller mapping · applies to every Controller button press transition"
+            title="Controller mapping · applies to every scene change that uses Controller button press"
           >
             <span class="interaction-option-icon" aria-hidden="true">${interactionOptionIcon("button-step")}</span>
           </button>
@@ -10420,7 +10565,7 @@ function renderInteractionStoryCanvas(proposal, boundaryContext) {
         </div>
       </div>
       <div class="source-graph-canvas-stage spatial-story-canvas-stage interaction-story-canvas-stage">
-        <div class="source-graph-canvas-viewport spatial-story-canvas-viewport interaction-story-canvas-viewport story-variant-links-canvas" data-interaction-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Interaction Control story canvas">
+        <div class="source-graph-canvas-viewport spatial-story-canvas-viewport interaction-story-canvas-viewport story-variant-links-canvas" data-interaction-story-canvas-viewport data-story-variant-canvas-viewport tabindex="0" aria-label="Reader actions story canvas">
           ${renderStoryVariantLinkLayer("interaction", proposal, boundaryContext)}
           <ol class="source-graph-canvas-track spatial-story-canvas-track interaction-story-canvas-track">
             ${beats.map((beat, index) => renderInteractionStoryBeat(
@@ -10453,11 +10598,11 @@ function renderInteractionStoryBeat(beat, index, total, proposal, boundaryContex
     <li class="source-graph-beat-item spatial-story-beat-item interaction-story-beat-item ${group ? "has-variants" : ""} ${group && nextGroup ? "has-variant-successor" : ""} ${index < total - 1 ? "has-connector" : ""}">
       ${renderInteractionStoryCard(beat, defaultOption, primaryContext, index, proposal, variantControl, true)}
       ${alternatives.length ? `
-        <ol class="source-graph-variant-alternatives spatial-story-variant-alternatives interaction-story-variant-alternatives" aria-label="Parallel Interaction Control scenes for ${escapeHtml(beat.title || beat.id)}">
+        <ol class="source-graph-variant-alternatives spatial-story-variant-alternatives interaction-story-variant-alternatives" aria-label="Parallel choices for ${escapeHtml(beat.title || beat.id)}">
           ${alternatives.map((option) => `<li>${renderInteractionStoryCard(beat, option, spatialSceneContext(beat.id, group.id, option.id), index, proposal, variantControl, false)}</li>`).join("")}
         </ol>
       ` : ""}
-      ${outgoingBoundaries.length ? `<div class="interaction-boundary-stack" aria-label="Outgoing Interaction Control boundaries">${outgoingBoundaries.map((boundary) => renderInteractionBoundaryConnector(boundary, boundary.from, boundary.to)).join("")}</div>` : ""}
+      ${outgoingBoundaries.length ? `<div class="interaction-boundary-stack" aria-label="Outgoing reader actions">${outgoingBoundaries.map((boundary) => renderInteractionBoundaryConnector(boundary, boundary.from, boundary.to)).join("")}</div>` : ""}
     </li>
   `;
 }
@@ -10466,13 +10611,14 @@ function renderInteractionStoryCard(beat, option, context, index, proposal, vari
   const previewBeat = interactionPreviewBeatForSceneContext(proposal, context);
   const linkedAssetIds = previewBeat?.linkedAssetIds || [];
   const interactableCount = interactionInBeatTargetsForContext(context).length;
+  const changed = interactableCount > 0;
   const title = option?.label || beat.title || beat.id;
   const text = option?.text || beat.text || beat.excerpt || beat.section || "";
   const variantArrowCount = variantControl
     ? interactionVariantSwitchEdges().filter((edge) => edge.from?.variantGroupId === variantControl.variantGroupId).length
     : 0;
   const variantStatus = variantControl
-    ? `<span class="topology-kind-pill variant-selection">Variant interactions</span><span class="interaction-default-pill">${variantArrowCount} directed arrow${variantArrowCount === 1 ? "" : "s"} · ${variantControl.optionIds.length} options</span>`
+    ? `<span class="topology-kind-pill variant-selection">Choice reader actions</span><span class="interaction-default-pill">${variantArrowCount} directed arrow${variantArrowCount === 1 ? "" : "s"} · ${variantControl.optionIds.length} choices</span>`
     : "";
   return `
     <button
@@ -10483,11 +10629,11 @@ function renderInteractionStoryCard(beat, option, context, index, proposal, vari
       ${context.variantGroupId ? `data-interaction-variant-group-id="${escapeHtml(context.variantGroupId)}"` : ""}
       ${context.variantOptionId ? `data-interaction-variant-option-id="${escapeHtml(context.variantOptionId)}"` : ""}
       ${renderStoryVariantCardAttributes(context)}
-      aria-label="Open Interaction Control editor for ${escapeHtml(title)}"
+      aria-label="Open Reader actions editor for ${escapeHtml(title)}"
     >
       <span class="source-graph-beat-card-head">
         <span class="beat-number">${String(index + 1).padStart(2, "0")}</span>
-        ${option ? `<span class="spatial-variant-badge">Variant</span>` : ""}
+        ${option ? `<span class="spatial-variant-badge">Choice</span>` : ""}
       </span>
       <span class="source-graph-beat-summary spatial-story-beat-summary">
         <strong>${escapeHtml(title)}</strong>
@@ -10497,7 +10643,7 @@ function renderInteractionStoryCard(beat, option, context, index, proposal, vari
         ${linkedAssetIds.map((assetId) => renderSpatialStoryAsset(assetId)).join("") || `<span class="muted">No linked visual</span>`}
       </span>
       ${variantStatus ? `<span class="interaction-story-card-controls" aria-live="polite">${variantStatus}</span>` : ""}
-      <span class="spatial-scene-card-footer interaction-scene-card-footer"><span>${linkedAssetIds.length} scene asset${linkedAssetIds.length === 1 ? "" : "s"}</span><em>${interactableCount ? `${interactableCount} interactable${interactableCount === 1 ? "" : "s"}` : "Add in-beat interaction"}</em></span>
+      <span class="spatial-scene-card-footer interaction-scene-card-footer"><span>${linkedAssetIds.length} scene asset${linkedAssetIds.length === 1 ? "" : "s"}</span>${renderStoryCanvasChangedIndicator(changed)}</span>
     </button>
   `;
 }
@@ -10599,11 +10745,11 @@ function renderInteractionBoundaryConnector(boundary, fromBeat, toBeat) {
     ? inferInteractionControlKind({ label: boundary.effectivePolicy })
     : "";
   const options = ["button-step", "direct", "embodied-control"];
-  const placeholder = !boundary?.configurationAvailable ? "Unavailable" : "Assign interaction";
+  const placeholder = !boundary?.configurationAvailable ? "Unavailable" : "Assign reader action";
   const sceneContext = normalizeMotionSceneContext(boundary?.fromContext, boundary?.fromBeatId)
     || interactionSceneContextForBeat(boundary?.fromBeatId);
   const directAvailable = interactionSceneHasInteractables(sceneContext);
-  const accessibleLabel = `Interaction options from ${fromTitle} to ${toTitle}`;
+  const accessibleLabel = `Reader actions from ${fromTitle} to ${toTitle}`;
   const needsAssignment = Boolean(boundary?.mappedTransition && !boundary?.effectivePolicy);
   return `
     <div
@@ -10611,7 +10757,7 @@ function renderInteractionBoundaryConnector(boundary, fromBeat, toBeat) {
       data-interaction-boundary-id="${escapeHtml(boundary?.boundaryId || "")}"
       ${needsAssignment ? `data-interaction-needs-assignment data-interaction-problem-boundary-id="${escapeHtml(boundary?.boundaryId || "")}"` : ""}
       role="group"
-      aria-label="${escapeHtml(`Interaction from ${fromTitle} to ${toTitle}: ${statusText}`)}"
+      aria-label="${escapeHtml(`Reader action from ${fromTitle} to ${toTitle}: ${statusText}`)}"
     >
       <span class="interaction-boundary-arrow" aria-hidden="true"></span>
       <span class="interaction-boundary-status">
@@ -10628,7 +10774,7 @@ function renderInteractionBoundaryConnector(boundary, fromBeat, toBeat) {
           class="interaction-boundary-policy-select"
           data-interaction-boundary-policy-select
           data-interaction-boundary-id="${escapeHtml(boundary?.boundaryId || "")}"
-          aria-label="${escapeHtml(`Interaction from ${fromTitle} to ${toTitle}`)}"
+          aria-label="${escapeHtml(`Reader action from ${fromTitle} to ${toTitle}`)}"
           ${boundary?.configurationAvailable ? "" : "disabled"}
         >
           ${effectiveKind === "branching-control"
@@ -10648,8 +10794,8 @@ function renderInteractionPreview(proposal, context) {
   if (!context?.beats?.length) {
     return `
       <section class="topology-diagram-card">
-        <h3>Interaction control preview</h3>
-        <p class="muted">No authored story boundaries are available to assign.</p>
+        <h3>Reader-action preview</h3>
+        <p class="muted">No authored scene changes are available to assign.</p>
       </section>
     `;
   }
@@ -10658,8 +10804,8 @@ function renderInteractionPreview(proposal, context) {
   const locomotionMode = interactionLocomotionMode(proposal, boundary);
   const controls = kind ? renderInteractionActionControls(kind, locomotionMode, boundary) : "";
   return `
-    <section class="topology-diagram-card topology-3d-card interaction-preview-card">
-      <div class="visual-card-head">
+    <section class="topology-diagram-card topology-3d-card interaction-preview-card storyvr-spatial-surface">
+      <div class="visual-card-head storyvr-spatial-surface-head">
         <div>
           <h3>Reader-action preview</h3>
           <p class="muted">${escapeHtml(boundary
@@ -10671,15 +10817,14 @@ function renderInteractionPreview(proposal, context) {
         <span class="topology-kind-pill ${boundary ? kind || "unassigned" : "opening"}">${escapeHtml(boundary ? boundary.effectivePolicy || "Unassigned" : "Story entry")}</span>
       </div>
       ${renderInteractionVariantControl(variantControl)}
-      ${controls ? `<div class="interaction-control-strip" data-interaction-action-strip>${controls}</div>` : ""}
-      <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell interaction-viewer-shell" data-interaction-viewer="${escapeHtml(proposal?.optionId || boundary?.boundaryId || "story-entry")}" tabindex="0" role="application" aria-label="Spatial Interaction Control editor with the reader's text panel attached to the left hand">
-        <div class="topology-viewer-status">Loading spatial interaction editor...</div>
+      ${controls ? `<div class="interaction-control-strip storyvr-spatial-toolbar" role="toolbar" aria-label="Reader-action preview controls" data-interaction-action-strip>${controls}</div>` : ""}
+      <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell interaction-viewer-shell storyvr-spatial-viewer" data-interaction-viewer="${escapeHtml(proposal?.optionId || boundary?.boundaryId || "story-entry")}" tabindex="0" role="application" aria-label="Reader actions scene editor with the reader's text panel attached to the left hand">
+        <div class="topology-viewer-status">Loading Reader actions scene...</div>
       </div>
-      <p class="topology-viewer-hint">Drag to look around. Select the scene and use WASD to move the preview camera.</p>
       <details class="facilitator-details preview-diagnostics">
         <summary>Action reason for facilitator</summary>
-        <p>Saved Dynamics and Transition playback remain visible. Return to the story canvas to inspect another boundary.</p>
-        <p class="topology-description">${escapeHtml(boundary?.reason || "The story opens directly on this beat; no preceding interaction is required.")}</p>
+        <p>Saved object movement and scene-change playback remain visible. Return to the story canvas to inspect another scene change.</p>
+        <p class="topology-description">${escapeHtml(boundary?.reason || "The story opens directly on this story part; no preceding reader action is required.")}</p>
       </details>
     </section>
   `;
@@ -10694,10 +10839,10 @@ function renderInteractionVariantControl(record) {
     <section class="interaction-boundary-editor variant-selection" data-variant-interaction-control="${escapeHtml(record.variantGroupId)}">
       <div class="interaction-boundary-heading">
         <div>
-          <strong>Variant arrow interactions</strong>
-          <p>Each direction between these variants has its own assignment on the story canvas.</p>
+          <strong>Choice arrow actions</strong>
+          <p>Each direction between these choices has its own reader action on the story canvas.</p>
         </div>
-        <span class="interaction-default-pill">${edgeControls.length} directed arrow${edgeControls.length === 1 ? "" : "s"} · ${record.optionIds.length} options</span>
+        <span class="interaction-default-pill">${edgeControls.length} directed arrow${edgeControls.length === 1 ? "" : "s"} · ${record.optionIds.length} choices</span>
       </div>
       <p class="muted">UI button press places Previous and Next buttons on the left-hand text panel for WebXR ray clicks. Direct manipulation and Reader locomotion assignments are preserved on their selected arrows.</p>
     </section>
@@ -10739,7 +10884,7 @@ function renderInteractionInspector(proposal, boundary) {
     return `
       <aside class="topology-inspector interaction-inspector">
         <h3>Story entry</h3>
-        <p class="muted">Select Beat 2 or later to inspect and assign its incoming interaction.</p>
+        <p class="muted">Select story part 2 or later to inspect and assign its incoming reader action.</p>
       </aside>
     `;
   }
@@ -10747,8 +10892,8 @@ function renderInteractionInspector(proposal, boundary) {
     return `
       <aside class="topology-inspector interaction-inspector">
         <section class="topology-inspector-section">
-          <h3>Transition unavailable</h3>
-          <p>Save Transition before assigning ${escapeHtml(boundary.fromBeatId)} → ${escapeHtml(boundary.toBeatId)}.</p>
+          <h3>Scene change unavailable</h3>
+          <p>Finish Scene changes before assigning ${escapeHtml(boundary.fromBeatId)} → ${escapeHtml(boundary.toBeatId)}.</p>
         </section>
       </aside>
     `;
@@ -10756,19 +10901,19 @@ function renderInteractionInspector(proposal, boundary) {
   return `
     <aside class="topology-inspector interaction-inspector">
       <section class="topology-inspector-section">
-        <h3>Boundary assignment</h3>
+        <h3>Scene-change assignment</h3>
         <p><strong>${escapeHtml(boundary.effectivePolicy || "Unassigned")}</strong> for ${escapeHtml(boundary.fromBeatId)} → ${escapeHtml(boundary.toBeatId)}.</p>
         <p>${escapeHtml(boundary.reason || "No rationale supplied.")}</p>
       </section>
       <section class="topology-inspector-section">
-        <h3>Transition context</h3>
-        <p>${boundary.mappedTransition ? "A mapped Transition is present. Choose any supported interaction for this boundary." : "No mapped Transition is present, so Controller button press is the default. You may replace it with any supported interaction."}</p>
+        <h3>Scene-change context</h3>
+        <p>${boundary.mappedTransition ? "A mapped scene change is present. Choose any supported reader action for this scene change." : "No mapped scene change is present, so Controller button press is the default. You may replace it with any supported reader action."}</p>
       </section>
       <section class="topology-inspector-section">
         <h3>Reader effect</h3>
         <p>${escapeHtml(boundary.effectivePolicy
           ? interactionControlKindHelp(inferInteractionControlKind({ label: boundary.effectivePolicy }), boundary.locomotionMode)
-          : "Assign an interaction to define how the reader crosses this mapped transition.")}</p>
+          : "Assign a reader action to define how the reader crosses this mapped scene change.")}</p>
       </section>
     </aside>
   `;
@@ -10792,7 +10937,7 @@ function renderFinalReviewWorkspace(component) {
         <div class="actions checkpoint-head-actions">
           ${renderCheckpointActions(component, decision, {
             canCommit: ready,
-            label: "Finish review",
+            label: "Finish this step",
           })}
         </div>
       </div>
@@ -10821,17 +10966,17 @@ function renderFinalReviewStoryCanvas(beats, selectedIndex, selectedContext) {
       <div class="final-review-story-canvas-head">
         <div>
           <p class="eyebrow">Story canvas</p>
-          <h3>Jump to a beat</h3>
+          <h3>Jump to a story part</h3>
         </div>
-        <span>${beats.length} beat${beats.length === 1 ? "" : "s"} · ${sceneCount} scene${sceneCount === 1 ? "" : "s"}</span>
+        <span>${beats.length} story part${beats.length === 1 ? "" : "s"} · ${sceneCount} scene${sceneCount === 1 ? "" : "s"}</span>
       </div>
       ${beats.length ? `
-        <div class="final-review-story-canvas-viewport" data-final-review-story-canvas-viewport tabindex="0" role="region" aria-label="Compact Final Review story canvas">
+        <div class="final-review-story-canvas-viewport" data-final-review-story-canvas-viewport tabindex="0" role="region" aria-label="Review story canvas">
           <ol class="final-review-story-canvas-track">
             ${beats.map((beat, index) => renderFinalReviewStoryBeat(beat, index, beats.length, selectedIndex, selectedContext)).join("")}
           </ol>
         </div>
-      ` : `<p class="muted">No authored beats are available for final review.</p>`}
+      ` : `<p class="muted">No story parts are available for review.</p>`}
     </section>
   `;
 }
@@ -10849,8 +10994,8 @@ function renderFinalReviewStoryBeat(beat, index, total, selectedIndex, selectedC
         ${renderFinalReviewStorySceneCard(beat, defaultOption, primaryContext, index, selectedIndex, selectedContext, true)}
         ${alternatives.length ? `
           <div class="final-review-story-variant-branch">
-            <span class="final-review-story-variant-label">${alternatives.length + 1} variants</span>
-            <ol class="final-review-story-variant-list" aria-label="Other scenes for beat ${index + 1}: ${escapeHtml(beat.title || beat.id)}">
+            <span class="final-review-story-variant-label">${alternatives.length + 1} choices</span>
+            <ol class="final-review-story-variant-list" aria-label="Other choices for story part ${index + 1}: ${escapeHtml(beat.title || beat.id)}">
               ${alternatives.map((option) => `
                 <li>${renderFinalReviewStorySceneCard(beat, option, spatialSceneContext(beat.id, group.id, option.id), index, selectedIndex, selectedContext, false)}</li>
               `).join("")}
@@ -10867,8 +11012,13 @@ function renderFinalReviewStorySceneCard(beat, option, context, index, selectedI
   const sceneBeat = finalReviewBeatForSceneContext(context) || beat;
   const linkedAssetCount = sceneBeat?.linkedAssetIds?.length || 0;
   const selected = index === selectedIndex && sourceGraphTransitionContextMatches(context, selectedContext);
-  const title = option?.label || sceneBeat?.title || beat?.title || beat?.id || "Untitled beat";
+  const title = option?.label || sceneBeat?.title || beat?.title || beat?.id || "Untitled story part";
   const sceneKey = spatialSceneRequestKey(context);
+  const changed = spatialSceneCardStatus(spatialSceneRecordForContext(lockedSpatialRelationsContract(), context)).changed
+    || environmentStorySceneChanged(context)
+    || attentionSceneMarkers(attentionSceneRecordForContext(attentionGuidanceSourceContract(), context)).some((marker) => marker.manual)
+    || interactionInBeatTargetsForContext(context).length > 0
+    || Boolean(proceduralDynamicsStoredPlan(context));
   return `
     <button
       type="button"
@@ -10880,12 +11030,13 @@ function renderFinalReviewStorySceneCard(beat, option, context, index, selectedI
       ${context.variantOptionId ? `data-final-review-variant-option-id="${escapeHtml(context.variantOptionId)}"` : ""}
       aria-pressed="${selected}"
       ${selected ? `aria-current="step"` : ""}
-      aria-label="Show ${option ? `variant ${escapeHtml(title)}` : `beat ${index + 1}`} in the spatial editor"
+      aria-label="Show ${option ? `choice ${escapeHtml(title)}` : `story part ${index + 1}`} in the scene editor"
     >
       <span class="final-review-story-beat-number">${primary ? String(index + 1).padStart(2, "0") : "↳"}</span>
       <span class="final-review-story-beat-summary">
         <strong>${escapeHtml(title)}</strong>
-        <small>${option && primary ? "Default variant · " : option ? "Variant · " : ""}${linkedAssetCount ? `${linkedAssetCount} scene asset${linkedAssetCount === 1 ? "" : "s"}` : "Text only"}</small>
+        <small>${option && primary ? "Default choice · " : option ? "Choice · " : ""}${linkedAssetCount ? `${linkedAssetCount} scene object${linkedAssetCount === 1 ? "" : "s"}` : "Text only"}</small>
+        ${renderStoryCanvasChangedIndicator(changed)}
       </span>
     </button>
   `;
@@ -10896,8 +11047,8 @@ function renderFinalReviewSpatialEditor(beat, index, beats, sceneContext) {
   const activeAsset = beat?.linkedAssetIds?.map(findAssetById).find(Boolean);
   const viewRotationMode = normalizeFinalReviewViewRotationMode(state.finalReviewViewRotationMode);
   return `
-    <section class="topology-diagram-card topology-3d-card final-review-preview-card" data-final-review-spatial-editor>
-      <div class="visual-card-head">
+    <section class="topology-diagram-card topology-3d-card final-review-preview-card storyvr-spatial-surface" data-final-review-spatial-editor>
+      <div class="visual-card-head storyvr-spatial-surface-head">
         <div>
           <p class="eyebrow">Reader preview</p>
           <h3>Check this scene</h3>
@@ -10905,24 +11056,24 @@ function renderFinalReviewSpatialEditor(beat, index, beats, sceneContext) {
         </div>
         <span class="topology-kind-pill final-review" data-final-review-region-label>${escapeHtml(region.label)}</span>
       </div>
-      <div class="final-review-active-beat">
+      <div class="final-review-active-beat storyvr-spatial-context">
         <div>
-          <strong data-final-review-beat-title>${escapeHtml(beat?.title || "No beat selected")}</strong>
-          <span data-final-review-beat-meta>${beats.length ? `${index + 1} of ${beats.length}` : "0 beats"} · ${escapeHtml(spatialSceneContextLabel(sceneContext))} · ${escapeHtml(activeAsset ? (activeAsset.type || "asset") : "text-only state")}</span>
+          <strong data-final-review-beat-title>${escapeHtml(beat?.title || "No story part selected")}</strong>
+          <span data-final-review-beat-meta>${beats.length ? `${index + 1} of ${beats.length}` : "0 story parts"} · ${escapeHtml(spatialSceneContextLabel(sceneContext))} · ${escapeHtml(activeAsset ? (activeAsset.type || "object") : "text-only state")}</span>
           <p data-final-review-beat-copy>${escapeHtml(shortText(beat?.text || "No story text available.", 260))}</p>
         </div>
       </div>
-      <div class="final-review-controls">
+      <div class="final-review-controls storyvr-spatial-toolbar" role="toolbar" aria-label="Reader preview controls">
         <div class="final-review-view-rotation" role="group" aria-label="Drag view behavior">
           <span>View</span>
           <button type="button" data-final-review-view-rotation="scene" aria-pressed="${viewRotationMode === "scene"}">Orbit scene</button>
-          <button type="button" data-final-review-view-rotation="reader" aria-pressed="${viewRotationMode === "reader"}">Reader look</button>
+          <button type="button" data-final-review-view-rotation="reader" aria-pressed="${viewRotationMode === "reader"}">Reader view</button>
         </div>
       </div>
-      <div class="topology-viewer-shell final-review-viewer-shell" data-final-review-viewer="${escapeHtml(spatialSceneRequestKey(sceneContext) || beat?.id || "none")}" tabindex="0" role="application" aria-label="Final StoryVR reader preview with the text panel attached to the reader's left hand">
+      <div class="topology-viewer-shell final-review-viewer-shell storyvr-spatial-viewer" data-final-review-viewer="${escapeHtml(spatialSceneRequestKey(sceneContext) || beat?.id || "none")}" tabindex="0" role="application" aria-label="Final StoryVR reader preview with the text panel attached to the reader's left hand">
         <div class="topology-viewer-status">Loading final spatial editor...</div>
       </div>
-      <details class="compact-help final-review-preview-help">
+      <details class="compact-help final-review-preview-help storyvr-spatial-footer">
         <summary>Preview controls</summary>
         <ul>
           <li>Drag the panel text or use the mouse wheel to scroll.</li>
@@ -10969,7 +11120,7 @@ function renderEmptyOptions(component) {
   return `
     <article class="empty-options">
       <h3>No ${escapeHtml(component.label)} proposals yet</h3>
-      <p>Generate options to create 3-4 AI options. The engine will use the source graph and all current saved upstream checkpoints.</p>
+      <p>Generate 3-4 AI options. StoryVR will use Story order and all saved earlier steps.</p>
     </article>
   `;
 }
@@ -11073,16 +11224,16 @@ function renderCompilerHandoff() {
   const summary = compiled
     ? compiledRuntimeSummary(compiled, staleCompile)
     : state.graphDirty
-      ? "Save Source Graph edits before compiling; unsaved beat grouping is not in the compiler input yet."
-      : "Click Compile + optimize + build reader to save the payload, prepare the reader source, apply a bounded performance profile, and rebuild the production dist.";
+      ? "Finish Story order before building; unsaved story-part grouping is not included yet."
+      : "Select Build reader to save the story data, prepare the reader source, apply performance settings, and build the production reader.";
   const distBuilt = compiled?.readerBuild?.status === "built" && !staleCompile;
 
   return `
     <div class="compiler-handoff ${compiled && !staleCompile ? "compiled" : ""}">
       <div class="compiler-status-row">
-        <span class="pill ${compiled && !staleCompile ? "good" : "neutral"}">${compiled ? (staleCompile ? "Stale compile" : distBuilt ? "Compiled + built" : "Compiled") : "Not compiled"}</span>
+        <span class="pill ${compiled && !staleCompile ? "good" : "neutral"}">${compiled ? (staleCompile ? "Reader build out of date" : distBuilt ? "Reader built" : "Story data saved") : "Reader not built"}</span>
         <div>
-          <strong>${compiled ? escapeHtml(compiled.title || compiled.slug || "Runtime payload") : "One-click compile handoff"}</strong>
+          <strong>${compiled ? escapeHtml(compiled.title || compiled.slug || "Story data") : "Reader build details"}</strong>
           <p class="muted">${escapeHtml(summary)}</p>
         </div>
       </div>
@@ -11090,7 +11241,7 @@ function renderCompilerHandoff() {
       ${compiled?.performanceOptimization ? renderPerformanceOptimizationHandoff(compiled.performanceOptimization) : ""}
       ${compiled?.readerBuild ? renderReaderBuildHandoff(compiled.readerBuild) : ""}
       <dl class="compiler-paths">
-        <dt>Saved runtime</dt>
+        <dt>Saved story data</dt>
         <dd>${escapeHtml(run.runtimePath)}</dd>
         <dt>Reader source</dt>
         <dd>${escapeHtml(run.readerSourcePath)}</dd>
@@ -11179,12 +11330,12 @@ function renderCompileError(output) {
   return `
     <div class="compiler-handoff error">
       <div class="compiler-status-row">
-        <span class="pill bad">${readerBuildFailed ? "Reader build failed" : "Compile failed"}</span>
+        <span class="pill bad">Reader build failed</span>
         <div>
-          <strong>${escapeHtml(output.error || "Compiler error")}</strong>
+          <strong>${escapeHtml(output.error || "Build error")}</strong>
           <p class="muted">${readerBuildFailed
-            ? "The runtime and reader source were saved, but the production dist was not completed. Fix the build issue, then use the same button again."
-            : "Fix the blocking issue, then compile again to prepare and build the reader app before running the story."}</p>
+            ? "The story data and reader source were saved, but the production reader was not completed. Fix the build issue, then use Build reader again."
+            : "Fix the blocking issue, then use Build reader again before running the story."}</p>
         </div>
       </div>
       ${diagnostics.length ? `<ul class="warning-list">${diagnostics.map((item) => `<li>${escapeHtml(item.message || item.code || String(item))}</li>`).join("")}</ul>` : ""}
@@ -11202,7 +11353,7 @@ function compileRunInstructions() {
     runtimePath,
     readerSourcePath,
     commandRoot: "Unavailable until the authoring server reports run metadata",
-    message: "Run metadata is not available from the authoring server. Restart the StoryVR authoring server so the compiler can show the exact folder and copy-paste command.",
+    message: "Run details are not available from the authoring server. Restart the StoryVR authoring server so the build panel can show the exact folder and copy-paste command.",
   };
 }
 
@@ -11239,16 +11390,16 @@ function summarizeCompiledRuntime(runtime) {
 
 function compiledRuntimeSummary(compiled, staleCompile) {
   const parts = [
-    compiled.authoredBeatCount != null ? countLabel(compiled.authoredBeatCount, "authored beat") : null,
+    compiled.authoredBeatCount != null ? countLabel(compiled.authoredBeatCount, "story part") : null,
     compiled.fineGrainedBeatCount != null && compiled.fineGrainedBeatCount !== compiled.authoredBeatCount
-      ? countLabel(compiled.fineGrainedBeatCount, "fine-grained source beat")
+      ? countLabel(compiled.fineGrainedBeatCount, "source story part")
       : null,
     compiled.assetCount != null ? countLabel(compiled.assetCount, "asset") : null,
-    compiled.readerBuild?.status === "built" ? "reader dist built" : null,
+    compiled.readerBuild?.status === "built" ? "reader built" : null,
     countLabel(compiled.diagnosticCount || 0, "diagnostic"),
   ].filter(Boolean);
   const detail = parts.join(" / ");
-  return staleCompile ? `Source Graph changed since this compile. ${detail}` : detail;
+  return staleCompile ? `Story order changed since this reader was built. ${detail}` : detail;
 }
 
 function countLabel(count, singular) {
@@ -11286,12 +11437,12 @@ function authoredBeatSignatureForGraph(graph) {
     return [{
       id,
       beatId: String(group?.beatId || id).trim(),
-      title: String(group?.title || "Selectable variants").trim(),
+      title: String(group?.title || "Story choices").trim(),
       defaultOptionId: options.some((option) => option.id === requestedDefault) ? requestedDefault : options[0].id,
       control: {
         kind: String(group?.control?.kind || "previous-next").trim(),
-        previousLabel: String(group?.control?.previousLabel || "Previous option").trim(),
-        nextLabel: String(group?.control?.nextLabel || "Next option").trim(),
+        previousLabel: String(group?.control?.previousLabel || "Previous").trim(),
+        nextLabel: String(group?.control?.nextLabel || "Next").trim(),
         wrap: group?.control?.wrap !== false,
       },
       options,
@@ -11395,7 +11546,7 @@ function bindEnvironmentEnhancementEvents() {
   });
   bindEnvironmentApplyTargetEvents();
 
-  document.querySelector("[data-environment-reset-view]")?.addEventListener("click", () => frameEnvironmentViewer());
+  document.querySelector("[data-environment-reset-view]")?.addEventListener("click", () => frameEnvironmentViewer(contextViewer, { force: true }));
   for (const control of document.querySelectorAll("[data-environment-draft-control]")) {
     control.addEventListener("input", handleEnvironmentDraftInput);
     control.addEventListener("change", handleEnvironmentDraftInput);
@@ -11425,6 +11576,14 @@ function bindDynamicGeometryCanvasEvents() {
     }));
   }
   document.querySelector("[data-dynamic-close-save]")?.addEventListener("click", () => closeDynamicSceneEditor());
+  for (const button of document.querySelectorAll("[data-dynamic-select-entity]")) {
+    button.addEventListener("click", () => {
+      const entityId = button.dataset.dynamicSelectEntity;
+      if (!dynamicSceneObjectEntities().some((entity) => entity.id === entityId)) return;
+      state.selectedDynamicEntityId = entityId;
+      syncDynamicSceneObjectSelection();
+    });
+  }
   bindProceduralDynamicsAuthoringEvents();
 }
 
@@ -11467,9 +11626,9 @@ function bindProceduralDynamicsAuthoringEvents() {
     const message = document.querySelector("[data-procedural-dynamics-message]");
     if (message) {
       message.textContent = candidateIsStale
-        ? "The description changed. Generate a new preview before applying motion."
+        ? "The description changed. Generate a new preview before applying movement."
         : candidateMotionOnlyViolation || candidateSceneChanged
-          ? candidateMotionOnlyViolation || "This scene's locked assets or Spatial Relations changed after generation. Generate a new preview before applying."
+          ? candidateMotionOnlyViolation || "This scene's locked assets or saved object placement changed after generation. Generate a new preview before applying."
           : candidateHasUnmetRequirements
             ? "Resolve the unmet prompt requirements by revising and regenerating before applying."
             : candidateLacksMaterialChange
@@ -11493,7 +11652,7 @@ function bindProceduralDynamicsAuthoringEvents() {
   document.querySelector("[data-procedural-dynamics-discard]")?.addEventListener("click", () => {
     delete state.proceduralDynamicsUi.candidatesByScene[sceneKey];
     delete state.proceduralDynamicsUi.expectedRevisionsByScene[sceneKey];
-    state.proceduralDynamicsUi.statusByScene[sceneKey] = "Motion preview discarded. Linked assets, saved transforms, and instance counts remain unchanged.";
+    state.proceduralDynamicsUi.statusByScene[sceneKey] = "Movement preview discarded. Linked assets, saved transforms, and instance counts remain unchanged.";
     delete state.proceduralDynamicsUi.errorsByScene[sceneKey];
     renderPreservingScroll();
   });
@@ -11573,7 +11732,7 @@ async function generateProceduralDynamicsPreview(sceneContext) {
   if (!prompt || state.proceduralDynamicsUi.busyByScene[sceneKey]) return;
   setProceduralDynamicsBusy(sceneContext, true);
   delete state.proceduralDynamicsUi.errorsByScene[sceneKey];
-  state.proceduralDynamicsUi.statusByScene[sceneKey] = "Codex is preparing a constrained motion preview…";
+  state.proceduralDynamicsUi.statusByScene[sceneKey] = "Codex is preparing a constrained movement preview…";
   renderPreservingScroll();
   try {
     const previousCandidate = proceduralDynamicsCandidate(sceneContext);
@@ -11590,7 +11749,7 @@ async function generateProceduralDynamicsPreview(sceneContext) {
     });
     const candidate = proceduralDynamicsCandidateFromResponse(response);
     if (!candidate || !proceduralDynamicsCandidateMotionPlan(candidate)) {
-      throw new Error("Dynamics generation did not return a v3 motion-only candidate.");
+      throw new Error("Object movement generation did not return a valid movement-only suggestion.");
     }
     const motionOnlyViolation = proceduralDynamicsCandidateMotionOnlyViolation(candidate, sceneContext);
     if (motionOnlyViolation) {
@@ -11604,10 +11763,10 @@ async function generateProceduralDynamicsPreview(sceneContext) {
       : Number(response?.proceduralDynamics?.revision) || proceduralDynamicsExpectedRevision(sceneContext);
     if (response?.proceduralDynamics) state.data.proceduralDynamics = response.proceduralDynamics;
     state.proceduralDynamicsUi.statusByScene[sceneKey] = response?.engine?.provider === "deterministic-fallback"
-      ? "Codex was unavailable or returned an invalid plan, so StoryVR prepared a safe local fallback motion preview. Linked assets, saved transforms, and instance counts are unchanged."
-      : "Motion preview ready. Linked assets, saved transforms, and instance counts are unchanged.";
+      ? "Codex was unavailable or returned an invalid plan, so StoryVR prepared a safe local fallback movement preview. Linked assets, saved transforms, and instance counts are unchanged."
+      : "Movement preview ready. Linked assets, saved transforms, and instance counts are unchanged.";
   } catch (error) {
-    state.proceduralDynamicsUi.errorsByScene[sceneKey] = `Could not generate motion: ${error.message}`;
+    state.proceduralDynamicsUi.errorsByScene[sceneKey] = `Could not generate movement: ${error.message}`;
     delete state.proceduralDynamicsUi.statusByScene[sceneKey];
   } finally {
     setProceduralDynamicsBusy(sceneContext, false);
@@ -11624,7 +11783,7 @@ async function applyProceduralDynamicsCandidate(sceneContext) {
   const impact = proceduralDynamicsCandidateImpact(candidate);
   if (proceduralDynamicsComparablePrompt(proceduralDynamicsCandidatePrompt(candidate))
     !== proceduralDynamicsComparablePrompt(currentPrompt)) {
-    state.proceduralDynamicsUi.errorsByScene[sceneKey] = "The description changed. Generate a new preview before applying motion.";
+    state.proceduralDynamicsUi.errorsByScene[sceneKey] = "The description changed. Generate a new preview before applying movement.";
     delete state.proceduralDynamicsUi.statusByScene[sceneKey];
     renderPreservingScroll();
     return;
@@ -11633,7 +11792,7 @@ async function applyProceduralDynamicsCandidate(sceneContext) {
     state.proceduralDynamicsUi.errorsByScene[sceneKey] = proceduralDynamicsCandidateMotionOnlyViolation(
       candidate,
       sceneContext,
-    ) || "This scene's locked assets or Spatial Relations changed after generation. Generate a new preview before applying.";
+    ) || "This scene's locked assets or saved object placement changed after generation. Generate a new preview before applying.";
     delete state.proceduralDynamicsUi.statusByScene[sceneKey];
     renderPreservingScroll();
     return;
@@ -11648,17 +11807,17 @@ async function applyProceduralDynamicsCandidate(sceneContext) {
   }
   setProceduralDynamicsBusy(sceneContext, true);
   delete state.proceduralDynamicsUi.errorsByScene[sceneKey];
-  state.proceduralDynamicsUi.statusByScene[sceneKey] = "Applying motion to the existing placed models…";
+  state.proceduralDynamicsUi.statusByScene[sceneKey] = "Applying movement to the existing placed models…";
   renderPreservingScroll();
   try {
-    await withAuthorHistory("Apply generated Dynamics motion", async () => {
+    await withAuthorHistory("Apply generated object movement", async () => {
       const response = await api.post("/api/dynamics/apply", {
         sceneContext: scope,
         expectedRevision: proceduralDynamicsExpectedRevision(sceneContext),
         candidate,
       });
       await refreshAfterProceduralDynamicsApply(response);
-      if (!state.data?.proceduralDynamics) throw new Error("Dynamics apply did not return the updated author state.");
+      if (!state.data?.proceduralDynamics) throw new Error("Object movement did not return the updated author state.");
       delete state.proceduralDynamicsUi.candidatesByScene[sceneKey];
       delete state.proceduralDynamicsUi.expectedRevisionsByScene[sceneKey];
       return response;
@@ -11667,9 +11826,9 @@ async function applyProceduralDynamicsCandidate(sceneContext) {
       componentId: "dynamic-geometry",
     });
     markStoryvrCheckpointCompletionPending("dynamic-geometry");
-    state.proceduralDynamicsUi.statusByScene[sceneKey] = "Generated motion applied. Linked assets, saved transforms, and instance counts remain unchanged.";
+    state.proceduralDynamicsUi.statusByScene[sceneKey] = "Generated movement applied. Linked assets, saved placement, and instance counts remain unchanged.";
   } catch (error) {
-    state.proceduralDynamicsUi.errorsByScene[sceneKey] = `Could not apply motion: ${error.message}`;
+    state.proceduralDynamicsUi.errorsByScene[sceneKey] = `Could not apply movement: ${error.message}`;
     delete state.proceduralDynamicsUi.statusByScene[sceneKey];
   } finally {
     setProceduralDynamicsBusy(sceneContext, false);
@@ -11683,15 +11842,15 @@ async function removeProceduralDynamicsPlan(sceneContext) {
   if (!proceduralDynamicsStoredPlan(sceneContext) || state.proceduralDynamicsUi.busyByScene[sceneKey]) return;
   setProceduralDynamicsBusy(sceneContext, true);
   delete state.proceduralDynamicsUi.errorsByScene[sceneKey];
-  state.proceduralDynamicsUi.statusByScene[sceneKey] = "Removing generated motion from this scene…";
+  state.proceduralDynamicsUi.statusByScene[sceneKey] = "Removing generated movement from this scene…";
   renderPreservingScroll();
   try {
-    await withAuthorHistory("Remove generated Dynamics motion", async () => {
+    await withAuthorHistory("Remove generated object movement", async () => {
       const response = await api.post("/api/dynamics/remove", {
         sceneContext: scope,
         expectedRevision: Number(state.data?.proceduralDynamics?.revision) || 0,
       });
-      if (!response?.proceduralDynamics) throw new Error("Dynamics removal did not return the updated store.");
+      if (!response?.proceduralDynamics) throw new Error("Object movement removal did not return the updated author state.");
       state.data.proceduralDynamics = response.proceduralDynamics;
       delete state.proceduralDynamicsUi.candidatesByScene[sceneKey];
       delete state.proceduralDynamicsUi.expectedRevisionsByScene[sceneKey];
@@ -11701,9 +11860,9 @@ async function removeProceduralDynamicsPlan(sceneContext) {
       componentId: "dynamic-geometry",
     });
     markStoryvrCheckpointCompletionPending("dynamic-geometry");
-    state.proceduralDynamicsUi.statusByScene[sceneKey] = "Generated motion removed. Source GLB animation mappings are unchanged.";
+    state.proceduralDynamicsUi.statusByScene[sceneKey] = "Generated movement removed. Saved 3D model animation mappings are unchanged.";
   } catch (error) {
-    state.proceduralDynamicsUi.errorsByScene[sceneKey] = `Could not remove motion: ${error.message}`;
+    state.proceduralDynamicsUi.errorsByScene[sceneKey] = `Could not remove movement: ${error.message}`;
     delete state.proceduralDynamicsUi.statusByScene[sceneKey];
   } finally {
     setProceduralDynamicsBusy(sceneContext, false);
@@ -11753,7 +11912,7 @@ function bindInteractionControlCanvasEvents() {
         (targetType === "boundary" && !interactionBoundaryDirectManipulationAvailable(targetId))
         || (targetType === "variant-edge" && !interactionVariantDirectManipulationAvailable(targetId))
       )) return;
-      const historyStarted = beginAuthorHistory("Choose and edit Interaction Control option", "interaction-control");
+      const historyStarted = beginAuthorHistory("Choose and edit Reader actions", "interaction-control");
       if (targetType === "boundary") setInteractionBoundaryPolicy(targetId, kind, { retainConfiguration: true });
       else setInteractionVariantPolicy(targetId, kind, { retainConfiguration: true });
       if (historyStarted) commitAuthorHistory();
@@ -11773,13 +11932,13 @@ function bindInteractionControlCanvasEvents() {
       const policyKind = select.value;
       if (!edgeId || !["ui-button-press", "direct", "embodied-control"].includes(policyKind)) return;
       if (policyKind === "direct" && !interactionVariantDirectManipulationAvailable(edgeId)) {
-        state.output = { error: "Add at least one in-beat interactable to this variant before assigning Direct manipulation." };
+        state.output = { error: "Add at least one object readers can move to this choice before assigning Direct manipulation." };
         renderPreservingScroll();
         return;
       }
-      const historyStarted = beginAuthorHistory("Edit variant interaction", "interaction-control");
+      const historyStarted = beginAuthorHistory("Edit choice action", "interaction-control");
       setInteractionVariantPolicy(edgeId, policyKind);
-      state.output = { interaction: `${variantInteractionPolicyLabel(policyKind)} assigned to the variant arrow.` };
+      state.output = { interaction: `${variantInteractionPolicyLabel(policyKind)} assigned to the choice arrow.` };
       if (historyStarted) commitAuthorHistory();
       renderPreservingScroll();
       [...document.querySelectorAll("[data-story-variant-interaction-policy-select]")]
@@ -11793,11 +11952,11 @@ function bindInteractionControlCanvasEvents() {
       const policyKind = select.value;
       if (!boundaryId || !["button-step", "direct", "embodied-control"].includes(policyKind)) return;
       if (policyKind === "direct" && !interactionBoundaryDirectManipulationAvailable(boundaryId)) {
-        state.output = { error: "Add at least one in-beat interactable to the source beat before assigning Direct manipulation." };
+        state.output = { error: "Add at least one object readers can move to the source story part before assigning Direct manipulation." };
         renderPreservingScroll();
         return;
       }
-      const historyStarted = beginAuthorHistory("Edit Interaction Control boundary", "interaction-control");
+      const historyStarted = beginAuthorHistory("Edit a Reader actions scene change", "interaction-control");
       setInteractionBoundaryPolicy(boundaryId, policyKind);
       state.interactionManipulationOffset = { x: 0, y: 0, z: 0 };
       state.interactionEmbodiedRestartToken += 1;
@@ -11857,8 +12016,8 @@ function commitInteractionEditorMutation(label, mutate, { rerender = true } = {}
   if (changed) {
     state.output = {
       interaction: editorContext.targetType === "global-controller"
-        ? "Controller mapping updated for every Controller button press transition."
-        : `${interactionControlKindLabel(editorContext.kind)} configuration updated for this transition.`,
+        ? "Controller mapping updated for every Controller button press scene change."
+        : `${interactionControlKindLabel(editorContext.kind)} configuration updated for this scene change.`,
     };
     if (rerender) renderPreservingScroll();
   }
@@ -12054,7 +12213,7 @@ function bindInteractionOptionEditorEvents() {
   root.querySelector("[data-interaction-apply-transform-suggestions]")?.addEventListener("click", () => {
     const editorContext = interactionEditorContextFromState();
     const suggestions = interactionMappedTransformSuggestions(editorContext);
-    commitInteractionEditorMutation("Use mapped transition transforms", (configuration) => {
+    commitInteractionEditorMutation("Use mapped scene-change placement", (configuration) => {
       const keys = new Set(suggestions.map((target) => interactionDirectTargetKey(target)));
       const entitiesWithPartSuggestions = new Set(suggestions.filter((target) => target.nodePath || target.nodeIndex != null).map((target) => target.entityId));
       const existingTargets = new Map(configuration.targets.map((target) => [interactionDirectTargetKey(target), target]));
@@ -12086,7 +12245,7 @@ function commitInteractionInBeatMutation(label, mutate, { rerender = true } = {}
   const changed = mutateInteractionInBeatRecord(editorContext.sceneContext, mutate);
   if (historyStarted && changed) commitAuthorHistory();
   if (changed) {
-    state.output = { interaction: "In-beat interaction updated. Return to the story canvas and save the Interaction Control checkpoint when ready." };
+    state.output = { interaction: "Interactive object updated. Return to the story canvas and finish the Reader actions step when ready." };
     if (rerender) renderPreservingScroll();
   }
   return changed;
@@ -12127,11 +12286,11 @@ function bindInteractionInBeatEditorEvents(root) {
       const otherCapability = capability === "oneHandGrabbable" ? "twoHandScalable" : "oneHandGrabbable";
       if (!input.checked && currentTarget && !currentTarget[otherCapability]) {
         input.checked = true;
-        state.output = { error: "An interactable needs one-hand grab, two-hand scale, or both. Use Remove to delete it." };
+        state.output = { error: "An interactive object needs one-hand grab, two-hand resize, or both. Use Remove to delete it." };
         renderPreservingScroll();
         return;
       }
-      commitInteractionInBeatMutation("Edit in-beat interaction affordance", (record) => {
+      commitInteractionInBeatMutation("Edit object action", (record) => {
         const target = interactionInBeatTargetByKey(record, key);
         if (!target || !["oneHandGrabbable", "twoHandScalable"].includes(capability)) return;
         target[capability] = input.checked;
@@ -12159,7 +12318,7 @@ function bindInteractionInBeatEditorEvents(root) {
     input.addEventListener("change", () => {
       const key = input.dataset.interactionInbeatTargetKey;
       const channel = input.dataset.interactionInbeatConstraintToggle;
-      commitInteractionInBeatMutation(input.checked ? "Add interaction transform range" : "Remove interaction transform range", (record) => {
+      commitInteractionInBeatMutation(input.checked ? "Add object movement range" : "Remove object movement range", (record) => {
         const target = interactionInBeatTargetByKey(record, key);
         if (!target || !["position", "rotation", "scale"].includes(channel)) return;
         target.constraints ||= {};
@@ -12191,7 +12350,7 @@ function bindInteractionInBeatEditorEvents(root) {
       const channel = input.dataset.interactionInbeatRangeInput;
       const endpoint = input.dataset.interactionInbeatRangeEndpoint === "max" ? "max" : "min";
       const axis = Number(input.dataset.interactionInbeatRangeAxis);
-      commitInteractionInBeatMutation("Edit interaction transform range", (record) => {
+      commitInteractionInBeatMutation("Edit object movement range", (record) => {
         const target = interactionInBeatTargetByKey(record, key);
         const range = target?.constraints?.[channel];
         if (!range || !Number.isInteger(axis) || axis < 0 || axis > 2) return;
@@ -12209,7 +12368,7 @@ function bindInteractionInBeatEditorEvents(root) {
   }
   root.querySelector("[data-interaction-inbeat-remove-target]")?.addEventListener("click", (event) => {
     const key = event.currentTarget.dataset.interactionInbeatRemoveTarget;
-    commitInteractionInBeatMutation("Remove in-beat interactable", (record) => {
+    commitInteractionInBeatMutation("Remove interactive object", (record) => {
       record.targets = record.targets.filter((target) => interactionInBeatTargetKey(target) !== key);
       state.interactionSelectedInBeatTargetKey = interactionInBeatTargetKey(record.targets[0]) || null;
     });
@@ -12312,7 +12471,7 @@ function syncEnvironmentApplyTargetControls() {
       || selectedIds.size === 0
       || manifest.skipped
       || !manifest.asset;
-    submit.textContent = state.environmentUi.operationBusy ? "Applying…" : "Apply to selected beats";
+    submit.textContent = state.environmentUi.operationBusy ? "Applying…" : "Apply to selected story parts";
   }
 }
 
@@ -12322,7 +12481,7 @@ async function applyEnvironmentToSelectedBeats(options = {}) {
   const targetBeatIds = (state.environmentUi.applyTargetBeatIds || []).filter((beatId) => validIds.has(beatId));
   if (!sceneContext?.beatId || !targetBeatIds.length || state.environmentUi.operationBusy || state.environmentUi.generationBusy) return;
   if (!options.skipHistory) {
-    return withAuthorHistory("Apply environment to selected beats", () => (
+    return withAuthorHistory("Apply setting to selected story parts", () => (
       applyEnvironmentToSelectedBeats({ skipHistory: true })
     ), {
       persistent: true,
@@ -12338,7 +12497,7 @@ async function applyEnvironmentToSelectedBeats(options = {}) {
   await flushEnvironmentDraft();
   state.environmentUi.operationBusy = true;
   state.environmentUi.applyError = false;
-  state.environmentUi.applyStatus = `Applying this environment to ${targetBeatIds.length} selected beat${targetBeatIds.length === 1 ? "" : "s"}…`;
+  state.environmentUi.applyStatus = `Applying this setting to ${targetBeatIds.length} selected story part${targetBeatIds.length === 1 ? "" : "s"}…`;
   updateEnvironmentActionAvailability();
   syncEnvironmentApplyTargetControls();
   try {
@@ -12350,7 +12509,7 @@ async function applyEnvironmentToSelectedBeats(options = {}) {
     applyEnvironmentEnhancementPayload(response, { resetDraft: true });
     markStoryvrCheckpointCompletionPending("environment-enhancement");
     state.environmentUi.applyTargetBeatIds = [];
-    state.environmentUi.applyStatus = `Applied to ${targetBeatIds.length} beat${targetBeatIds.length === 1 ? "" : "s"} without generating new images.`;
+    state.environmentUi.applyStatus = `Applied to ${targetBeatIds.length} story part${targetBeatIds.length === 1 ? "" : "s"} without generating new images.`;
     state.output = null;
   } catch (error) {
     state.environmentUi.applyError = true;
@@ -12481,7 +12640,7 @@ async function navigateEnvironmentSceneEditor(direction) {
     );
   } catch (error) {
     state.output = {
-      error: `Current scene could not be saved. You are still on this beat: ${error.message}`,
+      error: `Current scene could not be saved. You are still in this scene: ${error.message}`,
       diagnostics: error.diagnostics || [],
     };
     render();
@@ -12532,7 +12691,7 @@ async function generateEnvironmentFromUi() {
   state.environmentUi.generationNoticeVisible = true;
   state.environmentUi.generationResult = null;
   state.environmentUi.generationError = false;
-  state.environmentUi.generationStatus = "Codex is generating and validating the 360° panorama and matching ground in the background. You can keep working while this runs.";
+  state.environmentUi.generationStatus = "Codex is generating and validating the 360° setting and matching ground in the background. You can keep working while this runs.";
   updateEnvironmentGenerationDom();
   updateEnvironmentActionAvailability();
 
@@ -12544,18 +12703,18 @@ async function generateEnvironmentFromUi() {
       beatId: generationSceneContext.beatId,
     });
     if (requestId !== state.environmentUi.generationRequestId) return;
-    if (!staged?.generationToken) throw new Error("Environment generation did not return an installable result.");
+    if (!staged?.generationToken) throw new Error("Setting generation did not return an installable result.");
     state.environmentUi.generationPhase = "waiting";
-    state.environmentUi.generationStatus = "The panorama and matching ground are ready. StoryVR will install them as soon as the current edit is finished.";
+    state.environmentUi.generationStatus = "The 360° setting and matching ground are ready. StoryVR will install them as soon as the current edit is finished.";
     updateEnvironmentGenerationDom();
 
     const canInstall = await waitForBackgroundEnvironmentInstallTurn(requestId);
     if (!canInstall) return;
     state.environmentUi.generationPhase = "installing";
-    state.environmentUi.generationStatus = "The generated panorama and matching ground are ready. StoryVR is installing them now…";
+    state.environmentUi.generationStatus = "The generated 360° setting and matching ground are ready. StoryVR is installing them now…";
     updateEnvironmentGenerationDom();
 
-    await withAuthorHistory("Generate environment image", async () => {
+    await withAuthorHistory("Generate setting image", async () => {
       const installed = await api.post("/api/environment-enhancement/install-generated", {
         generationToken: staged.generationToken,
       });
@@ -12578,11 +12737,11 @@ async function generateEnvironmentFromUi() {
       const source = manifest.assetSource || manifest.selectedSource || {};
       state.environmentUi.generationResult = {
         ...(installed.generation || {}),
-        title: installed.generation?.title || environmentCandidateTitle(source) || "Generated panorama and ground ready",
+        title: installed.generation?.title || environmentCandidateTitle(source) || "Generated 360° setting and ground ready",
         description: installed.generation?.description
-          || "The generated panorama and matching ground are installed as the requested Environment Enhancement draft.",
+          || "The generated 360° setting and matching ground are installed as requested.",
       };
-      state.environmentUi.generationStatus = `Generated panorama and matching ground installed for ${spatialSceneBeat(generationSceneContext)?.title || generationSceneContext.beatId}. Open that scene to inspect the alignment, then save the checkpoint.`;
+      state.environmentUi.generationStatus = `Generated 360° setting and matching ground installed for ${spatialSceneBeat(generationSceneContext)?.title || generationSceneContext.beatId}. Open that scene to inspect the alignment, then save the scene.`;
       state.environmentUi.generationError = false;
       state.environmentUi.generationPhase = "ready";
       state.environmentUi.generationNoticeVisible = true;
@@ -12639,14 +12798,14 @@ function updateEnvironmentGenerationDom() {
   if (input && document.activeElement !== input) input.value = environmentGenerationPrompt();
   const status = document.querySelector("[data-environment-generation-status]");
   if (status) {
-    status.textContent = state.environmentUi.generationStatus || "Describe the surrounding, then generate its panorama and matching ground.";
+    status.textContent = state.environmentUi.generationStatus || "Describe the surrounding, then generate its 360° setting and matching ground.";
     status.classList.toggle("error", state.environmentUi.generationError);
   }
   const button = document.querySelector("[data-environment-generate-button]");
   if (button) {
     button.textContent = state.environmentUi.generationBusy
       ? "Generating…"
-      : "Generate environment";
+      : "Generate setting";
   }
   updateEnvironmentGenerationActivityDom();
 }
@@ -12802,13 +12961,13 @@ async function saveEnvironmentDraft(revision = state.environmentUi.draftRevision
 async function flushEnvironmentDraft() {
   if (!state.environmentUi.draftDirty && !state.environmentUi.draftPromise) return false;
   const saved = await saveEnvironmentDraft(state.environmentUi.draftRevision);
-  if (state.environmentUi.draftDirty) throw new Error("Save the environment tuning before saving the checkpoint.");
+  if (state.environmentUi.draftDirty) throw new Error("Save the setting changes before finishing this step.");
   return saved;
 }
 
 async function handleEnvironmentCheckpointAction(action, options = {}) {
   if (!options.skipHistory) {
-    return withAuthorHistory("Save Environment Enhancement", async () => {
+    return withAuthorHistory("Save setting", async () => {
       state.output = null;
       await handleEnvironmentCheckpointAction(action, { skipHistory: true });
       if (state.output?.error) {
@@ -12894,6 +13053,13 @@ function updateEnvironmentMovementCueControlAvailability() {
 }
 
 function bindEvents() {
+  const interactionLogToggle = document.querySelector("[data-interaction-log-toggle]");
+  if (interactionLogToggle) {
+    interactionLogToggle.addEventListener("click", () => {
+      const nextEnabled = !interactionLogger.snapshot().enabled;
+      interactionLogger.setEnabled(nextEnabled).catch(() => {});
+    });
+  }
   for (const button of document.querySelectorAll("[data-history-action]")) {
     button.addEventListener("click", () => performHistoryAction(button.dataset.historyAction));
   }
@@ -12989,7 +13155,7 @@ function bindEvents() {
     field.addEventListener("input", () => {
       updateSelectedBeatField(field.dataset.beatField, field.value);
     });
-    bindCoalescedAuthorTextHistory(field, `Edit beat ${field.dataset.beatField || "field"}`, "source-graph");
+    bindCoalescedAuthorTextHistory(field, `Edit story part ${field.dataset.beatField || "field"}`, "source-graph");
   }
 
   for (const input of document.querySelectorAll("[data-entity-meaning]")) {
@@ -13265,7 +13431,7 @@ function bindEvents() {
       const track = selectedSourceMotionTrack("dynamic-geometry");
       const draft = sourceMotionDraftForTrack(track);
       if (!track || !draft) return;
-      const historyStarted = beginAuthorHistory("Edit Dynamics motion assignment", "dynamic-geometry");
+      const historyStarted = beginAuthorHistory("Edit object movement assignment", "dynamic-geometry");
       const selected = new Set(draft.beatIds || []);
       if (checkbox.checked) selected.add(checkbox.dataset.motionBeatId);
       else selected.delete(checkbox.dataset.motionBeatId);
@@ -13281,7 +13447,7 @@ function bindEvents() {
       const track = selectedSourceMotionTrack("inter-beat-dynamics");
       const draft = sourceMotionDraftForTrack(track);
       if (!track || !draft) return;
-      const historyStarted = beginAuthorHistory("Edit Transition motion assignment", "inter-beat-dynamics");
+      const historyStarted = beginAuthorHistory("Edit scene-change movement assignment", "inter-beat-dynamics");
       const edgeId = checkbox.dataset.motionTransitionEdge;
       const authored = authoredMotionTransitions().find((transition) => transition.edgeId === edgeId);
       if (!authored) return;
@@ -13302,7 +13468,7 @@ function bindEvents() {
       const track = selectedSourceMotionTrack(state.activeId);
       const draft = sourceMotionDraftForTrack(track);
       if (!track || !draft) return;
-      const historyStarted = beginAuthorHistory(`Edit ${componentById(state.activeId).label} motion targets`);
+      const historyStarted = beginAuthorHistory(`Edit ${participantComponentLabel(state.activeId, componentById(state.activeId).label)} movement targets`);
       const selectAll = button.dataset.motionTargetAction === "all";
       if (state.activeId === "inter-beat-dynamics") {
         draft.transitions = selectAll
@@ -13322,7 +13488,7 @@ function bindEvents() {
     resetMotionButton.addEventListener("click", () => {
       const track = selectedSourceMotionTrack(state.activeId);
       if (!track) return;
-      const historyStarted = beginAuthorHistory(`Reset ${componentById(state.activeId).label} motion assignment`);
+      const historyStarted = beginAuthorHistory(`Reset ${participantComponentLabel(state.activeId, componentById(state.activeId).label)} movement assignment`);
       const draft = sourceMotionDraftForTrack(track);
       const inferred = sourceMotionInferredForTrack(track);
       if (state.activeId === "inter-beat-dynamics") draft.transitions = normalizeMotionTransitions(inferred.transitions);
@@ -13406,7 +13572,7 @@ function bindEvents() {
   const locomotionModeSelect = document.querySelector("[data-interaction-locomotion-mode]");
   if (locomotionModeSelect) {
     locomotionModeSelect.addEventListener("change", () => {
-      const historyStarted = beginAuthorHistory("Edit Interaction Control locomotion", "interaction-control");
+      const historyStarted = beginAuthorHistory("Edit Reader actions locomotion", "interaction-control");
       state.interactionViewerCameraState = captureInteractionViewerCameraState();
       const boundaryId = locomotionModeSelect.dataset.interactionBoundaryId;
       const boundary = interactionBoundaryContext().boundaries.find((item) => item.boundaryId === boundaryId);
@@ -14006,9 +14172,9 @@ function bindSourceGraphCanvasEvents() {
     clearSourceGraphCardDragVisualState();
     if (!droppedOutsideCanvas) return;
     if (removeSourceGraphBeat(beatId)) {
-      state.sourceGraphDragAnnouncement = `Removed ${beat?.title || beatId}. Save story order to keep the change.`;
+      state.sourceGraphDragAnnouncement = `Removed ${beat?.title || beatId}. Finish this step to keep the change.`;
     } else {
-      state.sourceGraphDragAnnouncement = "Keep at least one beat in the story.";
+      state.sourceGraphDragAnnouncement = "Keep at least one story part in the story.";
     }
     renderPreservingScroll();
   }, { signal: documentDragSignal });
@@ -15650,7 +15816,7 @@ async function navigateSpatialSceneEditor(direction) {
     );
   } catch (error) {
     state.output = {
-      error: `Current scene could not be saved. You are still on this beat: ${error.message}`,
+      error: `Current scene could not be saved. You are still in this scene: ${error.message}`,
       diagnostics: error.diagnostics || [],
     };
     setSpatialAutosaveStatus(`Save failed: ${shortText(error.message, 58)}`);
@@ -15679,17 +15845,18 @@ function bindAttentionGuidanceEvents() {
   for (const button of document.querySelectorAll("[data-attention-select-marker]")) {
     button.addEventListener("click", () => selectAttentionMarkerInViewer(button.dataset.attentionSelectMarker));
   }
-  for (const input of document.querySelectorAll("[data-attention-position-field]")) {
-    input.addEventListener("change", () => updateSelectedAttentionPositionField(input.dataset.attentionPositionField, input.value));
-  }
-  const reset = document.querySelector("[data-attention-reset-selected]");
-  if (reset) reset.addEventListener("click", resetSelectedAttentionMarker);
   const undo = document.querySelector("[data-attention-undo]");
   if (undo) undo.addEventListener("click", () => performHistoryAction("undo"));
   const redo = document.querySelector("[data-attention-redo]");
   if (redo) redo.addEventListener("click", () => performHistoryAction("redo"));
-  const manualTarget = document.querySelector("[data-attention-manual-target]");
-  if (manualTarget) manualTarget.addEventListener("change", () => syncAttentionManualTargetControls(textViewer));
+  for (const button of document.querySelectorAll("[data-attention-select-object]")) {
+    button.addEventListener("click", (event) => {
+      selectAttentionTargetObjectInViewer(button.dataset.attentionSelectObject, textViewer, {
+        additive: event.shiftKey,
+        toggle: event.metaKey || event.ctrlKey,
+      });
+    });
+  }
   const addManual = document.querySelector("[data-attention-add-manual]");
   if (addManual) addManual.addEventListener("click", addManualAttentionTarget);
   const placeManual = document.querySelector("[data-attention-place-manual]");
@@ -15730,7 +15897,7 @@ async function navigateAttentionSceneEditor(direction) {
     );
   } catch (error) {
     state.output = {
-      error: `Current scene could not be saved. You are still on this beat: ${error.message}`,
+      error: `Current scene could not be saved. You are still in this scene: ${error.message}`,
       diagnostics: error.diagnostics || [],
     };
     setAttentionAutosaveStatus(`Save failed: ${shortText(error.message, 58)}`);
@@ -15775,7 +15942,7 @@ async function saveStoryGraphCore(options = {}) {
 async function saveEnvironmentCheckpointCore() {
   await flushEnvironmentDraft();
   if (!environmentCheckpointAssignmentsReady()) {
-    throw new Error("Generate every selected beat environment before saving.");
+    throw new Error("Choose a setting for every story part before finishing this step.");
   }
   const response = await api.post("/api/environment-enhancement/save");
   applyEnvironmentEnhancementPayload(response, { resetDraft: true });
@@ -15911,7 +16078,7 @@ async function handleAction(action, options = {}) {
       else state.graphDirty = wasDirty;
       state.output = {
         animationProbeApplied: linking.promotedLinkCount
-          ? `${linking.promotedLinkCount} motion links applied. Save story order to keep them.`
+          ? `${linking.promotedLinkCount} movement links applied. Finish this step to keep them.`
           : "No matching animation probe links were found.",
       };
       return;
@@ -15983,13 +16150,14 @@ async function handleAction(action, options = {}) {
 }
 
 function historySpecForAction(action, component) {
+  const displayLabel = participantComponentLabel(component?.id, component?.label);
   const labelByAction = {
-    "save-source-motion-links": `Save ${component.label} motion links`,
-    "save-graph": "Save story order",
+    "save-source-motion-links": `Save ${displayLabel} movement links`,
+    "save-graph": "Finish Story order",
     "apply-animation-probe": "Apply animation probe links",
-    "regenerate-graph": "Refresh story order",
-    generate: `Generate ${component.label} options`,
-    "save-checkpoint": `Save ${component.label}`,
+    "regenerate-graph": "Refresh Story order",
+    generate: `Generate ${displayLabel} options`,
+    "save-checkpoint": `Finish ${displayLabel}`,
   };
   const label = labelByAction[action];
   if (!label) return null;
@@ -16763,14 +16931,14 @@ function updateTextComfortBeatStatus() {
   const hasOverride = Boolean(beat?.id && draft.overridesByBeat?.[beat.id]);
   const metaText = beats.length
     ? `${index + 1} of ${beats.length} · ${hasOverride ? "custom placement" : "global placement"}`
-    : "0 beats";
+    : "0 story parts";
 
   const title = document.querySelector("[data-text-beat-title]");
-  if (title) title.textContent = beat?.title || "No readable beat selected";
+  if (title) title.textContent = beat?.title || "No readable story part selected";
   const meta = document.querySelector("[data-text-beat-meta]");
   if (meta) meta.textContent = metaText;
   const copy = document.querySelector("[data-text-beat-copy]");
-  if (copy) copy.textContent = shortText(beat?.text || "No story text is available for this beat.", 240);
+  if (copy) copy.textContent = shortText(beat?.text || "No story text is available for this story part.", 240);
   for (const button of document.querySelectorAll("[data-text-step]")) {
     if (button.dataset.textStep === "prev") button.disabled = index <= 0;
     if (button.dataset.textStep === "next") button.disabled = index >= beats.length - 1;
@@ -16851,15 +17019,15 @@ function updateInteractionControlBeatStatus() {
   const { beats, beatIndex: index, beat } = context;
   const kind = context.boundary?.effectivePolicy ? inferInteractionControlKind({ label: context.boundary.effectivePolicy }) : null;
   const metaText = beats.length
-    ? `${index + 1} of ${beats.length} · ${context.boundary ? context.boundary.effectivePolicy || "unassigned mapped transition" : "story entry"}`
-    : "0 beats";
+    ? `${index + 1} of ${beats.length} · ${context.boundary ? context.boundary.effectivePolicy || "unassigned mapped scene change" : "story entry"}`
+    : "0 story parts";
 
   const title = document.querySelector("[data-interaction-beat-title]");
-  if (title) title.textContent = beat?.title || "No beat selected";
+  if (title) title.textContent = beat?.title || "No story part selected";
   const meta = document.querySelector("[data-interaction-beat-meta]");
   if (meta) meta.textContent = metaText;
   const copy = document.querySelector("[data-interaction-beat-copy]");
-  if (copy) copy.textContent = shortText(beat?.text || "No story text available for this beat.", 240);
+  if (copy) copy.textContent = shortText(beat?.text || "No story text available for this story part.", 240);
 
   if (interactionViewer) interactionViewer.proposal = proposal || interactionViewer.proposal;
   updateInteractionControlBeatLabel(interactionViewer, beat);
@@ -16877,10 +17045,10 @@ function updateFinalReviewBeatStatus() {
   const activeAsset = activeStep?.assetId ? findAssetById(activeStep.assetId) : beat?.linkedAssetIds?.map(findAssetById).find(Boolean);
   const metaText = beats.length
     ? `${index + 1} of ${beats.length} · ${spatialSceneContextLabel(sceneContext)} · ${activeAsset ? (activeAsset.type || "asset") : "text-only state"}`
-    : "0 beats";
+    : "0 story parts";
 
   const title = document.querySelector("[data-final-review-beat-title]");
-  if (title) title.textContent = beat?.title || "No beat selected";
+  if (title) title.textContent = beat?.title || "No story part selected";
   const meta = document.querySelector("[data-final-review-beat-meta]");
   if (meta) meta.textContent = metaText;
   const copy = document.querySelector("[data-final-review-beat-copy]");
@@ -16911,15 +17079,15 @@ function updateContextLayeringBeatStatus() {
   const linkedLabel = `${linkedCount} linked asset${linkedCount === 1 ? "" : "s"}`;
 
   const title = document.querySelector("[data-context-beat-title]");
-  if (title) title.textContent = beat?.title || "No linked beat selected";
+  if (title) title.textContent = beat?.title || "No linked story part selected";
   const meta = document.querySelector("[data-context-beat-meta]");
   if (meta) {
     meta.textContent = beats.length
       ? `${index + 1} of ${beats.length} · ${linkedLabel}`
-      : "0 beats";
+      : "0 story parts";
   }
   const copy = document.querySelector("[data-context-beat-copy]");
-  if (copy) copy.textContent = shortText(beat?.text || "Link source assets in Source Graph to preview context layers.", 220);
+  if (copy) copy.textContent = shortText(beat?.text || "Link source assets in Story order to preview this setting.", 220);
   for (const button of document.querySelectorAll("[data-context-step]")) {
     if (button.dataset.contextStep === "prev") button.disabled = index <= 0;
     if (button.dataset.contextStep === "next") button.disabled = index >= beats.length - 1;
@@ -17400,8 +17568,149 @@ function interactionPreviewCameraFramingContract(beat, sceneContext = null) {
   return `${INTERACTION_PREVIEW_CAMERA_FRAMING_CONTRACT}:${spatialSceneRequestKey(sceneContext) || beat?.id || "story-entry"}`;
 }
 
+const AUTHORING_SPATIAL_CAMERA_CONTRACT = "storyvr-authoring-spatial-camera/v1";
+const AUTHORING_SPATIAL_CAMERA_KIND = "outside-reader-rig-v4";
+
+function isAuthoringSpatialCameraViewer(viewer) {
+  return Boolean(
+    viewer
+    && !viewer.thumbnailMode
+    && [
+      SPATIAL_RELATIONS_COMPONENT_ID,
+      "environment-enhancement",
+      ATTENTION_GUIDANCE_COMPONENT_ID,
+      "dynamic-geometry",
+      "inter-beat-dynamics",
+      "interaction-control",
+    ].includes(viewer.componentId),
+  );
+}
+
+function authoringSpatialCameraFramingContract(sceneContext) {
+  const sceneKey = authoringSpatialCameraSceneKey(sceneContext);
+  return sceneKey ? `${AUTHORING_SPATIAL_CAMERA_CONTRACT}:${sceneKey}` : "";
+}
+
+function authoringSpatialCameraSceneKey(sceneContext) {
+  if (!sceneContext?.beatId) return "";
+  return spatialSceneRequestKey(spatialSceneContext(
+    sceneContext.beatId,
+    sceneContext.variantGroupId,
+    sceneContext.variantOptionId,
+  ));
+}
+
+function configureAuthoringSpatialCameraViewer(viewer, sceneContext = viewer?.sceneContext) {
+  if (!viewer || !sceneContext?.beatId) return viewer;
+  viewer.sceneContext = sceneContext;
+  viewer.spatialEditorCamera = AUTHORING_SPATIAL_CAMERA_KIND;
+  viewer.previewCameraFramingContract = authoringSpatialCameraFramingContract(sceneContext);
+  viewer.authoringSpatialObjects ||= new Map();
+  return viewer;
+}
+
+function authoringSpatialCameraStateForViewer(viewer) {
+  const key = authoringSpatialCameraSceneKey(viewer?.sceneContext);
+  return key ? state.authoringSpatialCameraStates?.[key] || null : null;
+}
+
+function captureAuthoringSpatialCameraState(viewer) {
+  if (!isAuthoringSpatialCameraViewer(viewer)) return null;
+  if (viewer.renderer?.xr?.isPresenting || viewer.sourceCameraCue || viewer.sourceCameraCuePending) return null;
+  if (String(viewer.previewCameraFramingContract || "").startsWith("source-playback-camera:")) return null;
+  const key = authoringSpatialCameraSceneKey(viewer.sceneContext);
+  if (!key || !viewer.previewCameraFramingReady) return null;
+  const cameraState = previewCameraState(viewer);
+  if (cameraState.previewCameraFramingContract !== viewer.previewCameraFramingContract) return null;
+  state.authoringSpatialCameraStates[key] = cameraState;
+  return cameraState;
+}
+
+function restoreAuthoringSpatialCameraState(viewer) {
+  const cameraState = authoringSpatialCameraStateForViewer(viewer);
+  if (!shouldRestorePreviewCameraState(viewer, cameraState)) return false;
+  applyPreviewViewerCameraState(viewer, cameraState);
+  return true;
+}
+
+function authoredReaderPoseForViewer(viewer) {
+  const entity = viewer?.readerEntity;
+  if (!entity) return spatialReaderRigPose();
+  const transform = normalizeSpatialTransform(entity.transform, entity.inferredTransform);
+  const position = new THREE.Vector3().fromArray(transform.position);
+  const quaternion = new THREE.Quaternion().fromArray(transform.quaternion);
+  const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(quaternion);
+  return { position, target: position.clone().add(forward) };
+}
+
+function authoringSpatialSceneBounds(viewer) {
+  const bounds = new THREE.Box3();
+  for (const object of viewer?.authoringSpatialObjects?.values?.() || []) {
+    object.updateWorldMatrix(true, true);
+    bounds.expandByObject(object);
+  }
+  const readerPose = authoredReaderPoseForViewer(viewer);
+  if (readerPose?.position) {
+    const eye = readerPose.position;
+    bounds.expandByPoint(eye.clone().add(new THREE.Vector3(-0.22, -1.55, -0.22)));
+    bounds.expandByPoint(eye.clone().add(new THREE.Vector3(0.22, 0.12, 0.22)));
+  }
+  return bounds;
+}
+
+function fitAuthoringSpatialCameraOnLoad(viewer, { force = false } = {}) {
+  if (!isAuthoringSpatialCameraViewer(viewer) || viewer.disposed) return false;
+  if (!force && viewer.previewCameraFramingReady) return true;
+  const bounds = authoringSpatialSceneBounds(viewer);
+  if (bounds.isEmpty()) return false;
+
+  const sphere = bounds.getBoundingSphere(new THREE.Sphere());
+  const radius = Math.max(sphere.radius, 0.65);
+  const verticalFov = THREE.MathUtils.degToRad(viewer.camera.fov);
+  const horizontalFov = 2 * Math.atan(Math.tan(verticalFov * 0.5) * Math.max(viewer.camera.aspect, 0.1));
+  const limitingFov = Math.max(THREE.MathUtils.degToRad(12), Math.min(verticalFov, horizontalFov));
+  const distance = Math.max(1.8, (radius / Math.sin(limitingFov * 0.5)) * 1.42);
+  const readerPose = authoredReaderPoseForViewer(viewer);
+  const readerPosition = readerPose?.position || sphere.center.clone();
+  const readerBack = readerPose?.target
+    ? readerPosition.clone().sub(readerPose.target)
+    : new THREE.Vector3(0, 0, 1);
+  readerBack.y = 0;
+  if (readerBack.lengthSq() < 1e-8) readerBack.set(0, 0, 1);
+  else readerBack.normalize();
+  const readerRight = new THREE.Vector3(readerBack.z, 0, -readerBack.x).normalize();
+  const direction = readerPosition.clone().sub(sphere.center);
+  direction.y = 0;
+  if (direction.lengthSq() < Math.max(radius * radius * 0.0025, 0.0025)) direction.copy(readerBack);
+  else direction.normalize();
+  direction
+    .multiplyScalar(0.82)
+    .addScaledVector(readerBack, 0.18)
+    .addScaledVector(readerRight, 0.28)
+    .addScaledVector(new THREE.Vector3(0, 1, 0), 0.16)
+    .normalize();
+
+  viewer.controls.target.copy(sphere.center);
+  viewer.camera.position.copy(sphere.center).addScaledVector(direction, distance);
+  viewer.camera.near = Math.max(radius / 250, 0.01);
+  viewer.camera.far = Math.max(distance + radius * 12, 100);
+  viewer.controls.minDistance = Math.max(radius * 0.08, 0.05);
+  viewer.controls.maxDistance = Math.max(distance * 5, 20);
+  viewer.camera.updateProjectionMatrix();
+  viewer.camera.lookAt(sphere.center);
+  viewer.controls.update();
+  viewer.previewCameraFramingReady = true;
+  captureAuthoringSpatialCameraState(viewer);
+  return true;
+}
+
 function dynamicPreviewAssetTargetSize(viewer, active) {
   return active ? 0.76 : 0.54;
+}
+
+function dynamicAssetNormalizationMode(spatialTransformApplied, spatialEntity) {
+  if (!spatialTransformApplied) return "topology";
+  return spatialEntity?.preserveSourceGeometry === true ? "none" : "spatial";
 }
 
 function captureDynamicViewerCameraState() {
@@ -17474,6 +17783,12 @@ function applyPreviewViewerCameraState(viewer, cameraState) {
   viewer.camera.quaternion.fromArray(cameraState.quaternion);
   viewer.camera.near = cameraState.near;
   viewer.camera.far = cameraState.far;
+  if (Number.isFinite(Number(cameraState.fov)) && viewer.camera.isPerspectiveCamera) {
+    viewer.camera.fov = Number(cameraState.fov);
+  }
+  if (Number.isFinite(Number(cameraState.zoom)) && Number(cameraState.zoom) > 0) {
+    viewer.camera.zoom = Number(cameraState.zoom);
+  }
   viewer.camera.updateProjectionMatrix();
   viewer.controls.target.fromArray(cameraState.target);
   viewer.controls.update();
@@ -17519,7 +17834,12 @@ function previewCameraState(viewer) {
     target: viewer.controls.target.toArray(),
     near: viewer.camera.near,
     far: viewer.camera.far,
+    fov: viewer.camera.isPerspectiveCamera ? viewer.camera.fov : null,
+    zoom: viewer.camera.zoom,
     spatialEditorCamera: viewer.spatialEditorCamera || null,
+    authoringSpatialSceneKey: isAuthoringSpatialCameraViewer(viewer)
+      ? authoringSpatialCameraSceneKey(viewer.sceneContext)
+      : null,
     topologyKind: viewer.topologyKind || viewer.layoutKind || viewer.decisionKinds?.topology || null,
     previewCameraFramingContract: viewer.previewCameraFramingReady
       ? (viewer.previewCameraFramingContract || null)
@@ -17556,6 +17876,10 @@ function captureMountedPreviewCameraState() {
     finalReviewViewer,
   ].find((candidate) => candidate && !candidate.disposed);
   if (!viewer) return;
+  if (isAuthoringSpatialCameraViewer(viewer)) {
+    captureAuthoringSpatialCameraState(viewer);
+    return;
+  }
   if (viewer.componentId === "dynamic-geometry" && dynamicSourceCameraPlaybackEntry(viewer)) return;
   if (viewer.componentId === "interaction-control") {
     state.interactionViewerCameraState = previewCameraState(viewer);
@@ -17598,9 +17922,54 @@ function narrativeSceneAssetLinks(proposal, beats) {
     const asset = findAssetById(assetId);
     return {
       assetId,
-      role: proposalLink?.role || asset?.role || asset?.type || "beat anchor",
+      role: proposalLink?.role || asset?.role || asset?.type || "story-part anchor",
     };
   });
+}
+
+function exactSpatialSceneAssetLinkSet(sceneContext, transitionSceneRole) {
+  if (!sceneContext?.beatId) return { available: false, links: [] };
+  const contract = lockedSpatialRelationsContract();
+  const scene = spatialSceneRecordForContext(contract, sceneContext);
+  if (!scene) return { available: false, links: [] };
+  const links = spatialSceneEntities(contract, sceneContext)
+    .filter((entity) => ["glb", "image-plane"].includes(spatialEntityType(entity)))
+    .map((entity) => {
+      const asset = findAssetById(entity.assetId);
+      return {
+        assetId: entity.assetId,
+        entityId: entity.id,
+        kind: spatialEntityType(entity),
+        role: entity.role || asset?.role || asset?.type || "Scene asset",
+        sceneContext,
+        transitionSceneRole,
+      };
+    });
+  return { available: true, links };
+}
+
+function interBeatExactBoundaryAssetLinks(beatContext, { includeFrom = true } = {}) {
+  const target = exactSpatialSceneAssetLinkSet(
+    beatContext?.toSceneContext,
+    "to",
+  );
+  const source = includeFrom
+    ? exactSpatialSceneAssetLinkSet(beatContext?.fromSceneContext, "from")
+    : { available: false, links: [] };
+  return {
+    available: target.available || source.available,
+    links: target.available
+      ? [...(source.available ? source.links : []), ...target.links]
+      : source.links,
+    sourceLinks: source.links,
+    targetLinks: target.links,
+  };
+}
+
+function interBeatSpatialSceneContextsByEntityId(assetLinks) {
+  return new Map((assetLinks || [])
+    .filter((link) => link?.entityId && link?.sceneContext?.beatId)
+    .map((link) => [String(link.entityId), link.sceneContext]));
 }
 
 function narrativeAssetPosition3d(kind, index, total, active, topologyKind = null) {
@@ -17668,12 +18037,12 @@ function initializeDynamicGeometryViewer(active) {
   const activeAssetIndex = Math.max(assetLinks.findIndex((assetLink) => activeAssetIds.has(assetLink.assetId)), 0);
   const hasSourceAnimation = kind !== "none" && dynamicPreviewHasEmbeddedGlbAnimation(proposal, beat);
   const width = Math.max(container.clientWidth, 360);
-  const height = Math.max(container.clientHeight, 460);
+  const height = Math.max(container.clientHeight, 520);
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xf8f7ec);
 
   const camera = new THREE.PerspectiveCamera(42, width / height, 0.02, 1000);
-  camera.position.set(4.3, 3.2, 5.4);
+  camera.position.set(3.4, 2.3, 4.8);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -17703,7 +18072,8 @@ function initializeDynamicGeometryViewer(active) {
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
-  controls.target.set(0, 0.5, 0);
+  controls.target.set(0, 0.85, 0);
+  controls.maxPolarAngle = Math.PI / 2 - 0.02;
   configureSpatialEditorMouseControls(controls);
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x6f7f78, 2.35));
@@ -17727,6 +18097,7 @@ function initializeDynamicGeometryViewer(active) {
     readerRig: readerEditorLayer.rig,
     readerProxy: readerEditorLayer.proxy,
     readerEntity,
+    authoringSpatialObjects: new Map(),
     animationId: null,
     resizeHandler: null,
     keyDownHandler: null,
@@ -17765,21 +18136,19 @@ function initializeDynamicGeometryViewer(active) {
     duplicateCount: topologySwapDuplicateCount(state.data?.decisions?.["asset-topology"]?.option),
     assetLinks,
     dynamicObjects: [],
+    selectionHelpers: [],
     effects: null,
     descriptionCues: null,
   };
+  configureAuthoringSpatialCameraViewer(viewer, sceneContext);
   dynamicViewer = viewer;
+  syncDynamicSceneObjectSelection();
   // Reader text is a hand-attached system surface, not scene geometry in the Dynamics editor.
   viewer.inheritedTextLayer = null;
   attachLockedEnvironmentToViewer(viewer);
-  const restoredCameraState = restoredPreviewCameraState(viewer, state.dynamicViewerCameraState);
-  const declaresSharedSourceCamera = dynamicPreviewDeclaresSharedSourceCamera(viewer);
-  const canRestoreCameraState = !declaresSharedSourceCamera && shouldRestorePreviewCameraState(viewer, restoredCameraState);
-  if (canRestoreCameraState) applyDynamicViewerCameraState(viewer, restoredCameraState);
+  const canRestoreCameraState = restoreAuthoringSpatialCameraState(viewer);
   const frameLoadedDynamicCamera = () => {
-    if (syncSourceCameraPreview(viewer, 0)) return;
-    if (canRestoreCameraState) applyDynamicViewerCameraState(viewer, restoredCameraState);
-    else fitInheritedTopologyPreviewCamera(viewer, root);
+    if (!canRestoreCameraState) fitAuthoringSpatialCameraOnLoad(viewer);
   };
 
   container.addEventListener("pointerdown", () => {
@@ -17814,7 +18183,7 @@ function initializeDynamicGeometryViewer(active) {
   viewer.resizeHandler = () => {
     if (viewer.disposed) return;
     const nextWidth = Math.max(container.clientWidth, 360);
-    const nextHeight = Math.max(container.clientHeight, 460);
+    const nextHeight = Math.max(container.clientHeight, 520);
     camera.aspect = nextWidth / nextHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(nextWidth, nextHeight);
@@ -17825,7 +18194,7 @@ function initializeDynamicGeometryViewer(active) {
   window.addEventListener("resize", viewer.resizeHandler);
 
   if (!assetLinks.length) {
-    root.add(makeTopologyPlaceholder("No dynamic assets", "Link source assets in Source Graph first", 0xc98a8a));
+    root.add(makeTopologyPlaceholder("No moving objects", "Link source assets in Story order first", 0xc98a8a));
     frameLoadedDynamicCamera();
   } else if (cumulativeContext) {
     let pending = assetLinks.length;
@@ -17834,10 +18203,11 @@ function initializeDynamicGeometryViewer(active) {
       pending -= 1;
       if (!ok) failed += 1;
       if (viewer.disposed) return;
-      frameLoadedDynamicCamera();
+      syncDynamicSceneObjectSelection();
       if (pending > 0) {
-        status.textContent = `Loading ${pending} more active-beat assets...`;
+        status.textContent = `Loading ${pending} more active story-part assets...`;
       } else {
+        frameLoadedDynamicCamera();
         viewer.swapReady = true;
         if (failed) {
           status.textContent = `Loaded cumulative scene with ${failed} asset issue${failed === 1 ? "" : "s"}.`;
@@ -17856,13 +18226,13 @@ function initializeDynamicGeometryViewer(active) {
       pending -= 1;
       if (!ok) failed += 1;
       if (viewer.disposed) return;
-      frameLoadedDynamicCamera();
+      syncDynamicSceneObjectSelection();
       if (pending > 0) {
         status.textContent = `Loading ${pending} more dynamic assets...`;
-      } else if (failed) {
-        status.textContent = `Loaded with ${failed} dynamic preview issue${failed === 1 ? "" : "s"}.`;
       } else {
-        status.remove();
+        frameLoadedDynamicCamera();
+        if (failed) status.textContent = `Loaded with ${failed} dynamic preview issue${failed === 1 ? "" : "s"}.`;
+        else status.remove();
       }
     };
     assetLinks.forEach((assetLink, index) => {
@@ -17878,12 +18248,32 @@ function initializeDynamicGeometryViewer(active) {
     updateTopologyKeyboardMovement(viewer, delta);
     if (animateNarrativeSingleAnchorViewer(viewer, delta)) return;
     animateDynamicGeometry(viewer);
-    syncSourceCameraPreview(viewer, delta);
+    for (const helper of viewer.selectionHelpers) helper.update();
     controls.update();
     renderer.render(scene, camera);
     viewer.animationId = requestAnimationFrame(animate);
   };
   viewer.animationId = requestAnimationFrame(animate);
+}
+
+function dynamicSceneObjectForEntityId(viewer, entityId) {
+  if (!viewer || !entityId) return null;
+  if (viewer.readerEntity?.id === entityId) return viewer.readerRig || null;
+  const entry = viewer.dynamicObjects.find((candidate) => candidate.entityId === entityId);
+  return entry?.authorWrapper || entry?.sourceScene || entry?.wrapper || null;
+}
+
+function syncDynamicSceneObjectSelection() {
+  const entities = dynamicSceneObjectEntities();
+  const selectedEntityId = ensureDynamicSceneObjectSelection(entities);
+  for (const item of document.querySelectorAll("[data-dynamic-select-entity]")) {
+    const selected = item.dataset.dynamicSelectEntity === selectedEntityId;
+    item.classList.toggle("selected", selected);
+    item.classList.toggle("selection-primary", selected);
+    item.setAttribute("aria-pressed", String(selected));
+  }
+  const object = dynamicSceneObjectForEntityId(dynamicViewer, selectedEntityId);
+  syncSpatialSelectionHelpers(dynamicViewer, object ? [object] : []);
 }
 
 function proceduralDynamicsReaderAnchorForScene(sceneContext) {
@@ -17971,11 +18361,17 @@ function initializeInterBeatDynamicsViewer(active) {
   if (thumbnailMode && !hasScrubWindow) return;
   const frozenSourcePartState = beat?.sourcePartStates?.find((item) => item.playbackMode === "frozen") || null;
   const transitionIndex = Math.max(0, beatContext.beatIndex - 1);
-  const cumulativeContext = transition && !sceneContext.variantOptionId
+  const legacyCumulativeContext = transition && !sceneContext.variantOptionId
     ? cumulativeSingleAnchorTransitionContext(transitions, transitionIndex)
     : null;
   const selectedBeats = beatContext.from ? [beatContext.from, beatContext.to] : (beatContext.to ? [beatContext.to] : []);
-  const assetLinks = cumulativeContext ? cumulativeContext.sequence.steps : narrativeSceneAssetLinks(proposal, selectedBeats);
+  const exactBoundaryAssets = thumbnailMode
+    ? { available: false, links: [], sourceLinks: [], targetLinks: [] }
+    : interBeatExactBoundaryAssetLinks(beatContext, { includeFrom: hasScrubWindow });
+  const cumulativeContext = exactBoundaryAssets.available ? null : legacyCumulativeContext;
+  const assetLinks = exactBoundaryAssets.available
+    ? exactBoundaryAssets.links
+    : cumulativeContext ? cumulativeContext.sequence.steps : narrativeSceneAssetLinks(proposal, selectedBeats);
   const sourcePlaybackPreviewAssetId = interBeatSourcePlaybackPreviewAssetId(sourcePlaybackSummary);
   const sourcePlaybackPreviewAssetIndex = sourcePlaybackPreviewAssetId
     ? assetLinks.findIndex((assetLink) => assetLink.assetId === sourcePlaybackPreviewAssetId)
@@ -17984,26 +18380,30 @@ function initializeInterBeatDynamicsViewer(active) {
     ? sourcePlaybackPreviewAssetIndex
     : (cumulativeContext?.activeIndex || 0);
   if (!hasScrubWindow) state.interBeatPreviewPlaying = false;
-  const fromAssetIds = new Set(cumulativeContext?.active?.assetId ? [cumulativeContext.active.assetId] : (beatContext.from?.linkedAssetIds || []));
-  const toAssetIds = new Set(cumulativeContext?.target?.assetId ? [cumulativeContext.target.assetId] : (beatContext.to?.linkedAssetIds || []));
+  const fromAssetIds = new Set(exactBoundaryAssets.available
+    ? exactBoundaryAssets.sourceLinks.map((link) => link.assetId)
+    : cumulativeContext?.active?.assetId ? [cumulativeContext.active.assetId] : (beatContext.from?.linkedAssetIds || []));
+  const toAssetIds = new Set(exactBoundaryAssets.available
+    ? exactBoundaryAssets.targetLinks.map((link) => link.assetId)
+    : cumulativeContext?.target?.assetId ? [cumulativeContext.target.assetId] : (beatContext.to?.linkedAssetIds || []));
   const activeAssetIds = new Set([...fromAssetIds, ...toAssetIds]);
   const fromAssetIndex = cumulativeContext
     ? cumulativeContext.activeIndex
-    : Math.max(assetLinks.findIndex((assetLink) => fromAssetIds.has(assetLink.assetId)), 0);
+    : Math.max(assetLinks.findIndex((assetLink) => assetLink.transitionSceneRole === "from" || fromAssetIds.has(assetLink.assetId)), 0);
   const toAssetIndex = cumulativeContext?.targetIndex != null
     ? cumulativeContext.targetIndex
-    : Math.max(assetLinks.findIndex((assetLink) => toAssetIds.has(assetLink.assetId)), fromAssetIndex);
+    : Math.max(assetLinks.findIndex((assetLink) => assetLink.transitionSceneRole === "to" || toAssetIds.has(assetLink.assetId)), fromAssetIndex);
   const fromPosition = dynamicAssetPosition3d(fromAssetIndex, Math.max(assetLinks.length, 1), layoutKind, true);
   const toPosition = dynamicAssetPosition3d(toAssetIndex, Math.max(assetLinks.length, 1), layoutKind, true);
   const minimumWidth = thumbnailMode ? 176 : 360;
-  const minimumHeight = thumbnailMode ? 104 : 460;
+  const minimumHeight = thumbnailMode ? 104 : 520;
   const width = Math.max(container.clientWidth, minimumWidth);
   const height = Math.max(container.clientHeight, minimumHeight);
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xf8f7ec);
 
   const camera = new THREE.PerspectiveCamera(42, width / height, 0.02, 1000);
-  camera.position.set(4.3, 3.2, 5.4);
+  camera.position.set(3.4, 2.3, 4.8);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -18015,8 +18415,8 @@ function initializeInterBeatDynamicsViewer(active) {
   const status = document.createElement("div");
   status.className = "topology-viewer-status overlay";
   status.textContent = assetLinks.length
-    ? (thumbnailMode ? "Loading transition..." : `Loading ${assetLinks.length} transition assets...`)
-    : "No linked beat pairs available for transition preview.";
+    ? (thumbnailMode ? "Loading scene change..." : `Loading ${assetLinks.length} scene-change assets...`)
+    : "No linked story-part pairs are available for the scene-change preview.";
   container.replaceChildren(renderer.domElement, status);
   const metadataOverlay = thumbnailMode ? null : addPreviewMetadataOverlay(container, previewMetadataEntries({
       componentId: "inter-beat-dynamics",
@@ -18035,7 +18435,8 @@ function initializeInterBeatDynamicsViewer(active) {
   controls.enabled = !thumbnailMode;
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
-  controls.target.set(0, 0.5, 0);
+  controls.target.set(0, 0.85, 0);
+  if (!thumbnailMode) controls.maxPolarAngle = Math.PI / 2 - 0.02;
   configureSpatialEditorMouseControls(controls);
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x6f7f78, 2.35));
@@ -18122,9 +18523,12 @@ function initializeInterBeatDynamicsViewer(active) {
     beat: beatContext.to,
     sceneContext: beatContext.toSceneContext,
     spatialSceneContextsByAssetId: interBeatSpatialSceneContextsByAssetId(beatContext),
+    spatialSceneContextsByEntityId: interBeatSpatialSceneContextsByEntityId(assetLinks),
+    authoringSpatialObjects: new Map(),
     suppressSceneLabels: true,
     metadataOverlay,
     cumulativeContext,
+    usesExactSceneComposition: exactBoundaryAssets.available,
     activeSwapIndex: previewActiveSwapIndex,
     sourcePlaybackPreviewAssetId,
     swapGroups: [],
@@ -18137,13 +18541,25 @@ function initializeInterBeatDynamicsViewer(active) {
     transitionEffects: addInterBeatTransitionOverlays(root, kind, fromPosition, toPosition, playback),
     descriptionCues: null,
   };
+  if (!thumbnailMode) configureAuthoringSpatialCameraViewer(viewer, beatContext.toSceneContext || sceneContext);
   interBeatViewer = viewer;
   viewer.inheritedTextLayer = null;
   attachLockedEnvironmentToViewer(viewer);
-  const restoredCameraState = thumbnailMode ? null : restoredPreviewCameraState(viewer, state.interBeatViewerCameraState);
-  const canRestoreCameraState = !sourcePlaybackPreviewAssetId
-    && shouldRestorePreviewCameraState(viewer, restoredCameraState);
-  if (canRestoreCameraState) applyInterBeatViewerCameraState(viewer, restoredCameraState);
+  const restoredCameraState = thumbnailMode
+    ? restoredPreviewCameraState(viewer, state.interBeatViewerCameraState)
+    : null;
+  const canRestoreCameraState = thumbnailMode
+    ? !sourcePlaybackPreviewAssetId && shouldRestorePreviewCameraState(viewer, restoredCameraState)
+    : restoreAuthoringSpatialCameraState(viewer);
+  if (thumbnailMode && canRestoreCameraState) applyInterBeatViewerCameraState(viewer, restoredCameraState);
+  const frameLoadedInterBeatCamera = () => {
+    if (thumbnailMode) {
+      if (canRestoreCameraState) applyInterBeatViewerCameraState(viewer, restoredCameraState);
+      else if (!frameInterBeatSourcePlaybackAsset(viewer)) fitInheritedTopologyPreviewCamera(viewer, root);
+      return;
+    }
+    if (!canRestoreCameraState) fitAuthoringSpatialCameraOnLoad(viewer);
+  };
 
   if (!thumbnailMode) {
     viewer.sourceCameraControlStartHandler = () => cancelSourceCameraCue(viewer);
@@ -18200,11 +18616,7 @@ function initializeInterBeatDynamicsViewer(active) {
   }
 
   if (!assetLinks.length) {
-    if (canRestoreCameraState) {
-      applyInterBeatViewerCameraState(viewer, restoredCameraState);
-    } else if (!frameInterBeatSourcePlaybackAsset(viewer)) {
-      fitInheritedTopologyPreviewCamera(viewer, root);
-    }
+    frameLoadedInterBeatCamera();
     markInterBeatThumbnailReady(viewer);
   } else if (cumulativeContext) {
     let pending = assetLinks.length;
@@ -18213,17 +18625,13 @@ function initializeInterBeatDynamicsViewer(active) {
       pending -= 1;
       if (!ok) failed += 1;
       if (viewer.disposed) return;
-      if (canRestoreCameraState) {
-        applyInterBeatViewerCameraState(viewer, restoredCameraState);
-      } else if (!frameInterBeatSourcePlaybackAsset(viewer)) {
-        fitInheritedTopologyPreviewCamera(viewer, root);
-      }
       if (pending > 0) {
-        status.textContent = `Loading ${pending} more cumulative transition assets...`;
+        status.textContent = `Loading ${pending} more cumulative scene-change assets...`;
       } else {
+        frameLoadedInterBeatCamera();
         viewer.swapReady = true;
         if (failed) {
-          status.textContent = `Loaded cumulative transition with ${failed} asset issue${failed === 1 ? "" : "s"}.`;
+          status.textContent = `Loaded cumulative scene change with ${failed} asset issue${failed === 1 ? "" : "s"}.`;
         } else {
           status.remove();
         }
@@ -18240,18 +18648,13 @@ function initializeInterBeatDynamicsViewer(active) {
       pending -= 1;
       if (!ok) failed += 1;
       if (viewer.disposed) return;
-      if (canRestoreCameraState) {
-        applyInterBeatViewerCameraState(viewer, restoredCameraState);
-      } else if (!frameInterBeatSourcePlaybackAsset(viewer)) {
-        fitInheritedTopologyPreviewCamera(viewer, root);
-      }
       if (pending > 0) {
-        status.textContent = `Loading ${pending} more transition assets...`;
-      } else if (failed) {
-        status.textContent = `Loaded with ${failed} transition preview issue${failed === 1 ? "" : "s"}.`;
-        markInterBeatThumbnailReady(viewer);
+        status.textContent = `Loading ${pending} more scene-change assets...`;
       } else {
-        status.remove();
+        frameLoadedInterBeatCamera();
+        applyInterBeatExactSceneVisibility(viewer, viewer.playing ? 0 : 1);
+        if (failed) status.textContent = `Loaded with ${failed} scene-change preview issue${failed === 1 ? "" : "s"}.`;
+        else status.remove();
         markInterBeatThumbnailReady(viewer);
       }
     };
@@ -18403,13 +18806,13 @@ function initializeEnvironmentEnhancementViewer(active) {
   if (!container) return;
 
   const width = Math.max(container.clientWidth, 360);
-  const height = Math.max(container.clientHeight, 460);
+  const height = Math.max(container.clientHeight, 520);
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x080a08);
   scene.fog = new THREE.Fog(0x080a08, 7, 18);
 
-  const camera = new THREE.PerspectiveCamera(52, width / height, 0.01, 4000);
-  camera.position.set(4.8, 3.2, 5.8);
+  const camera = new THREE.PerspectiveCamera(42, width / height, 0.01, 4000);
+  camera.position.set(3.4, 2.3, 4.8);
   const xrViewerRig = new THREE.Group();
   xrViewerRig.name = "StoryVR environment preview XR reader rig";
   xrViewerRig.add(camera);
@@ -18425,7 +18828,7 @@ function initializeEnvironmentEnhancementViewer(active) {
   renderer.xr.enabled = true;
   renderer.domElement.tabIndex = 0;
   renderer.domElement.className = "topology-viewer-canvas environment-viewer-canvas";
-  renderer.domElement.setAttribute("aria-label", "Environment Enhancement preview canvas");
+  renderer.domElement.setAttribute("aria-label", "Setting preview canvas");
 
   const empty = container.querySelector("[data-environment-viewer-empty]");
   const status = container.querySelector("[data-environment-viewer-status]");
@@ -18434,8 +18837,8 @@ function initializeEnvironmentEnhancementViewer(active) {
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.075;
-  controls.target.set(0, 1.15, 0);
-  controls.maxPolarAngle = Math.PI * 0.98;
+  controls.target.set(0, 0.85, 0);
+  controls.maxPolarAngle = Math.PI / 2 - 0.02;
   configureSpatialEditorMouseControls(controls);
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x5b625f, 1.6));
@@ -18472,6 +18875,9 @@ function initializeEnvironmentEnhancementViewer(active) {
     controls,
     root: storyRoot,
     storyRoot,
+    sceneContext,
+    readerEntity: null,
+    authoringSpatialObjects: new Map(),
     environmentRoot,
     neutralFallback,
     gltfLoader,
@@ -18497,7 +18903,9 @@ function initializeEnvironmentEnhancementViewer(active) {
     xrEntryLocalQuaternion: new THREE.Quaternion(),
     xrEntryEuler: new THREE.Euler(0, 0, 0, "YXZ"),
   };
+  configureAuthoringSpatialCameraViewer(viewer, sceneContext);
   contextViewer = viewer;
+  restoreAuthoringSpatialCameraState(viewer);
 
   viewer.xrSessionStartHandler = () => {
     captureEnvironmentXrEntryPose(viewer);
@@ -18519,7 +18927,7 @@ function initializeEnvironmentEnhancementViewer(active) {
   if (xrSlot) {
     const vrButton = VRButton.createButton(renderer);
     vrButton.className = "environment-vr-button";
-    vrButton.setAttribute("aria-label", "Enter VR Environment Enhancement preview");
+    vrButton.setAttribute("aria-label", "Enter VR setting preview");
     Object.assign(vrButton.style, {
       position: "static",
       left: "auto",
@@ -18542,7 +18950,7 @@ function initializeEnvironmentEnhancementViewer(active) {
   viewer.resizeObserver = new ResizeObserver(() => {
     if (viewer.disposed) return;
     const nextWidth = Math.max(container.clientWidth, 360);
-    const nextHeight = Math.max(container.clientHeight, 460);
+    const nextHeight = Math.max(container.clientHeight, 520);
     camera.aspect = nextWidth / nextHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(nextWidth, nextHeight, false);
@@ -18552,6 +18960,7 @@ function initializeEnvironmentEnhancementViewer(active) {
   applyEnvironmentDraftToViewer(viewer);
   loadEnvironmentPreviewStoryAssets(viewer, status);
   loadEnvironmentPreviewAsset(viewer, environmentManifest(sceneContext), status, empty);
+  requestAnimationFrame(() => frameEnvironmentViewer(viewer));
 
   renderer.setAnimationLoop((_time, xrFrame) => {
     if (viewer.disposed) return;
@@ -18669,6 +19078,7 @@ function loadEnvironmentPreviewStoryAssets(viewer, status) {
   viewer.sceneContext = context;
   viewer.beat = spatialSceneBeat(context);
   viewer.topologyKind = topologyKind;
+  viewer.readerEntity = readerEntity;
   if (readerEntity) {
     const readerLayer = createSpatialReaderRig(viewer.storyRoot, readerEntity);
     viewer.readerRig = readerLayer.rig;
@@ -18691,6 +19101,7 @@ function loadEnvironmentPreviewStoryAssets(viewer, status) {
     const wrapper = new THREE.Group();
     wrapper.name = `Spatial Relations preview asset · ${entry.asset.id}`;
     viewer.storyRoot.add(wrapper);
+    viewer.authoringSpatialObjects?.set(entry.entity?.id || `environment:${entry.asset.id}:${index}`, wrapper);
     if (entry.entity) applySpatialEntityTransformToObject(viewer, entry.entity, wrapper);
     else wrapper.position.copy(spatialTopologyAssetPose({ topologyKind }, index, entries.length).position);
     if (entry.kind === "image-plane") {
@@ -18774,7 +19185,7 @@ async function loadEnvironmentPreviewAsset(viewer, manifest, status, empty) {
       viewer.environmentKind = "panorama";
       viewer.hasEnvironment = true;
     } else {
-      throw new Error(`Unsupported environment media type: ${mediaType || "unknown"}`);
+      throw new Error(`Unsupported setting media type: ${mediaType || "unknown"}`);
     }
     viewer.environmentPending = false;
     if (viewer.neutralFallback) viewer.neutralFallback.visible = false;
@@ -18785,12 +19196,12 @@ async function loadEnvironmentPreviewAsset(viewer, manifest, status, empty) {
   } catch (error) {
     if (viewer.disposed || token !== viewer.loadToken) return;
     viewer.environmentPending = false;
-    viewer.environmentError = error.message || "Environment asset loading failed.";
+    viewer.environmentError = error.message || "Setting asset loading failed.";
     if (viewer.neutralFallback) viewer.neutralFallback.visible = true;
     updateEnvironmentViewerStatus(viewer, status);
     if (empty) {
       empty.hidden = false;
-      empty.querySelector("strong").textContent = "Could not load environment";
+      empty.querySelector("strong").textContent = "Could not load setting";
       empty.querySelector("span").textContent = viewer.environmentError;
     }
   }
@@ -18822,10 +19233,10 @@ function makeEnvironmentNeutralReaderFallback() {
 function updateEnvironmentViewerStatus(viewer = contextViewer, status = document.querySelector("[data-environment-viewer-status]")) {
   if (!viewer || !status) return;
   const spatialSceneLabel = viewer.spatialSceneState === "saved"
-    ? "saved spatial scene"
-    : viewer.spatialSceneState === "draft" ? "Spatial Relations draft scene" : "source-linked fallback scene";
+    ? "saved scene"
+    : viewer.spatialSceneState === "draft" ? "Unsaved object-placement scene" : "source-linked fallback scene";
   if (viewer.environmentError) {
-    status.textContent = `Environment failed to load: ${viewer.environmentError}`;
+    status.textContent = `Setting failed to load: ${viewer.environmentError}`;
     status.classList.add("error");
     return;
   }
@@ -18840,9 +19251,9 @@ function updateEnvironmentViewerStatus(viewer = contextViewer, status = document
   }
   if (viewer.hasEnvironment) status.remove();
   else if (environmentEnhancementSkipped()) status.textContent = viewer.storyAssetCount
-    ? `This ${spatialSceneLabel} is loaded with StoryVR's neutral reader environment.`
-    : "Using StoryVR's standard neutral scene with no added environment.";
-  else status.textContent = viewer.storyAssetCount ? `This ${spatialSceneLabel} is loaded. Generate an environment to surround it.` : "Generate an environment to begin the preview.";
+    ? `This ${spatialSceneLabel} is loaded with StoryVR's neutral reader setting.`
+    : "Using StoryVR's standard neutral scene with no added setting.";
+  else status.textContent = viewer.storyAssetCount ? `This ${spatialSceneLabel} is loaded. Generate a setting to surround it.` : "Generate a setting to begin the preview.";
 }
 
 function applyEnvironmentDraftToViewer(viewer = contextViewer) {
@@ -18912,37 +19323,10 @@ function environmentGroundTextureUrl(texture) {
   return String(texture.localUrl || texture.localPath || "").trim() || null;
 }
 
-function frameEnvironmentViewer(viewer = contextViewer) {
-  if (!viewer || viewer.disposed || viewer.componentId !== "environment-enhancement") return;
-  if (viewer.environmentKind === "panorama" && !viewer.storyRoot.children.length) {
-    viewer.camera.position.set(0, 1.6, 0.01);
-    viewer.controls.target.set(0, 1.6, -1);
-    viewer.camera.near = 0.01;
-    viewer.camera.far = 2000;
-    viewer.controls.minDistance = 0.01;
-    viewer.controls.maxDistance = 10;
-    viewer.camera.updateProjectionMatrix();
-    viewer.controls.update();
-    return;
-  }
-  const box = new THREE.Box3();
-  viewer.environmentRoot.updateMatrixWorld(true);
-  viewer.storyRoot.updateMatrixWorld(true);
-  if (viewer.environmentRoot.children.length) box.expandByObject(viewer.environmentRoot);
-  if (viewer.storyRoot.children.length) box.expandByObject(viewer.storyRoot);
-  if (box.isEmpty()) return;
-  const center = box.getCenter(new THREE.Vector3());
-  const size = box.getSize(new THREE.Vector3());
-  const maxSize = Math.max(size.x, size.y, size.z, 0.1);
-  const distance = Math.min(Math.max(maxSize / (2 * Math.tan(THREE.MathUtils.degToRad(viewer.camera.fov * 0.5))) * 1.22, 1.5), 1800);
-  viewer.camera.position.copy(center).add(new THREE.Vector3(1, 0.58, 1).normalize().multiplyScalar(distance));
-  viewer.controls.target.copy(center);
-  viewer.camera.near = Math.max(maxSize / 10000, 0.005);
-  viewer.camera.far = Math.max(maxSize * 25, 500);
-  viewer.controls.minDistance = Math.max(maxSize * 0.002, 0.01);
-  viewer.controls.maxDistance = Math.max(maxSize * 8, 20);
-  viewer.camera.updateProjectionMatrix();
-  viewer.controls.update();
+function frameEnvironmentViewer(viewer = contextViewer, { force = false } = {}) {
+  if (!viewer || viewer.disposed || viewer.componentId !== "environment-enhancement") return false;
+  if (!force && viewer.storyAssetsPending > 0) return false;
+  return fitAuthoringSpatialCameraOnLoad(viewer, { force });
 }
 
 function environmentEnhancementContractForBeat(contract, beatId) {
@@ -19049,7 +19433,7 @@ function attachLockedEnvironmentToViewer(viewer) {
       },
       undefined,
       (error) => {
-        viewer.lockedEnvironmentError = error?.message || "Environment could not be loaded.";
+        viewer.lockedEnvironmentError = error?.message || "Setting could not be loaded.";
       },
     );
     return;
@@ -19060,7 +19444,7 @@ function attachLockedEnvironmentToViewer(viewer) {
     && !ENVIRONMENT_EXR_MEDIA_TYPES.has(mediaType)
     && !ENVIRONMENT_PNG_MEDIA_TYPES.has(mediaType)
   ) {
-    viewer.lockedEnvironmentError = `Unsupported environment media type: ${mediaType || "unknown"}`;
+    viewer.lockedEnvironmentError = `Unsupported setting media type: ${mediaType || "unknown"}`;
     return;
   }
   const loader = ENVIRONMENT_PNG_MEDIA_TYPES.has(mediaType)
@@ -19083,7 +19467,7 @@ function attachLockedEnvironmentToViewer(viewer) {
     },
     undefined,
     (error) => {
-      viewer.lockedEnvironmentError = error?.message || "Environment panorama could not be loaded.";
+      viewer.lockedEnvironmentError = error?.message || "360° setting could not be loaded.";
     },
   );
 }
@@ -19293,7 +19677,7 @@ function initializeLegacyContextLayeringViewer(active) {
   viewer.resizeHandler = () => {
     if (viewer.disposed) return;
     const nextWidth = Math.max(container.clientWidth, 360);
-    const nextHeight = Math.max(container.clientHeight, 460);
+    const nextHeight = Math.max(container.clientHeight, 520);
     camera.aspect = nextWidth / nextHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(nextWidth, nextHeight);
@@ -19423,7 +19807,7 @@ function initializeInteractionControlViewer(active) {
   scene.background = new THREE.Color(0xf8f7ec);
 
   const camera = new THREE.PerspectiveCamera(42, width / height, 0.02, 1000);
-  camera.position.set(3.7, 2.5, 5.1);
+  camera.position.set(3.4, 2.3, 4.8);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -19441,7 +19825,7 @@ function initializeInteractionControlViewer(active) {
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.maxPolarAngle = Math.PI / 2 - 0.02;
-  controls.target.set(0, 0.8, 0);
+  controls.target.set(0, 0.85, 0);
   configureSpatialEditorMouseControls(controls);
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x6f7f78, 2.35));
@@ -19506,6 +19890,7 @@ function initializeInteractionControlViewer(active) {
     textPanel: spatialReaderHands.textPanel,
     textOrientationPolicy: "reader-hand",
     spatialObjects: new Map(),
+    authoringSpatialObjects: new Map(),
     spatialPickTargets: [],
     spatialPlaybackEntries: [],
     spatialAssetBounds: new Map(),
@@ -19522,7 +19907,7 @@ function initializeInteractionControlViewer(active) {
     interactionConstraintGhosts: new Map(),
     interactionConstraintGhostPickTargets: [],
     interactionConstraintRangeVisual: null,
-    spatialEditorCamera: "outside-reader-rig-v3",
+    spatialEditorCamera: AUTHORING_SPATIAL_CAMERA_KIND,
     proposal,
     beat,
     sceneContext: editorContext.sceneContext,
@@ -19561,7 +19946,7 @@ function initializeInteractionControlViewer(active) {
     sourceElapsed: 0,
     speed: 1,
     playing: upstreamBeatState.playTransition,
-    previewCameraFramingContract: interactionPreviewCameraFramingContract(beat, editorContext.sceneContext),
+    previewCameraFramingContract: authoringSpatialCameraFramingContract(editorContext.sceneContext),
     previewCameraFramingReady: false,
     embodiedRoute: route,
     actionTargets: [],
@@ -19592,12 +19977,11 @@ function initializeInteractionControlViewer(active) {
     lastFrameAt: performance.now(),
     elapsed: 0,
   };
+  configureAuthoringSpatialCameraViewer(viewer, editorContext.sceneContext);
   interactionViewer = viewer;
   viewer.resolveSourcePlaybackWindow = (asset) => spatialPlaybackWindowForAsset(viewer.upstreamBeatState, asset);
   attachLockedEnvironmentToViewer(viewer);
-  const restoredCameraState = restoredPreviewCameraState(viewer, state.interactionViewerCameraState);
-  const canRestoreCameraState = shouldRestorePreviewCameraState(viewer, restoredCameraState);
-  if (canRestoreCameraState) applyPreviewViewerCameraState(viewer, restoredCameraState);
+  const canRestoreCameraState = restoreAuthoringSpatialCameraState(viewer);
 
   viewer.effects = !usesInheritedSourcePlayback && dynamicKind ? addDynamicEffectOverlays(root, dynamicKind, activePosition, {
     ...beat,
@@ -19616,7 +20000,7 @@ function initializeInteractionControlViewer(active) {
       if (cumulativeContext) viewer.swapReady = true;
       viewer.sourcePlaybackReady = true;
       viewer.sourceElapsed = 0;
-      if (!canRestoreCameraState) fitInteractionControlPreviewCamera(viewer, root);
+      if (!canRestoreCameraState) fitAuthoringSpatialCameraOnLoad(viewer);
       initializeInteractionConfigurationGizmo(viewer);
       initializeInteractionInBeatViewportPicking(viewer);
       refreshInteractionInBeatTargetPicker(viewer);
@@ -19626,7 +20010,7 @@ function initializeInteractionControlViewer(active) {
   if (!assetLinks.length) requestAnimationFrame(() => {
     if (viewer.disposed) return;
     viewer.sourcePlaybackReady = true;
-    if (!canRestoreCameraState) fitInteractionControlPreviewCamera(viewer, root);
+    if (!canRestoreCameraState) fitAuthoringSpatialCameraOnLoad(viewer);
     initializeInteractionConfigurationGizmo(viewer);
     initializeInteractionInBeatViewportPicking(viewer);
     refreshInteractionInBeatTargetPicker(viewer);
@@ -19678,6 +20062,12 @@ function initializeInteractionControlViewer(active) {
     if (target.userData.interactionAction) {
       state.interactionViewerCameraState = captureInteractionViewerCameraState();
       const action = target.userData.interactionAction;
+      interactionLogger.recordSemanticClick(event, {
+        kind: "interaction-preview-control",
+        label: target.userData.interactionLabel || action,
+        id: action,
+        action,
+      });
       applyInteractionAction(action);
       if (action === "embodied-restart" || action === "embodied-step") {
         startEmbodiedProgressionReader(viewer);
@@ -19839,7 +20229,7 @@ function initializeFinalReviewViewer(active) {
   status.textContent = exactSceneAssetLinks.length
     ? `Loading ${exactSceneAssetLinks.length} exact-scene asset${exactSceneAssetLinks.length === 1 ? "" : "s"}...`
     : cumulativeContext
-    ? `Loading ${cumulativeAssetLinks.length} active-beat assets...`
+    ? `Loading ${cumulativeAssetLinks.length} active story-part assets...`
     : linkedAsset ? `Loading ${linkedAsset.id}...` : "Loading text-only reader state...";
   container.replaceChildren(renderer.domElement, status);
   const layers = cumulativePreviewLayersForComponent("transition-pacing", {
@@ -19854,7 +20244,7 @@ function initializeFinalReviewViewer(active) {
     componentId: "transition-pacing",
     layers,
     activeLink: cumulativeContext?.active || (linkedAssetId ? { assetId: linkedAssetId } : null),
-    currentValue: "Final Review",
+    currentValue: "Review story",
     beat,
   }));
 
@@ -20094,6 +20484,16 @@ function initializeFinalReviewViewer(active) {
     if (!action) return;
     event.preventDefault();
     event.stopPropagation();
+    interactionLogger.recordSemanticClick(event, {
+      kind: "reader-text-panel-control",
+      label: ({
+        minimize: "Minimize reader text panel",
+        restore: "Restore reader text panel",
+        "variant-previous": "Previous reader choice",
+        "variant-next": "Next reader choice",
+      })[action] || `Reader text panel ${action}`,
+      action,
+    });
     if (action === "minimize" || action === "restore") {
       setFinalReviewTextPanelMinimized(viewer, action === "minimize");
       return;
@@ -20354,7 +20754,7 @@ function initializeFinalReviewViewer(active) {
       if (pending > 0) {
         status.textContent = `Loading ${pending} more exact-scene asset${pending === 1 ? "" : "s"}...`;
       } else if (failed) {
-        status.textContent = `Loaded exact variant scene with ${failed} asset issue${failed === 1 ? "" : "s"}.`;
+        status.textContent = `Loaded exact choice scene with ${failed} asset issue${failed === 1 ? "" : "s"}.`;
       } else {
         status.remove();
       }
@@ -21780,7 +22180,7 @@ function makeFinalReviewTextTexture(beat, region, variantState = null, requested
   drawRoundRect(ctx, 24, 24, canvas.width - 48, canvas.height - 48, 34, "rgba(255,253,244,1)");
   ctx.fillStyle = "#10201c";
   ctx.font = "900 48px Avenir Next, Gill Sans, sans-serif";
-  wrapCanvasText(ctx, shortText(beat?.title || "Story beat", 86), 64, 96, 900, 54, 2);
+  wrapCanvasText(ctx, shortText(beat?.title || "Story part", 86), 64, 96, 900, 54, 2);
   ctx.fillStyle = "#354842";
   ctx.font = "700 30px Avenir Next, Gill Sans, sans-serif";
   const pagination = wrapCanvasText(
@@ -22799,7 +23199,7 @@ function makeInteractionLocomotionDestination(configuration, readerRig) {
   );
   arrow.rotation.x = -Math.PI / 2;
   arrow.position.set(0, 0.18, -Math.min(radius * 0.56, 0.38));
-  const label = makeTextSprite("Beat-change destination", {
+  const label = makeTextSprite("Scene-change destination", {
     fontSize: 44,
     background: "rgba(255,253,244,0.96)",
     color: "#007f73",
@@ -22973,6 +23373,12 @@ function initializeInteractionInBeatViewportPicking(viewer) {
     if (ghostEndpoint) {
       event.preventDefault();
       event.stopPropagation();
+      interactionLogger.recordSemanticClick(event, {
+        kind: "interaction-constraint-endpoint",
+        label: `${ghostEndpoint === "max" ? "Maximum" : "Minimum"} movement limit`,
+        id: ghostEndpoint,
+        action: "select-movement-limit",
+      });
       activateInteractionConstraintEndpoint(viewer, ghostEndpoint);
       return;
     }
@@ -22982,6 +23388,14 @@ function initializeInteractionInBeatViewportPicking(viewer) {
     if (!candidate) return;
     event.preventDefault();
     event.stopPropagation();
+    interactionLogger.recordSemanticClick(event, {
+      kind: "interaction-scene-object",
+      label: candidate.label || candidate.assetId || candidate.entityId,
+      id: interactionInBeatTargetKey(candidate),
+      assetId: candidate.assetId,
+      entityId: candidate.entityId,
+      action: "select-interaction-object",
+    });
     selectInteractionInBeatCandidateFromViewer(viewer, candidate);
   };
 
@@ -23102,7 +23516,7 @@ function addInteractionInBeatCandidate(candidate) {
   if (!candidate) return false;
   expandInteractionInBeatCandidateGroup(candidate);
   const key = interactionInBeatTargetKey(candidate);
-  return commitInteractionInBeatMutation("Add in-beat interactable", (record) => {
+  return commitInteractionInBeatMutation("Add interactive object", (record) => {
     record.targets = record.targets.filter((target) => {
       if (target.entityId !== candidate.entityId) return true;
       const existingPart = Boolean(target.nodePath || target.nodeIndex != null);
@@ -23129,7 +23543,7 @@ function addInteractionInBeatCandidate(candidate) {
 }
 
 function removeInteractionInBeatCandidate(key) {
-  return commitInteractionInBeatMutation("Remove in-beat interactable", (record) => {
+  return commitInteractionInBeatMutation("Remove interactive object", (record) => {
     record.targets = record.targets.filter((target) => interactionInBeatTargetKey(target) !== key);
     state.interactionSelectedInBeatTargetKey = interactionInBeatTargetKey(record.targets[0]) || null;
   });
@@ -23163,7 +23577,7 @@ function refreshInteractionInBeatTargetPicker(viewer) {
     return `
       <label class="interaction-inbeat-candidate ${part ? "part" : "whole"} ${configured ? "configured" : ""} ${state.interactionSelectedInBeatTargetKey === key ? "selected" : ""} ${unavailable ? "unavailable" : ""}">
         <input type="checkbox" data-interaction-inbeat-candidate="${escapeHtml(key)}" ${configured ? "checked" : ""}/>
-        <button type="button" data-interaction-inbeat-select-candidate="${escapeHtml(key)}"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(unavailable ? "Saved target unavailable in loaded GLB" : part ? "GLB part" : "Whole GLB")}</small></button>
+        <button type="button" data-interaction-inbeat-select-candidate="${escapeHtml(key)}"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(unavailable ? "Saved object unavailable in loaded 3D model" : part ? "Model part" : "Whole model")}</small></button>
       </label>`;
   };
   const rows = candidateGroups.map((group) => {
@@ -23184,7 +23598,7 @@ function refreshInteractionInBeatTargetPicker(viewer) {
       ${wholeRows.join("")}
       ${unavailableWholeRows.join("")}
       ${partRows.length ? `<details class="interaction-inbeat-candidate-parts" data-interaction-inbeat-candidate-parts="${escapeHtml(group.key)}" ${expanded ? "open" : ""}>
-        <summary>${partRows.length} GLB part${partRows.length === 1 ? "" : "s"}</summary>
+        <summary>${partRows.length} model part${partRows.length === 1 ? "" : "s"}</summary>
         <div class="interaction-inbeat-candidate-children">${partRows.join("")}</div>
       </details>` : ""}
     </div>`;
@@ -23192,7 +23606,7 @@ function refreshInteractionInBeatTargetPicker(viewer) {
   for (const [entityKey, unavailable] of unavailableByEntity) {
     rows.push(`<div class="interaction-inbeat-candidate-group unavailable" role="group" aria-label="${escapeHtml(entityKey)}">${unavailable.map((target) => renderCandidateRow(target, true)).join("")}</div>`);
   }
-  container.innerHTML = rows.join("") || `<p class="muted">No GLB objects are available in this exact scene.</p>`;
+  container.innerHTML = rows.join("") || `<p class="muted">No 3D models are available in this exact scene.</p>`;
   for (const checkbox of container.querySelectorAll("[data-interaction-inbeat-candidate]")) {
     checkbox.addEventListener("change", () => {
       const key = checkbox.dataset.interactionInbeatCandidate;
@@ -23617,7 +24031,7 @@ function initializeInteractionInBeatConstraintGizmo(viewer) {
   transformControls.addEventListener("mouseDown", () => {
     if (viewer.interactionInBeatPickGesture) viewer.interactionInBeatPickGesture.blocked = true;
     viewer.navigationTransformFinalized = false;
-    viewer.destinationHistoryStarted = beginAuthorHistory("Edit in-beat interaction range", "interaction-control");
+    viewer.destinationHistoryStarted = beginAuthorHistory("Edit object movement range", "interaction-control");
   });
   transformControls.addEventListener("objectChange", () => {
     syncInteractionInBeatRangeInputsFromViewer(viewer);
@@ -23725,7 +24139,7 @@ function initializeInteractionConfigurationGizmo(viewer) {
   });
   transformControls.addEventListener("mouseDown", () => {
     viewer.navigationTransformFinalized = false;
-    viewer.destinationHistoryStarted = beginAuthorHistory("Edit interaction destination", "interaction-control");
+    viewer.destinationHistoryStarted = beginAuthorHistory("Edit object destination", "interaction-control");
   });
   transformControls.addEventListener("objectChange", () => syncInteractionDestinationInputsFromViewer(viewer));
   transformControls.addEventListener("mouseUp", () => {
@@ -23978,11 +24392,13 @@ function applyInteractionSourceFocusToInheritedTextLayer(viewer, beat) {
 function makeInteractionButton(label, action, color) {
   const group = new THREE.Group();
   group.userData.interactionAction = action;
+  group.userData.interactionLabel = label;
   const button = new THREE.Mesh(
     new THREE.BoxGeometry(0.62, 0.3, 0.12),
     new THREE.MeshStandardMaterial({ color, roughness: 0.48, emissive: color, emissiveIntensity: 0.06 }),
   );
   button.userData.interactionAction = action;
+  button.userData.interactionLabel = label;
   group.add(button);
   const text = makeTextSprite(label, {
     fontSize: 46,
@@ -24231,7 +24647,7 @@ function addEmbodiedProgressionReaderRig(viewer, route) {
   previousStance.rotation.x = -Math.PI / 2;
   previousStance.position.copy(start).add(new THREE.Vector3(0, 0.045, 0));
   group.add(previousStance);
-  const previousLabel = makeTextSprite("previous beat end", {
+  const previousLabel = makeTextSprite("previous story-part end", {
     fontSize: 34,
     background: "rgba(255,253,244,0.82)",
     color: "#5f716b",
@@ -24247,7 +24663,7 @@ function addEmbodiedProgressionReaderRig(viewer, route) {
   targetStance.rotation.x = -Math.PI / 2;
   targetStance.position.copy(target).add(new THREE.Vector3(0, 0.05, 0));
   group.add(targetStance);
-  const targetLabel = makeTextSprite("current beat zone", {
+  const targetLabel = makeTextSprite("current story-part zone", {
     fontSize: 34,
     background: "rgba(255,253,244,0.9)",
     color: "#007f73",
@@ -24622,6 +25038,7 @@ function initializeSpatialRelationsViewer(active) {
     assetLinks,
     assetPositions,
     spatialObjects: new Map(),
+    authoringSpatialObjects: new Map(),
     spatialPickTargets: [],
     spatialPlaybackEntries: [],
     spatialPlaybackReady: false,
@@ -24648,7 +25065,7 @@ function initializeSpatialRelationsViewer(active) {
     selectionHelpers: [],
     selectionPointerGesture: null,
     selectionMarquee,
-    spatialEditorCamera: "outside-reader-rig-v2",
+    spatialEditorCamera: AUTHORING_SPATIAL_CAMERA_KIND,
     locked: false,
     animationId: null,
     resizeHandler: null,
@@ -24661,6 +25078,7 @@ function initializeSpatialRelationsViewer(active) {
     lastFrameAt: performance.now(),
     elapsed: 0,
   };
+  configureAuthoringSpatialCameraViewer(viewer, sceneContext);
   textViewer = viewer;
   if (readerEntity) {
     viewer.spatialObjects.set(readerEntity.id, readerEditorLayer.rig);
@@ -24740,10 +25158,7 @@ function initializeSpatialRelationsViewer(active) {
     syncSpatialSelectionInViewer();
   });
 
-  const restoredCameraState = restoredPreviewCameraState(viewer, state.textViewerCameraState);
-  const canRestoreCameraState = shouldRestorePreviewCameraState(viewer, restoredCameraState)
-    && restoredCameraState?.spatialEditorCamera === viewer.spatialEditorCamera;
-  if (canRestoreCameraState) applyPreviewViewerCameraState(viewer, restoredCameraState);
+  const canRestoreCameraState = restoreAuthoringSpatialCameraState(viewer);
 
   let pending = assetLinks.length;
   const finishAsset = () => {
@@ -24755,7 +25170,7 @@ function initializeSpatialRelationsViewer(active) {
         && viewer.spatialPlaybackEntries.some((entry) => entry.spatialTransitionPlaying);
       status.remove();
       syncSpatialSelectionInViewer();
-      if (!canRestoreCameraState) fitSpatialEditorCameraOnLoad(viewer);
+      if (!canRestoreCameraState) fitAuthoringSpatialCameraOnLoad(viewer);
     }
   };
   if (!assetLinks.length) requestAnimationFrame(() => {
@@ -24763,7 +25178,7 @@ function initializeSpatialRelationsViewer(active) {
     viewer.spatialPlaybackReady = true;
     status.remove();
     syncSpatialSelectionInViewer();
-    if (!canRestoreCameraState) fitSpatialEditorCameraOnLoad(viewer);
+    if (!canRestoreCameraState) fitAuthoringSpatialCameraOnLoad(viewer);
   });
   assetLinks.forEach((assetLink, index) => {
     if (assetLink.kind === "image-plane") loadSpatialRelationsImage(viewer, assetLink, index, assetLinks.length, finishAsset);
@@ -24911,6 +25326,15 @@ function initializeSpatialRelationsViewer(active) {
     }
     const entityId = gesture.entityId || spatialEntityIdAtPointer(event);
     if (entityId) {
+      const entity = spatialRelationEntityById(state.spatialRelationsDraft, entityId);
+      const asset = findAssetById(entity?.assetId);
+      interactionLogger.recordSemanticClick(event, {
+        kind: "spatial-scene-object",
+        label: entity?.partSelector || asset?.filename || asset?.label || entity?.assetId || entityId,
+        entityId,
+        assetId: entity?.assetId,
+        action: "select-spatial-object",
+      });
       selectSpatialRelationEntityInViewer(entityId, {
         additive: gesture.additive,
         toggle: gesture.toggle,
@@ -25009,12 +25433,18 @@ function initializeAttentionGuidanceViewer(active) {
   const status = document.createElement("div");
   status.className = "topology-viewer-status overlay";
   status.textContent = assetEntities.length
-    ? `Loading ${assetEntities.length} saved scene asset${assetEntities.length === 1 ? "" : "s"} and validating visible targets...`
-    : "No linked model or image is available; a target can still be placed manually.";
+    ? `Loading ${assetEntities.length} saved scene asset${assetEntities.length === 1 ? "" : "s"} and checking visible objects...`
+    : "No linked model or image is available; a focus marker can still be placed manually.";
   container.replaceChildren(renderer.domElement, status);
+  const selectionMarquee = document.createElement("div");
+  selectionMarquee.className = "spatial-selection-marquee";
+  selectionMarquee.hidden = true;
+  selectionMarquee.setAttribute("aria-hidden", "true");
+  container.append(selectionMarquee);
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
+  controls.screenSpacePanning = false;
   controls.maxPolarAngle = Math.PI / 2 - 0.02;
   controls.target.set(0, 0.85, 0);
   configureSpatialEditorMouseControls(controls);
@@ -25032,6 +25462,7 @@ function initializeAttentionGuidanceViewer(active) {
   const readerEditorLayer = createSpatialReaderRig(root, readerEntity);
   const locked = false;
   const viewer = {
+    container,
     scene,
     camera,
     renderer,
@@ -25052,9 +25483,11 @@ function initializeAttentionGuidanceViewer(active) {
     layers,
     locked,
     storyObjects: new Map(),
+    authoringSpatialObjects: new Map(),
     attentionAssetEntries: new Map(),
     attentionMarkerObjects: new Map(),
     attentionPickTargets: [],
+    attentionObjectSelectionHelpers: [],
     spatialPlaybackEntries: [],
     spatialPlaybackReady: false,
     spatialObjects: new Map(),
@@ -25073,59 +25506,25 @@ function initializeAttentionGuidanceViewer(active) {
     sourceCameraCuePending: false,
     sourceCamera: null,
     panel: null,
-    transformControls: null,
-    transformHelper: null,
-    attentionHistoryStarted: false,
     manualAttentionPlacementActive: false,
-    spatialEditorCamera: "outside-reader-rig-v2",
+    spatialEditorCamera: AUTHORING_SPATIAL_CAMERA_KIND,
     animationId: null,
     resizeHandler: null,
-    keyDownHandler: null,
     pointerDownHandler: null,
+    pointerMoveHandler: null,
+    pointerUpHandler: null,
+    pointerCancelHandler: null,
+    selectionPointerGesture: null,
+    selectionMarquee,
     disposed: false,
     lastFrameAt: performance.now(),
     elapsed: 0,
   };
+  configureAuthoringSpatialCameraViewer(viewer, sceneContext);
   textViewer = viewer;
   attachLockedEnvironmentToViewer(viewer);
 
-  const transformControls = new TransformControls(camera, renderer.domElement);
-  transformControls.enabled = !locked;
-  transformControls.setMode("translate");
-  transformControls.setSpace("world");
-  transformControls.setSize(0.72);
-  const transformHelper = transformControls.getHelper();
-  if (!locked) scene.add(transformHelper);
-  viewer.transformControls = transformControls;
-  viewer.transformHelper = transformHelper;
-  transformControls.addEventListener("dragging-changed", (event) => {
-    controls.enabled = !event.value;
-  });
-  transformControls.addEventListener("mouseDown", () => {
-    if (viewer.locked || viewer.attentionHistoryStarted) return;
-    viewer.navigationTransformFinalized = false;
-    viewer.attentionHistoryStarted = beginAuthorHistory("Move Attention Guidance target", ATTENTION_GUIDANCE_COMPONENT_ID);
-  });
-  transformControls.addEventListener("objectChange", () => {
-    if (viewer.locked || !transformControls.object) return;
-    persistAttentionMarkerObjectPosition(viewer, transformControls.object);
-    syncAttentionInspectorFromSelection();
-  });
-  transformControls.addEventListener("mouseUp", () => {
-    if (viewer.navigationTransformFinalized) {
-      viewer.navigationTransformFinalized = false;
-      return;
-    }
-    if (viewer.locked) return;
-    commitAttentionDraftMutation();
-    if (viewer.attentionHistoryStarted) finalizePersistentAuthorHistory(flushAttentionGuidanceAutosave);
-    viewer.attentionHistoryStarted = false;
-  });
-
-  const restoredCameraState = restoredPreviewCameraState(viewer, state.attentionViewerCameraState);
-  const canRestoreCameraState = shouldRestorePreviewCameraState(viewer, restoredCameraState)
-    && restoredCameraState?.spatialEditorCamera === viewer.spatialEditorCamera;
-  if (canRestoreCameraState) applyPreviewViewerCameraState(viewer, restoredCameraState);
+  const canRestoreCameraState = restoreAuthoringSpatialCameraState(viewer);
 
   let pending = assetEntities.length;
   const finishAssets = () => {
@@ -25139,7 +25538,7 @@ function initializeAttentionGuidanceViewer(active) {
     syncAttentionManualTargetControls(viewer);
     ensureAttentionMarkerSelection(attentionScene);
     selectAttentionMarkerInViewer(state.selectedAttentionMarkerId);
-    if (!canRestoreCameraState) fitAttentionEditorCameraOnLoad(viewer);
+    if (!canRestoreCameraState) fitAuthoringSpatialCameraOnLoad(viewer);
     if (evaluationChanged && !viewer.locked) requestAnimationFrame(() => {
       if (textViewer === viewer && !viewer.disposed) render();
     });
@@ -25151,36 +25550,174 @@ function initializeAttentionGuidanceViewer(active) {
   });
 
   const raycaster = new THREE.Raycaster();
+  raycaster.params.Line.threshold = 0.035;
+  raycaster.params.Points.threshold = 0.035;
   const pointer = new THREE.Vector2();
-  viewer.pointerDownHandler = (event) => {
-    if (event.button !== 0 || transformControls.dragging || transformControls.axis) return;
+  const clickMovementThresholdSquared = 36;
+  const attentionSelectionAtPointer = (event) => {
     const rect = renderer.domElement.getBoundingClientRect();
+    if (
+      !rect.width
+      || !rect.height
+      || event.clientX < rect.left
+      || event.clientX > rect.right
+      || event.clientY < rect.top
+      || event.clientY > rect.bottom
+    ) return { markerId: null, candidateId: null };
     pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
-    if (viewer.manualAttentionPlacementActive) {
-      event.preventDefault();
-      const position = attentionManualPlacementPosition(viewer, raycaster);
-      if (position) addManualAttentionTargetAtPosition(position, viewer);
-      return;
-    }
     const hit = raycaster.intersectObjects(viewer.attentionPickTargets, true)[0];
     let target = hit?.object || null;
     while (target && !target.userData?.attentionMarkerId) target = target.parent;
-    if (target?.userData?.attentionMarkerId) selectAttentionMarkerInViewer(target.userData.attentionMarkerId);
+    if (target?.userData?.attentionMarkerId) return { markerId: target.userData.attentionMarkerId, candidateId: null };
+    const candidate = attentionTargetObjectCandidateAtRay(viewer, raycaster);
+    return { markerId: null, candidateId: candidate?.id || null };
   };
-  renderer.domElement.addEventListener("pointerdown", viewer.pointerDownHandler);
-  viewer.keyDownHandler = (event) => {
-    if (viewer.locked) return;
-    if (event.metaKey || event.ctrlKey || event.altKey || /^(input|textarea|select)$/i.test(event.target?.tagName || "")) return;
-    if (event.key === "Escape" && viewer.manualAttentionPlacementActive) {
+  const hideSelectionMarquee = () => {
+    selectionMarquee.hidden = true;
+  };
+  viewer.pointerDownHandler = (event) => {
+    if (event.button !== 0 || event.isPrimary === false) return;
+    if (viewer.manualAttentionPlacementActive) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
       event.preventDefault();
-      cancelManualAttentionTargetPlacement(viewer);
+      const position = attentionManualPlacementPosition(viewer, raycaster);
+      if (position) {
+        interactionLogger.recordSemanticClick(event, {
+          kind: "attention-manual-position",
+          label: "Place focus marker manually",
+          action: "place-attention-marker",
+        });
+        addManualAttentionTargetAtPosition(position, viewer);
+      }
       return;
     }
-    if (event.key.toLowerCase() !== "w") return;
+    viewer.selectionPointerGesture = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      currentX: event.clientX,
+      currentY: event.clientY,
+      moved: false,
+      selection: attentionSelectionAtPointer(event),
+      additive: event.shiftKey,
+      toggle: event.metaKey || event.ctrlKey,
+    };
+    renderer.domElement.focus();
+    renderer.domElement.setPointerCapture?.(event.pointerId);
+  };
+  viewer.pointerMoveHandler = (event) => {
+    const gesture = viewer.selectionPointerGesture;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - gesture.clientX;
+    const deltaY = event.clientY - gesture.clientY;
+    gesture.currentX = event.clientX;
+    gesture.currentY = event.clientY;
+    if (deltaX * deltaX + deltaY * deltaY <= clickMovementThresholdSquared) return;
+    gesture.moved = true;
     event.preventDefault();
-    transformControls.setMode("translate");
+    updateSpatialSelectionMarquee(
+      selectionMarquee,
+      normalizeSpatialSelectionRectangle(
+        gesture.clientX,
+        gesture.clientY,
+        gesture.currentX,
+        gesture.currentY,
+      ),
+      container.getBoundingClientRect(),
+    );
+  };
+  viewer.pointerUpHandler = (event) => {
+    const gesture = viewer.selectionPointerGesture;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    viewer.selectionPointerGesture = null;
+    hideSelectionMarquee();
+    if (renderer.domElement.hasPointerCapture?.(event.pointerId)) {
+      renderer.domElement.releasePointerCapture?.(event.pointerId);
+    }
+    const deltaX = event.clientX - gesture.clientX;
+    const deltaY = event.clientY - gesture.clientY;
+    const moved = gesture.moved || deltaX * deltaX + deltaY * deltaY > clickMovementThresholdSquared;
+    if (event.button !== 0 || viewer.disposed) return;
+    if (moved) {
+      event.preventDefault();
+      const selectionRectangle = normalizeSpatialSelectionRectangle(
+        gesture.clientX,
+        gesture.clientY,
+        event.clientX,
+        event.clientY,
+      );
+      const hitCandidateIds = attentionTargetCandidateIdsInSelectionRectangle(viewer, selectionRectangle);
+      if (!hitCandidateIds.length) return;
+      const orderedCandidateIds = attentionManualTargetOptions(viewer.attentionScene).map((candidate) => candidate.id);
+      const candidateIds = spatialSelectionForRectangle(
+        orderedCandidateIds,
+        selectedAttentionTargetObjectCandidateIds(viewer.attentionScene),
+        hitCandidateIds,
+        { additive: gesture.additive, toggle: gesture.toggle },
+      );
+      const primaryCandidateId = [...hitCandidateIds].reverse().find((candidateId) => candidateIds.includes(candidateId))
+        || candidateIds[candidateIds.length - 1]
+        || null;
+      setAttentionTargetObjectSelection(candidateIds, viewer, { primaryCandidateId, focusViewer: true });
+      return;
+    }
+    const selection = gesture.selection?.markerId || gesture.selection?.candidateId
+      ? gesture.selection
+      : attentionSelectionAtPointer(event);
+    if (selection.markerId) {
+      const marker = attentionSceneMarkers(viewer.attentionScene)
+        .find((candidate) => candidate.id === selection.markerId);
+      interactionLogger.recordSemanticClick(event, {
+        kind: "attention-marker",
+        label: attentionMarkerLabel(marker),
+        markerId: selection.markerId,
+        assetId: marker?.assetId,
+        action: "select-attention-marker",
+      });
+      selectAttentionMarkerInViewer(selection.markerId);
+      return;
+    }
+    if (selection.candidateId) {
+      const candidate = attentionManualTargetOptions(viewer.attentionScene)
+        .find((option) => option.id === selection.candidateId);
+      interactionLogger.recordSemanticClick(event, {
+        kind: "attention-target-object",
+        label: attentionManualTargetLabel(candidate),
+        candidateId: selection.candidateId,
+        entityId: candidate?.entityId,
+        assetId: candidate?.assetId,
+        action: "select-attention-target",
+      });
+      selectAttentionTargetObjectInViewer(selection.candidateId, viewer, {
+        additive: gesture.additive,
+        toggle: gesture.toggle,
+        focusViewer: true,
+      });
+      return;
+    }
+    if (!gesture.additive && !gesture.toggle) clearAttentionTargetObjectSelection(viewer);
+  };
+  viewer.pointerCancelHandler = (event) => {
+    if (viewer.selectionPointerGesture?.pointerId !== event.pointerId) return;
+    viewer.selectionPointerGesture = null;
+    hideSelectionMarquee();
+    if (renderer.domElement.hasPointerCapture?.(event.pointerId)) {
+      renderer.domElement.releasePointerCapture?.(event.pointerId);
+    }
+  };
+  renderer.domElement.addEventListener("pointerdown", viewer.pointerDownHandler);
+  window.addEventListener("pointermove", viewer.pointerMoveHandler);
+  window.addEventListener("pointerup", viewer.pointerUpHandler);
+  window.addEventListener("pointercancel", viewer.pointerCancelHandler);
+  viewer.keyDownHandler = (event) => {
+    if (event.key !== "Escape" || !viewer.manualAttentionPlacementActive) return;
+    event.preventDefault();
+    cancelManualAttentionTargetPlacement(viewer);
   };
   window.addEventListener("keydown", viewer.keyDownHandler);
   viewer.resizeHandler = () => {
@@ -25202,6 +25739,7 @@ function initializeAttentionGuidanceViewer(active) {
       const ring = object.userData.attentionFacingRing;
       if (ring) ring.quaternion.copy(camera.quaternion);
     }
+    updateAttentionTargetObjectSelectionHelpers(viewer);
     controls.update();
     renderer.render(scene, camera);
     viewer.animationId = requestAnimationFrame(animate);
@@ -25224,12 +25762,14 @@ function loadAttentionGuidanceGlb(viewer, entity, index, total, done) {
   const wrapper = new THREE.Group();
   wrapper.name = `Fixed story object · ${entity.assetId}`;
   wrapper.userData.attentionStoryObject = true;
+  wrapper.userData.spatialEntityId = entity.id;
   wrapper.userData.assetId = entity.assetId;
   viewer.root.add(wrapper);
   viewer.storyObjects.set(entity.id, wrapper);
+  viewer.authoringSpatialObjects?.set(entity.id, wrapper);
   viewer.spatialObjects.set(entity.id, wrapper);
   applyAttentionSpatialEntityTransform(entity, wrapper);
-  const placeholder = makeTextComfortPlaceholder(asset?.filename || entity.assetId, "GLB");
+  const placeholder = makeTextComfortPlaceholder(asset?.filename || entity.assetId, "3D model");
   placeholder.userData.attentionStoryObject = true;
   wrapper.add(placeholder);
   if (!src) {
@@ -25289,6 +25829,7 @@ function loadAttentionGuidanceImage(viewer, entity, done) {
   wrapper.userData.assetId = entity.assetId;
   viewer.root.add(wrapper);
   viewer.storyObjects.set(entity.id, wrapper);
+  viewer.authoringSpatialObjects?.set(entity.id, wrapper);
   applyAttentionSpatialEntityTransform(entity, wrapper);
   if (!src) {
     done(false);
@@ -25371,24 +25912,124 @@ function attentionCandidateMeshes(entry, candidate) {
   return visibleMeshes.filter((object) => sourcePartSelectorMatchesNode(candidate.partSelector, object, root));
 }
 
-function attentionCandidatePosition(viewer, candidate) {
-  const entry = viewer?.attentionAssetEntries?.get(candidate?.entityId)
-    || [...(viewer?.attentionAssetEntries?.values?.() || [])].find((value) => value?.assetId === candidate?.assetId);
+function attentionCandidateAssetEntry(viewer, candidate) {
+  return candidate?.entityId
+    ? viewer?.attentionAssetEntries?.get(candidate.entityId)
+    : [...(viewer?.attentionAssetEntries?.values?.() || [])].find((value) => value?.assetId === candidate?.assetId);
+}
+
+function attentionVisibleMeshWorldBounds(mesh) {
+  if (!mesh?.geometry) return null;
+  mesh.updateWorldMatrix(true, false);
+  if (mesh.isSkinnedMesh || mesh.isInstancedMesh) mesh.computeBoundingBox?.();
+  else if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox?.();
+  const localBounds = (mesh.isSkinnedMesh || mesh.isInstancedMesh)
+    ? mesh.boundingBox
+    : mesh.geometry.boundingBox;
+  if (!localBounds || localBounds.isEmpty()) return null;
+  return localBounds.clone().applyMatrix4(mesh.matrixWorld);
+}
+
+function attentionCandidateWorldBounds(viewer, candidate) {
+  const entry = attentionCandidateAssetEntry(viewer, candidate);
   const meshes = attentionCandidateMeshes(entry, candidate);
   if (!meshes.length) return null;
   const bounds = new THREE.Box3();
   for (const mesh of meshes) {
-    mesh.updateWorldMatrix(true, false);
-    bounds.union(new THREE.Box3().setFromObject(mesh, true));
+    const meshBounds = attentionVisibleMeshWorldBounds(mesh);
+    if (meshBounds) bounds.union(meshBounds);
   }
   if (bounds.isEmpty()) return null;
   const size = bounds.getSize(new THREE.Vector3());
   if (![size.x, size.y, size.z].every(Number.isFinite) || Math.max(size.x, size.y, size.z) <= 0.0001) return null;
+  return bounds;
+}
+
+function attentionCandidatePosition(viewer, candidate) {
+  const bounds = attentionCandidateWorldBounds(viewer, candidate);
+  if (!bounds) return null;
   const center = bounds.getCenter(new THREE.Vector3());
   viewer.root.updateWorldMatrix(true, false);
   viewer.root.worldToLocal(center);
   if (![center.x, center.y, center.z].every(Number.isFinite)) return null;
   return { x: center.x, y: center.y, z: center.z };
+}
+
+function attentionTargetObjectCandidateFromPicks(exactPicks, fallbackPicks) {
+  const closestForegroundPick = (picks) => [...(picks || [])]
+    .filter((pick) => !pick.enclosesCamera)
+    .sort((left, right) => left.distance - right.distance)[0] || null;
+  return closestForegroundPick(exactPicks)?.candidate
+    || closestForegroundPick(fallbackPicks)?.candidate
+    || null;
+}
+
+function attentionTargetObjectCandidateAtRay(viewer, raycaster) {
+  if (!viewer?.attentionScene || !raycaster?.ray) return null;
+  const candidates = attentionManualTargetOptions(viewer.attentionScene);
+  const candidateByEntityId = new Map(candidates.map((candidate) => [candidate.entityId, candidate]));
+  const storyRoots = [...(viewer.storyObjects?.values?.() || [])].filter(Boolean);
+  const cameraPosition = viewer.camera?.getWorldPosition?.(new THREE.Vector3()) || raycaster.ray.origin;
+  const candidatePick = (candidate, distance) => {
+    const object = viewer.storyObjects?.get(candidate?.entityId);
+    if (
+      !candidate
+      || !object
+      || object.userData?.spatialPlaybackActive === false
+    ) return null;
+    const bounds = attentionCandidateWorldBounds(viewer, candidate);
+    if (!bounds) return null;
+    return {
+      candidate,
+      distance,
+      enclosesCamera: bounds.containsPoint(cameraPosition),
+    };
+  };
+  const registerClosestPick = (map, pick) => {
+    if (!pick) return;
+    const previous = map.get(pick.candidate.id);
+    if (!previous || pick.distance < previous.distance) map.set(pick.candidate.id, pick);
+  };
+  const exactPicksByCandidateId = new Map();
+  for (const hit of raycaster.intersectObjects(storyRoots, true)) {
+    if (!spatialObjectIsEffectivelyVisible(hit.object, viewer.scene)) continue;
+    let target = hit.object;
+    while (target && !target.userData?.spatialEntityId) target = target.parent;
+    const candidate = candidateByEntityId.get(target?.userData?.spatialEntityId);
+    registerClosestPick(exactPicksByCandidateId, candidatePick(candidate, hit.distance));
+  }
+  const fallbackPicksByCandidateId = new Map();
+  for (const candidate of candidates) {
+    if (candidate.targetKind !== "standalone-glb") continue;
+    const object = viewer.storyObjects?.get(candidate.entityId);
+    if (!object?.visible || object.userData?.spatialPlaybackActive === false) continue;
+    let closestDistance = Number.POSITIVE_INFINITY;
+    for (const bounds of preciseVisibleSpatialBounds(object, viewer.scene)) {
+      const hitPoint = raycaster.ray.intersectBox(bounds, new THREE.Vector3());
+      if (!hitPoint) continue;
+      closestDistance = Math.min(closestDistance, raycaster.ray.origin.distanceTo(hitPoint));
+    }
+    if (Number.isFinite(closestDistance)) {
+      registerClosestPick(fallbackPicksByCandidateId, candidatePick(candidate, closestDistance));
+    }
+  }
+  const exactPicks = [...exactPicksByCandidateId.values()];
+  const fallbackPicks = [...fallbackPicksByCandidateId.values()];
+  return attentionTargetObjectCandidateFromPicks(exactPicks, fallbackPicks);
+}
+
+function attentionTargetCandidateIdsInSelectionRectangle(viewer, selectionRectangle) {
+  const viewportRect = viewer?.renderer?.domElement?.getBoundingClientRect?.();
+  const frustum = spatialSelectionFrustum(viewer?.camera, viewportRect, selectionRectangle);
+  if (!viewer?.attentionScene || !frustum) return [];
+  return attentionManualTargetOptions(viewer.attentionScene)
+    .filter((candidate) => {
+      const object = viewer.storyObjects?.get(candidate.entityId);
+      if (!object || object.userData?.spatialPlaybackActive === false) return false;
+      const bounds = attentionCandidateWorldBounds(viewer, candidate);
+      return Boolean(bounds && frustum.intersectsBox(bounds));
+    })
+    .map((candidate) => candidate.id);
 }
 
 function attentionManualPlacementPosition(viewer, raycaster) {
@@ -25537,38 +26178,15 @@ function mountAttentionMarkerObject(viewer, marker) {
   return object;
 }
 
-function persistAttentionMarkerObjectPosition(viewer, object) {
-  const markerId = object?.userData?.attentionMarkerId;
-  const scene = viewer?.attentionScene;
-  const marker = attentionSceneMarkers(scene).find((candidate) => candidate.id === markerId);
-  if (!marker) return;
-  marker.position = { x: object.position.x, y: object.position.y, z: object.position.z };
-  marker.manual = attentionMarkerEditLabel(marker) === "manual"
-    || !attentionPositionsEqual(marker.position, marker.inferredPosition);
-}
-
-function applyAttentionDraftToViewer(viewer) {
-  const scene = viewer?.attentionScene;
-  if (!scene) return;
-  for (const marker of attentionSceneMarkers(scene)) {
-    const object = viewer.attentionMarkerObjects?.get(marker.id);
-    const position = attentionPosition(marker.position);
-    if (object && position) object.position.set(position.x, position.y, position.z);
-  }
-}
-
 function selectAttentionMarkerInViewer(markerId) {
   const scene = attentionSceneRecordForContext(state.attentionGuidanceDraft, activeAttentionSceneContext());
   const marker = attentionSceneMarkers(scene).find((candidate) => candidate.id === markerId) || null;
   state.selectedAttentionMarkerId = marker?.id || null;
-  const object = marker ? textViewer?.attentionMarkerObjects?.get(marker.id) : null;
-  if (object && !textViewer?.locked) textViewer.transformControls?.attach(object);
-  else textViewer?.transformControls?.detach();
   for (const item of document.querySelectorAll("[data-attention-select-marker]")) {
     item.classList.toggle("selected", item.dataset.attentionSelectMarker === marker?.id);
   }
   const pill = document.querySelector(".attention-preview-card .attention-kind-pill");
-  if (pill) pill.textContent = marker ? attentionMarkerLabel(marker) : "No target";
+  if (pill) pill.textContent = marker ? attentionMarkerLabel(marker) : "No focus marker";
   syncAttentionInspectorFromSelection();
 }
 
@@ -25576,11 +26194,6 @@ function syncAttentionInspectorFromSelection() {
   const scene = attentionSceneRecordForContext(state.attentionGuidanceDraft, activeAttentionSceneContext());
   const marker = selectedAttentionMarker(scene);
   if (!marker) return;
-  const position = attentionPosition(marker.position);
-  if (!position) return;
-  for (const input of document.querySelectorAll("[data-attention-position-field]")) {
-    input.value = formatSpatialNumber(position[["x", "y", "z"][Number(input.dataset.attentionPositionField)]]);
-  }
   const badge = document.querySelector("[data-attention-manual-badge]");
   if (badge) {
     badge.textContent = marker.manual ? attentionMarkerEditLabel(marker) : "inferred";
@@ -25630,7 +26243,7 @@ function frameAttentionBounds(viewer, bounds) {
 }
 
 function fitAttentionEditorCameraOnLoad(viewer) {
-  return frameAttentionBounds(viewer, attentionSceneBounds(viewer));
+  return fitAuthoringSpatialCameraOnLoad(viewer);
 }
 
 function spatialBeatScenePresence(beat) {
@@ -25992,7 +26605,8 @@ function loadSpatialRelationsGlb(viewer, assetLink, index, total, done) {
   const entity = spatialRelationEntityById(viewer.spatialContract || state.spatialRelationsDraft, entityId);
   viewer.root.add(topologyWrapper);
   viewer.spatialObjects.set(entityId, authorWrapper);
-  const placeholder = makeTextComfortPlaceholder(asset?.filename || assetLink.assetId, "GLB");
+  viewer.authoringSpatialObjects?.set(entityId, authorWrapper);
+  const placeholder = makeTextComfortPlaceholder(asset?.filename || assetLink.assetId, "3D model");
   placeholder.userData.spatialEntityId = entityId;
   placeholder.traverse((object) => { object.userData.spatialEntityId = entityId; });
   authorWrapper.add(placeholder);
@@ -26080,6 +26694,7 @@ function loadSpatialRelationsImage(viewer, assetLink, index, total, done) {
   authorWrapper.userData.assetId = assetLink.assetId;
   viewer.root.add(authorWrapper);
   viewer.spatialObjects.set(entityId, authorWrapper);
+  viewer.authoringSpatialObjects?.set(entityId, authorWrapper);
   const placeholder = makeTextComfortPlaceholder(asset?.filename || assetLink.assetId, "IMG");
   placeholder.userData.spatialEntityId = entityId;
   placeholder.traverse((object) => { object.userData.spatialEntityId = entityId; });
@@ -26199,7 +26814,7 @@ function applySpatialEntityTransformToObject(viewer, entity, object) {
   object.userData.spatialEntityId = entity.id;
 }
 
-function lockedSpatialGlbEntityForViewer(viewer, assetId, entityId = "") {
+function lockedSpatialGlbEntityForViewer(viewer, assetId, entityId = "", explicitSceneContext = null) {
   const contract = lockedSpatialRelationsContract();
   const asset = findAssetById(assetId);
   const expectedType = isImageAsset(asset) ? "image-plane" : "glb";
@@ -26212,8 +26827,13 @@ function lockedSpatialGlbEntityForViewer(viewer, assetId, entityId = "") {
       || String(candidate.id || "").startsWith(`${expectedType === "image-plane" ? "image" : "glb"}:${assetId}:`)
     )
   );
+  const mappedEntityContext = requestedEntityId
+    ? viewer?.spatialSceneContextsByEntityId?.get?.(requestedEntityId) || null
+    : null;
   const mappedContext = viewer?.spatialSceneContextsByAssetId?.get?.(assetId) || null;
-  const viewerContext = mappedContext || (viewer?.sceneContext?.beatId ? viewer.sceneContext : null);
+  const viewerContext = explicitSceneContext?.beatId
+    ? explicitSceneContext
+    : mappedEntityContext || mappedContext || (viewer?.sceneContext?.beatId ? viewer.sceneContext : null);
   const context = viewerContext?.beatId
     ? spatialSceneContext(
       viewerContext.beatId,
@@ -27433,10 +28053,10 @@ function makeTextPanelTexture(beat, placement, kind) {
   ctx.stroke();
   ctx.fillStyle = "#0f211d";
   ctx.font = "900 54px Georgia, serif";
-  drawWrappedCanvasText(ctx, beat?.title || "Story beat", 72, 108, canvas.width - 144, 62, 2);
+  drawWrappedCanvasText(ctx, beat?.title || "Story part", 72, 108, canvas.width - 144, 62, 2);
   ctx.fillStyle = "#344943";
   ctx.font = "500 42px Georgia, serif";
-  drawWrappedCanvasText(ctx, beat?.text || "No story text available for this beat.", 72, 252, canvas.width - 144, 54, 6);
+  drawWrappedCanvasText(ctx, beat?.text || "No story text available for this story part.", 72, 252, canvas.width - 144, 54, 6);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
@@ -27575,7 +28195,7 @@ function addContextStage(root, kind, beat, options = {}) {
     addCumulativeLayerLabels(root, stageOptions, "environment-enhancement", { limit: 4, startX: -2.35, spacing: 1.55, z: -2.06 });
   } else {
     addPriorDecisionLabel(root, "Geometry", dynamicKind ? dynamicGeometryKindLabel(dynamicKind) : "", { x: -1.84, z: -2.06, width: 1.58 });
-    addPriorDecisionLabel(root, "Transition", transitionKind ? interBeatDynamicsKindLabel(transitionKind) : "", { x: 1.02, z: -2.06, width: 1.64 });
+    addPriorDecisionLabel(root, "Scene changes", transitionKind ? interBeatDynamicsKindLabel(transitionKind) : "", { x: 1.02, z: -2.06, width: 1.64 });
   }
   if (beat?.title) {
     stage.beatLabelText = shortText(beat.title, 34);
@@ -27932,7 +28552,7 @@ function loadDynamicAsset(viewer, assetLink, index, total, active, finishAsset) 
   authorWrapper.userData.assetId = assetLink.assetId;
   authorWrapper.visible = true;
   const spatialEntity = viewer?.layers?.enabled?.[SPATIAL_RELATIONS_COMPONENT_ID]
-    ? lockedSpatialGlbEntityForViewer(viewer, assetLink.assetId, assetLink.entityId)
+    ? lockedSpatialGlbEntityForViewer(viewer, assetLink.assetId, assetLink.entityId, assetLink.sceneContext)
     : null;
   const spatialEntityId = assetLink.entityId || spatialEntity?.id || "";
   authorWrapper.userData.spatialEntityId = spatialEntityId;
@@ -27946,6 +28566,10 @@ function loadDynamicAsset(viewer, assetLink, index, total, active, finishAsset) 
   wrapper.position.copy(basePosition);
   wrapper.add(authorWrapper);
   viewer.root.add(wrapper);
+  const authoringObjectKey = spatialEntityId || `${assetLink.assetId}:${index}`;
+  if (assetLink.transitionSceneRole !== "from") {
+    viewer.authoringSpatialObjects?.set(authoringObjectKey, spatialTransformApplied ? authorWrapper : wrapper);
+  }
   const dynamicEntry = {
     wrapper,
     authorWrapper,
@@ -27955,6 +28579,8 @@ function loadDynamicAsset(viewer, assetLink, index, total, active, finishAsset) 
     spatialTransformApplied,
     assetId: assetLink.assetId,
     entityId: spatialEntityId,
+    transitionSceneRole: assetLink.transitionSceneRole || null,
+    sceneContext: assetLink.sceneContext || null,
     index,
     opacityMaterials: [],
   };
@@ -28013,14 +28639,16 @@ function loadDynamicAsset(viewer, assetLink, index, total, active, finishAsset) 
           disposeObject(placeholder);
         }
         applySpatialLoaderTransformPolicy(gltf.scene, spatialEntity);
-        if (spatialTransformApplied && spatialEntity?.preserveSourceGeometry !== true) {
+        const normalizationMode = dynamicAssetNormalizationMode(spatialTransformApplied, spatialEntity);
+        if (normalizationMode === "spatial") {
           normalizeSpatialRuntimeObject(
             gltf.scene,
             targetSize,
             spatialEntityVerticalAlignment(spatialEntity),
           );
+        } else if (normalizationMode === "topology") {
+          normalizeTopologyObject(gltf.scene, targetSize);
         }
-        else normalizeTopologyObject(gltf.scene, targetSize);
         dynamicEntry.opacityMaterials.push(...preparePreviewOpacityTarget(gltf.scene));
         authorWrapper.add(gltf.scene);
         dynamicEntry.sourceScene = gltf.scene;
@@ -29841,10 +30469,10 @@ function updateSourceCameraEvidenceFromRuntime(viewer, entry) {
   if (status) status.textContent = `${sourceSpatialCueStatusLabel(evaluation.status)} · ${evaluation.visibleRenderables}/${evaluation.renderables} visible parts`;
   if (correctness) {
     correctness.textContent = evaluation.status === "aligned"
-      ? `Camera focus intersects the active GLB state at source ${Math.round((Number(cue.sourceProgress) || 0) * 100)}%.`
+      ? `Camera focus intersects the active 3D model state at source ${Math.round((Number(cue.sourceProgress) || 0) * 100)}%.`
       : evaluation.status === "partial"
-        ? `Active GLB parts enter the camera frustum, but the focus ray is ambiguous.`
-        : `The linked GLB state could not be verified from this camera cue.`;
+        ? `Active model parts enter the camera view, but the focus direction is unclear.`
+        : `The linked 3D model state could not be verified from this camera cue.`;
   }
   entry.sourceCameraEvidence = { cue, evaluation };
   return true;
@@ -29895,6 +30523,7 @@ function animateInterBeatDynamics(viewer) {
     }
   }
   animateDynamicGeometry(viewer);
+  applyInterBeatExactSceneVisibility(viewer, progress);
   const effects = viewer.transitionEffects;
   if (!effects) return;
   const time = viewer.elapsed;
@@ -29980,7 +30609,22 @@ function animateInterBeatDynamics(viewer) {
   });
 }
 
+function applyInterBeatExactSceneVisibility(viewer, progress) {
+  if (!viewer?.usesExactSceneComposition) return false;
+  const rawProgress = Math.max(0, Math.min(1, Number(progress) || 0));
+  const clamped = !viewer.playing && rawProgress <= 0 ? 1 : rawProgress;
+  const smooth = clamped * clamped * (3 - 2 * clamped);
+  const hardSwitch = ["discrete-hard", "discrete-pop"].includes(viewer.kind);
+  const destinationOpacity = hardSwitch ? (clamped >= 0.5 ? 1 : 0) : smooth;
+  for (const item of viewer.dynamicObjects || []) {
+    if (item.transitionSceneRole === "from") setDynamicPreviewObjectOpacity(item, 1 - destinationOpacity);
+    else if (item.transitionSceneRole === "to") setDynamicPreviewObjectOpacity(item, destinationOpacity);
+  }
+  return true;
+}
+
 function updateInterBeatFadeTargets(viewer, progress) {
+  if (applyInterBeatExactSceneVisibility(viewer, progress)) return;
   if (viewer.cumulativeContext || viewer.singleAnchorContext) {
     updateCumulativeInterBeatFadeTargets(viewer, progress);
     return;
@@ -30688,10 +31332,10 @@ function cumulativeLayerLabelEntries(layers, activeComponentId) {
   const entries = [
     { id: "topology", label: "Topology", value: layers?.topologyKind ? topologyKindLabel(layers.topologyKind) : "" },
     { id: "dynamic-geometry", label: "Geometry", value: layers?.dynamicKind ? dynamicGeometryKindLabel(layers.dynamicKind) : "" },
-    { id: "inter-beat-dynamics", label: "Transition", value: layers?.transitionKind ? interBeatDynamicsKindLabel(layers.transitionKind) : "" },
-    { id: "environment-enhancement", label: "Environment", value: layers?.contextKind ? contextLayerKindLabel(layers.contextKind) : "" },
+    { id: "inter-beat-dynamics", label: "Scene changes", value: layers?.transitionKind ? interBeatDynamicsKindLabel(layers.transitionKind) : "" },
+    { id: "environment-enhancement", label: "Setting", value: layers?.contextKind ? contextLayerKindLabel(layers.contextKind) : "" },
     { id: SPATIAL_RELATIONS_COMPONENT_ID, label: "Spatial", value: layers?.textKind ? (layers.textKind === "spatial-relations" ? "Authored transforms" : textComfortKindLabel(layers.textKind)) : "" },
-    { id: "interaction-control", label: "Interaction", value: layers?.interactionKind ? interactionControlKindLabel(layers.interactionKind) : "" },
+    { id: "interaction-control", label: "Reader actions", value: layers?.interactionKind ? interactionControlKindLabel(layers.interactionKind) : "" },
   ];
   return entries.filter((entry) => entry.value && entry.id !== activeLayerId && layers?.enabled?.[entry.id]);
 }
@@ -30710,10 +31354,10 @@ function dynamicPreviewMetadataEntries(
     || assetLinks?.[activeAssetIndex]
     || assetLinks?.find((assetLink) => activeAssetIds?.has(assetLink.assetId));
   const currentValue = hasProceduralMotion
-    ? (hasSourceAnimation ? "Generated path + GLB animation" : "Generated path motion")
+    ? (hasSourceAnimation ? "Generated path + 3D model animation" : "Generated path movement")
     : hasSourceAnimation
-      ? "GLB animation"
-      : "Static GLB pose";
+      ? "3D model animation"
+      : "Static 3D model pose";
   return previewMetadataEntries({
     componentId: "dynamic-geometry",
     layers,
@@ -30728,7 +31372,7 @@ function previewMetadataEntries(options = {}) {
   return [
     Object.hasOwn(options, "activeLink") ? { id: "active-asset", label: options.activeLabel || "Active asset", value: activeValue } : null,
     options.currentValue ? { id: "current-option", value: options.currentValue } : null,
-    Object.hasOwn(options, "beat") ? { id: "beat", label: "Beat", value: shortText(options.beat?.title || "", 52) } : null,
+    Object.hasOwn(options, "beat") ? { id: "beat", label: "Story part", value: shortText(options.beat?.title || "", 52) } : null,
     ...(options.additionalEntries || []),
     ...(options.layers ? cumulativeLayerLabelEntries(options.layers, options.componentId).reverse() : []),
   ].filter(Boolean);
@@ -30955,9 +31599,9 @@ function previewDescriptionCueLabel(componentId, proposal, options = {}) {
   const kind = options.kind || selectedProposalKind(componentId, proposal);
   const labels = {
     "asset-topology": kind === "single" ? "source-order anchor" : kind === "map" ? "habitat map cue" : "visible specimen set",
-    "dynamic-geometry": kind === "none" ? "no dynamics" : kind === "flow" ? "particle flow cue" : kind === "zoom" ? "scale pulse cue" : kind === "focus" ? "focus cue" : "motion cue",
+    "dynamic-geometry": kind === "none" ? "no object movement" : kind === "flow" ? "particle flow cue" : kind === "zoom" ? "scale pulse cue" : kind === "focus" ? "focus cue" : "movement cue",
     "inter-beat-dynamics": interBeatDynamicsKindLabel(kind),
-    "environment-enhancement": kind === "none" ? "no added environment" : kind === "nested" ? "nested scale cue" : "object focus cue",
+    "environment-enhancement": kind === "none" ? "no added setting" : kind === "nested" ? "nested scale cue" : "object focus cue",
     "text-comfort": textComfortKindLabel(kind),
     "interaction-control": interactionControlKindLabel(kind),
   };
@@ -32239,20 +32883,20 @@ function interBeatBoundaryStatus(proposal, context) {
   } = playback;
   if (manualVariantSwitch) {
     return canScrub
-      ? { className: "mapped", label: "Saved change" }
-      : { className: "no-dynamics", label: "No saved change" };
+      ? { className: "mapped", label: "Saved scene change" }
+      : { className: "no-dynamics", label: "No saved scene change" };
   }
   if (!boundary.fromBeatId) return { className: "static", label: "Story starts here" };
   if (sourcePartPlaybackMode === "frozen") return { className: "static", label: "Previous scene stays visible" };
   if (!routeScopedProgression && sourcePlaybackSummary.contractAvailable) {
-    if (sourcePlaybackSummary.windowState.mode === "scrub") return { className: "mapped", label: "Saved change" };
+    if (sourcePlaybackSummary.windowState.mode === "scrub") return { className: "mapped", label: "Saved scene change" };
     if (sourcePlaybackSummary.windowState.mode === "initialize") return { className: "static", label: "Story starts here" };
     if (sourcePlaybackSummary.windowState.mode === "hold") return { className: "static", label: "Previous scene stays visible" };
-    return { className: "no-dynamics", label: "No saved change" };
+    return { className: "no-dynamics", label: "No saved scene change" };
   }
   return mappedTracks.length
-    ? { className: "mapped", label: "Saved change" }
-    : { className: "no-dynamics", label: "No saved change" };
+    ? { className: "mapped", label: "Saved scene change" }
+    : { className: "no-dynamics", label: "No saved scene change" };
 }
 
 function interBeatSpatialSceneContextsByAssetId(boundary) {
@@ -32292,7 +32936,7 @@ function spatialPreviewBeats() {
   return (state.data?.graph?.beats || []).map((beat, index) => ({
     ...beat,
     id: beat.id || `beat-${index + 1}`,
-    title: beat.title || beat.section || `Beat ${index + 1}`,
+    title: beat.title || beat.section || `Story part ${index + 1}`,
     text: beat.text || beat.excerpt || beat.summary || beat.title || "",
     linkedAssetIds: beatAssetIds(beat),
   }));
@@ -32317,11 +32961,11 @@ function spatialSceneBeat(context) {
 }
 
 function spatialSceneContextLabel(context) {
-  if (!context?.variantOptionId) return "Beat scene";
+  if (!context?.variantOptionId) return "Story-part scene";
   const beat = (state.data?.graph?.beats || []).find((candidate) => candidate.id === context.beatId);
   const group = beat ? variantGroupForBeat(beat) : null;
   const option = (group?.options || []).find((candidate) => candidate.id === context.variantOptionId);
-  return `Variant scene · ${option?.label || context.variantOptionId}`;
+  return `Choice scene · ${option?.label || context.variantOptionId}`;
 }
 
 function spatialAllSceneRecords(contract) {
@@ -32409,10 +33053,10 @@ function spatialSceneLinkedAssetIds(scene, beat, option = null, contextInput = n
 }
 
 function spatialSceneCardStatus(scene) {
-  if (!scene) return { className: "needs-review", label: "Review" };
+  if (!scene) return { className: "needs-review", changed: false };
   const entities = spatialRelationEntities(scene).filter((entity) => spatialEntityType(entity) !== "text-panel");
-  if (entities.some((entity) => entity.manual)) return { className: "edited", label: "Changed" };
-  return { className: "inferred", label: "Suggested" };
+  if (entities.some((entity) => entity.manual)) return { className: "edited", changed: true };
+  return { className: "inferred", changed: false };
 }
 
 function spatialSceneTopologyLabel(scene) {
@@ -32561,7 +33205,7 @@ function attentionReconciliationPresentation(value) {
     label: {
       confirmed: "Confirmed",
       compatible: "Compatible",
-      "runtime-only": "Runtime only",
+      "runtime-only": "Visible model only",
       "semantic-only": "Semantic only",
       conflict: "Conflict",
       unresolved: "Unresolved",
@@ -32648,6 +33292,28 @@ function attentionManualTargetOptions(scene) {
 function attentionAvailableManualTargetOptions(scene) {
   const markerIds = new Set(attentionSceneMarkers(scene).map((marker) => marker.id));
   return attentionManualTargetOptions(scene).filter((candidate) => !markerIds.has(candidate.id));
+}
+
+function ensureAttentionTargetObjectSelection(scene) {
+  const orderedIds = attentionManualTargetOptions(scene).map((candidate) => candidate.id);
+  const selected = new Set([
+    ...(Array.isArray(state.selectedAttentionTargetCandidateIds) ? state.selectedAttentionTargetCandidateIds : []),
+    state.selectedAttentionTargetCandidateId,
+  ].filter(Boolean));
+  state.selectedAttentionTargetCandidateIds = orderedIds.filter((candidateId) => selected.has(candidateId));
+  state.selectedAttentionTargetCandidateId = state.selectedAttentionTargetCandidateIds.includes(state.selectedAttentionTargetCandidateId)
+    ? state.selectedAttentionTargetCandidateId
+    : state.selectedAttentionTargetCandidateIds.at(-1) || null;
+}
+
+function selectedAttentionTargetObjectCandidateIds(scene) {
+  ensureAttentionTargetObjectSelection(scene);
+  return [...state.selectedAttentionTargetCandidateIds];
+}
+
+function selectedAttentionTargetObjectCandidates(scene) {
+  const selectedIds = new Set(selectedAttentionTargetObjectCandidateIds(scene));
+  return attentionManualTargetOptions(scene).filter((candidate) => selectedIds.has(candidate.id));
 }
 
 function attentionManualPositionTargetOption(scene) {
@@ -32778,27 +33444,21 @@ function attentionGuidanceForSave() {
 }
 
 function attentionMarkerLabel(marker) {
-  if (!marker) return "No target";
-  if (marker.targetKind === "spatial-point") return "Manual position";
+  if (!marker) return "No focus marker";
+  if (marker.targetKind === "spatial-point") return "Placed focus marker";
   const asset = findAssetById(marker.assetId);
   const assetLabel = asset?.filename || asset?.label || marker.assetId;
   return marker.partSelector ? `${marker.partSelector} · ${assetLabel}` : assetLabel;
 }
 
 function attentionMarkerEditLabel(marker) {
-  return String(marker?.provenance?.source || "").startsWith("author-manual-attention-") ? "manual" : "moved";
+  return String(marker?.provenance?.source || "").startsWith("author-manual-attention-") ? "placed" : "moved";
 }
 
 function attentionTargetKindLabel(marker) {
   if (marker?.targetKind === "spatial-point") return "Manual scene position";
   if (marker?.targetKind === "standalone-image") return "Visible image";
-  return marker?.partSelector ? "Visible GLB part" : "Visible standalone GLB";
-}
-
-function attentionMarkerResetLabel(marker) {
-  return marker?.targetKind === "spatial-point"
-    ? "Reset target to placed position"
-    : "Reset target to inferred position";
+  return marker?.partSelector ? "Visible model part" : "Visible 3D model";
 }
 
 function ensureAttentionMarkerSelection(scene) {
@@ -32869,7 +33529,7 @@ async function persistAttentionGuidanceDraft(requestId) {
   } else {
     markStoryvrCheckpointCompletionPending(ATTENTION_GUIDANCE_COMPONENT_ID);
   }
-  setAttentionAutosaveStatus("Draft saved");
+  setAttentionAutosaveStatus("Changes saved");
   updateCheckpointStatusDom(ATTENTION_GUIDANCE_COMPONENT_ID);
   return decision;
 }
@@ -32891,43 +33551,119 @@ async function flushAttentionGuidanceAutosave() {
   return hadPendingPromise;
 }
 
-function mutateSelectedAttentionMarker(mutator, options = {}) {
-  const scene = attentionSceneRecordForContext(state.attentionGuidanceDraft, activeAttentionSceneContext());
-  const marker = selectedAttentionMarker(scene);
-  if (!marker || typeof mutator !== "function") return false;
-  const historyStarted = options.recordHistory === false ? false : beginAuthorHistory("Move Attention Guidance target", ATTENTION_GUIDANCE_COMPONENT_ID);
-  mutator(marker);
-  marker.position = attentionPosition(marker.position) || cloneJson(marker.inferredPosition);
-  const authorCreated = attentionMarkerEditLabel(marker) === "manual";
-  marker.manual = authorCreated || (options.reset !== true && !attentionPositionsEqual(marker.position, marker.inferredPosition));
-  commitAttentionDraftMutation();
-  if (historyStarted) finalizePersistentAuthorHistory(flushAttentionGuidanceAutosave);
-  return true;
-}
-
 function syncAttentionManualTargetControls(viewer = textViewer) {
   const scene = attentionSceneRecordForContext(state.attentionGuidanceDraft, activeAttentionSceneContext());
-  const select = document.querySelector("[data-attention-manual-target]");
   const button = document.querySelector("[data-attention-add-manual]");
   const placeButton = document.querySelector("[data-attention-place-manual]");
-  if (!select || !button) return;
-  const options = attentionAvailableManualTargetOptions(scene);
-  const availableById = new Map(options.map((candidate) => [candidate.id, candidate]));
-  for (const option of select.options) {
-    const candidate = availableById.get(option.value);
-    option.disabled = !candidate || !attentionCandidatePosition(viewer, candidate);
+  if (!button) return;
+  ensureAttentionTargetObjectSelection(scene);
+  const options = attentionManualTargetOptions(scene);
+  const optionById = new Map(options.map((candidate) => [candidate.id, candidate]));
+  const availableIds = new Set(attentionAvailableManualTargetOptions(scene).map((candidate) => candidate.id));
+  const positionById = new Map(options.map((candidate) => [candidate.id, attentionCandidatePosition(viewer, candidate)]));
+  for (const item of document.querySelectorAll("[data-attention-select-object]")) {
+    const candidate = optionById.get(item.dataset.attentionSelectObject);
+    item.disabled = Boolean(viewer?.spatialPlaybackReady && candidate && !positionById.get(candidate.id));
   }
-  const selected = availableById.get(select.value);
-  if (!selected || !attentionCandidatePosition(viewer, selected)) {
-    const next = options.find((candidate) => attentionCandidatePosition(viewer, candidate));
-    if (next) select.value = next.id;
+  let selected = selectedAttentionTargetObjectCandidates(scene);
+  if (viewer?.spatialPlaybackReady) {
+    selected = selected.filter((candidate) => positionById.get(candidate.id));
+    state.selectedAttentionTargetCandidateIds = selected.map((candidate) => candidate.id);
+    if (!state.selectedAttentionTargetCandidateIds.includes(state.selectedAttentionTargetCandidateId)) {
+      state.selectedAttentionTargetCandidateId = state.selectedAttentionTargetCandidateIds.at(-1) || null;
+    }
   }
-  button.disabled = !availableById.get(select.value) || !attentionCandidatePosition(viewer, availableById.get(select.value));
+  const selectedIds = new Set(selected.map((candidate) => candidate.id));
+  for (const item of document.querySelectorAll("[data-attention-select-object]")) {
+    const itemSelected = selectedIds.has(item.dataset.attentionSelectObject);
+    item.classList.toggle("selected", itemSelected);
+    item.classList.toggle("selection-primary", item.dataset.attentionSelectObject === state.selectedAttentionTargetCandidateId);
+    item.setAttribute("aria-pressed", String(itemSelected));
+  }
+  const addable = selected.filter((candidate) => availableIds.has(candidate.id) && positionById.get(candidate.id));
+  button.disabled = !addable.length;
+  button.textContent = addable.length > 1
+    ? `Add focus markers to ${addable.length} objects`
+    : "Add focus marker to object";
+  syncAttentionTargetObjectSelectionHelpers(viewer, selected);
   if (placeButton) {
     const manualPosition = attentionAvailableManualPositionTarget(scene);
     placeButton.disabled = !manualPosition || viewer?.locked === true;
     if (!manualPosition && viewer?.manualAttentionPlacementActive) cancelManualAttentionTargetPlacement(viewer);
   }
+}
+
+function syncAttentionTargetObjectSelectionHelpers(viewer, candidates) {
+  if (!viewer?.scene) return;
+  for (const helper of viewer.attentionObjectSelectionHelpers || []) {
+    helper.removeFromParent();
+    helper.geometry?.dispose?.();
+    helper.material?.dispose?.();
+  }
+  viewer.attentionObjectSelectionHelpers = [];
+  for (const candidate of candidates || []) {
+    const bounds = attentionCandidateWorldBounds(viewer, candidate);
+    if (!bounds) continue;
+    const helper = new THREE.Box3Helper(bounds.clone(), 0x007f73);
+    helper.name = "StoryVR selected attention target object";
+    helper.userData.attentionTargetCandidateId = candidate.id;
+    helper.material.transparent = true;
+    helper.material.opacity = 0.9;
+    helper.material.depthTest = false;
+    helper.material.depthWrite = false;
+    helper.renderOrder = 1000;
+    viewer.scene.add(helper);
+    viewer.attentionObjectSelectionHelpers.push(helper);
+  }
+}
+
+function updateAttentionTargetObjectSelectionHelpers(viewer) {
+  const candidateById = new Map(attentionManualTargetOptions(viewer?.attentionScene)
+    .map((candidate) => [candidate.id, candidate]));
+  for (const helper of viewer?.attentionObjectSelectionHelpers || []) {
+    const candidate = candidateById.get(helper.userData.attentionTargetCandidateId);
+    const bounds = candidate ? attentionCandidateWorldBounds(viewer, candidate) : null;
+    helper.visible = Boolean(bounds);
+    if (bounds) helper.box.copy(bounds);
+  }
+}
+
+function setAttentionTargetObjectSelection(candidateIds, viewer = textViewer, options = {}) {
+  const scene = attentionSceneRecordForContext(state.attentionGuidanceDraft, activeAttentionSceneContext());
+  const orderedIds = attentionManualTargetOptions(scene).map((candidate) => candidate.id);
+  const selected = new Set((candidateIds || []).filter((candidateId) => orderedIds.includes(candidateId)));
+  state.selectedAttentionTargetCandidateIds = orderedIds.filter((candidateId) => selected.has(candidateId));
+  state.selectedAttentionTargetCandidateId = state.selectedAttentionTargetCandidateIds.includes(options.primaryCandidateId)
+    ? options.primaryCandidateId
+    : state.selectedAttentionTargetCandidateIds.at(-1) || null;
+  cancelManualAttentionTargetPlacement(viewer);
+  syncAttentionManualTargetControls(viewer);
+  if (options.focusViewer) viewer?.renderer?.domElement?.focus?.();
+  return state.selectedAttentionTargetCandidateIds.length > 0;
+}
+
+function selectAttentionTargetObjectInViewer(candidateId, viewer = textViewer, options = {}) {
+  const scene = attentionSceneRecordForContext(state.attentionGuidanceDraft, activeAttentionSceneContext());
+  const orderedIds = attentionManualTargetOptions(scene).map((candidate) => candidate.id);
+  if (!orderedIds.includes(candidateId)) return false;
+  const candidateIds = spatialSelectionForRectangle(
+    orderedIds,
+    selectedAttentionTargetObjectCandidateIds(scene),
+    [candidateId],
+    options,
+  );
+  const primaryCandidateId = candidateIds.includes(candidateId)
+    ? candidateId
+    : candidateIds.at(-1) || null;
+  return setAttentionTargetObjectSelection(candidateIds, viewer, { ...options, primaryCandidateId });
+}
+
+function clearAttentionTargetObjectSelection(viewer = textViewer) {
+  const hadSelection = Boolean(state.selectedAttentionTargetCandidateIds.length || state.selectedAttentionTargetCandidateId);
+  state.selectedAttentionTargetCandidateIds = [];
+  state.selectedAttentionTargetCandidateId = null;
+  syncAttentionManualTargetControls(viewer);
+  return hadSelection;
 }
 
 function setManualAttentionTargetPlacement(viewer, active) {
@@ -32937,11 +33673,9 @@ function setManualAttentionTargetPlacement(viewer, active) {
   if (button) {
     button.classList.toggle("selected", viewer.manualAttentionPlacementActive);
     button.setAttribute("aria-pressed", String(viewer.manualAttentionPlacementActive));
-    button.textContent = viewer.manualAttentionPlacementActive ? "Click scene to place target" : "Place target manually";
+    button.textContent = viewer.manualAttentionPlacementActive ? "Click scene to place focus marker" : "Place focus marker manually";
   }
   viewer.renderer?.domElement?.classList?.toggle("attention-placement-active", viewer.manualAttentionPlacementActive);
-  if (viewer.manualAttentionPlacementActive) viewer.transformControls?.detach();
-  else if (state.selectedAttentionMarkerId) selectAttentionMarkerInViewer(state.selectedAttentionMarkerId);
   return true;
 }
 
@@ -32956,26 +33690,29 @@ function cancelManualAttentionTargetPlacement(viewer = textViewer) {
   return setManualAttentionTargetPlacement(viewer, false);
 }
 
-function addAttentionTargetMarker({ viewer, scene, candidate, position, source, evidenceType, historyLabel }) {
-  if (!scene || !candidate || !attentionPosition(position) || viewer?.locked) return false;
-  const historyStarted = beginAuthorHistory(historyLabel || "Add Attention Guidance target", ATTENTION_GUIDANCE_COMPONENT_ID);
+function addAttentionTargetMarkers({ viewer, scene, entries, historyLabel }) {
+  const validEntries = (entries || []).filter((entry) => (
+    entry?.candidate && attentionPosition(entry.position)
+  ));
+  if (!scene || !validEntries.length || viewer?.locked) return false;
+  const historyStarted = beginAuthorHistory(historyLabel || "Add focus marker", ATTENTION_GUIDANCE_COMPONENT_ID);
   scene.candidates = dedupeAttentionCandidates([
     ...attentionSceneCandidates(scene),
-    cloneJson(candidate),
+    ...validEntries.map(({ candidate }) => cloneJson(candidate)),
   ]);
   scene.markers = [
     ...attentionSceneMarkers(scene),
-    normalizeAttentionMarker({
-      ...candidate,
-      inferredPosition: position,
-      position,
-      manual: true,
-      provenance: {
-        ...(candidate.provenance || {}),
-        source,
-        evidenceType,
-      },
-    }),
+    ...validEntries.map(({ candidate, position, source, evidenceType }) => normalizeAttentionMarker({
+        ...candidate,
+        inferredPosition: position,
+        position,
+        manual: true,
+        provenance: {
+          ...(candidate.provenance || {}),
+          source,
+          evidenceType,
+        },
+      })),
   ].filter(Boolean);
   scene.evaluated = true;
   scene.evaluation = {
@@ -32984,27 +33721,45 @@ function addAttentionTargetMarker({ viewer, scene, candidate, position, source, 
     rejectedCandidateCount: Math.max(0, scene.candidates.length - scene.markers.length),
     intentionallyEmpty: false,
   };
-  state.selectedAttentionMarkerId = candidate.id;
+  state.selectedAttentionMarkerId = validEntries.at(-1).candidate.id;
   commitAttentionDraftMutation({ immediate: true });
   if (historyStarted) finalizePersistentAuthorHistory(flushAttentionGuidanceAutosave);
   renderPreservingScroll();
   return true;
 }
 
+function addAttentionTargetMarker({ viewer, scene, candidate, position, source, evidenceType, historyLabel }) {
+  return addAttentionTargetMarkers({
+    viewer,
+    scene,
+    historyLabel,
+    entries: [{ candidate, position, source, evidenceType }],
+  });
+}
+
 function addManualAttentionTarget() {
   const viewer = textViewer;
   const scene = attentionSceneRecordForContext(state.attentionGuidanceDraft, activeAttentionSceneContext());
-  const selectedId = document.querySelector("[data-attention-manual-target]")?.value || "";
-  const candidate = attentionAvailableManualTargetOptions(scene).find((option) => option.id === selectedId);
-  const position = attentionCandidatePosition(viewer, candidate);
-  return addAttentionTargetMarker({
+  const availableIds = new Set(attentionAvailableManualTargetOptions(scene).map((candidate) => candidate.id));
+  const entries = selectedAttentionTargetObjectCandidates(scene)
+    .filter((candidate) => availableIds.has(candidate.id))
+    .map((candidate) => ({
+      candidate,
+      position: attentionCandidatePosition(viewer, candidate),
+      source: "author-manual-attention-target",
+      evidenceType: candidate.targetKind === "standalone-image"
+        ? "author-selected-visible-image"
+        : "author-selected-visible-glb",
+    }))
+    .filter((entry) => entry.position);
+  if (!entries.length) return false;
+  state.selectedAttentionTargetCandidateIds = [];
+  state.selectedAttentionTargetCandidateId = null;
+  return addAttentionTargetMarkers({
     viewer,
     scene,
-    candidate,
-    position,
-    source: "author-manual-attention-target",
-    evidenceType: candidate?.targetKind === "standalone-image" ? "author-selected-visible-image" : "author-selected-visible-glb",
-    historyLabel: "Add object as Attention Guidance target",
+    entries,
+    historyLabel: entries.length > 1 ? "Add focus markers to objects" : "Add focus marker to object",
   });
 }
 
@@ -33020,29 +33775,8 @@ function addManualAttentionTargetAtPosition(position, viewer = textViewer) {
     position,
     source: "author-manual-attention-position",
     evidenceType: "author-placed-spatial-point",
-    historyLabel: "Place Attention Guidance target",
+    historyLabel: "Place focus marker manually",
   });
-}
-
-function updateSelectedAttentionPositionField(indexValue, rawValue) {
-  const index = Number(indexValue);
-  const value = Number(rawValue);
-  if (!Number.isInteger(index) || index < 0 || index > 2 || !Number.isFinite(value)) return;
-  mutateSelectedAttentionMarker((marker) => {
-    const position = attentionPosition(marker.position) || cloneJson(marker.inferredPosition);
-    position[["x", "y", "z"][index]] = value;
-    marker.position = position;
-  });
-  applyAttentionDraftToViewer(textViewer);
-  syncAttentionInspectorFromSelection();
-}
-
-function resetSelectedAttentionMarker() {
-  mutateSelectedAttentionMarker((marker) => {
-    marker.position = cloneJson(marker.inferredPosition);
-  }, { reset: true });
-  applyAttentionDraftToViewer(textViewer);
-  syncAttentionInspectorFromSelection();
 }
 
 function spatialRelationEntities(contract) {
@@ -33087,14 +33821,14 @@ function spatialRelationEntityLabel(entity) {
 }
 
 function spatialEntityScopeLabel(entity) {
-  if (spatialEntityType(entity) === "reader") return `Beat-scoped reader pose · ${entity?.beatId || activeSpatialSceneContext()?.beatId || "scene"}`;
+  if (spatialEntityType(entity) === "reader") return `Story-part reader pose · ${entity?.beatId || activeSpatialSceneContext()?.beatId || "scene"}`;
   if (spatialEntityType(entity) === "glb") {
-    const scope = `Beat-scoped GLB · ${entity?.beatId || activeSpatialSceneContext()?.beatId || "scene"}`;
+    const scope = `Story-part 3D model · ${entity?.beatId || activeSpatialSceneContext()?.beatId || "scene"}`;
     return entity?.authoredInstance === true ? `${scope} · authored instance` : scope;
   }
-  if (spatialEntityType(entity) === "image-plane") return `Beat-scoped image · ${entity?.beatId || activeSpatialSceneContext()?.beatId || "scene"}`;
+  if (spatialEntityType(entity) === "image-plane") return `Story-part image · ${entity?.beatId || activeSpatialSceneContext()?.beatId || "scene"}`;
   const beatId = entity?.beatId || String(entity?.id || "").slice("text-panel:".length);
-  return `Beat-scoped panel · ${beatId}`;
+  return `Story-part panel · ${beatId}`;
 }
 
 function normalizeSpatialTransform(value, fallback = null) {
@@ -33203,7 +33937,7 @@ function normalizeSpatialAnchor(anchor, entity = null) {
 
 function spatialAnchorLabel(type) {
   if (type === "reader") return "Reader / headset";
-  if (type === "asset") return "GLB object";
+  if (type === "asset") return "3D model";
   if (type === "source-focus") return "Source-camera focus";
   return "World";
 }
@@ -33246,7 +33980,7 @@ function spatialFallbackTextEntity(beat, index, proposal, legacyPlacement = null
     manual: false,
     inference: {
       confidence: Number(proposal?.confidence) || 0.5,
-      reasons: [beat.linkedAssetIds?.length ? "Placed near the beat's linked visual evidence." : "Placed in a stable world reading zone."],
+      reasons: [beat.linkedAssetIds?.length ? "Placed near the story part's linked visual evidence." : "Placed in a stable world reading zone."],
     },
   };
 }
@@ -33337,7 +34071,7 @@ function fallbackSpatialSceneEntities(context, proposal, legacyPlacement = null)
       orientationPolicy: "fixed",
       ...(type === "image-plane" ? { image: { aspectRatio: null, width: 1.6, height: 0.9 } } : {}),
       manual: false,
-      inference: { confidence: 1, reasons: ["Inferred from this scene's Source Graph asset links."] },
+      inference: { confidence: 1, reasons: ["Suggested from this scene's Story order asset links."] },
     };
   }).filter(Boolean);
   return [readerEntity, textEntity, ...assetEntities].filter(Boolean);
@@ -33802,8 +34536,8 @@ function syncSpatialPropagationControls() {
     state.spatialPropagationTargetBeatIds = [];
     state.spatialPropagationStatus = spatialEntityType(selected) === "glb"
       ? (targetBeats.length
-          ? `Choose which other beat${targetBeats.length === 1 ? "" : "s"} should receive the ${spatialRelationEntityLabel(selected)} transform.`
-          : "No matching instance of this GLB exists in another beat.")
+          ? `Choose which other story part${targetBeats.length === 1 ? "" : "s"} should receive the ${spatialRelationEntityLabel(selected)} placement.`
+          : "No matching instance of this 3D model exists in another story part.")
       : "";
   }
   const selectedIds = new Set(
@@ -33818,10 +34552,10 @@ function syncSpatialPropagationControls() {
   const toggle = document.querySelector("[data-spatial-apply-toggle]");
   if (toggle) {
     toggle.disabled = spatialEntityType(selected) !== "glb" || targetBeats.length === 0;
-    toggle.textContent = "Apply transform to other beats…";
+    toggle.textContent = "Apply placement to other story parts…";
     toggle.title = targetBeats.length
-      ? `Choose which of ${targetBeats.length} other matching beat${targetBeats.length === 1 ? "" : "s"} receives this GLB transform.`
-      : "No matching instance of this GLB exists in another beat.";
+      ? `Choose which of ${targetBeats.length} other matching story part${targetBeats.length === 1 ? "" : "s"} receives this 3D model placement.`
+      : "No matching instance of this 3D model exists in another story part.";
     toggle.setAttribute("aria-expanded", String(state.spatialPropagationTargetsOpen));
   }
   const panel = document.querySelector("[data-spatial-apply-target-panel]");
@@ -33843,7 +34577,7 @@ function syncSpatialPropagationControls() {
   const submit = document.querySelector("[data-spatial-apply-submit]");
   if (submit) {
     submit.disabled = selectedIds.size === 0;
-    submit.textContent = "Apply to selected beats";
+    submit.textContent = "Apply to selected story parts";
   }
   for (const status of document.querySelectorAll("[data-spatial-propagation-status]")) {
     status.textContent = state.spatialPropagationStatus;
@@ -33856,7 +34590,7 @@ function copySelectedSpatialGlb() {
     selectedSpatialRelationEntities().length !== 1
     || spatialEntityType(entity) !== "glb"
   ) {
-    state.spatialClipboardStatus = "Select one GLB model before copying.";
+    state.spatialClipboardStatus = "Select one 3D model before copying.";
     syncSpatialClipboardControls();
     return false;
   }
@@ -33877,7 +34611,7 @@ function applySelectedSpatialGlbTransformToMatchingScenes() {
     selectedSpatialRelationEntities().length !== 1
     || spatialEntityType(sourceEntity) !== "glb"
   ) {
-    state.spatialPropagationStatus = "Select a GLB model before applying its transform.";
+    state.spatialPropagationStatus = "Select a 3D model before applying its placement.";
     syncSpatialPropagationControls();
     return false;
   }
@@ -33890,7 +34624,7 @@ function applySelectedSpatialGlbTransformToMatchingScenes() {
     .map((beatId) => String(beatId || "").trim())
     .filter((beatId) => availableBeatIds.has(beatId)));
   if (!targetBeatIds.size) {
-    state.spatialPropagationStatus = "Select one or more other beats before applying this transform.";
+    state.spatialPropagationStatus = "Select one or more other story parts before applying this placement.";
     syncSpatialPropagationControls();
     return false;
   }
@@ -33914,12 +34648,12 @@ function applySelectedSpatialGlbTransformToMatchingScenes() {
     || Boolean(entity.manual) !== manual
   ));
   if (!matches.length) {
-    state.spatialPropagationStatus = "No matching instance of this GLB exists in the selected beats.";
+    state.spatialPropagationStatus = "No matching instance of this 3D model exists in the selected story parts.";
     syncSpatialPropagationControls();
     return false;
   }
   if (!updates.length) {
-    state.spatialPropagationStatus = `This GLB already has the same transform in ${targetBeatIds.size} selected beat${targetBeatIds.size === 1 ? "" : "s"}.`;
+    state.spatialPropagationStatus = `This 3D model already has the same placement in ${targetBeatIds.size} selected story part${targetBeatIds.size === 1 ? "" : "s"}.`;
     syncSpatialPropagationControls();
     return false;
   }
@@ -33936,7 +34670,7 @@ function applySelectedSpatialGlbTransformToMatchingScenes() {
   }
   const updatedBeatCount = new Set(updates.map(({ scene }) => String(scene?.beatId || "").trim())).size;
   state.spatialPropagationTargetBeatIds = [];
-  state.spatialPropagationStatus = `Applied ${spatialRelationEntityLabel(sourceEntity)} transform to ${updatedBeatCount} selected beat${updatedBeatCount === 1 ? "" : "s"}.`;
+  state.spatialPropagationStatus = `Applied ${spatialRelationEntityLabel(sourceEntity)} placement to ${updatedBeatCount} selected story part${updatedBeatCount === 1 ? "" : "s"}.`;
   commitSpatialDraftMutation();
   finalizePersistentAuthorHistory(flushSpatialRelationsAutosave);
   syncSpatialPropagationControls();
@@ -33968,7 +34702,7 @@ function pasteSpatialGlbInstance() {
   const scene = spatialSceneRecordForContext(state.spatialRelationsDraft, context);
   const baseEntity = spatialClipboardTargetBase(context);
   if (!scene || !baseEntity || state.spatialClipboard?.kind !== "glb") {
-    state.spatialClipboardStatus = "This scene does not contain the copied GLB model.";
+    state.spatialClipboardStatus = "This scene does not contain the copied 3D model.";
     syncSpatialClipboardControls();
     return false;
   }
@@ -34122,7 +34856,7 @@ function spatialGroupTransformDelta(entities, group, index, value) {
 
 function pushSpatialUndoSnapshot() {
   if (!state.spatialRelationsDraft) return false;
-  return beginAuthorHistory("Edit Spatial Relations", "spatial-relations");
+  return beginAuthorHistory("Edit object placement", "spatial-relations");
 }
 
 function commitSpatialDraftMutation() {
@@ -34152,7 +34886,7 @@ function setSpatialAutosaveStatus(value) {
 function scheduleSpatialRelationsAutosave() {
   if (!state.spatialRelationsDraft) return;
   if (state.spatialAutosaveTimer) clearTimeout(state.spatialAutosaveTimer);
-  setSpatialAutosaveStatus("Saving draft...");
+  setSpatialAutosaveStatus("Saving changes...");
   const requestId = state.spatialAutosaveRequestId + 1;
   state.spatialAutosaveRequestId = requestId;
   state.spatialAutosaveTimer = setTimeout(() => {
@@ -34177,8 +34911,8 @@ async function persistSpatialRelationsDraft(requestId) {
   if (!component) return null;
   const optionId = selectedOptionIdForComponent(component);
   if (!optionId) {
-    setSpatialAutosaveStatus("Inference option unavailable");
-    throw new Error("Spatial Relations inference option is unavailable.");
+    setSpatialAutosaveStatus("Suggested layout unavailable");
+    throw new Error("The suggested object layout is unavailable.");
   }
   const decision = await api.post(`/api/decisions/${SPATIAL_RELATIONS_COMPONENT_ID}/draft`, {
     optionId,
@@ -34194,7 +34928,7 @@ async function persistSpatialRelationsDraft(requestId) {
   } else {
     markStoryvrCheckpointCompletionPending(SPATIAL_RELATIONS_COMPONENT_ID);
   }
-  setSpatialAutosaveStatus("Draft saved");
+  setSpatialAutosaveStatus("Changes saved");
   updateCheckpointStatusDom(SPATIAL_RELATIONS_COMPONENT_ID);
   return decision;
 }
@@ -34310,7 +35044,7 @@ function textComfortPreviewBeats() {
     .map((beat, index) => ({
       ...beat,
       id: beat.id || `text-beat-${index + 1}`,
-      title: beat.title || beat.section || `Beat ${index + 1}`,
+      title: beat.title || beat.section || `Story part ${index + 1}`,
       text: beat.text || beat.excerpt || beat.summary || beat.title || "",
       linkedAssetIds: beatAssetIds(beat),
     }));
@@ -35352,11 +36086,11 @@ function interactionVariantControlForBeat(beat, records) {
       surface: "text-panel",
       selectionMode: "previous-next",
       sourceControlKind: group.control?.kind || "variant",
-      previousLabel: group.control?.previousLabel || "Previous option",
-      nextLabel: group.control?.nextLabel || "Next option",
+      previousLabel: group.control?.previousLabel || "Previous",
+      nextLabel: group.control?.nextLabel || "Next",
       wrap: group.control?.wrap !== false,
       optionIds: group.options.map((option) => option.id),
-      reason: `This beat contains ${group.options.length} within-beat variants. Previous and next UI buttons on the text panel let the reader ray-click backward or forward without leaving the active story beat.`,
+      reason: `This story part contains ${group.options.length} choices. Previous and Next buttons on the text panel let the reader change the choice without leaving the active story part.`,
     };
   }
   return {
@@ -35366,11 +36100,11 @@ function interactionVariantControlForBeat(beat, records) {
     effectivePolicy: "UI button press",
     surface: "text-panel",
     selectionMode: "previous-next",
-    previousLabel: record.previousLabel || group.control?.previousLabel || "Previous option",
-    nextLabel: record.nextLabel || group.control?.nextLabel || "Next option",
+    previousLabel: record.previousLabel || group.control?.previousLabel || "Previous",
+    nextLabel: record.nextLabel || group.control?.nextLabel || "Next",
     wrap: record.wrap ?? (group.control?.wrap !== false),
     optionIds: group.options.map((option) => option.id),
-    reason: `This beat contains ${group.options.length} within-beat variants. Previous and next UI buttons on the text panel let the reader ray-click backward or forward without leaving the active story beat.`,
+    reason: `This story part contains ${group.options.length} choices. Previous and Next buttons on the text panel let the reader change the choice without leaving the active story part.`,
   };
 }
 
@@ -35580,7 +36314,7 @@ function interactionBoundaryContext(proposal = null, sceneContext = null) {
         inferredPolicy: null,
         effectivePolicy: null,
         overridden: false,
-        reason: "Save Transition before assigning this boundary.",
+        reason: "Finish Scene changes before assigning a reader action to this scene change.",
         evidence: [],
         locomotionMode: null,
       };
@@ -35597,8 +36331,8 @@ function interactionBoundaryContext(proposal = null, sceneContext = null) {
     const overridden = !resetToDefault && Boolean(draftOverride || (record.overridden && preservedAssignment));
     const defaultReason = record.defaultReason || (!record.overridden ? record.reason : "")
       || (mappedTransition
-        ? "Transition has a mapped animation for this boundary. Assign the reader interaction explicitly."
-        : "No mapped Transition is available, so Controller button press is the default.");
+        ? "This scene change has mapped movement. Assign the reader action explicitly."
+        : "No mapped scene change is available, so Controller button press is the default.");
     return {
       ...record,
       boundaryId,
@@ -35704,7 +36438,7 @@ function interactionProposalForBoundary(baseProposal, boundary) {
     ...source,
     optionId: boundary.boundaryId,
     label: boundary.effectivePolicy || "Unassigned",
-    description: boundary.reason || (kind ? interactionControlKindHelp(kind) : "Assign an interaction for this mapped transition."),
+    description: boundary.reason || (kind ? interactionControlKindHelp(kind) : "Assign a reader action for this mapped scene change."),
     interactionBoundary: boundary,
   };
 }
@@ -35786,8 +36520,8 @@ function interactionOptionEditorContext(baseProposal, sceneContext = activeInter
       sceneContext,
       targetSceneContext: sceneContext,
       beat: interactionPreviewBeatForSceneContext(baseProposal, sceneContext),
-      fromLabel: "All controller button press transitions",
-      toLabel: "All controller button press transitions",
+      fromLabel: "All Controller button press scene changes",
+      toLabel: "All Controller button press scene changes",
       configuration: ensureInteractionControllerConfiguration(),
       boundaryContext: context,
     };
@@ -36164,9 +36898,9 @@ function selectedInterBeatBeatContext(proposal, sceneContext = activeInterBeatSc
 }
 
 function interBeatBeatDisplayTitle(beat, beats) {
-  if (!beat) return "beat";
+  if (!beat) return "Story part";
   const title = String(beat.title || "").trim();
-  if (!title) return beat.id || "beat";
+  if (!title) return beat.id || "Story part";
   const duplicateCount = (beats || []).filter((candidate) => String(candidate?.title || "").trim() === title).length;
   return duplicateCount > 1 ? beat.id || title : title;
 }
@@ -36328,8 +37062,8 @@ function applyInterBeatSourcePartMasks(viewer, phase) {
   }
 }
 
-function interBeatTransitionBeatLabel(beat, fallback = "beat", maxLength = 64) {
-  const id = String(beat?.id || fallback || "beat").trim();
+function interBeatTransitionBeatLabel(beat, fallback = "story part", maxLength = 64) {
+  const id = String(beat?.id || fallback || "story part").trim();
   const cue = String(beat?.text || beat?.title || "").trim();
   if (!cue || cue === id) return shortText(id, maxLength);
   return shortText(`${id} · ${cue}`, maxLength);
@@ -36391,43 +37125,43 @@ function interBeatDynamicsModeBadge(kind) {
 }
 
 function interBeatDynamicsKindLabel(kind) {
-  if (kind === "transition") return "Transition";
-  if (kind === "none") return "No transition";
+  if (kind === "transition") return "Scene change";
+  if (kind === "none") return "No scene change";
   if (kind === "discrete-hard") return "Hard switch";
   if (kind === "discrete-fade") return "Fade / dissolve";
   if (kind === "discrete-wipe") return "Spatial wipe";
   if (kind === "discrete-pop") return "Flash / pop";
   if (kind === "continuous-active") return "Active travel";
   if (kind === "continuous-passive") return "Passive arrival";
-  return "Transition";
+  return "Scene change";
 }
 
 function dynamicGeometryKindLabel(kind) {
-  if (kind === "none") return "No dynamics";
+  if (kind === "none") return "No movement";
   if (kind === "flow") return "Flow / particles";
   if (kind === "zoom") return "Scale / zoom";
   if (kind === "focus") return "Focus states";
-  return "Motion";
+  return "Movement";
 }
 
 function dynamicGeometryKindHelp(kind) {
-  if (kind === "none") return "Keep source and topology assets static with no added dynamic geometry layer.";
-  if (kind === "flow") return "Preview lightweight particles or trace fields around the active beat asset.";
+  if (kind === "none") return "Keep the saved story objects still with no added movement.";
+  if (kind === "flow") return "Preview lightweight particles or trace fields around the object in the active story part.";
   if (kind === "zoom") return "Preview magnification pulses, zoom rings, and scale emphasis.";
-  if (kind === "focus") return "Preview attention markers and pulsing focus states without claiming real mesh semantics.";
-  return "Preview simple whole-asset motion such as rotation, bobbing, jitter, or short dashes.";
+  if (kind === "focus") return "Preview focus markers and pulsing focus states without claiming details about unnamed model parts.";
+  return "Preview simple whole-object movement such as rotation, bobbing, jitter, or short dashes.";
 }
 
 function interBeatDynamicsKindHelp(kind) {
-  if (kind === "transition") return "Preview source-classified transition behavior between consecutive beats.";
-  if (kind === "none") return "No source transition behavior was classified between beats.";
-  if (kind === "discrete-hard") return "Preview a sudden beat boundary where Beat A turns off and Beat B snaps on.";
-  if (kind === "discrete-fade") return "Preview Beat A dissolving out while Beat B fades in.";
-  if (kind === "discrete-wipe") return "Preview a spatial wipe sweeping attention from Beat A to Beat B.";
-  if (kind === "discrete-pop") return "Preview a short flash at the boundary followed by a pop emphasis on Beat B.";
-  if (kind === "continuous-active") return "Preview an active reader/avatar path traveling from Beat A's anchor to Beat B's anchor.";
+  if (kind === "transition") return "Preview the saved scene-change behavior between consecutive story parts.";
+  if (kind === "none") return "No saved scene-change behavior was found between these story parts.";
+  if (kind === "discrete-hard") return "Preview a sudden scene change where story part A turns off and story part B snaps on.";
+  if (kind === "discrete-fade") return "Preview story part A dissolving out while story part B fades in.";
+  if (kind === "discrete-wipe") return "Preview a spatial wipe sweeping attention from story part A to story part B.";
+  if (kind === "discrete-pop") return "Preview a short flash during the scene change followed by a pop emphasis on story part B.";
+  if (kind === "continuous-active") return "Preview a reader path traveling from story part A's anchor to story part B's anchor.";
   if (kind === "continuous-passive") return "Preview the next object/anchor moving toward a central reader position.";
-  return "Preview the beat-to-beat transition between two consecutive anchors.";
+  return "Preview the scene change between two consecutive story-part anchors.";
 }
 
 function inferContextLayerKind(proposal) {
@@ -36444,15 +37178,15 @@ function inferContextLayerKind(proposal) {
 }
 
 function contextLayerKindLabel(kind) {
-  if (kind === "none") return "No added environment";
-  if (kind === "environment") return "Generated surrounding";
+  if (kind === "none") return "No added setting";
+  if (kind === "environment") return "Generated setting";
   if (kind === "nested") return "Nested scale";
   return "Object only";
 }
 
 function contextLayerKindHelp(kind) {
-  if (kind === "none") return "Keep StoryVR's standard neutral scene without attaching a generated surrounding.";
-  if (kind === "environment") return "Preview the saved story assets inside the generated persistent surrounding.";
+  if (kind === "none") return "Keep StoryVR's standard neutral setting without adding a custom setting.";
+  if (kind === "environment") return "Preview the saved story objects inside the generated setting.";
   if (kind === "nested") return "Preview object, habitat, and room scale as nested layers with a small detail inset.";
   return "Preview the active story object isolated on the inspection anchor with minimal surrounding context.";
 }
@@ -36480,7 +37214,7 @@ function textComfortKindLabel(kind) {
 function textComfortKindHelp(kind) {
   if (kind === "reader-facing") return "The panel keeps facing the reader camera while preserving author-chosen position.";
   if (kind === "near-body") return "The panel sits in a near-body reading zone, like a wrist or held card.";
-  if (kind === "object-attached") return "The panel uses the source GLB camera path to infer each beat's spatial focus, then applies a comfortable reader-facing offset; active-object placement is the fallback when focus is unverified.";
+  if (kind === "object-attached") return "The panel uses the source 3D model camera path to suggest each story part's spatial focus, then applies a comfortable reader-facing offset; placement near the active object is the fallback when focus is unverified.";
   return "The panel stays at a stable world-space location for predictable reading.";
 }
 

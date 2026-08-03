@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#11231f" />
+    <meta
+      name="description"
+      content="See StoryVR session steps, clicks, pauses, and key moments, then ask Codex for a plain-language review."
+    />
+    <title>Session Viewer · StoryVR</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="module" src="/main.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">Skip to session view</a>
+
+    <div class="app-shell">
+      <header class="product-header">
+        <div class="brand-lockup" aria-label="StoryVR Session Viewer">
+          <div class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+          <div>
+            <p class="eyebrow">StoryVR research tools</p>
+            <p class="product-name">Session Viewer</p>
+          </div>
+        </div>
+
+        <div class="header-copy">
+          <p class="eyebrow">Session viewer</p>
+          <h1>See how a StoryVR session unfolded.</h1>
+          <p>See each step, click, pause, and key moment in one timeline.</p>
+        </div>
+
+        <div class="header-actions">
+          <span class="privacy-badge"><i aria-hidden="true"></i> Local by default</span>
+          <div class="button-row">
+            <button class="button quiet" id="load-demo" type="button">Reset demo</button>
+            <label class="button primary file-button" for="log-files">
+              Import logs
+              <input id="log-files" type="file" accept=".json,application/json" multiple />
+            </label>
+          </div>
+        </div>
+      </header>
+
+      <main id="workspace" class="workspace" aria-busy="true">
+        <section class="session-bar panel" aria-labelledby="session-title">
+          <div class="session-heading">
+            <p class="section-index">01 · Session</p>
+            <div>
+              <h2 id="session-title">Session overview</h2>
+              <p id="session-subtitle">Loading the demonstration log…</p>
+            </div>
+          </div>
+          <label class="select-field" for="session-select">
+            <span>Active session</span>
+            <select id="session-select" aria-label="Active StoryVR session"></select>
+          </label>
+          <div class="session-actions">
+            <button class="icon-button" id="export-analysis" type="button" title="Download this session review" aria-label="Download session review">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 15v4h14v-4" /></svg>
+            </button>
+            <button class="icon-button danger" id="clear-logs" type="button" title="Clear imported logs" aria-label="Clear imported logs">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5" /></svg>
+            </button>
+          </div>
+        </section>
+
+        <section class="metric-grid" aria-label="Session summary">
+          <article class="metric-card panel">
+            <span class="metric-icon teal" aria-hidden="true">◷</span>
+            <div><strong id="metric-duration">—</strong><span>Session time</span></div>
+            <small id="metric-duration-note">Time recorded</small>
+          </article>
+          <article class="metric-card panel">
+            <span class="metric-icon blue" aria-hidden="true">↗</span>
+            <div><strong id="metric-events">—</strong><span>Clicks</span></div>
+            <small id="metric-events-note">Captured clicks</small>
+          </article>
+          <article class="metric-card panel">
+            <span class="metric-icon amber" aria-hidden="true">◫</span>
+            <div><strong id="metric-steps">—</strong><span>Steps visited</span></div>
+            <small id="metric-steps-note">Of 8 StoryVR steps</small>
+          </article>
+          <article class="metric-card panel">
+            <span class="metric-icon coral" aria-hidden="true">✦</span>
+            <div><strong id="metric-moments">—</strong><span>Moments</span></div>
+            <small id="metric-moments-note">Key points found in the log</small>
+          </article>
+        </section>
+
+        <section class="timeline-panel panel" aria-labelledby="timeline-title">
+          <div class="panel-heading timeline-heading">
+            <div>
+              <p class="section-index">02 · Journey</p>
+              <h2 id="timeline-title">Session timeline</h2>
+              <p>The background color shows the StoryVR step. Dots show clicks, diamonds show 3D work, and flags show key moments.</p>
+            </div>
+            <div class="timeline-tools" aria-label="Timeline view controls">
+              <button class="tool-button" id="pan-left" type="button" aria-label="Pan timeline left">←</button>
+              <button class="tool-button" id="zoom-out" type="button" aria-label="Zoom timeline out">−</button>
+              <button class="tool-button" id="zoom-in" type="button" aria-label="Zoom timeline in">+</button>
+              <button class="tool-button text" id="reset-view" type="button">Full session</button>
+              <button class="tool-button" id="pan-right" type="button" aria-label="Pan timeline right">→</button>
+            </div>
+          </div>
+
+          <div id="step-legend" class="step-legend" aria-label="StoryVR step colors"></div>
+
+          <div class="timeline-stage">
+            <div class="lane-labels" aria-hidden="true">
+              <span>Clicks</span><span>3D / scene</span><span>Moments</span><span>Click pace</span>
+            </div>
+            <div class="timeline-canvas-wrap">
+              <svg id="timeline-svg" class="timeline-svg" viewBox="0 0 1200 300" role="img" aria-labelledby="timeline-title timeline-description"></svg>
+              <p id="timeline-description" class="sr-only">Session chart over time. Use Tab to choose a marker, then Enter for details.</p>
+              <div id="timeline-tooltip" class="timeline-tooltip" role="tooltip" hidden></div>
+            </div>
+          </div>
+
+          <div class="timeline-footer">
+            <label for="timeline-scrubber"><span>View</span><output id="window-label">Full session</output></label>
+            <input id="timeline-scrubber" type="range" min="0" max="1000" value="500" aria-label="Move visible timeline window" />
+          </div>
+
+          <div id="selected-event" class="selected-event" aria-live="polite">
+            <span class="selection-dot" aria-hidden="true"></span>
+            <div><strong>Select a marker</strong><p>Details for that click or moment will appear here.</p></div>
+          </div>
+        </section>
+
+        <section class="insight-grid">
+          <article class="panel moments-panel" aria-labelledby="moments-title">
+            <div class="panel-heading compact">
+              <div>
+                <p class="section-index">03 · Moments</p>
+                <h2 id="moments-title">Key moments</h2>
+              </div>
+              <span id="moment-count" class="count-badge">0</span>
+            </div>
+            <div class="filter-tabs" role="tablist" aria-label="Moment filter">
+              <button class="active" type="button" role="tab" aria-selected="true" data-moment-filter="all">All</button>
+              <button type="button" role="tab" aria-selected="false" data-moment-filter="good"><i class="good"></i>Good</button>
+              <button type="button" role="tab" aria-selected="false" data-moment-filter="concern"><i class="concern"></i>Needs attention</button>
+              <button type="button" role="tab" aria-selected="false" data-moment-filter="watch"><i class="watch"></i>Watch</button>
+            </div>
+            <div id="moment-list" class="moment-list"></div>
+          </article>
+
+          <aside class="panel step-panel" aria-labelledby="step-time-title">
+            <div class="panel-heading compact">
+              <div>
+                <p class="section-index">Time by step</p>
+                <h2 id="step-time-title">Where time went</h2>
+              </div>
+            </div>
+            <div id="step-dwell" class="step-dwell"></div>
+            <div class="mini-divider"></div>
+            <h3>Step path</h3>
+            <div id="journey-path" class="journey-path"></div>
+          </aside>
+        </section>
+
+        <section class="behavior-grid">
+          <article class="panel rhythm-panel" aria-labelledby="rhythm-title">
+            <div class="panel-heading compact">
+              <div>
+                <p class="section-index">Click pace</p>
+                <h2 id="rhythm-title">Clicks and pauses</h2>
+              </div>
+              <span id="rhythm-summary" class="soft-badge">—</span>
+            </div>
+            <div id="rhythm-chart" class="rhythm-chart" role="img" aria-label="Clicks over session time"></div>
+            <div class="chart-key"><span><i class="bar"></i>Clicks per bin</span><span><i class="pause"></i>Possible pause</span></div>
+          </article>
+
+          <article class="panel clickmap-panel" aria-labelledby="clickmap-title">
+            <div class="panel-heading compact">
+              <div>
+                <p class="section-index">Click position</p>
+                <h2 id="clickmap-title">Where clicks happened</h2>
+              </div>
+              <span id="clickmap-summary" class="soft-badge">—</span>
+            </div>
+            <div id="click-field" class="click-field" role="img" aria-label="Approximate viewport click positions"></div>
+            <p class="chart-note">Click positions use the screen size saved at the start. They may be less exact after a resize.</p>
+          </article>
+
+          <article class="panel target-panel" aria-labelledby="target-title">
+            <div class="panel-heading compact">
+              <div>
+                <p class="section-index">Click types</p>
+                <h2 id="target-title">What the user clicked</h2>
+              </div>
+            </div>
+            <div id="target-mix" class="target-mix"></div>
+          </article>
+        </section>
+
+        <section class="codex-panel panel" aria-labelledby="codex-title">
+          <div class="codex-intro">
+            <div class="codex-orbit" aria-hidden="true"><span></span><span></span><b>✦</b></div>
+            <div>
+              <p class="section-index light">04 · Review</p>
+              <h2 id="codex-title">Ask Codex to review this session</h2>
+              <p>Codex gets a short log summary, not the original file. Each note must point to a step, time, and click number.</p>
+            </div>
+          </div>
+          <div class="codex-actions">
+            <div id="codex-status" class="codex-status" role="status" aria-live="polite">
+              <i></i><span>Checking local Codex…</span>
+            </div>
+            <button id="run-codex" class="button codex" type="button" disabled>Review current session</button>
+          </div>
+          <div id="codex-results" class="codex-results" hidden></div>
+        </section>
+
+        <section class="events-panel panel" aria-labelledby="events-title">
+          <div class="panel-heading event-heading">
+            <div>
+              <p class="section-index">05 · Log</p>
+              <h2 id="events-title">All log entries</h2>
+              <p>Search by button name, object, step, or scene.</p>
+            </div>
+            <div class="event-filters">
+              <label><span class="sr-only">Search events</span><input id="event-search" type="search" placeholder="Search events…" autocomplete="off" /></label>
+              <label><span class="sr-only">Filter events by step</span><select id="event-step-filter"><option value="all">All steps</option></select></label>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Time</th><th>Step</th><th>Action</th><th>Scene / target</th><th>Signal</th></tr></thead>
+              <tbody id="event-table-body"></tbody>
+            </table>
+          </div>
+          <div class="table-footer"><span id="event-table-count">0 events</span><button id="show-more-events" class="text-button" type="button">Show more</button></div>
+        </section>
+
+        <section id="quality-panel" class="quality-panel panel" aria-labelledby="quality-title">
+          <div>
+            <p class="section-index">What to keep in mind</p>
+            <h2 id="quality-title">Limits of this log</h2>
+          </div>
+          <div id="quality-list" class="quality-list"></div>
+        </section>
+      </main>
+
+      <div id="drop-overlay" class="drop-overlay" hidden>
+        <div><span aria-hidden="true">↓</span><strong>Drop StoryVR log files</strong><p>The files stay in this browser unless you choose to ask Codex for a review.</p></div>
+      </div>
+
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    </div>
+  </body>
+</html>

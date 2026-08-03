@@ -188,32 +188,32 @@ const xrButtonSlot = document.querySelector("#xr-button-slot");
 const READER_STORY_GUIDANCE_PROFILES = Object.freeze({
   "shark-season-attacks-survival-tips": Object.freeze({
     key: "shark",
-    context: "Follow each shark-safety step.",
-    next: "Follow each shark-safety step. Select Next to continue; in a headset, use A for next and X for back.",
-    variant: "Compare the shark choices below, then select Next. In a headset, use Trigger to choose.",
-    final: "This is the final shark-safety part. Select Finish when you are ready.",
+    context: "Follow one shark-safety story part at a time.",
+    next: "Follow one shark-safety story part at a time. Select Next to continue; in a headset, use A for Next and X for Previous.",
+    variant: "Compare the shark choices below, then select Next. In a headset, use Trigger to select a choice.",
+    final: "This is the final story part about shark safety. Select Finish when you are ready.",
   }),
   "reopen-schools-safety-ventilation": Object.freeze({
     key: "classroom",
     context: "Follow how fresh air moves through the classroom.",
-    next: "Follow how fresh air moves through the classroom. Select Next to continue; in a headset, use A for next and X for back.",
-    variant: "Compare the classroom ventilation choices below, then select Next. In a headset, use Trigger to choose.",
-    final: "This is the final classroom ventilation part. Select Finish when you are ready.",
+    next: "Follow how fresh air moves through the classroom. Select Next to continue; in a headset, use A for Next and X for Previous.",
+    variant: "Compare the classroom ventilation choices below, then select Next. In a headset, use Trigger to select a choice.",
+    final: "This is the final story part about classroom ventilation. Select Finish when you are ready.",
   }),
   "coronavirus-transmission-cough-6-feet-ar-ul": Object.freeze({
     key: "transmission",
     context: "Watch how cough droplets spread at different distances.",
-    next: "Watch how cough droplets spread at different distances. Select Next to continue; in a headset, use A for next and X for back.",
-    variant: "Choose a cough-distance view below, then select Next to reveal its droplets. In a headset, use Trigger to choose.",
-    final: "This is the final cough-distance view. Select Finish when you are ready.",
+    next: "Watch how cough droplets spread at different distances. Select Next to continue; in a headset, use A for Next and X for Previous.",
+    variant: "Select a cough-distance choice below, then select Next to reveal its droplets. In a headset, use Trigger to select a choice.",
+    final: "This is the final cough-distance story part. Select Finish when you are ready.",
   }),
 });
 const GENERIC_READER_STORY_GUIDANCE_PROFILE = Object.freeze({
   key: "generic",
-  context: "Follow the story one part at a time.",
-  next: "Select Next or use the Right Arrow key. In a headset, use A for next and X for back.",
-  variant: "Choose an option below, then select Next. In a headset, use Trigger to choose.",
-  final: "This is the last part. Select Finish when you are ready.",
+  context: "Follow the story one story part at a time.",
+  next: "Select Next or use the Right Arrow key. In a headset, use A for Next and X for Previous.",
+  variant: "Select a choice below, then select Next. In a headset, use Trigger to select a choice.",
+  final: "This is the final story part. Select Finish when you are ready.",
 });
 const READER_STORY_SLUG_BY_PATH_SEGMENT = Object.freeze({
   shark: "shark-season-attacks-survival-tips",
@@ -381,7 +381,7 @@ let textPanelMinimized = false;
 let readerPanelDrag = null;
 let suppressReaderPanelToggleClick = false;
 
-storyTitle.textContent = runtime.title || runtime.slug || "StoryVR experience";
+storyTitle.textContent = runtime.title || runtime.slug || "Interactive story";
 decisionRow.replaceChildren();
 
 const renderer = new THREE.WebGLRenderer({
@@ -401,7 +401,7 @@ renderer.xr.setFoveation(performanceOptimization.settings.xrFixedFoveation);
 renderer.domElement.tabIndex = 0;
 renderer.domElement.setAttribute(
   "aria-label",
-  "Reader view. Drag to look around. Focus the scene and use W A S D to move.",
+  "Interactive story view. Drag to look around. Focus the scene and use WASD to move.",
 );
 renderer.domElement.title = "Drag to look around · Click the scene, then use WASD to move";
 stage.appendChild(renderer.domElement);
@@ -687,7 +687,7 @@ renderer.setAnimationLoop(render);
 
 async function loadRuntime() {
   const response = await fetch(runtimeUrl, { cache: "no-store" });
-  if (!response.ok) throw new Error(`Could not load ${runtimeUrl}`);
+  if (!response.ok) throw new Error(`The story data file could not be loaded: ${runtimeUrl}`);
   return response.json();
 }
 
@@ -715,17 +715,17 @@ function showReaderStartupFailure(kind = "reader-start", error = null) {
   readerPanel?.classList.add("startup-failed");
   if (readerStartupAlert) readerStartupAlert.hidden = false;
   if (readerStartupAlertMessage) readerStartupAlertMessage.textContent = readerStartupFailureMessage(kind, error);
-  if (readerStartupAlertLocation) readerStartupAlertLocation.textContent = "Reader start";
+  if (readerStartupAlertLocation) readerStartupAlertLocation.textContent = "Story start";
   if (readerStartupAlertFile) {
     readerStartupAlertFile.hidden = !runtimeDataFailure;
     readerStartupAlertFile.textContent = runtimeDataFailure
-      ? `Runtime data file: ${safeReaderRuntimeFileLocation(runtimeUrl)}`
+      ? `Story data file: ${safeReaderRuntimeFileLocation(runtimeUrl)}`
       : "";
   }
   if (readerStartupAlertRecovery) {
     readerStartupAlertRecovery.textContent = runtimeDataFailure
-      ? "Make sure the runtime data file is available and valid, then reload."
-      : "Check the Reader story data, then reload.";
+      ? "Make sure the story data file is available and valid, then reload."
+      : "Check the story data file, then reload.";
   }
   storyTitle.textContent = "Story could not start";
   beatStrip.hidden = true;
@@ -835,7 +835,7 @@ function normalizeRuntimeEnvironmentEnhancement(value, decision = null) {
     movementCue: normalizeGroundMovementCue(source.movementCue),
     provenance: {
       provider: String(sourceEvidence.provider || "").trim(),
-      title: String(sourceEvidence.title || decision?.option?.label || "Environment asset").trim(),
+      title: String(sourceEvidence.title || decision?.option?.label || "Story setting").trim(),
       attribution: String(sourceEvidence.attribution || sourceEvidence.license?.attribution || "").trim(),
       sourceUrl: safeRuntimeHttpUrl(sourceEvidence.sourceUrl || sourceEvidence.sourcePageUrl || sourceEvidence.pageUrl),
       license: sourceEvidence.license || null,
@@ -886,7 +886,7 @@ async function switchRuntimeEnvironmentEnhancement(beat, loadRevision) {
   renderEnvironmentInformation({
     loaded: false,
     reason: "loading",
-    error: "loading the selected surrounding",
+    error: "loading the selected setting",
   }, nextEnvironment);
   const result = await loadRuntimeEnvironmentEnhancement(nextEnvironment, loadRevision);
   if (result.reason === "stale") return result;
@@ -1113,7 +1113,7 @@ function renderEnvironmentInformation(result, runtimeEnvironment = activeRuntime
   const evidence = runtimeEnvironment.provenance;
   const label = document.createElement("span");
   label.textContent = result.loaded
-    ? `Setting: ${evidence.title || "story environment"}`
+    ? `Setting: ${evidence.title || "story setting"}`
     : "A simple background is being used because the selected setting could not load.";
   environmentInfo.append(label);
   const details = [runtimeLicenseLabel(evidence.license), evidence.attribution].filter(Boolean).join(" · ");
@@ -5478,8 +5478,8 @@ function buildBeatStrip() {
   beatStrip.innerHTML = `
     <details id="part-picker" class="part-picker">
       <summary id="part-picker-summary" aria-controls="part-picker-list">
-        <span id="part-picker-progress">Part 1 of ${beats.length}</span>
-        <span id="part-picker-prompt" class="part-picker-summary-prompt">Choose part</span>
+        <span id="part-picker-progress">Story part 1 of ${beats.length}</span>
+        <span id="part-picker-prompt" class="part-picker-summary-prompt">Select story part</span>
       </summary>
       <div id="part-picker-list" class="part-picker-list" aria-label="All story parts">
         ${beats.map((beat, index) => `
@@ -5488,7 +5488,7 @@ function buildBeatStrip() {
             type="button"
             data-beat-index="${index}"
             title="${escapeHtml(beat.title || beat.text || beat.id)}"
-            aria-label="Go to part ${index + 1}: ${escapeHtml(beat.title || beat.text || beat.id || "Untitled")}"
+            aria-label="Go to story part ${index + 1}: ${escapeHtml(beat.title || beat.text || beat.id || "Untitled")}"
           >${String(index + 1).padStart(2, "0")}</button>
         `).join("")}
       </div>
@@ -5516,13 +5516,13 @@ function updatePartPickerSummary(completed = false) {
   const progress = beatStrip.querySelector("#part-picker-progress");
   const prompt = beatStrip.querySelector("#part-picker-prompt");
   const summary = beatStrip.querySelector("#part-picker-summary");
-  if (progress) progress.textContent = `Part ${activeIndex + 1} of ${beats.length}`;
-  if (prompt) prompt.textContent = completed ? "Story complete" : "Choose part";
+  if (progress) progress.textContent = `Story part ${activeIndex + 1} of ${beats.length}`;
+  if (prompt) prompt.textContent = completed ? "Story complete" : "Select story part";
   summary?.setAttribute(
     "aria-label",
     completed
-      ? `Story complete at part ${activeIndex + 1} of ${beats.length}. Open the part list to review.`
-      : `Current story part ${activeIndex + 1} of ${beats.length}. Open the part list to choose another part.`,
+      ? `Story complete at story part ${activeIndex + 1} of ${beats.length}. Open the story part list to review.`
+      : `Current story part ${activeIndex + 1} of ${beats.length}. Open the story part list to select another story part.`,
   );
 }
 
@@ -5544,7 +5544,7 @@ function configureTraversalControls() {
   nextButton.setAttribute("aria-label", atEnd
     ? "Finish the story"
     : isReaderLocomotionInteraction(outgoing) ? "Continue to the next place" : "Go to the next story part");
-  beatStrip.setAttribute("aria-label", "Choose a story part");
+  beatStrip.setAttribute("aria-label", "Select a story part");
   for (const button of beatStrip.querySelectorAll("button")) {
     const destinationIndex = Number(button.dataset.beatIndex);
     button.disabled = requiresPhysicalLocomotionBetween(activeIndex, destinationIndex);
@@ -5573,7 +5573,7 @@ function updateReaderGuidance() {
     return;
   }
   if (isPhysicalLocomotionBoundary(outgoing)) {
-    readerGuidanceText.textContent = `${activeReaderStoryGuidance.context} Walk to the glowing destination and pause there briefly to continue.`;
+    readerGuidanceText.textContent = `${activeReaderStoryGuidance.context} Walk to the glowing place and pause there briefly to continue.`;
     return;
   }
   const variantGroup = runtimeVariantGroupForBeat(beats[activeIndex]);
@@ -5587,7 +5587,7 @@ function completeStory() {
   if (storyComplete) storyComplete.hidden = false;
   nextButton.disabled = true;
   beatProgress.textContent = `${beats.length} of ${beats.length} · Story complete`;
-  if (readerGuidanceText) readerGuidanceText.textContent = "Story complete. You can restart from the beginning or review any numbered part.";
+  if (readerGuidanceText) readerGuidanceText.textContent = "Story complete. You can restart from the beginning or review any numbered story part.";
   status.textContent = "Story complete.";
   updatePartPickerSummary(true);
   storyComplete?.scrollIntoView({ block: "nearest" });
@@ -5679,10 +5679,10 @@ async function setBeat(index) {
       : null;
   const text = variantOption?.text || beat.text || graphBeat?.text || "";
   const variantProgress = variantGroup && variantOption
-    ? ` · option ${variantGroup.options.findIndex((option) => option.id === variantOption.id) + 1} of ${variantGroup.options.length}`
+    ? ` · choice ${variantGroup.options.findIndex((option) => option.id === variantOption.id) + 1} of ${variantGroup.options.length}`
     : "";
   beatProgress.textContent = `${activeIndex + 1} of ${beats.length}${variantProgress}`;
-  beatTitle.textContent = variantGroup?.title || beat.title || graphBeat?.title || "Untitled part";
+  beatTitle.textContent = variantGroup?.title || beat.title || graphBeat?.title || "Untitled story part";
   beatText.textContent = text;
   renderRuntimeVariantControls(variantGroup, variantOption, variantInteraction);
   prevButton.disabled = activeIndex === 0;
@@ -5715,29 +5715,29 @@ async function setBeat(index) {
       });
       if (loadRevision !== activeSceneLoadRevision) return;
       status.textContent = result.failed
-        ? `Scene ready, but ${result.failed} element${result.failed === 1 ? "" : "s"} could not load. You can continue.`
-        : "Scene ready.";
+        ? `Story part ready, but ${result.failed} object${result.failed === 1 ? "" : "s"} could not load. You can continue.`
+        : "Story part ready.";
     } catch (error) {
       if (loadRevision !== activeSceneLoadRevision) return;
       clearModel();
-      status.textContent = "Part of this scene could not load. You can still continue through the story.";
+      status.textContent = "One or more objects in this story part could not load. You can still continue through the story.";
     }
   } else if (usesBeatSpatialScene) {
     clearModel();
-    status.textContent = "This part uses text only.";
+    status.textContent = "This story part uses text only.";
   } else if (modelAsset) {
     try {
       await showModel(modelAsset, beat, transitionPlayback, { loadRevision });
       if (loadRevision !== activeSceneLoadRevision) return;
-      status.textContent = "Scene ready.";
+      status.textContent = "Story part ready.";
     } catch (error) {
       if (loadRevision !== activeSceneLoadRevision) return;
       clearModel();
-      status.textContent = "The scene image could not load. You can still continue through the story.";
+      status.textContent = "The 3D model could not load. You can still continue through the story.";
     }
   } else {
     clearModel();
-    status.textContent = "Text part ready.";
+    status.textContent = "Text-only story part ready.";
   }
   if (loadRevision !== activeSceneLoadRevision) return;
   try {
@@ -5749,12 +5749,12 @@ async function setBeat(index) {
     );
     if (loadRevision !== activeSceneLoadRevision) return;
     if (proceduralResult.failed) {
-      status.textContent += ` Some motion is unavailable, but you can continue.`;
+      status.textContent += ` Some object movement is unavailable, but you can continue.`;
     }
   } catch (error) {
     if (loadRevision !== activeSceneLoadRevision) return;
     clearProceduralDynamics();
-    status.textContent += " Some motion is unavailable, but you can continue.";
+    status.textContent += " Some object movement is unavailable, but you can continue.";
   }
   activateRuntimeAttentionGuidance(activeAttentionGuidance);
   updateSpatialTextPanel(beat, text, modelAsset);
@@ -5768,7 +5768,7 @@ function normalizeRuntimeVariantGroups(value) {
     const id = String(group?.id || `variant-group-${groupIndex + 1}`).trim();
     const sourceOrderedOptions = (Array.isArray(group?.options) ? group.options : []).flatMap((option, optionIndex) => {
       const optionId = String(option?.id || `${id}-option-${optionIndex + 1}`).trim();
-      const label = String(option?.label || option?.title || `Option ${optionIndex + 1}`).trim();
+      const label = String(option?.label || option?.title || `Choice ${optionIndex + 1}`).trim();
       if (!optionId || !label) return [];
       return [{
         ...option,
@@ -5791,14 +5791,14 @@ function normalizeRuntimeVariantGroups(value) {
     return [{
       ...group,
       id,
-      title: String(group?.title || "Selectable variants").trim(),
+      title: String(group?.title || "Choices").trim(),
       beatId: String(group?.beatId || id).trim(),
       defaultOptionId,
       selectionMode: "single",
       control: {
         kind: String(group?.control?.kind || "previous-next").trim(),
-        previousLabel: String(group?.control?.previousLabel || "Previous option").trim(),
-        nextLabel: String(group?.control?.nextLabel || "Next option").trim(),
+        previousLabel: String(group?.control?.previousLabel || "Previous choice").trim(),
+        nextLabel: String(group?.control?.nextLabel || "Next choice").trim(),
         wrap: group?.control?.wrap !== false,
       },
       options,
@@ -6021,7 +6021,7 @@ function renderRuntimeVariantControls(group, selectedOption, interactionControl)
   const hasUiButton = !previousDisabled || !nextDisabled;
   variantControls.hidden = false;
   variantControls.innerHTML = `
-    <p class="variant-interaction-label" data-variant-interaction="${hasUiButton ? "ui-button-press" : "assigned-edge-controls"}">${hasUiButton ? "Choose with the buttons below" : "Use the scene interaction to change options"}</p>
+    <p class="variant-interaction-label" data-variant-interaction="${hasUiButton ? "ui-button-press" : "assigned-edge-controls"}">${hasUiButton ? "Select a choice with the buttons below" : "Use the scene interaction to select a choice"}</p>
     <div class="variant-control-head">
       <strong>${escapeHtml(selectedOption.label)}</strong>
       <span>${selectedIndex + 1} of ${group.options.length}</span>
@@ -7002,7 +7002,7 @@ function updateSpatialTextPanel(beat, text, modelAsset) {
   spatialTextPlacement = runtimeTextPlacementForBeat(beat);
   if (!spatialTextPanel) spatialTextPanel = createRuntimeHandTextPanel();
   const variantState = runtimeTextPanelVariantState(beat);
-  const title = variantState?.group?.title || beat.title || "Story beat";
+  const title = variantState?.group?.title || beat.title || "Story part";
   const contentKey = JSON.stringify([
     beat.id,
     variantState?.selectedOption?.id || "",
@@ -7085,9 +7085,9 @@ function createRuntimeHandTextPanel() {
 
   const variantControlRoot = new THREE.Group();
   variantControlRoot.name = "storyvr-hand-text-panel-variant-controls";
-  const variantPreviousButton = makeRuntimeTextPanelButton("Previous", "variant-previous");
+  const variantPreviousButton = makeRuntimeTextPanelButton("Previous choice", "variant-previous");
   variantPreviousButton.position.set(-0.085, -0.098, 0.006);
-  const variantNextButton = makeRuntimeTextPanelButton("Next", "variant-next");
+  const variantNextButton = makeRuntimeTextPanelButton("Next choice", "variant-next");
   variantNextButton.position.set(0.085, -0.098, 0.006);
   variantControlRoot.add(variantPreviousButton, variantNextButton);
   variantControlRoot.visible = false;
@@ -7224,15 +7224,22 @@ function runtimeTextPanelVariantState(beat) {
       || !runtimeVariantUiButtonAllowed(group, selectedOption.id, nextOption.id),
     previousPresentation: runtimeTextPanelButtonPresentation(
       previousInteraction,
-      group.control.previousLabel || "Previous",
+      group.control.previousLabel || "Previous choice",
       [0.2, 0.86],
     ),
     nextPresentation: runtimeTextPanelButtonPresentation(
       nextInteraction,
-      group.control.nextLabel || "Next",
+      group.control.nextLabel || "Next choice",
       [0.8, 0.86],
     ),
   };
+}
+
+function readerChoicePresentationLabel(value) {
+  const label = String(value || "").trim();
+  if (/^previous\s+(?:option|variant)$/i.test(label)) return "Previous choice";
+  if (/^next\s+(?:option|variant)$/i.test(label)) return "Next choice";
+  return label;
 }
 
 function runtimeTextPanelButtonPresentation(record, fallbackLabel, fallbackPosition) {
@@ -7244,7 +7251,7 @@ function runtimeTextPanelButtonPresentation(record, fallbackLabel, fallbackPosit
   const authoredLayout = record?.overridden === true || record?.authored === true;
   return {
     id: String(button?.id || ""),
-    label: String(button?.label || fallbackLabel || "Select").trim(),
+    label: readerChoicePresentationLabel(button?.label || fallbackLabel || "Select"),
     action: String(button?.action || "select-variant"),
     position: finiteInteractionArray(authoredLayout ? button?.position : fallbackPosition, 2, fallbackPosition)
       .map((component) => THREE.MathUtils.clamp(component, 0, 1)),
@@ -8010,7 +8017,7 @@ function makeRuntimeTextPanelTexture(title, text, placement, variantState = null
   context.strokeRect(12, 12, canvas.width - 24, canvas.height - 24);
   context.fillStyle = "#6ed8c2";
   context.font = "700 46px sans-serif";
-  context.fillText(String(title || "Story beat").slice(0, 58), 54, 78);
+  context.fillText(String(title || "Story part").slice(0, 58), 54, 78);
   context.fillStyle = "#f6f2e7";
   context.font = "34px sans-serif";
   const pagination = drawRuntimeWrappedText(
@@ -8042,8 +8049,8 @@ function makeRuntimeTextPanelTexture(title, text, placement, variantState = null
   context.fillStyle = "rgba(246, 242, 231, 0.58)";
   context.font = "24px sans-serif";
   const footer = pagination.maxScrollLine > 0
-    ? `Hold Trigger and move vertically to scroll \u00b7 lines ${pagination.scrollLine + 1}\u2013${Math.min(pagination.lineCount, pagination.scrollLine + pagination.maxLines)} of ${pagination.lineCount} \u00b7 A next \u00b7 X back`
-    : "Trigger selects buttons \u00b7 Grip grabs objects \u00b7 A next \u00b7 X back";
+    ? `Hold Trigger and move vertically to scroll \u00b7 lines ${pagination.scrollLine + 1}\u2013${Math.min(pagination.lineCount, pagination.scrollLine + pagination.maxLines)} of ${pagination.lineCount} \u00b7 A Next \u00b7 X Previous`
+    : "Trigger selects buttons \u00b7 Grip grabs objects \u00b7 A Next \u00b7 X Previous";
   context.fillText(footer, 54, 526, 916);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -10274,7 +10281,7 @@ function sourceAnimationStatusText() {
       : `; looping ${clipCount} assigned source animation${clipCount === 1 ? "" : "s"}`;
   }
   if (activeSourceAnimation.sourceCamera) {
-    return "; source camera motion retained while preserving the reader view";
+    return "; source camera motion retained while preserving the interactive story view";
   }
   if (activeSourceAnimation.cameraUnavailable) {
     return "; assigned source camera is unavailable; using the reader camera";

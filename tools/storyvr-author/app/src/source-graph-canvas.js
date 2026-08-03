@@ -502,8 +502,8 @@ export function placeSourceGraphBeatAsVariant(graph, {
     defaultOptionId: targetOption.id,
     control: {
       kind: "previous-next",
-      previousLabel: "Previous option",
-      nextLabel: "Next option",
+      previousLabel: "Previous choice",
+      nextLabel: "Next choice",
       wrap: true,
     },
     options: reindexVariantOptions([targetOption, sourceOptionForGroup]),

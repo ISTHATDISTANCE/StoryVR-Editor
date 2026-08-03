@@ -1,0 +1,795 @@
+{
+  "schemaVersion": "storyvr-interaction-log/v1",
+  "sessionId": "sample-lighthouse-workflow",
+  "startedAt": "2026-08-03T14:00:00.000Z",
+  "endedAt": "2026-08-03T14:05:57.000Z",
+  "durationMs": 357000,
+  "sessionContext": {
+    "story": {
+      "slug": "sample-lighthouse-story",
+      "title": "Sample Lighthouse Story"
+    },
+    "workspace": {
+      "componentId": "source-graph",
+      "mode": "canvas",
+      "editorScene": null
+    },
+    "page": {
+      "pathname": "/",
+      "hash": ""
+    }
+  },
+  "viewport": {
+    "width": 1440,
+    "height": 900,
+    "devicePixelRatio": 2
+  },
+  "eventCount": 51,
+  "events": [
+    {
+      "sequence": 1,
+      "timestamp": "2026-08-03T14:00:00.000Z",
+      "elapsedMs": 0,
+      "type": "collection-started",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "source-graph", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "system", "tag": "system", "label": "Interaction data collection enabled" }
+    },
+    {
+      "sequence": 2,
+      "timestamp": "2026-08-03T14:00:08.000Z",
+      "elapsedMs": 8000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "source-graph", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": {
+        "kind": "button",
+        "tag": "button",
+        "label": "Story part 1: Arrival at the lighthouse",
+        "locator": "button[data-source-graph-card-beat=\"opening\"]",
+        "data": { "sourceGraphCardBeat": "opening", "selectBeat": "opening" }
+      },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 420, "clientY": 468, "relativeX": 136, "relativeY": 84, "normalizedX": 0.43, "normalizedY": 0.52 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 3,
+      "timestamp": "2026-08-03T14:00:20.000Z",
+      "elapsedMs": 20000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "source-graph", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Finish this step", "locator": "button[data-action=\"save-graph\"]", "data": { "action": "save-graph" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1190, "clientY": 248, "relativeX": 73, "relativeY": 20, "normalizedX": 0.58, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 4,
+      "timestamp": "2026-08-03T14:00:25.000Z",
+      "elapsedMs": 25000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "source-graph", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Place objects. Ready.", "locator": "button[data-select-component=\"spatial-relations\"]", "data": { "selectComponent": "spatial-relations" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 300, "clientY": 184, "relativeX": 88, "relativeY": 24, "normalizedX": 0.5, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 5,
+      "timestamp": "2026-08-03T14:00:26.200Z",
+      "elapsedMs": 26200,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "spatial-relations", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Open object editor for Arrival at the lighthouse", "locator": "button[data-spatial-beat-id=\"opening\"]", "data": { "spatialBeatId": "opening" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 392, "clientY": 490, "relativeX": 124, "relativeY": 88, "normalizedX": 0.39, "normalizedY": 0.55 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 6,
+      "timestamp": "2026-08-03T14:00:31.000Z",
+      "elapsedMs": 31000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "spatial-relations", "mode": "spatial", "editorScene": { "beatId": "opening" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": {
+        "kind": "application",
+        "tag": "canvas",
+        "role": "application",
+        "label": "Place objects scene",
+        "locator": "canvas[role=\"application\"]",
+        "semantic": { "kind": "spatial-scene-object", "label": "Beacon model", "assetId": "asset:beacon", "entityId": "entity:beacon", "action": "select-spatial-object" }
+      },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 875, "clientY": 510, "relativeX": 476, "relativeY": 280, "normalizedX": 0.59, "normalizedY": 0.47 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 7,
+      "timestamp": "2026-08-03T14:00:46.000Z",
+      "elapsedMs": 46000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "spatial-relations", "mode": "spatial", "editorScene": { "beatId": "opening" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Save scene and return", "locator": "button.primary" },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1196, "clientY": 248, "relativeX": 84, "relativeY": 20, "normalizedX": 0.55, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 8,
+      "timestamp": "2026-08-03T14:00:49.000Z",
+      "elapsedMs": 49000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "spatial-relations", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Finish this step", "locator": "button[data-action=\"save-checkpoint\"]", "data": { "action": "save-checkpoint" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1190, "clientY": 248, "relativeX": 73, "relativeY": 20, "normalizedX": 0.58, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 9,
+      "timestamp": "2026-08-03T14:00:52.000Z",
+      "elapsedMs": 52000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "spatial-relations", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Set the scene. Ready.", "locator": "button[data-select-component=\"environment-enhancement\"]", "data": { "selectComponent": "environment-enhancement" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 474, "clientY": 184, "relativeX": 85, "relativeY": 24, "normalizedX": 0.48, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 10,
+      "timestamp": "2026-08-03T14:00:53.000Z",
+      "elapsedMs": 53000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "environment-enhancement", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Open setting editor for Arrival at the lighthouse", "locator": "button[data-environment-beat-id=\"opening\"]", "data": { "environmentBeatId": "opening" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 398, "clientY": 488, "relativeX": 130, "relativeY": 86, "normalizedX": 0.41, "normalizedY": 0.54 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 11,
+      "timestamp": "2026-08-03T14:01:05.000Z",
+      "elapsedMs": 65000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "environment-enhancement", "mode": "spatial", "editorScene": { "beatId": "opening" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Save scene and return", "locator": "button.primary" },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1194, "clientY": 248, "relativeX": 82, "relativeY": 20, "normalizedX": 0.54, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 12,
+      "timestamp": "2026-08-03T14:01:10.000Z",
+      "elapsedMs": 70000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "environment-enhancement", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Finish this step", "locator": "button[data-environment-action=\"save\"]", "data": { "environmentAction": "save" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1188, "clientY": 248, "relativeX": 71, "relativeY": 20, "normalizedX": 0.57, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 13,
+      "timestamp": "2026-08-03T14:01:12.000Z",
+      "elapsedMs": 72000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "environment-enhancement", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Guide attention. Ready.", "locator": "button[data-select-component=\"attention-guidance\"]", "data": { "selectComponent": "attention-guidance" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 650, "clientY": 184, "relativeX": 88, "relativeY": 24, "normalizedX": 0.5, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 14,
+      "timestamp": "2026-08-03T14:01:13.000Z",
+      "elapsedMs": 73000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "attention-guidance", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Open attention editor for Choose the safe route", "locator": "button[data-attention-beat-id=\"turning-point\"]", "data": { "attentionBeatId": "turning-point", "attentionVariantGroupId": "route-choice", "attentionVariantOptionId": "safe-route" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 694, "clientY": 514, "relativeX": 146, "relativeY": 92, "normalizedX": 0.46, "normalizedY": 0.58 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 15,
+      "timestamp": "2026-08-03T14:01:20.000Z",
+      "elapsedMs": 80000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "attention-guidance", "mode": "spatial", "editorScene": { "beatId": "turning-point", "variantGroupId": "route-choice", "variantOptionId": "safe-route" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": {
+        "kind": "application",
+        "tag": "canvas",
+        "role": "application",
+        "label": "Guide attention scene",
+        "locator": "canvas[role=\"application\"]",
+        "semantic": { "kind": "attention-target-object", "label": "Harbor light", "candidateId": "candidate:harbor-light", "assetId": "asset:beacon", "entityId": "entity:beacon", "action": "select-attention-target" }
+      },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 930, "clientY": 420, "relativeX": 532, "relativeY": 190, "normalizedX": 0.66, "normalizedY": 0.32 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 16,
+      "timestamp": "2026-08-03T14:01:24.000Z",
+      "elapsedMs": 84000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "attention-guidance", "mode": "spatial", "editorScene": { "beatId": "turning-point", "variantGroupId": "route-choice", "variantOptionId": "safe-route" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Add focus marker to object", "locator": "button.attention-add-target" },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 214, "clientY": 604, "relativeX": 92, "relativeY": 20, "normalizedX": 0.5, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 17,
+      "timestamp": "2026-08-03T14:01:35.000Z",
+      "elapsedMs": 95000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "attention-guidance", "mode": "spatial", "editorScene": { "beatId": "turning-point", "variantGroupId": "route-choice", "variantOptionId": "safe-route" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Save scene and return", "locator": "button.primary" },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1194, "clientY": 248, "relativeX": 82, "relativeY": 20, "normalizedX": 0.54, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 18,
+      "timestamp": "2026-08-03T14:01:38.000Z",
+      "elapsedMs": 98000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "attention-guidance", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Finish this step", "locator": "button[data-action=\"save-checkpoint\"]", "data": { "action": "save-checkpoint" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1190, "clientY": 248, "relativeX": 73, "relativeY": 20, "normalizedX": 0.58, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 19,
+      "timestamp": "2026-08-03T14:01:40.000Z",
+      "elapsedMs": 100000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "attention-guidance", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Object movement. Ready.", "locator": "button[data-select-component=\"dynamic-geometry\"]", "data": { "selectComponent": "dynamic-geometry" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 824, "clientY": 184, "relativeX": 88, "relativeY": 24, "normalizedX": 0.5, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 20,
+      "timestamp": "2026-08-03T14:01:41.000Z",
+      "elapsedMs": 101000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "dynamic-geometry", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Open movement editor for Beacon sweep", "locator": "button[data-dynamic-beat-id=\"beacon-sweep\"]", "data": { "dynamicBeatId": "beacon-sweep" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 534, "clientY": 506, "relativeX": 142, "relativeY": 91, "normalizedX": 0.45, "normalizedY": 0.57 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 21,
+      "timestamp": "2026-08-03T14:02:05.000Z",
+      "elapsedMs": 125000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "dynamic-geometry", "mode": "spatial", "editorScene": { "beatId": "beacon-sweep" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Preview movement", "locator": "button.dynamic-preview-play" },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1016, "clientY": 718, "relativeX": 68, "relativeY": 18, "normalizedX": 0.5, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 22,
+      "timestamp": "2026-08-03T14:02:05.450Z",
+      "elapsedMs": 125450,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "dynamic-geometry", "mode": "spatial", "editorScene": { "beatId": "beacon-sweep" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Preview movement", "locator": "button.dynamic-preview-play" },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1016, "clientY": 718, "relativeX": 68, "relativeY": 18, "normalizedX": 0.5, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 23,
+      "timestamp": "2026-08-03T14:02:05.900Z",
+      "elapsedMs": 125900,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "dynamic-geometry", "mode": "spatial", "editorScene": { "beatId": "beacon-sweep" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Preview movement", "locator": "button.dynamic-preview-play" },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1017, "clientY": 718, "relativeX": 69, "relativeY": 18, "normalizedX": 0.51, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 24,
+      "timestamp": "2026-08-03T14:04:10.000Z",
+      "elapsedMs": 250000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "dynamic-geometry", "mode": "spatial", "editorScene": { "beatId": "beacon-sweep" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Save scene and return", "locator": "button.primary" },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1194, "clientY": 248, "relativeX": 82, "relativeY": 20, "normalizedX": 0.54, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 25,
+      "timestamp": "2026-08-03T14:04:14.000Z",
+      "elapsedMs": 254000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "dynamic-geometry", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Finish this step", "locator": "button[data-action=\"save-checkpoint\"]", "data": { "action": "save-checkpoint" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1190, "clientY": 248, "relativeX": 73, "relativeY": 20, "normalizedX": 0.58, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 26,
+      "timestamp": "2026-08-03T14:04:16.000Z",
+      "elapsedMs": 256000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "dynamic-geometry", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Scene changes. Ready.", "locator": "button[data-select-component=\"inter-beat-dynamics\"]", "data": { "selectComponent": "inter-beat-dynamics" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 992, "clientY": 184, "relativeX": 84, "relativeY": 24, "normalizedX": 0.48, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 27,
+      "timestamp": "2026-08-03T14:04:17.000Z",
+      "elapsedMs": 257000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "inter-beat-dynamics", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Open scene change after Beacon sweep", "locator": "button[data-inter-beat-beat-id=\"beacon-sweep\"]", "data": { "interBeatBeatId": "beacon-sweep", "interBeatEdgeId": "edge:beacon-to-choice" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 636, "clientY": 520, "relativeX": 105, "relativeY": 70, "normalizedX": 0.52, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 28,
+      "timestamp": "2026-08-03T14:04:25.000Z",
+      "elapsedMs": 265000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "inter-beat-dynamics", "mode": "spatial", "editorScene": { "beatId": "beacon-sweep" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Preview scene change", "locator": "button[data-inter-beat-play=\"restart\"]", "data": { "interBeatPlay": "restart" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1028, "clientY": 720, "relativeX": 74, "relativeY": 18, "normalizedX": 0.51, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 29,
+      "timestamp": "2026-08-03T14:04:33.000Z",
+      "elapsedMs": 273000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "inter-beat-dynamics", "mode": "spatial", "editorScene": { "beatId": "beacon-sweep" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Save scene and return", "locator": "button.primary" },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1194, "clientY": 248, "relativeX": 82, "relativeY": 20, "normalizedX": 0.54, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 30,
+      "timestamp": "2026-08-03T14:04:36.000Z",
+      "elapsedMs": 276000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "inter-beat-dynamics", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Finish this step", "locator": "button[data-action=\"save-checkpoint\"]", "data": { "action": "save-checkpoint" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1190, "clientY": 248, "relativeX": 73, "relativeY": 20, "normalizedX": 0.58, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 31,
+      "timestamp": "2026-08-03T14:04:38.000Z",
+      "elapsedMs": 278000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "inter-beat-dynamics", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Reader actions. Ready.", "locator": "button[data-select-component=\"interaction-control\"]", "data": { "selectComponent": "interaction-control" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1160, "clientY": 184, "relativeX": 84, "relativeY": 24, "normalizedX": 0.48, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 32,
+      "timestamp": "2026-08-03T14:04:39.000Z",
+      "elapsedMs": 279000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "interaction-control", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Open reader-action editor for Arrival at the lighthouse", "locator": "button[data-interaction-beat-id=\"opening\"]", "data": { "interactionBeatId": "opening" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 394, "clientY": 504, "relativeX": 128, "relativeY": 90, "normalizedX": 0.4, "normalizedY": 0.56 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 33,
+      "timestamp": "2026-08-03T14:04:46.000Z",
+      "elapsedMs": 286000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "interaction-control", "mode": "spatial", "editorScene": { "beatId": "opening" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": {
+        "kind": "application",
+        "tag": "canvas",
+        "role": "application",
+        "label": "Reader actions scene",
+        "locator": "canvas[role=\"application\"]",
+        "semantic": { "kind": "interaction-scene-object", "label": "Beacon model", "id": "entity:beacon", "assetId": "asset:beacon", "entityId": "entity:beacon", "action": "select-interaction-object" }
+      },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 866, "clientY": 514, "relativeX": 468, "relativeY": 284, "normalizedX": 0.58, "normalizedY": 0.47 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 34,
+      "timestamp": "2026-08-03T14:04:50.000Z",
+      "elapsedMs": 290000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "interaction-control", "mode": "spatial", "editorScene": { "beatId": "opening" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": {
+        "kind": "application",
+        "tag": "canvas",
+        "role": "application",
+        "label": "Reader actions scene",
+        "locator": "canvas[role=\"application\"]",
+        "semantic": { "kind": "interaction-constraint-endpoint", "label": "Maximum movement limit", "id": "max", "action": "select-movement-limit" }
+      },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 994, "clientY": 514, "relativeX": 596, "relativeY": 284, "normalizedX": 0.74, "normalizedY": 0.47 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 35,
+      "timestamp": "2026-08-03T14:04:56.000Z",
+      "elapsedMs": 296000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "interaction-control", "mode": "spatial", "editorScene": { "beatId": "opening" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Save scene and return", "locator": "button.primary" },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1194, "clientY": 248, "relativeX": 82, "relativeY": 20, "normalizedX": 0.54, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 36,
+      "timestamp": "2026-08-03T14:05:00.000Z",
+      "elapsedMs": 300000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "interaction-control", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Finish this step", "locator": "button[data-action=\"save-checkpoint\"]", "data": { "action": "save-checkpoint" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1190, "clientY": 248, "relativeX": 73, "relativeY": 20, "normalizedX": 0.58, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 37,
+      "timestamp": "2026-08-03T14:05:03.000Z",
+      "elapsedMs": 303000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "interaction-control", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Review story. Ready.", "locator": "button[data-select-component=\"transition-pacing\"]", "data": { "selectComponent": "transition-pacing" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1320, "clientY": 184, "relativeX": 80, "relativeY": 24, "normalizedX": 0.46, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 38,
+      "timestamp": "2026-08-03T14:05:04.000Z",
+      "elapsedMs": 304000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "transition-pacing", "mode": "spatial", "editorScene": { "beatId": "turning-point", "variantGroupId": "route-choice", "variantOptionId": "safe-route" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Show choice Safe route in the scene editor", "locator": "button[data-final-review-scene-key=\"turning-point::route-choice::safe-route\"]", "data": { "finalReviewBeatId": "turning-point", "finalReviewSceneKey": "turning-point::route-choice::safe-route" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 356, "clientY": 482, "relativeX": 122, "relativeY": 76, "normalizedX": 0.43, "normalizedY": 0.51 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 39,
+      "timestamp": "2026-08-03T14:05:11.000Z",
+      "elapsedMs": 311000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "transition-pacing", "mode": "spatial", "editorScene": { "beatId": "turning-point", "variantGroupId": "route-choice", "variantOptionId": "safe-route" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": {
+        "kind": "application",
+        "tag": "canvas",
+        "role": "application",
+        "label": "Final StoryVR reader preview",
+        "locator": "canvas[role=\"application\"]",
+        "semantic": { "kind": "reader-text-panel-control", "label": "Minimize reader text panel", "action": "minimize" }
+      },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1124, "clientY": 364, "relativeX": 724, "relativeY": 134, "normalizedX": 0.9, "normalizedY": 0.22 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 40,
+      "timestamp": "2026-08-03T14:05:16.000Z",
+      "elapsedMs": 316000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "transition-pacing", "mode": "spatial", "editorScene": { "beatId": "turning-point", "variantGroupId": "route-choice", "variantOptionId": "safe-route" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Reader actions. Complete.", "locator": "button[data-select-component=\"interaction-control\"]", "data": { "selectComponent": "interaction-control" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1160, "clientY": 184, "relativeX": 84, "relativeY": 24, "normalizedX": 0.48, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 41,
+      "timestamp": "2026-08-03T14:05:18.000Z",
+      "elapsedMs": 318000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "interaction-control", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Open reader-action editor for Arrival at the lighthouse", "locator": "button[data-interaction-beat-id=\"opening\"]", "data": { "interactionBeatId": "opening" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 394, "clientY": 504, "relativeX": 128, "relativeY": 90, "normalizedX": 0.4, "normalizedY": 0.56 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 42,
+      "timestamp": "2026-08-03T14:05:20.000Z",
+      "elapsedMs": 320000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "interaction-control", "mode": "spatial", "editorScene": { "beatId": "opening" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": {
+        "kind": "application",
+        "tag": "canvas",
+        "role": "application",
+        "label": "Reader actions preview",
+        "locator": "canvas[role=\"application\"]",
+        "semantic": { "kind": "interaction-preview-control", "label": "Restart reader action", "id": "embodied-restart", "action": "embodied-restart" }
+      },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1044, "clientY": 708, "relativeX": 646, "relativeY": 478, "normalizedX": 0.8, "normalizedY": 0.8 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 43,
+      "timestamp": "2026-08-03T14:05:25.000Z",
+      "elapsedMs": 325000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "interaction-control", "mode": "spatial", "editorScene": { "beatId": "opening" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Save scene and return", "locator": "button.primary" },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1194, "clientY": 248, "relativeX": 82, "relativeY": 20, "normalizedX": 0.54, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 44,
+      "timestamp": "2026-08-03T14:05:32.000Z",
+      "elapsedMs": 332000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "interaction-control", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Finish this step", "locator": "button[data-action=\"save-checkpoint\"]", "data": { "action": "save-checkpoint" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1190, "clientY": 248, "relativeX": 73, "relativeY": 20, "normalizedX": 0.58, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 45,
+      "timestamp": "2026-08-03T14:05:36.000Z",
+      "elapsedMs": 336000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "interaction-control", "mode": "canvas", "editorScene": null },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Review story. Ready.", "locator": "button[data-select-component=\"transition-pacing\"]", "data": { "selectComponent": "transition-pacing" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1320, "clientY": 184, "relativeX": 80, "relativeY": 24, "normalizedX": 0.46, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 46,
+      "timestamp": "2026-08-03T14:05:38.000Z",
+      "elapsedMs": 338000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "transition-pacing", "mode": "spatial", "editorScene": { "beatId": "turning-point", "variantGroupId": "route-choice", "variantOptionId": "safe-route" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Show choice Safe route in the scene editor", "locator": "button[data-final-review-scene-key=\"turning-point::route-choice::safe-route\"]", "data": { "finalReviewBeatId": "turning-point", "finalReviewSceneKey": "turning-point::route-choice::safe-route" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 356, "clientY": 482, "relativeX": 122, "relativeY": 76, "normalizedX": 0.43, "normalizedY": 0.51 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 47,
+      "timestamp": "2026-08-03T14:05:39.000Z",
+      "elapsedMs": 339000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "transition-pacing", "mode": "spatial", "editorScene": { "beatId": "turning-point", "variantGroupId": "route-choice", "variantOptionId": "safe-route" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": {
+        "kind": "application",
+        "tag": "canvas",
+        "role": "application",
+        "label": "Final StoryVR reader preview",
+        "locator": "canvas[role=\"application\"]",
+        "semantic": { "kind": "reader-text-panel-control", "label": "Restore reader text panel", "action": "restore" }
+      },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1124, "clientY": 364, "relativeX": 724, "relativeY": 134, "normalizedX": 0.9, "normalizedY": 0.22 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 48,
+      "timestamp": "2026-08-03T14:05:46.000Z",
+      "elapsedMs": 346000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "transition-pacing", "mode": "spatial", "editorScene": { "beatId": "turning-point", "variantGroupId": "route-choice", "variantOptionId": "safe-route" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Finish this step", "locator": "button[data-action=\"save-checkpoint\"]", "data": { "action": "save-checkpoint" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1186, "clientY": 248, "relativeX": 70, "relativeY": 20, "normalizedX": 0.56, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 49,
+      "timestamp": "2026-08-03T14:05:52.000Z",
+      "elapsedMs": 352000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "transition-pacing", "mode": "spatial", "editorScene": { "beatId": "turning-point", "variantGroupId": "route-choice", "variantOptionId": "safe-route" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "button", "tag": "button", "label": "Build reader", "locator": "button[data-action=\"compile\"]", "data": { "action": "compile" } },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1182, "clientY": 698, "relativeX": 66, "relativeY": 20, "normalizedX": 0.53, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 50,
+      "timestamp": "2026-08-03T14:05:55.000Z",
+      "elapsedMs": 355000,
+      "type": "click",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "transition-pacing", "mode": "spatial", "editorScene": { "beatId": "turning-point", "variantGroupId": "route-choice", "variantOptionId": "safe-route" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "switch", "tag": "button", "role": "switch", "label": "Turn off interaction data collection", "locator": "button[role=\"switch\"]" },
+      "pointer": { "inputMethod": "pointer", "pointerType": "mouse", "button": 0, "clientX": 1358, "clientY": 42, "relativeX": 36, "relativeY": 18, "normalizedX": 0.75, "normalizedY": 0.5 },
+      "modifiers": { "alt": false, "control": false, "meta": false, "shift": false }
+    },
+    {
+      "sequence": 51,
+      "timestamp": "2026-08-03T14:05:57.000Z",
+      "elapsedMs": 357000,
+      "type": "collection-stopped",
+      "context": {
+        "story": { "slug": "sample-lighthouse-story", "title": "Sample Lighthouse Story" },
+        "workspace": { "componentId": "transition-pacing", "mode": "spatial", "editorScene": { "beatId": "turning-point", "variantGroupId": "route-choice", "variantOptionId": "safe-route" } },
+        "page": { "pathname": "/", "hash": "" }
+      },
+      "target": { "kind": "system", "tag": "system", "label": "Interaction data collection disabled" }
+    }
+  ]
+}

@@ -212,7 +212,7 @@ async function handleApi(req, res) {
       const referenceImages = decodeEnvironmentGenerationReferenceImages(body.referenceImages);
       sweepPendingEnvironmentGenerations();
       if (environmentGenerationBusy) {
-        throw httpError(409, "An environment panorama and matching ground are already being prepared.");
+        throw httpError(409, "A setting panorama and matching ground are already being prepared.");
       }
 
       environmentGenerationBusy = true;
@@ -222,7 +222,7 @@ async function handleApi(req, res) {
           throw httpError(503, "Codex CLI is not available on this authoring server.");
         }
         if (!codexStatus.authenticated) {
-          throw httpError(409, "Sign in to Codex CLI before generating an environment image.");
+          throw httpError(409, "Sign in to Codex CLI before generating a setting image.");
         }
         const baselineEnvironment = await environmentStore.getState();
         const generated = await generateEnvironmentImageWithCodex({
@@ -261,7 +261,7 @@ async function handleApi(req, res) {
       sweepPendingEnvironmentGenerations();
       const pending = pendingEnvironmentGenerations.get(generationToken);
       if (!pending) {
-        throw httpError(404, "The generated environment is no longer available. Generate it again.");
+        throw httpError(404, "The generated setting is no longer available. Generate it again.");
       }
       pendingEnvironmentGenerations.delete(generationToken);
 
@@ -274,7 +274,7 @@ async function handleApi(req, res) {
       ) {
         throw httpError(
           409,
-          "Environment Enhancement changed while the image was generating. Generate again from the current draft.",
+          "The setting changed while the image was generating. Generate again from the current changes.",
         );
       }
 
@@ -338,20 +338,20 @@ async function handleApi(req, res) {
       const body = await readLimitedJsonBody(req, MAX_ENVIRONMENT_JSON_BYTES);
       const sourceBeatId = requireAuthoredEnvironmentBeat(projectState, body.sourceBeatId, "sourceBeatId");
       if (!Array.isArray(body.targetBeatIds)) {
-        throw httpError(400, "targetBeatIds must be an array of authored beat ids.");
+        throw httpError(400, "Choose one or more target story parts.");
       }
       const targetBeatIds = [...new Set(body.targetBeatIds.map((beatId) => (
         requireAuthoredEnvironmentBeat(projectState, beatId, "targetBeatIds")
       )))];
       if (!targetBeatIds.length) {
-        throw httpError(400, "Select at least one other beat.");
+        throw httpError(400, "Select at least one other story part.");
       }
       if (targetBeatIds.includes(sourceBeatId)) {
-        throw httpError(400, "The source beat cannot also be an apply target.");
+        throw httpError(400, "The source story part cannot also be a target.");
       }
       const expectedRevision = Number(body.expectedRevision);
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
-        throw httpError(400, "expectedRevision must be a non-negative integer.");
+        throw httpError(400, "The saved setting version is invalid. Reload this step and try again.");
       }
       const environmentState = await environmentStore.applyAssignment({
         sourceBeatId,
@@ -619,13 +619,13 @@ async function serveStoryAsset(req, res, url) {
 
 async function serveEnvironmentAsset(req, res) {
   if (req.method !== "GET" && req.method !== "HEAD") {
-    writeJsonResponse(res, 405, { error: "Environment assets support GET and HEAD only." });
+    writeJsonResponse(res, 405, { error: "Setting assets support GET and HEAD only." });
     return;
   }
   const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   const assetPath = environmentStore.assetPathFromUrl(requestUrl.pathname);
   if (!assetPath) {
-    writeJsonResponse(res, 404, { error: "Environment asset not found." });
+    writeJsonResponse(res, 404, { error: "Setting asset not found." });
     return;
   }
   try {
@@ -645,7 +645,7 @@ async function serveEnvironmentAsset(req, res) {
     }
     await pipeline(createReadStream(assetPath), res);
   } catch {
-    if (!res.headersSent) writeJsonResponse(res, 404, { error: "Environment asset not found." });
+    if (!res.headersSent) writeJsonResponse(res, 404, { error: "Setting asset not found." });
     else res.destroy();
   }
 }
@@ -751,21 +751,21 @@ function decorateEnvironmentStateFromDisk(state) {
 async function assertEnvironmentEnhancementReady() {
   const projectState = await loadAuthorProject(authorOptions());
   if (!projectState.readiness?.["environment-enhancement"]?.canGenerate) {
-    throw httpError(409, "Save Spatial Relations before editing Environment Enhancement.");
+    throw httpError(409, "Finish Place objects before editing Set the scene.");
   }
   return projectState;
 }
 
 function requireAuthoredEnvironmentBeat(projectState, value, label = "beatId") {
   const beatId = String(value || "").trim();
-  if (!beatId) throw httpError(400, `${label} is required.`);
+  if (!beatId) throw httpError(400, "A story part is required.");
   const authoredBeatIds = new Set(
     (projectState?.graph?.beats || [])
       .map((beat) => String(beat?.id || "").trim())
       .filter(Boolean),
   );
   if (!authoredBeatIds.has(beatId)) {
-    throw httpError(400, `${label} must identify an authored Source Graph beat.`);
+    throw httpError(400, "Choose a story part from Story order.");
   }
   return beatId;
 }
@@ -824,8 +824,8 @@ function createGeneratedEnvironmentCandidate(generated) {
     provider: "codex-cli",
     providerAssetId: generated.generationId,
     sourceId: generated.generationId,
-    title: shortTitle || "Generated environment",
-    description: `AI-generated 360° environment: ${prompt}`,
+    title: shortTitle || "Generated setting",
+    description: `AI-generated 360° setting: ${prompt}`,
     sourceUrl: null,
     license: null,
     provenance: {

@@ -2,9 +2,9 @@
 
 StoryVR Editor is the shared local authoring system for turning a prepared web
 story capture into an editable StoryVR experience and a compiled WebXR reader.
-This repository contains the editor, adapter, animation probe, reader template,
-and local HTTPS server. Story-specific source files and authored output live in
-separate story folders beside this repository.
+This repository contains the editor, adapter, animation probe, session viewer,
+reader template, and local HTTPS server. Story-specific source files and
+authored output live in separate story folders beside this repository.
 
 ## Prerequisites
 
@@ -85,22 +85,23 @@ Run only one server on port 5188 at a time.
 
 ## Use the authoring workflow
 
-Work through the checkpoints in order:
+Work through the eight participant-facing steps in order:
 
-1. Source Graph
-2. Spatial Relations
-3. Environment Enhancement
-4. Attention Guidance
-5. Dynamics
-6. Transition
-7. Interaction Control
-8. Final Review
+1. Story order
+2. Place objects
+3. Set the scene
+4. Guide attention
+5. Object movement
+6. Scene changes
+7. Reader actions
+8. Review story
 
-Use **Save checkpoint** before moving downstream. If an upstream checkpoint is
-changed later, StoryVR revalidates previously completed downstream work in
-order, preserves steps that are still safe, and stops at the first scene or
-field that needs review. Final Review compiles the current authored decisions
-into:
+Use **Finish this step** before moving downstream. Inside a 3D editor, use
+**Save scene and return** to return to that step's story canvas without
+completing the top-level step. If an earlier step changes, StoryVR revalidates
+completed downstream work in order, preserves steps that are still safe, and
+stops at the first scene or field that needs review. After Review story is
+complete, **Build reader** writes the current authored decisions into:
 
 ```text
 <story-folder>/discovery/storyvr-runtime.json
@@ -112,33 +113,51 @@ The editor keeps one browser-session Undo/Redo history. Use `Command-Z` and
 Windows and Linux.
 
 When a project opens, StoryVR can use the signed-in Codex CLI to generate a
-semantic progress strip for the saved Source Graph. Missing or stale grouping
-is refreshed in the background after the story order is saved; the continuous
-beat and variant graph remains the source of truth.
+semantic progress strip for the saved Story order. Missing or stale grouping
+is refreshed in the background after Story order is finished; the continuous
+story-part and choice graph remains the source of truth.
 
-Spatial Relations flattens probe-verified source layouts into independent GLB
+Place objects flattens probe-verified source layouts into independent GLB
 placements while preserving their shared framing, relative transforms, and
-beat-specific visibility. Each object can then be edited and reset on its own.
+story-part-specific visibility. Each object can then be edited and reset on its own.
 The canvas supports drag-box selection, Shift additive selection, Command/Ctrl
 toggling, right-drag orbiting, and middle-drag panning.
 
-Environment Enhancement is a Generate-only flow that uses the signed-in Codex
-CLI to create a beat-scoped panorama and matching near-ground texture. Attention
-Guidance can target a visible GLB, named part, image plane, or a manually placed
-scene point; the compiled reader uses a sparkle plus an edge arrow until the
-reader reaches the target.
+Set the scene is a Generate-only flow that uses the signed-in Codex CLI to
+create a story-part-scoped panorama and matching near-ground texture. Guide
+attention can target a visible GLB, named part, image plane, or a manually
+placed scene point; the built reader uses a sparkle plus an edge arrow until
+the reader reaches the target.
 
-Interaction Control uses one shared Quest controller mapping across
-controller-button transitions. Its defaults keep A/X for next/back, use the
+Reader actions uses one shared Quest controller mapping across
+controller-button scene changes. Its defaults keep A/X for Next/Previous, use the
 left stick for continuous forward/backward movement and strafing, and use the
 right stick for 45-degree snap turns, ground-plane teleport on Up, and a
 180-degree turn on Down. Locomotion stays on directional stick inputs; Trigger
 and Grip remain reserved for UI rays and grabbing.
 
+### Optional session data collection
+
+The editor's **Data collection** switch is off by default. Turning it on records
+clicks and selected 3D actions without recording typed values. Turning it off
+downloads a local `storyvr-interaction-log/v1` JSON file.
+
+Open exported logs in the local session viewer:
+
+```sh
+npm run storyvr:workflow
+```
+
+Then open <http://127.0.0.1:5197/> and import one or more log files. The viewer
+shows the step timeline, click pace and locations, pauses, 3D actions, and
+evidence-linked moments to review. Imported logs stay local unless **Review
+current session** is selected; that optional action sends only a compact
+summary to Codex.
+
 ### Optional AI features
 
-StoryVR remains usable without an AI login, but Source Graph progress grouping,
-environment generation, and some motion-generation features require a signed-in
+StoryVR remains usable without an AI login, but Story order progress grouping,
+setting generation, and some movement-generation features require a signed-in
 Codex CLI:
 
 ```sh
@@ -158,7 +177,8 @@ environment panorama and matching-ground generation require the Codex CLI.
 
 ## Build and preview the WebXR reader
 
-After compiling in Final Review, build a generic story reader:
+After selecting **Build reader** in Review story, you can also rebuild a generic
+story reader directly:
 
 ```sh
 STORY_SLUG=my-story
@@ -220,6 +240,7 @@ Detailed subsystem documentation is available in:
 - `tools/storyvr-adapter/README.md`
 - `tools/animation-logic-probe/README.md`
 - `tools/environment-enhancement-lab/README.md`
+- `tools/storyvr-workflow-lens/README.md`
 
 ## Verify the installation
 

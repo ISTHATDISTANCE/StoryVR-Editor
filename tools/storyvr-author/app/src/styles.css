@@ -222,6 +222,13 @@ h3 {
   letter-spacing: -0.025em;
 }
 
+.product-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 .history-controls {
   display: flex;
   flex: 0 0 auto;
@@ -254,6 +261,106 @@ h3 {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.9;
+}
+
+.interaction-log-control {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.35rem 0.45rem 0.35rem 0.75rem;
+  border: 1px solid rgba(16, 32, 28, 0.11);
+  border-radius: 14px;
+  background: rgba(255, 253, 244, 0.68);
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.interaction-log-control.is-on {
+  border-color: rgba(0, 127, 115, 0.34);
+  background: rgba(225, 245, 239, 0.84);
+  box-shadow: inset 0 0 0 1px rgba(0, 127, 115, 0.07);
+}
+
+.interaction-log-control.is-error {
+  border-color: rgba(177, 46, 75, 0.38);
+  background: rgba(255, 240, 242, 0.9);
+}
+
+.interaction-log-copy {
+  display: grid;
+  min-width: 96px;
+  gap: 0.08rem;
+  line-height: 1.12;
+}
+
+.interaction-log-copy strong {
+  color: var(--ink);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.interaction-log-copy small {
+  max-width: 138px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.65rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.interaction-log-switch {
+  display: block;
+  width: 46px;
+  height: 28px;
+  min-width: 46px;
+  border: 0;
+  border-radius: 999px;
+  padding: 2px;
+  background: transparent;
+  line-height: 1;
+  overflow-wrap: normal;
+}
+
+.interaction-log-switch:hover:not(:disabled) {
+  border-color: transparent;
+  transform: none;
+}
+
+.interaction-log-switch-track {
+  display: block;
+  width: 42px;
+  height: 24px;
+  padding: 3px;
+  border: 1px solid rgba(16, 32, 28, 0.18);
+  border-radius: 999px;
+  background: #cbd6d1;
+  box-shadow: inset 0 1px 2px rgba(16, 32, 28, 0.14);
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.interaction-log-switch-track > span {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fffdf4;
+  box-shadow: 0 1px 4px rgba(16, 32, 28, 0.28);
+  transition: transform 160ms ease;
+}
+
+.interaction-log-switch[aria-checked="true"] .interaction-log-switch-track {
+  border-color: #007f73;
+  background: #007f73;
+}
+
+.interaction-log-switch[aria-checked="true"] .interaction-log-switch-track > span {
+  transform: translateX(18px);
+}
+
+.interaction-log-control.is-saving .interaction-log-switch-track {
+  background: #95aaa3;
 }
 
 .story-summary {
@@ -2253,7 +2360,7 @@ button.source-graph-link-handle:hover:not(:disabled) {
   -webkit-line-clamp: 5;
 }
 
-.source-graph-beat-card:hover {
+.source-graph-beat-card:hover:not(.transition-story-beat-card) {
   border-color: rgba(0, 127, 115, 0.48);
   transform: translateY(-2px);
 }
@@ -4763,7 +4870,7 @@ dd {
   white-space: normal;
 }
 
-.dynamic-story-beat-card:hover:not(:disabled),
+.dynamic-story-beat-card:hover:not(:disabled):not(.transition-story-beat-card),
 .dynamic-story-beat-card:focus-visible {
   border-color: rgba(0, 127, 115, 0.64);
   outline: 4px solid rgba(0, 127, 115, 0.14);
@@ -4971,10 +5078,6 @@ dd {
   cursor: default;
 }
 
-.transition-story-beat-card:hover {
-  transform: none;
-}
-
 .dynamic-scene-context-bar > p {
   flex: 1 1 24rem;
   max-width: 54rem;
@@ -4987,7 +5090,7 @@ dd {
 .procedural-dynamics-authoring {
   display: grid;
   gap: 0.85rem;
-  margin-top: 1rem;
+  margin: 0;
   border: 1px solid rgba(0, 127, 115, 0.22);
   border-radius: 20px;
   padding: 1rem;
@@ -5055,6 +5158,27 @@ dd {
   display: flex;
   flex-wrap: wrap;
   gap: 0.55rem;
+}
+
+.dynamic-generation-sidebar-card .procedural-dynamics-heading,
+.dynamic-generation-sidebar-card .procedural-dynamics-plan-summary > div,
+.dynamic-generation-sidebar-card .procedural-dynamics-impact-head,
+.dynamic-generation-sidebar-card .procedural-dynamics-impact-asset-diff,
+.dynamic-generation-sidebar-card .procedural-dynamics-impact-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.dynamic-generation-sidebar-card .procedural-dynamics-scope {
+  justify-self: start;
+}
+
+.dynamic-generation-sidebar-card .procedural-dynamics-actions {
+  display: grid;
+}
+
+.dynamic-generation-sidebar-card .procedural-dynamics-actions > * {
+  width: 100%;
 }
 
 .procedural-dynamics-plan-summary {
@@ -6210,8 +6334,10 @@ dd {
 }
 
 .environment-story-card-footer {
-  display: grid;
-  gap: 0.24rem;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
   border-top: 1px solid rgba(255, 255, 255, 0.22);
   padding-top: 0.62rem;
   color: rgba(255, 253, 244, 0.78);
@@ -6221,10 +6347,11 @@ dd {
 
 .environment-story-card-footer em {
   overflow: hidden;
-  color: #a7efdd;
+  color: var(--accent-2);
   font-style: normal;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-transform: uppercase;
 }
 
 .environment-catalog,
@@ -9022,8 +9149,16 @@ button.interaction-ui-button-preview:hover:not(:disabled) {
 }
 
 .spatial-scene-card-footer em {
-  color: var(--accent);
+  color: var(--accent-2);
   font-style: normal;
+  text-transform: uppercase;
+}
+
+.story-canvas-changed-indicator {
+  color: var(--accent-2);
+  font-style: normal;
+  font-weight: 900;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
 }
 
@@ -9154,16 +9289,6 @@ button.interaction-ui-button-preview:hover:not(:disabled) {
   padding: 0.55rem 0.62rem;
   background: rgba(255, 255, 255, 0.82);
   color: var(--ink);
-}
-
-.spatial-current-beat {
-  overflow: hidden;
-  margin: 0.65rem 0 0.42rem;
-  color: var(--accent);
-  font-size: 0.75rem;
-  font-weight: 900;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .spatial-hierarchy-scroll {
@@ -9645,7 +9770,7 @@ canvas.spatial-editor-mouse-controls:active {
 }
 
 .attention-workbench-sidebar > .attention-marker-hierarchy {
-  max-height: clamp(300px, 38vh, 380px);
+  max-height: clamp(420px, 56vh, 610px);
 }
 
 .attention-manual-target-controls {
@@ -9655,50 +9780,68 @@ canvas.spatial-editor-mouse-controls:active {
   padding: 0 0 0.8rem;
 }
 
-.attention-manual-target-controls label {
+.attention-target-object-hierarchy {
   display: grid;
-  gap: 0.3rem;
+  gap: 0.4rem;
+  min-height: 0;
+  border: 1px solid rgba(16, 32, 28, 0.1);
+  border-radius: 16px;
+  padding: 0.55rem;
+  background: rgba(16, 32, 28, 0.035);
 }
 
-.attention-manual-target-controls label > span {
-  color: var(--muted);
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.035em;
-  text-transform: uppercase;
+.attention-target-object-hierarchy .spatial-hierarchy-group-head {
+  margin: 0;
+  padding: 0 0.12rem;
 }
 
-.attention-manual-target-controls select,
+.attention-target-object-scroll {
+  max-height: clamp(92px, 16vh, 172px);
+}
+
+.attention-target-object-item {
+  min-height: 36px;
+  border-radius: 11px;
+  padding: 0.42rem 0.52rem;
+  background: rgba(255, 253, 244, 0.78);
+  font-size: 0.73rem;
+}
+
+.attention-target-object-item:hover:not(:disabled) {
+  background: rgba(255, 253, 244, 0.98);
+  transform: none;
+}
+
 .attention-manual-target-controls button {
   width: 100%;
 }
 
-.attention-manual-target-controls select {
-  min-height: 42px;
-  border: 1px solid rgba(16, 32, 28, 0.14);
+.attention-target-object-item:disabled {
+  opacity: 0.52;
+}
+
+.attention-no-target-objects {
+  margin: 0;
+  border: 1px dashed rgba(16, 32, 28, 0.18);
   border-radius: 12px;
-  padding: 0.55rem 0.65rem;
-  background: rgba(255, 255, 255, 0.82);
-  color: var(--ink);
-  font: inherit;
-  font-size: 0.78rem;
-  font-weight: 750;
+  padding: 0.72rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-align: center;
 }
 
-.attention-manual-target-controls select:focus-visible {
-  border-color: var(--accent);
-  outline: 3px solid rgba(0, 127, 115, 0.14);
-  outline-offset: 1px;
-}
-
-.attention-manual-target-controls button {
+.attention-manual-target-controls > button {
+  min-height: 48px;
+  border-radius: 999px;
   border-color: rgba(0, 127, 115, 0.3);
   background: rgba(0, 127, 115, 0.08);
   color: var(--accent);
+  font-size: 0.85rem;
   font-weight: 900;
+  white-space: nowrap;
 }
 
-.attention-manual-target-controls button.selected {
+.attention-manual-target-controls > button.selected {
   border-color: var(--accent);
   background: var(--accent);
   color: #fffdf4;
@@ -9751,11 +9894,6 @@ canvas.spatial-editor-mouse-controls:active {
 .attention-empty-targets.is-rejected {
   border-color: rgba(198, 119, 23, 0.4);
   background: rgba(255, 248, 224, 0.72);
-}
-
-.attention-transform-toolbar .selected:disabled {
-  cursor: default;
-  opacity: 1;
 }
 
 .attention-kind-pill {
@@ -9953,6 +10091,12 @@ canvas.spatial-editor-mouse-controls:active {
   font-size: 0.64rem;
   font-weight: 900;
   text-transform: uppercase;
+}
+
+.final-review-story-beat-summary .story-canvas-changed-indicator {
+  justify-self: end;
+  color: var(--accent-2);
+  font-size: 0.58rem;
 }
 
 .final-review-story-variant-branch {
@@ -11101,11 +11245,32 @@ canvas.spatial-editor-mouse-controls:active {
     font-size: 1.3rem;
   }
 
+  .product-actions {
+    gap: 0.3rem;
+  }
+
+  .history-controls {
+    gap: 0.25rem;
+  }
+
   .history-controls button {
     width: 36px;
     height: 36px;
     min-width: 36px;
     border-radius: 10px;
+  }
+
+  .interaction-log-control {
+    min-height: 36px;
+    gap: 0;
+    padding: 0.2rem;
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .interaction-log-copy {
+    display: none;
   }
 
   .story-summary {
@@ -11300,5 +11465,281 @@ canvas.spatial-editor-mouse-controls:active {
   .timeline-list span {
     width: 32px;
     height: 32px;
+  }
+}
+
+/* Shared spatial design language */
+.eyebrow {
+  margin: 0 0 0.28rem;
+  color: #49635c;
+  font-size: 0.7rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+
+:where(button, input, textarea, select, summary):focus-visible {
+  outline: 3px solid rgba(0, 127, 115, 0.2);
+  outline-offset: 2px;
+}
+
+#app[data-workspace-mode="spatial"] {
+  padding-top: 16px;
+}
+
+#app[data-workspace-mode="spatial"] .app-header {
+  margin-bottom: 12px;
+  border-radius: 18px;
+  box-shadow: 0 10px 28px rgba(29, 59, 50, 0.09);
+}
+
+#app[data-workspace-mode="spatial"] .product-bar {
+  min-height: 54px;
+  padding: 0.55rem 1rem;
+}
+
+#app[data-workspace-mode="spatial"] .storyvr-mark {
+  width: 32px;
+  height: 32px;
+  flex-basis: 32px;
+  border-radius: 9px;
+}
+
+#app[data-workspace-mode="spatial"] .storyvr-mark svg {
+  width: 24px;
+  height: 24px;
+}
+
+#app[data-workspace-mode="spatial"] .product-title {
+  font-size: 1.32rem;
+}
+
+#app[data-workspace-mode="spatial"] .story-summary {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.22rem 0.85rem;
+  padding: 0.58rem 1rem 0.65rem;
+}
+
+#app[data-workspace-mode="spatial"] .story-summary > .eyebrow {
+  grid-column: 1 / -1;
+}
+
+#app[data-workspace-mode="spatial"] .story-title {
+  grid-column: 1;
+  font-size: 1rem;
+}
+
+#app[data-workspace-mode="spatial"] .story-project-details {
+  grid-column: 2;
+}
+
+#app[data-workspace-mode="spatial"] .flow {
+  margin-bottom: 12px;
+  padding-bottom: 0;
+}
+
+#app[data-workspace-mode="spatial"] .flow-step {
+  min-height: 64px;
+  padding-block: 0.52rem;
+}
+
+#app[data-workspace-mode="spatial"] .flow-step small {
+  font-size: 0.68rem;
+}
+
+#app[data-workspace-mode="spatial"] .panel {
+  border-radius: 22px;
+  padding: 1rem;
+  box-shadow: 0 16px 38px rgba(29, 59, 50, 0.11);
+}
+
+#app[data-workspace-mode="spatial"] .panel-head {
+  margin-bottom: 0.72rem;
+}
+
+.storyvr-spatial-sidebar-card {
+  border: 1px solid rgba(16, 32, 28, 0.1);
+  border-radius: 20px;
+  padding: 0.85rem;
+  background: rgba(255, 253, 244, 0.9);
+}
+
+.storyvr-spatial-workbench > .storyvr-spatial-surface {
+  min-width: 0;
+}
+
+.storyvr-spatial-sidebar-card .spatial-inspector-head {
+  gap: 0.65rem;
+}
+
+.storyvr-spatial-sidebar-card .dynamic-scene-motion-pill {
+  max-width: 100%;
+  white-space: normal;
+}
+
+.storyvr-spatial-sidebar-card > .muted:last-child {
+  margin-bottom: 0;
+}
+
+.storyvr-spatial-surface {
+  gap: 0.78rem;
+  border: 1px solid rgba(0, 127, 115, 0.18);
+  border-radius: 24px;
+  padding: 1rem;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(0, 127, 115, 0.07), transparent 20rem),
+    linear-gradient(145deg, rgba(255, 253, 244, 0.97), rgba(244, 249, 242, 0.91));
+  box-shadow: 0 12px 30px rgba(29, 59, 50, 0.06);
+}
+
+.storyvr-spatial-surface-head {
+  align-items: flex-start;
+  margin: 0;
+  padding-bottom: 0.72rem;
+  border-bottom: 1px solid rgba(16, 32, 28, 0.09);
+}
+
+.storyvr-spatial-surface-head :where(h3, p) {
+  margin-top: 0;
+}
+
+.storyvr-spatial-surface-head h3 {
+  margin-bottom: 0.28rem;
+  color: #48625b;
+}
+
+.storyvr-spatial-surface-head p {
+  margin-bottom: 0;
+}
+
+.storyvr-spatial-context {
+  margin: 0;
+  border: 1px solid rgba(0, 127, 115, 0.14);
+  border-radius: 16px;
+  padding: 0.68rem 0.82rem;
+  background: linear-gradient(135deg, rgba(230, 248, 239, 0.66), rgba(255, 253, 244, 0.86));
+}
+
+.storyvr-spatial-toolbar {
+  gap: 0.42rem;
+  margin: 0;
+  border: 1px solid rgba(16, 32, 28, 0.1);
+  border-radius: 16px;
+  padding: 0.55rem;
+  background: linear-gradient(135deg, rgba(255, 253, 244, 0.96), rgba(238, 247, 240, 0.72));
+  box-shadow: none;
+}
+
+.topology-viewer-shell.storyvr-spatial-viewer {
+  overflow: hidden;
+  border-color: rgba(16, 32, 28, 0.16);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(0, 127, 115, 0.13), transparent 12rem),
+    radial-gradient(circle at 22% 24%, rgba(199, 95, 31, 0.09), transparent 9rem),
+    linear-gradient(135deg, #fffdf4, #e4f1ee);
+  box-shadow: inset 0 0 0 1px rgba(255, 253, 244, 0.68);
+}
+
+.topology-viewer-shell.storyvr-spatial-viewer.spatial-viewer-shell {
+  min-height: clamp(480px, 61vh, 660px);
+}
+
+.topology-viewer-shell.storyvr-spatial-viewer.dynamic-viewer-shell,
+.topology-viewer-shell.storyvr-spatial-viewer.inter-beat-viewer-shell {
+  min-height: clamp(480px, 61vh, 660px);
+}
+
+.storyvr-spatial-surface .preview-diagnostics {
+  margin-top: 0;
+}
+
+.dynamic-playback-status {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.inter-beat-selected-beat.storyvr-spatial-context > div {
+  display: grid;
+  gap: 0.14rem;
+}
+
+.inter-beat-selected-beat.storyvr-spatial-context span,
+.inter-beat-selected-beat.storyvr-spatial-context p {
+  margin-top: 0;
+  font-size: 0.72rem;
+}
+
+.topology-viewer-shell.storyvr-spatial-viewer.interaction-inbeat-viewer-shell {
+  min-height: clamp(520px, 66vh, 780px);
+}
+
+.topology-viewer-shell.storyvr-spatial-viewer.final-review-viewer-shell {
+  min-height: clamp(640px, 72vh, 880px);
+}
+
+canvas.spatial-editor-mouse-controls,
+canvas.spatial-editor-mouse-controls:active {
+  cursor: default;
+}
+
+.storyvr-spatial-footer {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+@media (max-width: 780px) {
+  #app[data-workspace-mode="spatial"] {
+    width: min(100% - 20px, 1800px);
+    padding-top: 10px;
+  }
+
+  #app[data-workspace-mode="spatial"] .story-summary {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 0.65rem 0.85rem 0.72rem;
+  }
+
+  #app[data-workspace-mode="spatial"] .story-summary > .eyebrow,
+  #app[data-workspace-mode="spatial"] .story-title,
+  #app[data-workspace-mode="spatial"] .story-project-details {
+    grid-column: 1;
+  }
+
+  #app[data-workspace-mode="spatial"] .panel,
+  .storyvr-spatial-surface,
+  .storyvr-spatial-sidebar-card {
+    border-radius: 18px;
+    padding: 0.82rem;
+  }
+
+  .storyvr-spatial-context,
+  .storyvr-spatial-toolbar {
+    border-radius: 14px;
+  }
+
+  .topology-viewer-shell.storyvr-spatial-viewer.spatial-viewer-shell,
+  .topology-viewer-shell.storyvr-spatial-viewer.dynamic-viewer-shell,
+  .topology-viewer-shell.storyvr-spatial-viewer.inter-beat-viewer-shell,
+  .topology-viewer-shell.storyvr-spatial-viewer.interaction-inbeat-viewer-shell {
+    min-height: clamp(360px, 52vh, 500px);
+  }
+
+  .topology-viewer-shell.storyvr-spatial-viewer.final-review-viewer-shell {
+    min-height: clamp(480px, 60vh, 620px);
+  }
+}
+
+@media (max-width: 680px) {
+  .source-graph-canvas-stage.dynamic-story-canvas-stage,
+  .source-graph-canvas-stage.environment-story-canvas-stage,
+  .source-graph-canvas-stage.interaction-story-canvas-stage,
+  .source-graph-canvas-stage.spatial-story-canvas-stage {
+    min-height: 0;
+    height: auto;
   }
 }

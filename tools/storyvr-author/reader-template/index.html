@@ -19,7 +19,7 @@
   </head>
   <body data-story-slug="__STORY_SLUG__">
     <main class="runtime-shell">
-      <section id="stage" class="stage" aria-label="Interactive StoryVR scene"></section>
+      <section id="stage" class="stage" aria-label="Interactive story scene"></section>
 
       <section class="reader-panel" aria-labelledby="story-title">
         <button
@@ -41,13 +41,13 @@
             hidden
           >
             <strong id="reader-startup-alert-title">Story could not start</strong>
-            <p id="reader-startup-alert-message">The Reader could not finish starting.</p>
+            <p id="reader-startup-alert-message">The interactive story could not finish starting.</p>
             <p class="reader-startup-location">
               <span>Available location</span>
-              <strong id="reader-startup-alert-location">Reader start</strong>
+              <strong id="reader-startup-alert-location">Story start</strong>
               <code id="reader-startup-alert-file" hidden></code>
             </p>
-            <p id="reader-startup-alert-recovery">Check the story files, then reload.</p>
+            <p id="reader-startup-alert-recovery">Check the story data file, then reload.</p>
             <button id="reload-reader" type="button">Reload story</button>
           </section>
           <div class="decision-row" id="decision-row" hidden aria-hidden="true"></div>
@@ -62,7 +62,7 @@
           <div id="variant-controls" class="variant-controls" hidden></div>
           <section id="story-complete" class="story-complete" aria-labelledby="story-complete-title" hidden>
             <strong id="story-complete-title">Story complete</strong>
-            <span>You reached the end of this experience.</span>
+            <span>You reached the end of this story.</span>
             <button id="restart-story" type="button">Restart story</button>
           </section>
         </div>
@@ -73,7 +73,7 @@
         </div>
       </section>
 
-      <nav id="beat-strip" class="beat-strip" aria-label="Choose a story part"></nav>
+      <nav id="beat-strip" class="beat-strip" aria-label="Select a story part"></nav>
       <div id="runtime-status" class="runtime-status" role="status" aria-live="polite">Loading story...</div>
     </main>
     <script type="module" src="./src/main.js"></script>

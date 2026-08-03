@@ -15,9 +15,9 @@ const DEFAULT_MOVEMENT_CUE = Object.freeze({
 });
 
 export const INFINITE_GROUND_MIN_TILE_SIZE_METERS = 512;
-export const INFINITE_GROUND_MAX_TILE_SIZE_METERS = 8192;
 export const INFINITE_GROUND_RECENTER_TARGET_METERS = 8;
 const INFINITE_GROUND_FAR_CORNER_MARGIN = 1.05;
+const INFINITE_GROUND_CENTER_CELL_SIZE_METERS = 64;
 
 const SAND_TEXTURE_SIZE = 512;
 const SAND_TEXTURE_SEED = 0x51a7d;
@@ -109,16 +109,8 @@ export function infiniteGroundSpanForCamera(camera, textureScaleMeters = DEFAULT
     farCornerDistance * 2 * INFINITE_GROUND_FAR_CORNER_MARGIN,
   );
   const powerOfTwoSpan = 2 ** Math.ceil(Math.log2(requiredSpan));
-  // The ground follows the viewer, so this cap limits only the currently
-  // rendered patch, not how far the viewer can travel. It covers the author
-  // panorama camera's 2 km far plane while keeping texture coordinates within
-  // a range that remains stable on the GPU.
-  const boundedSpan = Math.min(
-    INFINITE_GROUND_MAX_TILE_SIZE_METERS,
-    Number.isFinite(powerOfTwoSpan) ? powerOfTwoSpan : requiredSpan,
-  );
   return textureAlignedGroundSpan(
-    boundedSpan,
+    Number.isFinite(powerOfTwoSpan) ? powerOfTwoSpan : requiredSpan,
     textureScaleMeters,
   );
 }
@@ -164,7 +156,8 @@ export function createGroundMovementCue(value, {
   if (!config.enabled) return null;
 
   const fallbackTexture = createSandCanvasTexture(renderer);
-  const geometry = new THREE.BoxGeometry(1, 1, 1);
+  let geometry = new THREE.BoxGeometry(1, 1, 1);
+  let geometrySignature = "bounded";
   const material = new THREE.MeshStandardMaterial({
     color: 0xc7c2b5,
     map: fallbackTexture,
@@ -219,6 +212,11 @@ export function createGroundMovementCue(value, {
   };
 
   function applyTextureRepeat(texture) {
+    if (config.coverage === "infinite") {
+      texture.repeat.set(1, 1);
+      texture.needsUpdate = true;
+      return;
+    }
     const widthMeters = renderedGroundWidth(config, infiniteGroundSpan);
     const depthMeters = renderedGroundDepth(config, infiniteGroundSpan);
     texture.repeat.set(
@@ -229,6 +227,24 @@ export function createGroundMovementCue(value, {
   }
 
   function applyRenderedGroundDimensions() {
+    const nextGeometrySignature = config.coverage === "infinite"
+      ? `infinite:${infiniteGroundSpan}:${config.textureScaleMeters}:${config.widthMeters}:${config.depthMeters}`
+      : "bounded";
+    if (geometrySignature !== nextGeometrySignature) {
+      const nextGeometry = config.coverage === "infinite"
+        ? createInfiniteGroundGeometry(
+          infiniteGroundSpan,
+          config.textureScaleMeters,
+          config.widthMeters,
+          config.depthMeters,
+        )
+        : new THREE.BoxGeometry(1, 1, 1);
+      const previousGeometry = geometry;
+      geometry = nextGeometry;
+      geometrySignature = nextGeometrySignature;
+      mesh.geometry = nextGeometry;
+      previousGeometry.dispose();
+    }
     mesh.scale.set(
       renderedGroundWidth(config, infiniteGroundSpan),
       config.thicknessMeters,
@@ -294,7 +310,9 @@ export function createGroundMovementCue(value, {
 
   const controller = {
     mesh,
-    geometry,
+    get geometry() {
+      return geometry;
+    },
     material,
     get texture() {
       return activeTexture;
@@ -370,6 +388,106 @@ function textureAlignedGroundSpan(value, textureScaleMeters) {
   const evenTexturePeriods = Math.ceil(span / textureScale / 2) * 2;
   const aligned = evenTexturePeriods * textureScale;
   return Number.isFinite(aligned) ? aligned : span;
+}
+
+/**
+ * Builds a single draw-call surface whose cells grow geometrically away from
+ * the viewer. Near cells retain small, precise UV ranges while outer cells can
+ * cover an arbitrarily distant camera far plane without creating millions of
+ * quads. Cell-local wrapped UV origins keep every seam on the same texture
+ * phase, so the generated ground remains fixed in authored world space.
+ */
+function createInfiniteGroundGeometry(
+  spanMeters,
+  textureScaleMeters,
+  boundedWidthMeters,
+  boundedDepthMeters,
+) {
+  const span = finitePositiveNumber(spanMeters, INFINITE_GROUND_MIN_TILE_SIZE_METERS);
+  const textureScale = boundedNumber(
+    textureScaleMeters,
+    DEFAULT_MOVEMENT_CUE.textureScaleMeters,
+    0.02,
+    5,
+  );
+  const axis = infiniteGroundAxisCoordinates(span);
+  // BoxGeometry anchors its top-face texture at the bounded patch's -X/-Z
+  // corner. Retaining those half-dimension offsets keeps the terrain under the
+  // authored origin unchanged when an existing bounded cue becomes infinite.
+  const uOriginOffset = finitePositiveNumber(boundedWidthMeters, DEFAULT_MOVEMENT_CUE.widthMeters) / 2;
+  const vOriginOffset = finitePositiveNumber(boundedDepthMeters, DEFAULT_MOVEMENT_CUE.depthMeters) / 2;
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let zIndex = 0; zIndex < axis.length - 1; zIndex += 1) {
+    const z0 = axis[zIndex];
+    const z1 = axis[zIndex + 1];
+    // Match BoxGeometry's top-face orientation: U increases with X while V
+    // decreases with Z, preserving existing generated-ground alignment.
+    const [v1, v0] = wrappedTextureCoordinateRange(-z1, -z0, textureScale, vOriginOffset);
+    for (let xIndex = 0; xIndex < axis.length - 1; xIndex += 1) {
+      const x0 = axis[xIndex];
+      const x1 = axis[xIndex + 1];
+      const [u0, u1] = wrappedTextureCoordinateRange(x0, x1, textureScale, uOriginOffset);
+      const firstVertex = positions.length / 3;
+      positions.push(
+        x0 / span, 0.5, z0 / span,
+        x0 / span, 0.5, z1 / span,
+        x1 / span, 0.5, z1 / span,
+        x1 / span, 0.5, z0 / span,
+      );
+      normals.push(
+        0, 1, 0,
+        0, 1, 0,
+        0, 1, 0,
+        0, 1, 0,
+      );
+      uvs.push(u0, v0, u0, v1, u1, v1, u1, v0);
+      indices.push(
+        firstVertex, firstVertex + 1, firstVertex + 2,
+        firstVertex, firstVertex + 2, firstVertex + 3,
+      );
+    }
+  }
+
+  const nextGeometry = new THREE.BufferGeometry();
+  nextGeometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  nextGeometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  nextGeometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  nextGeometry.setIndex(indices);
+  nextGeometry.computeBoundingBox();
+  nextGeometry.computeBoundingSphere();
+  nextGeometry.userData.storyvrInfiniteGround = true;
+  nextGeometry.userData.axisCellCount = axis.length - 1;
+  return nextGeometry;
+}
+
+function infiniteGroundAxisCoordinates(spanMeters) {
+  const halfSpan = spanMeters / 2;
+  const positive = [0];
+  let coordinate = Math.min(INFINITE_GROUND_CENTER_CELL_SIZE_METERS, halfSpan);
+  while (coordinate < halfSpan) {
+    positive.push(coordinate);
+    coordinate *= 2;
+  }
+  if (positive.at(-1) !== halfSpan) positive.push(halfSpan);
+  return [
+    ...positive.slice(1).reverse().map((value) => -value),
+    ...positive,
+  ];
+}
+
+function wrappedTextureCoordinateRange(
+  startMeters,
+  endMeters,
+  textureScaleMeters,
+  originOffsetMeters = 0,
+) {
+  const startPeriods = (startMeters + originOffsetMeters) / textureScaleMeters;
+  const startPhase = ((startPeriods % 1) + 1) % 1;
+  return [startPhase, startPhase + (endMeters - startMeters) / textureScaleMeters];
 }
 
 function finiteCoordinate(value, fallback) {
