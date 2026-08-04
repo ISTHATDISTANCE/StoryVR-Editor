@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "storyvr-study-extension-config/v2",
+  "studyConfigId": "storyvr-consented-original-pages-v1",
+  "displayName": "StoryVR original-story study",
+  "controllerPages": [
+    {
+      "pageKey": "storyvr-author-127",
+      "origin": "http://127.0.0.1:5188",
+      "pathPrefix": "/"
+    },
+    {
+      "pageKey": "storyvr-author-localhost",
+      "origin": "http://localhost:5188",
+      "pathPrefix": "/"
+    }
+  ],
+  "originalPageConsent": {
+    "captureScrollDepth": true,
+    "allowControlLabelConsent": true
+  }
+}

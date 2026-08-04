@@ -55,7 +55,13 @@ import {
   AuthorHistory,
   historyShortcutForEvent,
 } from "./author-history.js";
-import { createInteractionLogger } from "./interaction-log.js";
+import {
+  createInteractionLogger,
+} from "./interaction-log.js";
+import {
+  createStoryvrStudyExtensionBridge,
+  mergeStoryvrStudyExtensionEvents,
+} from "./study-extension-bridge.js";
 import {
   createGroundMovementCue,
   normalizeGroundMovementCue,
@@ -110,6 +116,9 @@ const IN_BEAT_INTERACTIONS_SCHEMA = "storyvr-in-beat-interactions/v1";
 const CURRENT_SPATIAL_RELATIONS_INFERENCE_VERSION = "per-scene-exact-assets-v3";
 const SPATIAL_TRANSFORM_POSITION_LIMIT = 1_000_000;
 const SPATIAL_TRANSFORM_SCALE_LIMIT = 1_000_000;
+const STORY_BUILD_STATUS_POLL_MS = 500;
+const STORY_BUILD_STATUS_RETRY_MS = 750;
+const STORY_BUILD_STATUS_MAX_CONSECUTIVE_FAILURES = 3;
 const INTERACTION_DIRECTIONAL_THUMBSTICK_INPUTS = new Set([
   "thumbstick-up",
   "thumbstick-down",
@@ -463,6 +472,18 @@ const state = {
     attemptedSignature: "",
     flowDirty: false,
   },
+  storyBuildUi: {
+    busy: false,
+    phase: "idle",
+    status: "",
+    error: false,
+    requestId: 0,
+    jobId: null,
+    output: null,
+    noticeVisible: false,
+    authoringGeneration: 0,
+    startedAuthoringGeneration: 0,
+  },
   historySessionId: null,
   historyCheckpointId: null,
   historyCheckpointSignature: "",
@@ -472,7 +493,10 @@ const state = {
 };
 
 const authorHistory = new AuthorHistory({
-  onChange: () => updateHistoryControlsDom(),
+  onChange: () => {
+    updateHistoryControlsDom();
+    markStoryBuildAuthoringChange();
+  },
 });
 const pendingStoryvrCheckpointCompletions = new Set();
 let historyFinalizePromise = Promise.resolve();
@@ -549,11 +573,61 @@ const api = {
   },
 };
 
+const studyExtensionBridge = createStoryvrStudyExtensionBridge();
 const interactionLogger = createInteractionLogger({
   getContext: interactionLogContext,
+  onCollectionStarted: (session) => studyExtensionBridge.startSession(session),
+  prepareCheckpoint: prepareInteractionLogCheckpoint,
+  transformCheckpoint: (payload, extensionSnapshot) => (
+    mergeStoryvrStudyExtensionEvents(payload, extensionSnapshot)
+  ),
+  commitCheckpoint: commitInteractionLogCheckpoint,
+  abortCheckpoint: abortInteractionLogCheckpoint,
+});
+studyExtensionBridge.subscribeCheckpointRequests(({ reason }) => {
+  interactionLogger.requestCheckpoint(reason || "extension-buffer");
 });
 interactionLogger.start();
 interactionLogger.subscribe(updateInteractionLogControlsDom);
+
+function prepareInteractionLogCheckpoint({ sessionId, checkpointedAt, endedAt, final }) {
+  return final
+    ? studyExtensionBridge.prepareExport({ sessionId, endedAt })
+    : studyExtensionBridge.prepareCheckpoint({ sessionId, checkpointedAt });
+}
+
+async function commitInteractionLogCheckpoint(preparation, { sessionId, final }) {
+  if (!preparation?.connected || !preparation?.prepared) return;
+  const response = final
+    ? await studyExtensionBridge.commitExport({
+      sessionId,
+      exportToken: preparation.exportToken,
+    })
+    : await studyExtensionBridge.commitCheckpoint({
+      sessionId,
+      checkpointToken: preparation.checkpointToken,
+    });
+  if (!response?.connected || !response?.committed) {
+    throw new Error(final
+      ? "The cross-tab study buffer could not be confirmed as finalized."
+      : "The cross-tab study buffer could not be confirmed as checkpointed.");
+  }
+}
+
+async function abortInteractionLogCheckpoint(preparation, { sessionId, final }) {
+  if (!preparation?.connected || !preparation?.prepared) return;
+  if (final) {
+    await studyExtensionBridge.abortExport({
+      sessionId,
+      exportToken: preparation.exportToken,
+    });
+    return;
+  }
+  await studyExtensionBridge.abortCheckpoint({
+    sessionId,
+    checkpointToken: preparation.checkpointToken,
+  });
+}
 
 function interactionLogContext() {
   const story = state.data?.project?.story;
@@ -603,7 +677,7 @@ function renderInteractionLogControl() {
         aria-label="${snapshot.enabled ? "Turn off" : "Turn on"} interaction data collection"
         aria-describedby="interaction-log-switch-state"
         data-interaction-log-toggle
-        ${snapshot.saving ? "disabled" : ""}
+        ${snapshot.saving || snapshot.starting ? "disabled" : ""}
       >
         <span class="interaction-log-switch-track" aria-hidden="true"><span></span></span>
         <span class="sr-only" id="interaction-log-switch-state">${escapeHtml(status)}</span>
@@ -613,18 +687,20 @@ function renderInteractionLogControl() {
 }
 
 function interactionLogControlStateClass(snapshot) {
-  if (snapshot.saving) return "is-saving";
-  if (["canceled", "error", "limit-reached"].includes(snapshot.status)) return "is-error";
+  if (snapshot.saving || snapshot.starting || snapshot.checkpointing) return "is-saving";
+  if (["location-canceled", "error", "limit-reached"].includes(snapshot.status)) return "is-error";
   if (snapshot.enabled) return "is-on";
   if (snapshot.status === "saved") return "is-saved";
   return "is-off";
 }
 
 function interactionLogStatusText(snapshot) {
+  if (snapshot.starting) return "Choose folder…";
   if (snapshot.saving) return "Saving…";
-  if (snapshot.status === "canceled") return "Save canceled · collection remains on";
-  if (snapshot.status === "error") return "Save failed · collection remains on";
-  if (snapshot.status === "limit-reached") return "Cache full · save to continue";
+  if (snapshot.checkpointing) return "Writing…";
+  if (snapshot.status === "location-canceled") return "Folder not selected";
+  if (snapshot.status === "error") return snapshot.enabled ? "Write failed · retrying" : "Location unavailable";
+  if (snapshot.status === "limit-reached") return "Buffer full · retrying";
   if (snapshot.enabled) return "On";
   if (snapshot.status === "saved") return "Saved";
   return "Off";
@@ -637,7 +713,7 @@ function updateInteractionLogControlsDom(snapshot = interactionLogger.snapshot()
   control.classList.add(interactionLogControlStateClass(snapshot));
   const toggle = control.querySelector("[data-interaction-log-toggle]");
   if (toggle) {
-    toggle.disabled = snapshot.saving;
+    toggle.disabled = snapshot.saving || snapshot.starting;
     toggle.setAttribute("aria-checked", String(snapshot.enabled));
     toggle.setAttribute("aria-label", `${snapshot.enabled ? "Turn off" : "Turn on"} interaction data collection`);
   }
@@ -1220,6 +1296,7 @@ function replaceStoryvrBrowserNavigation(route) {
 function markStoryvrCheckpointCompletionPending(componentId = state.activeId) {
   if (componentId && componentId !== "source-graph") {
     pendingStoryvrCheckpointCompletions.add(componentId);
+    markStoryBuildAuthoringChange();
   }
 }
 
@@ -1373,8 +1450,8 @@ function storyvrRouteOwnsCheckpointCompletion(route) {
   return !route?.editorScene || route?.componentId === "transition-pacing";
 }
 
-async function prepareStoryvrRouteExit(fromRoute, toRoute) {
-  if (storyvrNavigationRoutesEqual(fromRoute, toRoute)) return false;
+async function prepareStoryvrRouteExit(fromRoute, toRoute, options = {}) {
+  if (storyvrNavigationRoutesEqual(fromRoute, toRoute) && options.persistSameRoute !== true) return false;
   await synchronizeActiveStoryvrAuthoringControl();
   const componentId = fromRoute.componentId;
   const componentChanged = componentId !== toRoute.componentId;
@@ -1432,10 +1509,18 @@ async function requestStoryvrBrowserNavigation(route, options = {}) {
   storyvrNavigationRequestPromise = (async () => {
     const fromRoute = currentStoryvrBrowserNavigation();
     let navigation = normalizeStoryvrBrowserNavigation(route);
-    if (storyvrNavigationRoutesEqual(fromRoute, navigation)) return false;
+    const refreshBeforeApply = options.refreshBeforeApply === true;
+    if (storyvrNavigationRoutesEqual(fromRoute, navigation) && !refreshBeforeApply) return false;
     try {
-      await prepareStoryvrRouteExit(fromRoute, navigation);
+      await prepareStoryvrRouteExit(fromRoute, navigation, {
+        persistSameRoute: refreshBeforeApply,
+      });
+      if (refreshBeforeApply) await refresh(false);
       navigation = normalizeStoryvrBrowserNavigation(route);
+      if (storyvrNavigationRoutesEqual(currentStoryvrBrowserNavigation(), navigation)) {
+        applyStoryvrBrowserNavigation(navigation);
+        return true;
+      }
       if (options.mode === "back") {
         window.history.back();
         return true;
@@ -1881,6 +1966,7 @@ function render() {
   const storyTitle = state.data.project.story.title || state.data.project.story.slug;
   const storyName = storyHeaderEyebrow(state.data);
   const environmentGenerationActivity = renderEnvironmentGenerationActivity();
+  const storyBuildActivity = renderStoryBuildActivity();
   app.innerHTML = `
     <header class="app-header">
       <div class="product-bar">
@@ -1922,7 +2008,10 @@ function render() {
     <nav class="flow" aria-label="Story steps" style="--flow-step-count: ${Math.max(flowComponents.length, 1)}">
       ${flowComponents.map((component) => renderFlowButton(component)).join("")}
     </nav>
-    <div class="background-task-region" data-environment-generation-activity ${environmentGenerationActivity ? "" : "hidden"}>${environmentGenerationActivity}</div>
+    <div class="background-task-region" data-background-task-region ${environmentGenerationActivity || storyBuildActivity ? "" : "hidden"}>
+      <div data-environment-generation-activity ${environmentGenerationActivity ? "" : "hidden"}>${environmentGenerationActivity}</div>
+      <div data-story-build-activity ${storyBuildActivity ? "" : "hidden"}>${storyBuildActivity}</div>
+    </div>
     <section class="layout ${layoutClass} ${isSourceGraph && showSidebar ? "source-layout" : ""}">
       ${showSidebar ? `<aside class="sidebar">
         ${renderCodexAuth()}
@@ -2120,7 +2209,7 @@ function stageErrorLocation(componentId, output = state.output) {
   const locatedComponentId = stageErrorComponentId(componentId, diagnostic);
   const component = componentById(locatedComponentId);
   const stageLabel = diagnosticComponentId === "compile"
-    ? "Build reader"
+    ? "Build story"
     : participantComponentLabel(locatedComponentId, component?.label);
   const parts = [
     `Step: ${stageLabel}`,
@@ -2167,7 +2256,7 @@ function stageErrorLocation(componentId, output = state.output) {
 function stageErrorRecovery(componentId, output = state.output) {
   const diagnostic = firstStageErrorDiagnostic(output);
   if (diagnostic?.code === "READER_DIST_BUILD_FAILED") {
-    return "Ask the facilitator to fix the reader build, then select “Build reader” again.";
+    return "Ask the facilitator to fix the reader build, then select “Build story” again.";
   }
   const locatedComponentId = stageErrorComponentId(componentId, diagnostic);
   const requestedComponentId = componentId || state.activeId;
@@ -2190,7 +2279,7 @@ function stageErrorRecovery(componentId, output = state.output) {
       : "Review the story parts, then select “Finish this step” again.";
   }
   if (locatedComponentId === "transition-pacing") {
-    return "Open the named step, correct it, then select “Build reader” again.";
+    return "Open the named step, correct it, then select “Build story” again.";
   }
   if (locatedComponentId === "interaction-control" && activeStageSceneContext(locatedComponentId)) {
     return "Review the settings in this scene, then try the action again.";
@@ -2585,9 +2674,7 @@ function updateCheckpointStatusDom(componentId = state.activeId) {
   }
   const compileButton = document.querySelector('[data-action="compile"]');
   if (compileButton) {
-    compileButton.disabled = state.busy
-      || state.graphDirty
-      || checkpointComponents().some((component) => !checkpointIsCurrent(component.id) || checkpointHasLocalDraft(component.id));
+    compileButton.disabled = state.busy || state.storyBuildUi.busy || !storyBuildCanStart();
   }
 }
 
@@ -5236,7 +5323,7 @@ function updateGraphDraftFromState({ storyFlowChanged = false } = {}) {
 function markGraphDirty({ storyFlowChanged = false } = {}) {
   state.graphDirty = true;
   if (storyFlowChanged) markStoryCanvasGroupingDraftDirty();
-  if (state.output?.kind === "compile") state.output = { ...state.output, stale: true };
+  markStoryBuildAuthoringChange();
 }
 
 function markStoryCanvasGroupingDraftDirty() {
@@ -8839,6 +8926,13 @@ function updateEnvironmentGenerationActivityDom() {
   region.hidden = !activity;
   region.innerHTML = activity;
   bindEnvironmentGenerationActivityEvents();
+  updateBackgroundTaskRegionVisibility();
+}
+
+function updateBackgroundTaskRegionVisibility() {
+  const region = document.querySelector("[data-background-task-region]");
+  if (!region) return;
+  region.hidden = [...region.children].every((child) => child.hidden);
 }
 
 function bindEnvironmentGenerationActivityEvents() {
@@ -8851,6 +8945,174 @@ function bindEnvironmentGenerationActivityEvents() {
     state.environmentUi.generationNoticeVisible = false;
     updateEnvironmentGenerationActivityDom();
   });
+}
+
+function storyBuildStaleStatus() {
+  return "The story changed after this build started. Build again to include the latest changes.";
+}
+
+function storyBuildRunningStatus() {
+  return "Building the WebXR story in the background. You can keep using StoryVR.";
+}
+
+function markStoryBuildAuthoringChange() {
+  const buildUi = state.storyBuildUi;
+  buildUi.authoringGeneration += 1;
+  if (buildUi.busy || buildUi.output?.kind !== "compile") return;
+  const alreadyStale = buildUi.phase === "stale" && buildUi.output.stale === true;
+  buildUi.phase = "stale";
+  buildUi.status = storyBuildStaleStatus();
+  buildUi.error = false;
+  buildUi.output = { ...buildUi.output, stale: true };
+  buildUi.noticeVisible = true;
+  if (!alreadyStale) updateStoryBuildDom();
+}
+
+function storyBuildActivityTitle() {
+  if (state.storyBuildUi.phase === "building") return "Building story";
+  if (state.storyBuildUi.phase === "ready") return "Story built";
+  if (state.storyBuildUi.phase === "stale") return "Build out of date";
+  if (state.storyBuildUi.phase === "error") return "Build needs attention";
+  return "Story build";
+}
+
+function storyBuildErrorComponentFromMessage(error) {
+  const message = String(error || "");
+  const componentPatterns = [
+    ["source-graph", /\b(?:Source Graph|Story order)\b/i],
+    [SPATIAL_RELATIONS_COMPONENT_ID, /\b(?:Spatial Relations|Place objects)\b/i],
+    ["environment-enhancement", /\b(?:Environment Enhancement|Set the scene)\b/i],
+    [ATTENTION_GUIDANCE_COMPONENT_ID, /\b(?:Attention Guidance|Guide attention)\b/i],
+    ["dynamic-geometry", /\b(?:Dynamic Geometry|Dynamics|Object movement)\b/i],
+    ["inter-beat-dynamics", /\b(?:Inter-beat Dynamics|Transition|Scene changes)\b/i],
+    ["interaction-control", /\b(?:Interaction Control|Reader actions)\b/i],
+  ];
+  return componentPatterns.find(([, pattern]) => pattern.test(message))?.[0] || null;
+}
+
+function storyBuildActivityAction() {
+  let componentId = "transition-pacing";
+  if (state.storyBuildUi.phase === "error") {
+    const output = storyBuildOutput();
+    const diagnostic = firstStageErrorDiagnostic(output);
+    componentId = diagnostic
+      ? stageErrorComponentId("transition-pacing", diagnostic)
+      : storyBuildErrorComponentFromMessage(output?.error || state.storyBuildUi.status) || componentId;
+  }
+  if (componentId === "transition-pacing") {
+    return { componentId, label: "View build" };
+  }
+  const component = componentById(componentId);
+  return {
+    componentId,
+    label: `Open ${participantComponentLabel(componentId, component?.label)}`,
+  };
+}
+
+function renderStoryBuildActivity() {
+  if (!state.storyBuildUi.noticeVisible || state.storyBuildUi.phase === "idle") return "";
+  const busy = Boolean(state.storyBuildUi.busy);
+  const error = state.storyBuildUi.phase === "error";
+  const action = storyBuildActivityAction();
+  return `
+    <section
+      class="background-task-banner ${error ? "error" : busy ? "running" : "ready"}"
+      role="${error ? "alert" : "status"}"
+      aria-live="polite"
+      aria-busy="${busy ? "true" : "false"}"
+    >
+      <span class="background-task-indicator" aria-hidden="true"></span>
+      <div class="background-task-copy">
+        <strong data-story-build-activity-title>${escapeHtml(storyBuildActivityTitle())}</strong>
+        <span data-story-build-activity-status>${escapeHtml(state.storyBuildUi.status || "StoryVR is building the WebXR story in the background.")}</span>
+      </div>
+      <div class="background-task-actions">
+        <button type="button" data-story-build-open-review data-story-build-target="${escapeHtml(action.componentId)}">${escapeHtml(action.label)}</button>
+        ${busy ? "" : `<button type="button" data-story-build-dismiss>Dismiss</button>`}
+      </div>
+    </section>
+  `;
+}
+
+function updateStoryBuildActivityDom() {
+  const region = document.querySelector("[data-story-build-activity]");
+  if (!region) return;
+  const activity = renderStoryBuildActivity();
+  if (!activity) {
+    region.hidden = true;
+    region.replaceChildren();
+    updateBackgroundTaskRegionVisibility();
+    return;
+  }
+  let banner = region.querySelector(":scope > .background-task-banner");
+  if (!banner) {
+    region.innerHTML = activity;
+    banner = region.querySelector(":scope > .background-task-banner");
+  } else {
+    const busy = Boolean(state.storyBuildUi.busy);
+    const error = state.storyBuildUi.phase === "error";
+    banner.className = `background-task-banner ${error ? "error" : busy ? "running" : "ready"}`;
+    banner.setAttribute("role", error ? "alert" : "status");
+    banner.setAttribute("aria-busy", busy ? "true" : "false");
+    const title = banner.querySelector("[data-story-build-activity-title]");
+    if (title) title.textContent = storyBuildActivityTitle();
+    const status = banner.querySelector("[data-story-build-activity-status]");
+    if (status) status.textContent = state.storyBuildUi.status || "StoryVR is building the WebXR story in the background.";
+    const actions = banner.querySelector(".background-task-actions");
+    const open = actions?.querySelector("[data-story-build-open-review]");
+    const action = storyBuildActivityAction();
+    if (open) {
+      open.textContent = action.label;
+      open.dataset.storyBuildTarget = action.componentId;
+    }
+    const dismiss = actions?.querySelector("[data-story-build-dismiss]");
+    if (busy) dismiss?.remove();
+    else if (actions && !dismiss) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.storyBuildDismiss = "";
+      button.textContent = "Dismiss";
+      actions.append(button);
+    }
+  }
+  region.hidden = false;
+  bindStoryBuildActivityEvents();
+  updateBackgroundTaskRegionVisibility();
+}
+
+function bindStoryBuildActivityEvents() {
+  const openReview = document.querySelector("[data-story-build-open-review]");
+  if (openReview && openReview.dataset.storyBuildActivityBound !== "true") {
+    openReview.dataset.storyBuildActivityBound = "true";
+    openReview.addEventListener("click", () => {
+      openStoryBuildActivity();
+    });
+  }
+  const dismiss = document.querySelector("[data-story-build-dismiss]");
+  if (dismiss && dismiss.dataset.storyBuildActivityBound !== "true") {
+    dismiss.dataset.storyBuildActivityBound = "true";
+    dismiss.addEventListener("click", () => {
+      state.storyBuildUi.noticeVisible = false;
+      updateStoryBuildActivityDom();
+    });
+  }
+}
+
+async function openStoryBuildActivity() {
+  const action = storyBuildActivityAction();
+  const refreshBeforeApply = state.storyBuildUi.phase === "error";
+  const opened = await requestStoryvrBrowserNavigation(
+    createStoryvrNavigationRoute(action.componentId),
+    { refreshBeforeApply },
+  );
+  if (action.componentId !== "transition-pacing") return opened;
+  window.requestAnimationFrame(() => {
+    const panel = document.querySelector("[data-story-build-panel]");
+    if (!panel) return;
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    panel.focus({ preventScroll: true });
+  });
+  return opened;
 }
 
 function environmentSelectionTitle(manifest) {
@@ -9955,7 +10217,6 @@ function renderInteractionControlCanvasWorkspace(component, baseProposal, decisi
       </div>
       ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before choosing reader actions.</p>`}
       ${renderInteractionControlStatus()}
-      ${renderInteractionTraversalConstraint(interactionSpatialTraversal(baseProposal))}
       ${unassignedCount ? `<p class="blocked-note interaction-assignment-note" data-interaction-assignment-required><span>${unassignedCount} scene change${unassignedCount === 1 ? " needs" : "s need"} a reader action. The ${unassignedCount === 1 ? "problem is" : "problems are"} highlighted below.</span><button type="button" data-interaction-show-problem="${escapeHtml(firstUnassignedBoundaryId)}">Show ${unassignedCount === 1 ? "problem" : "first problem"}</button></p>` : ""}
       ${incompleteConfigurationCount ? `<p class="blocked-note" data-interaction-configuration-required>${incompleteConfigurationCount} reader action${incompleteConfigurationCount === 1 ? " needs" : "s need"} more information before this step can be finished.</p>` : ""}
       <div class="dynamic-canvas-summary interaction-canvas-summary" aria-label="Current reader actions for scene changes">
@@ -10011,7 +10272,6 @@ function renderInteractionControlEditorWorkspace(component, baseProposal, ready,
             : "Check the reader action for this scene.")}</p>
       ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(blockingDependencyLabel)} before choosing reader actions.</p>`}
       ${renderInteractionControlStatus()}
-      ${renderInteractionTraversalConstraint(interactionSpatialTraversal(baseProposal))}
       ${inBeatEditor
         ? renderInteractionInBeatEditor(editorContext)
         : editorContext?.kind
@@ -11044,7 +11304,7 @@ function renderFinalReviewStorySceneCard(beat, option, context, index, selectedI
 
 function renderFinalReviewSpatialEditor(beat, index, beats, sceneContext) {
   const region = microhabitatForBeat(beat);
-  const activeAsset = beat?.linkedAssetIds?.map(findAssetById).find(Boolean);
+  const sceneAssetLabel = finalReviewSceneAssetLabel(beat, sceneContext);
   const viewRotationMode = normalizeFinalReviewViewRotationMode(state.finalReviewViewRotationMode);
   return `
     <section class="topology-diagram-card topology-3d-card final-review-preview-card storyvr-spatial-surface" data-final-review-spatial-editor>
@@ -11059,7 +11319,7 @@ function renderFinalReviewSpatialEditor(beat, index, beats, sceneContext) {
       <div class="final-review-active-beat storyvr-spatial-context">
         <div>
           <strong data-final-review-beat-title>${escapeHtml(beat?.title || "No story part selected")}</strong>
-          <span data-final-review-beat-meta>${beats.length ? `${index + 1} of ${beats.length}` : "0 story parts"} · ${escapeHtml(spatialSceneContextLabel(sceneContext))} · ${escapeHtml(activeAsset ? (activeAsset.type || "object") : "text-only state")}</span>
+          <span data-final-review-beat-meta>${beats.length ? `${index + 1} of ${beats.length}` : "0 story parts"} · ${escapeHtml(spatialSceneContextLabel(sceneContext))} · ${escapeHtml(sceneAssetLabel)}</span>
           <p data-final-review-beat-copy>${escapeHtml(shortText(beat?.text || "No story text available.", 260))}</p>
         </div>
       </div>
@@ -11126,26 +11386,25 @@ function renderEmptyOptions(component) {
 }
 
 function renderPreviewQa() {
-  const allCurrent = checkpointComponents().every((component) => checkpointIsCurrent(component.id) && !checkpointHasLocalDraft(component.id));
-  const canCompile = allCurrent && !state.graphDirty;
+  const canCompile = storyBuildCanStart();
   const blocking = canCompile ? null : compileBlockingGuidance();
   return `
-    <section class="panel">
+    <section class="panel" data-story-build-panel tabindex="-1">
       <div class="panel-head">
         <div>
           <p class="eyebrow">Reader output</p>
-          <h2>Build reader</h2>
+          <h2>Build story</h2>
         </div>
-        <button class="primary" data-action="compile" ${canCompile && !state.busy ? "" : "disabled"}>Build reader</button>
+        <button class="primary" data-action="compile" ${canCompile && !state.busy && !state.storyBuildUi.busy ? "" : "disabled"} aria-busy="${state.storyBuildUi.busy ? "true" : "false"}">${state.storyBuildUi.busy ? "Building story…" : "Build story"}</button>
       </div>
-      <p>Build the reader after every story step is complete.</p>
+      <p>Build the WebXR story after every story step is complete. You can keep using StoryVR while it builds.</p>
       ${blocking ? renderCompileBlockingNotice(blocking) : ""}
-      ${state.output?.error ? renderStageErrorNotice("transition-pacing") : ""}
-      ${renderReaderRunHandoff()}
+      <div data-story-build-error>${storyBuildOutput()?.error ? renderStageErrorNotice("transition-pacing", storyBuildOutput()) : ""}</div>
+      <div data-story-build-run-handoff>${renderReaderRunHandoff()}</div>
       <details class="technical-details">
         <summary>Build details for the facilitator</summary>
         ${renderDiagnostics()}
-        ${renderCompilerHandoff()}
+        <div data-story-build-compiler-handoff>${renderCompilerHandoff()}</div>
       </details>
     </section>
   `;
@@ -11156,7 +11415,7 @@ function compileBlockingGuidance() {
     return {
       componentId: "source-graph",
       label: participantComponentLabel("source-graph"),
-      short: `Finish ${participantComponentLabel("source-graph")} before building the reader`,
+      short: `Finish ${participantComponentLabel("source-graph")} before building the story`,
       instruction: `Go to ${participantComponentLabel("source-graph")} and select "${checkpointSaveActionLabel("source-graph")}".`,
     };
   }
@@ -11167,7 +11426,7 @@ function compileBlockingGuidance() {
     return {
       componentId: "transition-pacing",
       label: participantComponentLabel("transition-pacing"),
-      short: `Finish ${participantComponentLabel("transition-pacing")} before building the reader`,
+      short: `Finish ${participantComponentLabel("transition-pacing")} before building the story`,
       instruction: `Go to ${participantComponentLabel("transition-pacing")} and select "${checkpointSaveActionLabel("transition-pacing")}".`,
     };
   }
@@ -11176,7 +11435,7 @@ function compileBlockingGuidance() {
   return {
     componentId: component.id,
     label,
-    short: `Finish ${label} before building the reader`,
+    short: `Finish ${label} before building the story`,
     instruction: `Go to ${label}, review what needs attention, then select "${action}".`,
   };
 }
@@ -11196,7 +11455,8 @@ function renderCompileBlockingNotice(blocking) {
 function renderReaderRunHandoff() {
   const run = compileRunInstructions();
   if (run.status !== "ready") return "";
-  const compiled = state.output?.kind === "compile" ? state.output : null;
+  const output = storyBuildOutput();
+  const compiled = output?.kind === "compile" ? output : null;
   const staleCompile = compiledOutputIsStale(compiled);
   const distBuilt = compiled?.readerBuild?.status === "built" && !staleCompile;
   const staticRunCommand = distBuilt ? run.serveCommand : run.headsetCommand;
@@ -11216,8 +11476,22 @@ function renderReaderRunHandoff() {
 }
 
 function renderCompilerHandoff() {
-  if (state.output?.error) return renderCompileError(state.output);
-  const compiled = state.output?.kind === "compile" ? state.output : null;
+  const output = storyBuildOutput();
+  if (output?.error) return renderCompileError(output);
+  if (state.storyBuildUi.busy) {
+    return `
+      <div class="compiler-handoff">
+        <div class="compiler-status-row">
+          <span class="pill neutral">Building story</span>
+          <div>
+            <strong>WebXR production build is running</strong>
+            <p class="muted">You can continue using StoryVR. This panel will update when the background build finishes.</p>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  const compiled = output?.kind === "compile" ? output : null;
   const staleCompile = compiledOutputIsStale(compiled);
   const run = compileRunInstructions();
   const runnable = run.status === "ready";
@@ -11225,7 +11499,7 @@ function renderCompilerHandoff() {
     ? compiledRuntimeSummary(compiled, staleCompile)
     : state.graphDirty
       ? "Finish Story order before building; unsaved story-part grouping is not included yet."
-      : "Select Build reader to save the story data, prepare the reader source, apply performance settings, and build the production reader.";
+      : "Select Build story to save the story data, prepare the reader source, apply performance settings, and build the production reader.";
   const distBuilt = compiled?.readerBuild?.status === "built" && !staleCompile;
 
   return `
@@ -11327,15 +11601,18 @@ function renderPerformanceOptimizationHandoff(optimization) {
 function renderCompileError(output) {
   const diagnostics = Array.isArray(output.diagnostics) ? output.diagnostics : [];
   const readerBuildFailed = diagnostics.some((item) => item?.code === "READER_DIST_BUILD_FAILED");
+  const statusUnavailable = output.statusUnavailable === true;
   return `
     <div class="compiler-handoff error">
       <div class="compiler-status-row">
-        <span class="pill bad">Reader build failed</span>
+        <span class="pill bad">${statusUnavailable ? "Build status unavailable" : "Reader build failed"}</span>
         <div>
           <strong>${escapeHtml(output.error || "Build error")}</strong>
-          <p class="muted">${readerBuildFailed
-            ? "The story data and reader source were saved, but the production reader was not completed. Fix the build issue, then use Build reader again."
-            : "Fix the blocking issue, then use Build reader again before running the story."}</p>
+          <p class="muted">${statusUnavailable
+            ? "The background job may still be running. Select Build story to reconnect before deciding whether another build is needed."
+            : readerBuildFailed
+              ? "The story data and reader source were saved, but the production reader was not completed. Fix the build issue, then use Build story again."
+              : "Fix the blocking issue, then use Build story again before running the story."}</p>
         </div>
       </div>
       ${diagnostics.length ? `<ul class="warning-list">${diagnostics.map((item) => `<li>${escapeHtml(item.message || item.code || String(item))}</li>`).join("")}</ul>` : ""}
@@ -11343,7 +11620,13 @@ function renderCompileError(output) {
   `;
 }
 
+function storyBuildOutput() {
+  return state.storyBuildUi.output;
+}
+
 function compileRunInstructions() {
+  const builtReaderRun = storyBuildOutput()?.readerRun;
+  if (builtReaderRun?.status) return builtReaderRun;
   if (state.data.readerRun) return state.data.readerRun;
   const storyFolder = normalizeRelativePath(state.data.paths.storyFolder || state.data.project.story.slug || "story");
   const runtimePath = normalizeRelativePath(state.data.paths.compiledRuntimePath || `${storyFolder}/discovery/storyvr-runtime.json`);
@@ -11354,37 +11637,6 @@ function compileRunInstructions() {
     readerSourcePath,
     commandRoot: "Unavailable until the authoring server reports run metadata",
     message: "Run details are not available from the authoring server. Restart the StoryVR authoring server so the build panel can show the exact folder and copy-paste command.",
-  };
-}
-
-function summarizeCompiledRuntime(runtime) {
-  const graph = runtime.sceneTopology?.storyGraph || {};
-  const authoredBeatCount = Number.isFinite(Number(runtime.provenance?.authoredBeatCount))
-    ? Number(runtime.provenance.authoredBeatCount)
-    : Array.isArray(graph.beats)
-      ? graph.beats.length
-      : Array.isArray(runtime.contentUnits)
-        ? runtime.contentUnits.length
-        : runtime.contentUnitCount;
-  const fineGrainedBeatCount = Number.isFinite(Number(runtime.provenance?.fineGrainedBeatCount))
-    ? Number(runtime.provenance.fineGrainedBeatCount)
-    : Array.isArray(graph.atomicBeats)
-      ? graph.atomicBeats.length
-      : authoredBeatCount;
-  return {
-    kind: "compile",
-    slug: runtime.slug,
-    title: runtime.title,
-    contentUnitCount: authoredBeatCount,
-    authoredBeatCount,
-    fineGrainedBeatCount,
-    authoredBeatSignature: runtime.provenance?.authoredBeatSignature || authoredBeatSignatureForGraph(graph),
-    assetCount: Array.isArray(runtime.assets) ? runtime.assets.length : runtime.assetCount,
-    diagnosticCount: Array.isArray(runtime.diagnostics) ? runtime.diagnostics.length : 0,
-    diagnostics: runtime.diagnostics || [],
-    performanceOptimization: runtime.performanceOptimization || null,
-    readerBuild: runtime.readerBuild || null,
-    compiledAt: runtime.provenance?.compiledAt || null,
   };
 }
 
@@ -11399,7 +11651,7 @@ function compiledRuntimeSummary(compiled, staleCompile) {
     countLabel(compiled.diagnosticCount || 0, "diagnostic"),
   ].filter(Boolean);
   const detail = parts.join(" / ");
-  return staleCompile ? `Story order changed since this reader was built. ${detail}` : detail;
+  return staleCompile ? `The story changed since this reader was built. ${detail}` : detail;
 }
 
 function countLabel(count, singular) {
@@ -13064,6 +13316,7 @@ function bindEvents() {
     button.addEventListener("click", () => performHistoryAction(button.dataset.historyAction));
   }
   bindEnvironmentGenerationActivityEvents();
+  bindStoryBuildActivityEvents();
 
   for (const button of document.querySelectorAll("[data-select-component]")) {
     button.addEventListener("click", () => {
@@ -13620,7 +13873,9 @@ function bindEvents() {
 
   const editNotes = document.querySelector("[data-edit-notes]");
   if (editNotes) editNotes.addEventListener("input", () => {
+    const changed = state.editNotes !== editNotes.value;
     state.editNotes = editNotes.value;
+    if (changed) markStoryBuildAuthoringChange();
     if (state.activeId === "transition-pacing") updateFinalReviewTuningFromPrompt();
     updateCheckpointStatusDom();
   });
@@ -16038,6 +16293,151 @@ async function copyRunCommand(button) {
   }, 3000);
 }
 
+function storyBuildHasLocalAuthoringChanges() {
+  return Boolean(
+    state.graphDirty
+    || state.storyCanvasGroupingUi.flowDirty
+    || pendingStoryvrCheckpointCompletions.size
+    || checkpointComponents().some((component) => checkpointHasLocalDraft(component.id))
+  );
+}
+
+function storyBuildCanStart() {
+  return !storyBuildHasLocalAuthoringChanges()
+    && checkpointComponents().every((component) => checkpointIsCurrent(component.id));
+}
+
+async function buildStoryInBackground() {
+  if (state.storyBuildUi.busy) return;
+  const canBuild = storyBuildCanStart();
+  if (!canBuild) {
+    state.storyBuildUi.phase = "error";
+    state.storyBuildUi.error = true;
+    state.storyBuildUi.status = "Finish every story step before building the WebXR story.";
+    state.storyBuildUi.output = { error: state.storyBuildUi.status, diagnostics: [] };
+    state.storyBuildUi.noticeVisible = true;
+    updateStoryBuildDom();
+    return;
+  }
+
+  const requestId = state.storyBuildUi.requestId + 1;
+  state.storyBuildUi.requestId = requestId;
+  state.storyBuildUi.busy = true;
+  state.storyBuildUi.phase = "building";
+  state.storyBuildUi.status = storyBuildRunningStatus();
+  state.storyBuildUi.error = false;
+  state.storyBuildUi.jobId = null;
+  state.storyBuildUi.output = null;
+  state.storyBuildUi.noticeVisible = true;
+  state.storyBuildUi.startedAuthoringGeneration = state.storyBuildUi.authoringGeneration;
+  updateStoryBuildDom();
+
+  try {
+    const job = await api.post("/api/story-build");
+    if (requestId !== state.storyBuildUi.requestId) return;
+    state.storyBuildUi.jobId = job.jobId;
+    await waitForStoryBuildJob(job.jobId, requestId);
+  } catch (error) {
+    if (requestId !== state.storyBuildUi.requestId) return;
+    finishStoryBuildWithError(error);
+  }
+}
+
+async function waitForStoryBuildJob(jobId, requestId) {
+  let consecutiveFailures = 0;
+  while (requestId === state.storyBuildUi.requestId && state.storyBuildUi.busy) {
+    let job;
+    let recoveredStatusPolling = false;
+    try {
+      job = await api.get(`/api/story-build/${encodeURIComponent(jobId)}`);
+      if (consecutiveFailures > 0) {
+        recoveredStatusPolling = true;
+        consecutiveFailures = 0;
+      }
+    } catch (error) {
+      if (requestId !== state.storyBuildUi.requestId) return;
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= STORY_BUILD_STATUS_MAX_CONSECUTIVE_FAILURES) {
+        throw Object.assign(new Error(error?.message || "StoryVR could not check the background build status."), {
+          diagnostics: error?.diagnostics || [],
+          storyBuildStatusUnavailable: true,
+        });
+      }
+      state.storyBuildUi.status = `The build is still presumed to be running. StoryVR will retry the status check (${consecutiveFailures}/${STORY_BUILD_STATUS_MAX_CONSECUTIVE_FAILURES}).`;
+      updateStoryBuildActivityDom();
+      await new Promise((resolve) => window.setTimeout(resolve, STORY_BUILD_STATUS_RETRY_MS));
+      continue;
+    }
+    if (requestId !== state.storyBuildUi.requestId) return;
+    if (job.status === "built" || job.status === "stale") {
+      const localStale = state.storyBuildUi.authoringGeneration !== state.storyBuildUi.startedAuthoringGeneration
+        || storyBuildHasLocalAuthoringChanges();
+      const stale = job.status === "stale" || job.result?.stale === true || localStale;
+      state.storyBuildUi.busy = false;
+      state.storyBuildUi.phase = stale ? "stale" : "ready";
+      state.storyBuildUi.status = stale
+        ? storyBuildStaleStatus()
+        : "The WebXR story is built and ready to run.";
+      state.storyBuildUi.error = false;
+      state.storyBuildUi.output = { ...(job.result || {}), stale };
+      updateStoryBuildDom();
+      return;
+    }
+    if (job.status === "failed") {
+      finishStoryBuildWithError(Object.assign(
+        new Error(job.error?.message || "StoryVR could not build the WebXR story."),
+        { diagnostics: job.error?.diagnostics || [] },
+      ));
+      return;
+    }
+    if (recoveredStatusPolling) {
+      state.storyBuildUi.status = storyBuildRunningStatus();
+      updateStoryBuildActivityDom();
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, STORY_BUILD_STATUS_POLL_MS));
+  }
+}
+
+function finishStoryBuildWithError(error) {
+  const statusUnavailable = error?.storyBuildStatusUnavailable === true;
+  state.storyBuildUi.busy = false;
+  state.storyBuildUi.phase = "error";
+  state.storyBuildUi.status = statusUnavailable
+    ? "StoryVR could not confirm the build status after several attempts. The server may still be building; select Build story to reconnect."
+    : `Build failed: ${participantStageErrorMessage(error?.message || error)}`;
+  state.storyBuildUi.error = true;
+  state.storyBuildUi.output = {
+    error: statusUnavailable
+      ? "StoryVR lost contact with the background build before it could confirm the result."
+      : error?.message || String(error),
+    diagnostics: error?.diagnostics || [],
+    statusUnavailable,
+  };
+  updateStoryBuildDom();
+}
+
+function updateStoryBuildDom() {
+  updateStoryBuildActivityDom();
+  const compileButton = document.querySelector('[data-action="compile"]');
+  if (compileButton) {
+    const canBuild = storyBuildCanStart();
+    compileButton.disabled = state.busy || state.storyBuildUi.busy || !canBuild;
+    compileButton.textContent = state.storyBuildUi.busy ? "Building story…" : "Build story";
+    compileButton.setAttribute("aria-busy", state.storyBuildUi.busy ? "true" : "false");
+  }
+  const error = document.querySelector("[data-story-build-error]");
+  if (error) error.innerHTML = storyBuildOutput()?.error
+    ? renderStageErrorNotice("transition-pacing", storyBuildOutput())
+    : "";
+  const runHandoff = document.querySelector("[data-story-build-run-handoff]");
+  if (runHandoff) runHandoff.innerHTML = renderReaderRunHandoff();
+  const compilerHandoff = document.querySelector("[data-story-build-compiler-handoff]");
+  if (compilerHandoff) compilerHandoff.innerHTML = renderCompilerHandoff();
+  for (const button of document.querySelectorAll("[data-story-build-panel] [data-copy-run-command]")) {
+    button.addEventListener("click", () => copyRunCommand(button));
+  }
+}
+
 async function handleAction(action, options = {}) {
   const component = componentById(state.activeId);
   const historySpec = options.skipHistory ? null : historySpecForAction(action, component);
@@ -16059,6 +16459,10 @@ async function handleAction(action, options = {}) {
       state.output = { error: error.message, diagnostics: error.diagnostics || [] };
       render();
     }
+    return;
+  }
+  if (action === "compile") {
+    await buildStoryInBackground();
     return;
   }
   await run(async () => {
@@ -16136,15 +16540,6 @@ async function handleAction(action, options = {}) {
     }
     if (action === "save-checkpoint") {
       return saveDecisionCheckpointCore(component);
-    }
-    if (action === "compile") {
-      if (state.graphDirty) {
-        state.output = { error: "Finish Story order before building the reader." };
-        render();
-        return;
-      }
-      state.output = summarizeCompiledRuntime(await api.post("/api/compile"));
-      return refresh(false);
     }
   });
 }
@@ -17043,8 +17438,9 @@ function updateFinalReviewBeatStatus() {
   const cumulativeContext = finalReviewCumulativeContextForBeat(beats, index, sceneContext, beat);
   const activeStep = cumulativeContext?.active || null;
   const activeAsset = activeStep?.assetId ? findAssetById(activeStep.assetId) : beat?.linkedAssetIds?.map(findAssetById).find(Boolean);
+  const sceneAssetLabel = finalReviewSceneAssetLabel(beat, sceneContext, activeAsset);
   const metaText = beats.length
-    ? `${index + 1} of ${beats.length} · ${spatialSceneContextLabel(sceneContext)} · ${activeAsset ? (activeAsset.type || "asset") : "text-only state"}`
+    ? `${index + 1} of ${beats.length} · ${spatialSceneContextLabel(sceneContext)} · ${sceneAssetLabel}`
     : "0 story parts";
 
   const title = document.querySelector("[data-final-review-beat-title]");
@@ -20191,15 +20587,26 @@ function initializeFinalReviewViewer(active) {
   const routeInteractionKind = recognizedInteractionPolicyKind(activeProgressionBoundary?.effectivePolicy);
   const decisionKinds = { ...savedDecisionKinds, interaction: routeInteractionKind };
   const transitionAssetLinks = finalReviewTransitionAssetLinks(transitionPlayback);
+  const savedSpatialSceneAssets = exactSpatialSceneAssetLinkSet(sceneContext);
   const cumulativeContext = finalReviewCumulativeContextForBeat(beats, beatIndex, sceneContext, beat);
   const exactSceneAssetLinks = transitionAssetLinks.length
       ? transitionAssetLinks
       : beat && (proceduralPlan || sceneContext?.variantOptionId)
         ? dynamicSceneAssetLinks(null, [beat], sceneContext)
-        : [];
+        : savedSpatialSceneAssets.available
+          ? savedSpatialSceneAssets.links
+          : [];
+  const usesSavedSpatialSceneAssets = !transitionAssetLinks.length
+    && !proceduralPlan
+    && !sceneContext?.variantOptionId
+    && savedSpatialSceneAssets.available;
   const linkedAssetId = cumulativeContext?.active?.assetId
-    || beat?.linkedAssetIds?.find((assetId) => isModelAsset(findAssetById(assetId)))
-    || beat?.linkedAssetIds?.[0]
+    || exactSceneAssetLinks.find((link) => isModelAsset(findAssetById(link.assetId)))?.assetId
+    || exactSceneAssetLinks[0]?.assetId
+    || (usesSavedSpatialSceneAssets
+      ? null
+      : beat?.linkedAssetIds?.find((assetId) => isModelAsset(findAssetById(assetId)))
+        || beat?.linkedAssetIds?.[0])
     || null;
   const linkedAsset = linkedAssetId ? findAssetById(linkedAssetId) : null;
   const cumulativeAssetLinks = cumulativeContext?.sequence?.steps || [];
@@ -32142,10 +32549,21 @@ function finalReviewBeats() {
   return spatialPreviewBeats();
 }
 
+function finalReviewSceneAssetLabel(beat, sceneContext, fallbackAsset = null) {
+  const savedSpatialSceneAssets = exactSpatialSceneAssetLinkSet(sceneContext);
+  if (savedSpatialSceneAssets.available) {
+    const count = savedSpatialSceneAssets.links.length;
+    return count ? `${count} scene object${count === 1 ? "" : "s"}` : "text-only state";
+  }
+  const asset = fallbackAsset || beat?.linkedAssetIds?.map(findAssetById).find(Boolean);
+  return asset ? (asset.type || "asset") : "text-only state";
+}
+
 function finalReviewCumulativeContextForBeat(beats, beatIndex, sceneContext, beat) {
   if (
     !beat
     || sceneContext?.variantOptionId
+    || exactSpatialSceneAssetLinkSet(sceneContext).available
     || !(beat.linkedAssetIds || []).length
   ) return null;
   return cumulativeSingleAnchorContext(beats, beatIndex);
@@ -36752,22 +37170,6 @@ function interactionLocomotionMode(proposal = null, boundary = null) {
   const traversal = interactionSpatialTraversal(proposal);
   if (traversal?.defaultLocomotionMode) return normalizeInteractionLocomotionMode(traversal.defaultLocomotionMode);
   return interactionTraversalRequiresLocomotion(traversal) ? "virtual-teleport" : "physical-walking";
-}
-
-function renderInteractionTraversalConstraint(traversal) {
-  if (!interactionTraversalRequiresLocomotion(traversal)) return "";
-  const stations = Array.isArray(traversal?.orderedStations) ? traversal.orderedStations : [];
-  const count = stations.length;
-  return `
-    <div class="interaction-traversal-constraint" role="note">
-      <strong>Reader travel is available</strong>
-      <span>${count ? `${count} reader destination${count === 1 ? "" : "s"} are saved. ` : ""}You may use Walk or teleport between scenes.</span>
-      <details class="facilitator-details interaction-route-diagnostics">
-        <summary>Route details for facilitator</summary>
-        <p>Spatial route available. You may assign Reader locomotion to any boundary.</p>
-      </details>
-    </div>
-  `;
 }
 
 function clampInteractionBeatIndex(beats) {

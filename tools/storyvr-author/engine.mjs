@@ -1,4 +1,4 @@
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync } from "node:fs";
 import {
   access,
   copyFile,
@@ -5582,8 +5582,18 @@ function normalizeResourceFolderArgument(resourceFolder, storyFolder) {
 }
 
 function hasFetchedResourceMetadata(folder) {
-  return existsSync(path.join(folder, "metadata", "story_structure_candidates.json"))
-    && existsSync(path.join(folder, "metadata", "asset_manifest.json"));
+  const metadataRoot = path.join(folder, "metadata");
+  if (!existsSync(metadataRoot)) return false;
+  try {
+    const fileNames = readdirSync(metadataRoot).sort((left, right) => left.localeCompare(right));
+    return fileNames.some((fileName) => (
+      fileName === "story_structure_candidates.json"
+      || fileName === "story_text.json"
+      || /__(story_structure_candidates|story_text)\.json$/i.test(fileName)
+    ));
+  } catch {
+    return false;
+  }
 }
 
 function makeProject(paths, runtime) {
@@ -8100,6 +8110,15 @@ function sourcePartStatesRuntimeContract(graph) {
   };
 }
 
+function sourcePartStatesDependencyState(graph) {
+  const source = sourcePartStatesRuntimeContract(graph);
+  return {
+    schemaVersion: source.schemaVersion,
+    states: source.states,
+    resolvedStates: source.resolvedStates,
+  };
+}
+
 function sourcePartStatesForBeat(graph, beatId) {
   const source = graph?.sourcePartStates || {};
   const states = Array.isArray(source.resolvedStates) && source.resolvedStates.length ? source.resolvedStates : source.states || [];
@@ -8153,8 +8172,8 @@ function attentionGuidanceInputSignature(graph, runtime, decisions, spatialRelat
       alt: asset?.alt || "",
       description: asset?.description || "",
     })).sort((left, right) => left.id.localeCompare(right.id)),
-    sourcePartStates: sourcePartStatesRuntimeContract(graph || {}),
-    sourceMotionPlayback: graph?.sourceMotionPlayback || emptySourceMotionPlayback(),
+    sourcePartStates: sourcePartStatesDependencyState(graph || {}),
+    sourceMotionPlayback: sourceMotionEffectiveSignature(null, graph?.sourceMotionPlayback),
     spatialRelations: {
       schemaVersion: spatialRelations?.schemaVersion || null,
       inputSignature: spatialRelations?.inputSignature || null,
@@ -9509,7 +9528,6 @@ function sourceDynamicsPreviewPrerequisitesCurrent(decisions) {
 
 function spatialRelationsInputSignature(graph, runtime, decisions) {
   const cues = graph?.sourceSpatialCues || sourceSpatialCuesForGraph(graph);
-  const contentUnits = authoredContentUnitsFromGraph(graph || {}, runtime || {});
   const input = {
     inference: {
       version: SPATIAL_RELATIONS_INFERENCE_VERSION,
@@ -9538,11 +9556,11 @@ function spatialRelationsInputSignature(graph, runtime, decisions) {
       activePartSelectors: uniqueStrings(cue.activePartSelectors || []).sort(),
       confidence: cue.confidence,
     })),
-    sourceMotionEvidence: {
-      dynamics: sourceDynamicsRuntimeContract(graph || {}, contentUnits),
-      playback: graph?.sourceMotionPlayback || emptySourceMotionPlayback(),
-    },
-    sourcePartStates: sourcePartStatesRuntimeContract(graph || {}),
+    sourceMotionEvidence: sourceMotionEffectiveSignature(
+      graph?.sourceMotionLinking,
+      graph?.sourceMotionPlayback,
+    ),
+    sourcePartStates: sourcePartStatesDependencyState(graph || {}),
     sourceSpatialPlacements: cloneJson(runtime?.sourceSpatialPlacements || []),
   };
   return createHash("sha256").update(JSON.stringify(input)).digest("hex");
@@ -10085,7 +10103,16 @@ export function validateSpatialRelationsContract(value, inferred) {
     throw Object.assign(new Error(`Unsupported Spatial Relations schema: ${source.schemaVersion}`), { statusCode: 409 });
   }
   if (!legacySource && source.inputSignature && source.inputSignature !== inferred.inputSignature) {
-    throw Object.assign(new Error("Spatial Relations is stale because its source graph or current upstream layout changed. Review the refreshed inference before saving."), { statusCode: 409 });
+    const message = "Spatial Relations is stale because its source graph or current upstream layout changed. Review the refreshed inference before saving.";
+    throw Object.assign(new Error(message), {
+      statusCode: 409,
+      diagnostics: [{
+        severity: "error",
+        code: "SPATIAL_RELATIONS_INPUT_STALE",
+        component: SPATIAL_RELATIONS_COMPONENT_ID,
+        message,
+      }],
+    });
   }
   const submittedSceneForBase = (baseScene) => (
     baseScene?.variantOptionId
@@ -10882,7 +10909,14 @@ async function ensureSpatialRelationsInferenceState(paths, proposals, decisions,
   const inferred = inferSpatialRelationsContract(graph, runtime, decisions);
   const existingDecision = decisions[SPATIAL_RELATIONS_COMPONENT_ID] || null;
   const existingProposal = proposals[SPATIAL_RELATIONS_COMPONENT_ID] || null;
-  let contract = existingDecision?.spatialRelations || existingProposal?.spatialRelations || null;
+  const existingContract = existingDecision?.spatialRelations || existingProposal?.spatialRelations || null;
+  const stale = Boolean(existingContract) && (
+    existingContract.schemaVersion !== SPATIAL_RELATIONS_SCHEMA_VERSION
+    || !existingContract.inputSignature
+    || existingContract.inputSignature !== inferred.inputSignature
+  );
+  let reconciliationError = null;
+  let contract = existingContract;
   const migratesStandaloneTopology = Boolean(
     !existingDecision
     && decisions["asset-topology"]
@@ -10892,8 +10926,15 @@ async function ensureSpatialRelationsInferenceState(paths, proposals, decisions,
     contract = inferred;
   } else if (existingDecision?.legacyTextPlacement) {
     contract = legacyTextPlacementSpatialRelations(inferred, existingDecision.legacyTextPlacement);
-  } else if (!contract || contract.inputSignature !== inferred.inputSignature) {
-    contract = mergeSpatialRelationsWithExisting(inferred, contract);
+  } else if (!contract) {
+    contract = inferred;
+  } else if (stale) {
+    try {
+      contract = mergeSpatialRelationsWithExisting(inferred, contract);
+    } catch (error) {
+      reconciliationError = error;
+      contract = inferred;
+    }
   } else {
     contract = validateSpatialRelationsContract(contract, inferred);
   }
@@ -10907,20 +10948,38 @@ async function ensureSpatialRelationsInferenceState(paths, proposals, decisions,
     && existingDecision.spatialRelations?.schemaVersion !== SPATIAL_RELATIONS_SCHEMA_VERSION,
   );
   const spatialComponent = COMPONENT_BY_ID.get(SPATIAL_RELATIONS_COMPONENT_ID);
-  if (existingDecision && (!isValidCurrentDecision(spatialComponent, existingDecision) || migratesLegacySpatialDecision)) {
+  if (existingDecision && (
+    !isValidCurrentDecision(spatialComponent, existingDecision)
+    || migratesLegacySpatialDecision
+    || stale
+  )) {
     const option = bundle.proposals[0];
-    const nextStatus = migratesLegacySpatialDecision ? "draft" : existingDecision.status;
+    const nextStatus = migratesLegacySpatialDecision
+      ? "draft"
+      : stale ? "stale" : existingDecision.status;
+    const revalidationDiagnostics = reconciliationError
+      ? automaticRevalidationDiagnostics(reconciliationError, SPATIAL_RELATIONS_COMPONENT_ID)
+      : existingDecision.revalidationDiagnostics;
     const nextDecision = decisionWithStatus({
       ...existingDecision,
       component: SPATIAL_RELATIONS_COMPONENT_ID,
       label: "Spatial Relations",
       option,
-      spatialRelations: contract,
-      requiresReview: migratesLegacySpatialDecision || existingDecision.requiresReview === true,
+      spatialRelations: reconciliationError ? existingContract : contract,
+      requiresReview: Boolean(reconciliationError)
+        || migratesLegacySpatialDecision
+        || existingDecision.requiresReview === true,
+      ...(revalidationDiagnostics?.length ? { revalidationDiagnostics } : {}),
+      ...(stale ? {
+        invalidatedBy: existingDecision.invalidatedBy || "spatial-relations-input",
+        staleAt: existingDecision.staleAt || new Date().toISOString(),
+      } : {}),
       ...(migratesLegacySpatialDecision ? { migratedFromSchemaVersion: existingDecision.spatialRelations?.schemaVersion || null } : {}),
     }, DECISION_STATUSES.has(nextStatus) ? nextStatus : "draft", existingDecision.savedAt ?? null);
     await writeJson(path.join(paths.decisionsRoot, `${SPATIAL_RELATIONS_COMPONENT_ID}.json`), nextDecision);
-    if (migratesLegacySpatialDecision) await markDownstreamDecisionsStale(paths, SPATIAL_RELATIONS_COMPONENT_ID);
+    if (migratesLegacySpatialDecision || stale) {
+      await markDownstreamDecisionsStale(paths, SPATIAL_RELATIONS_COMPONENT_ID);
+    }
     nextDecisions = { ...decisions, [SPATIAL_RELATIONS_COMPONENT_ID]: nextDecision };
   } else if (!existingDecision && decisions["asset-topology"] && decisions["asset-topology"].autoDerived !== true) {
     const option = bundle.proposals[0];
@@ -14806,7 +14865,15 @@ function isValidSourceDynamicsPreviewOption(component, option) {
 }
 
 function assertSupportedStory(paths, runtime) {
-  const text = [runtime.slug, runtime.title, paths.storyFolder, paths.resourceFolder].join(" ").toLowerCase();
+  const text = [
+    runtime.slug,
+    runtime.title,
+    runtime.sourceUrl,
+    runtime.source?.sourceUrl,
+    runtime.source?.storyUrl,
+    paths.storyFolder,
+    paths.resourceFolder,
+  ].join(" ").toLowerCase();
   const sportsPattern = /\b(sport|sports|football|basketball|baseball|soccer|tennis|olympic|olympics|nba|nfl|mlb|nhl|world-cup)\b/;
   const virtualWalkPattern = /\b(virtual[-_\s]?walk|virtual[-_\s]?tour|walking[-_\s]?tour|walkthrough|360[-_\s]?tour)\b/;
   if (sportsPattern.test(text) || virtualWalkPattern.test(text)) {
@@ -15002,7 +15069,7 @@ async function resolveReaderRun(paths) {
       storyFolder,
       commandRoot: REPO_ROOT,
       readerSourcePath: toPosix(path.relative(REPO_ROOT, directReaderSource)),
-      message: `Select Build reader to create ${storyFolder}/webxr-adaptation/index.html, apply the bounded performance profile, and enable the copy-paste run command.`,
+      message: `Select Build story to create ${storyFolder}/webxr-adaptation/index.html, apply the bounded performance profile, and enable the copy-paste run command.`,
     };
   }
 

@@ -173,38 +173,193 @@ export async function importStoryAssets(storyFolder, mode = "dev", options = {})
   return runtime;
 }
 
+const FETCHED_METADATA_FILE_NAMES = {
+  storyStructurePath: "story_structure_candidates.json",
+  storyTextPath: "story_text.json",
+  manifestPath: "asset_manifest.json",
+  sourceDiscoveryPath: "source_discovery.json",
+};
+
+async function resolveFetchedMetadataFiles(metadataRoot) {
+  if (!(await exists(metadataRoot))) {
+    throw new Error(`Fetched resource folder is missing its metadata directory: ${path.dirname(metadataRoot)}`);
+  }
+
+  const fileNames = (await readdir(metadataRoot, { withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right));
+  const fileNameSet = new Set(fileNames);
+  const bundles = new Map();
+  const kindBySuffix = Object.fromEntries(
+    Object.entries(FETCHED_METADATA_FILE_NAMES).map(([kind, fileName]) => [fileName, kind]),
+  );
+
+  for (const fileName of fileNames) {
+    const match = fileName.match(/^(.+)__(story_structure_candidates|story_text|asset_manifest|source_discovery)\.json$/i);
+    if (!match) continue;
+    const prefix = match[1];
+    const kind = kindBySuffix[`${match[2].toLowerCase()}.json`];
+    if (!kind) continue;
+    const bundle = bundles.get(prefix) || { prefix };
+    bundle[kind] = fileName;
+    bundles.set(prefix, bundle);
+  }
+
+  const scoreBundle = (bundle) => {
+    const populated = Object.keys(FETCHED_METADATA_FILE_NAMES).filter((kind) => bundle[kind]).length;
+    return (populated * 10)
+      + (bundle.storyStructurePath ? 4 : 0)
+      + (bundle.storyTextPath ? 2 : 0)
+      + (bundle.manifestPath ? 1 : 0);
+  };
+  const hasCanonicalNarrativeMetadata = fileNameSet.has(FETCHED_METADATA_FILE_NAMES.storyStructurePath)
+    || fileNameSet.has(FETCHED_METADATA_FILE_NAMES.storyTextPath);
+  const selectedBundle = Array.from(bundles.values())
+    .filter((bundle) => hasCanonicalNarrativeMetadata || bundle.storyStructurePath || bundle.storyTextPath)
+    .sort((left, right) => scoreBundle(right) - scoreBundle(left) || left.prefix.localeCompare(right.prefix))[0]
+    || null;
+  const resolved = {};
+  for (const [kind, canonicalFileName] of Object.entries(FETCHED_METADATA_FILE_NAMES)) {
+    const selectedFileName = fileNameSet.has(canonicalFileName)
+      ? canonicalFileName
+      : selectedBundle?.[kind] || null;
+    resolved[kind] = selectedFileName ? path.join(metadataRoot, selectedFileName) : null;
+  }
+  resolved.legacyPrefix = selectedBundle?.prefix || null;
+  resolved.legacyFileNames = Object.keys(FETCHED_METADATA_FILE_NAMES)
+    .map((kind) => resolved[kind] && path.basename(resolved[kind]))
+    .filter((fileName) => fileName?.includes("__"));
+  return resolved;
+}
+
 export async function importFetchedStoryResources(resourceFolder, mode = "dev", options = {}) {
   const repoRoot = options.repoRoot || REPO_ROOT;
   const fullResourceFolder = path.resolve(resourceFolder);
   const metadataRoot = path.join(fullResourceFolder, "metadata");
-  const storyStructurePath = path.join(metadataRoot, "story_structure_candidates.json");
-  const manifestPath = path.join(metadataRoot, "asset_manifest.json");
-  const sourceDiscoveryPath = path.join(metadataRoot, "source_discovery.json");
+  const metadataFiles = await resolveFetchedMetadataFiles(metadataRoot);
+  const {
+    storyStructurePath,
+    storyTextPath,
+    manifestPath,
+    sourceDiscoveryPath,
+  } = metadataFiles;
 
-  if (!(await exists(storyStructurePath))) {
-    throw new Error(`Fetched resource folder is missing metadata/story_structure_candidates.json: ${fullResourceFolder}`);
-  }
-  if (!(await exists(manifestPath))) {
-    throw new Error(`Fetched resource folder is missing metadata/asset_manifest.json: ${fullResourceFolder}`);
+  if (!storyStructurePath && !storyTextPath) {
+    throw new Error(
+      `Fetched resource folder needs metadata/story_structure_candidates.json or metadata/story_text.json, including a deterministic <prefix>__ legacy name: ${fullResourceFolder}`,
+    );
   }
 
-  const storyStructure = JSON.parse(await readFile(storyStructurePath, "utf8"));
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  const sourceDiscovery = (await exists(sourceDiscoveryPath))
+  const storyStructure = storyStructurePath
+    ? JSON.parse(await readFile(storyStructurePath, "utf8"))
+    : {};
+  const storyText = storyTextPath
+    ? JSON.parse(await readFile(storyTextPath, "utf8"))
+    : {};
+  const manifest = manifestPath
+    ? JSON.parse(await readFile(manifestPath, "utf8"))
+    : [];
+  const sourceDiscovery = sourceDiscoveryPath
     ? JSON.parse(await readFile(sourceDiscoveryPath, "utf8"))
     : {};
-  const slug = firstNonEmpty(sourceDiscovery.slug, storySlugFromUrl(sourceDiscovery.story_url || storyStructure.story_url), inferredSlugFromResourceFolder(fullResourceFolder));
-  const storyTitle = firstNonEmpty(storyStructure.title, sourceDiscovery.title, slug);
+  const sourceUrl = firstNonEmpty(
+    sourceDiscovery.story_url,
+    sourceDiscovery.url,
+    storyStructure.story_url,
+    storyStructure.url,
+    storyText.story_url,
+    storyText.url,
+    manifest.story_url,
+    manifest.url,
+    "",
+  );
+  const slug = firstNonEmpty(
+    sourceDiscovery.slug,
+    storySlugFromUrl(sourceUrl),
+    inferredSlugFromResourceFolder(fullResourceFolder),
+  );
+  const storyTitle = firstNonEmpty(
+    storyStructure.title,
+    storyStructure.headline,
+    sourceDiscovery.title,
+    storyText.headline,
+    storyText.title,
+    manifest.title,
+    slug,
+  );
   const assets = assetsFromManifest(manifest);
   const pointCloudEffects = normalizeStoryVrPointCloudEffects(storyStructure.point_cloud_effects, assets);
   const sourceSpatialPlacements = normalizeFetchedSourceSpatialPlacements(storyStructure, assets);
-  const rawContentUnits = contentUnitsFromFetchedStructure(storyStructure, { storyTitle });
+  let rawContentUnits = contentUnitsFromFetchedStructure(storyStructure, { storyTitle });
+  let contentFallback = null;
+  if (!rawContentUnits.length) {
+    const legacyTextUnits = contentUnitsFromLegacyStoryText(storyText, { storyTitle });
+    if (legacyTextUnits.length) {
+      rawContentUnits = legacyTextUnits;
+      contentFallback = {
+        kind: "legacy-story-text",
+        count: legacyTextUnits.length,
+        fileName: path.basename(storyTextPath),
+      };
+    } else {
+      const capturedTitle = firstNonEmpty(
+        storyStructure.headline,
+        storyStructure.title,
+        arrayOr(storyStructure.headings)[0]?.text,
+        sourceDiscovery.title,
+        storyText.headline,
+        storyText.title,
+        manifest.title,
+        "",
+      );
+      const titleUnits = contentUnitsFromFetchedTitle(capturedTitle);
+      if (titleUnits.length) {
+        rawContentUnits = titleUnits;
+        contentFallback = { kind: "captured-title", count: 1 };
+      }
+    }
+  }
   const variantGroups = variantGroupsFromFetchedStructure(storyStructure, assets);
   const unresolvedVariantGroupCount = arrayOr(storyStructure.unresolved_variant_groups).length;
   const contentUnits = collapseFetchedVariantGroups(rawContentUnits, variantGroups, storyTitle, assets);
   linkImageAssetsToFetchedContentUnits(contentUnits, assets, storyStructure);
   const diagnostics = [];
 
+  if (metadataFiles.legacyFileNames.length) {
+    diagnostics.push({
+      severity: "info",
+      code: "LEGACY_PREFIXED_FETCHED_METADATA",
+      message: `Loaded the deterministic legacy metadata bundle${metadataFiles.legacyPrefix ? ` "${metadataFiles.legacyPrefix}"` : ""}: ${metadataFiles.legacyFileNames.join(", ")}.`,
+    });
+  }
+  if (!storyStructurePath) {
+    diagnostics.push({
+      severity: "warning",
+      code: "MISSING_FETCHED_STORY_STRUCTURE",
+      message: `No canonical or prefixed story structure file was found; StoryVR used ${path.basename(storyTextPath)} for narrative content.`,
+    });
+  }
+  if (!manifestPath) {
+    diagnostics.push({
+      severity: "warning",
+      code: "MISSING_FETCHED_ASSET_MANIFEST",
+      message: "No canonical or prefixed asset manifest was found; StoryVR imported no source assets.",
+    });
+  }
+  if (contentFallback?.kind === "legacy-story-text") {
+    diagnostics.push({
+      severity: "warning",
+      code: "FETCHED_CONTENT_UNIT_FALLBACK",
+      message: `No usable canonical narrative units were found; StoryVR used ${contentFallback.count} captured text beat(s) from ${contentFallback.fileName}.`,
+    });
+  } else if (contentFallback?.kind === "captured-title") {
+    diagnostics.push({
+      severity: "warning",
+      code: "FETCHED_CONTENT_UNIT_FALLBACK",
+      message: "No usable canonical narrative units or legacy story beats were found; StoryVR kept one text-only unit from the captured story title.",
+    });
+  }
   if (!contentUnits.length) {
     diagnostics.push({
       severity: "warning",
@@ -227,7 +382,7 @@ export async function importFetchedStoryResources(resourceFolder, mode = "dev", 
     slug,
     title: storyTitle,
     byline: "",
-    sourceUrl: firstNonEmpty(sourceDiscovery.story_url, storyStructure.story_url, ""),
+    sourceUrl,
     source: {
       family: "fetched-resource",
       strategy: "single fetched web resource folder",
@@ -238,9 +393,10 @@ export async function importFetchedStoryResources(resourceFolder, mode = "dev", 
       sourceFormat: "fetched-resource-folder",
       originalSchema: {
         storyStructure: summarizeOriginalSchema(storyStructure),
-        assetManifestCount: Array.isArray(manifest) ? manifest.length : 0,
+        ...(storyTextPath ? { storyText: summarizeOriginalSchema(storyText) } : {}),
+        assetManifestCount: fetchedManifestEntries(manifest).length,
       },
-      generatedAt: sourceDiscovery.timestamp || storyStructure.timestamp || null,
+      generatedAt: sourceDiscovery.timestamp || storyStructure.timestamp || storyText.timestamp || manifest.timestamp || null,
     },
     assetRoot: normalizeFetchedAssetRoot(fullResourceFolder, mode, repoRoot),
     style: { colors: {}, tokens: {} },
@@ -284,7 +440,8 @@ export async function importFetchedStoryResources(resourceFolder, mode = "dev", 
     diagnostics,
     rawSummary: {
       contentUnitCount: contentUnits.length,
-      assetManifestCount: Array.isArray(manifest) ? manifest.length : 0,
+      assetManifestCount: fetchedManifestEntries(manifest).length,
+      legacyStoryTextBeatCount: arrayOr(storyText.beats).length,
       slideCount: arrayOr(storyStructure.slides).length,
       scrollStepCount: arrayOr(storyStructure.scroll_steps).length,
       captionCount: arrayOr(storyStructure.captions).length,
@@ -564,6 +721,66 @@ function contentUnitsFromFetchedStructure(storyStructure, options = {}) {
       };
     });
   return applyBeatTitlesToFetchedUnits(applyHeadingsToFetchedUnits(units, storyStructure.headings), storyTitle);
+}
+
+function contentUnitsFromLegacyStoryText(storyText, options = {}) {
+  const storyTitle = firstNonEmpty(options.storyTitle, storyText.headline, storyText.title, "");
+  let sectionHeading = storyTitle;
+  const narrativeBeats = [];
+  arrayOr(storyText.beats).forEach((beat, index) => {
+    const text = firstNonEmpty(beat?.text, beat?.content, beat?.value, "");
+    if (!isUsableFetchedText(text)) return;
+    const tag = String(beat?.tag || "").toLowerCase();
+    if (/^h[1-6]$/.test(tag)) {
+      sectionHeading = text;
+      return;
+    }
+    narrativeBeats.push({
+      ...beat,
+      index,
+      text,
+      className: firstNonEmpty(beat?.className, beat?.cls, ""),
+      domOrder: Number.isFinite(Number(beat?.domOrder)) ? Number(beat.domOrder) : index,
+      sectionHeading,
+    });
+  });
+
+  const candidates = [];
+  addFetchedUnits(candidates, narrativeBeats, "text-only", "Narrative Text", "legacy_story_text.beats");
+  return dedupeFetchedUnits(sortFetchedUnitsBySourceOrder(candidates))
+    .filter((unit) => unit.text)
+    .map((unit, index) => {
+      const { __sourceOrder, ...cleanUnit } = unit;
+      return {
+        ...cleanUnit,
+        id: cleanUnit.id || `legacy-text-${String(index + 1).padStart(2, "0")}`,
+        index,
+        title: firstNonEmpty(cleanUnit.sectionHeading, storyTitle, titleFromText(cleanUnit.text, index)),
+        originalField: "legacy_story_text.beats",
+      };
+    });
+}
+
+function contentUnitsFromFetchedTitle(capturedTitle) {
+  const text = firstNonEmpty(capturedTitle, "");
+  if (!isUsableFetchedText(text)) return [];
+  return [{
+    id: "fetched-title-1",
+    index: 0,
+    kind: "text-only",
+    subtype: "captured-title-fallback",
+    isTextOnly: true,
+    section: "Narrative Text",
+    sectionHeading: text,
+    title: text,
+    text,
+    sourceIds: [],
+    media: {},
+    scene: {},
+    lifecycle: { textOnly: true, narrativeSubtype: "captured-title-fallback" },
+    interactions: {},
+    originalField: "metadata.title",
+  }];
 }
 
 function variantGroupId(value, fallback) {
@@ -1107,10 +1324,16 @@ function normalizeFetchedAssetRoot(resourceFolder, mode, repoRoot) {
   };
 }
 
+function fetchedManifestEntries(manifest) {
+  if (Array.isArray(manifest)) return manifest;
+  return arrayOr(manifest?.assets);
+}
+
 function assetsFromManifest(manifest) {
-  return arrayOr(manifest).map((entry, index) => {
+  return fetchedManifestEntries(manifest).map((entry, index) => {
     const localPath = String(entry.local_path || "");
-    const fileName = assetFileName(localPath || entry.final_url || entry.asset_url || `asset-${index + 1}`);
+    const localName = String(entry.local_name || "");
+    const fileName = assetFileName(localPath || localName || entry.final_url || entry.asset_url || `asset-${index + 1}`);
     return {
       id: firstNonEmpty(entry.id, fileName),
       path: localPath ? toPosix(localPath).replace(/^.*\/(models|pointclouds|textures|data|scripts|html|metadata|media)\//, "$1/") : null,
@@ -1118,8 +1341,9 @@ function assetsFromManifest(manifest) {
       type: entry.asset_type || inferAssetType(fileName),
       role: firstNonEmpty(entry.adaptation_relevance, entry.role, ""),
       sourceField: "metadata.asset_manifest",
-      bytes: entry.file_size || null,
+      bytes: entry.file_size || entry.size || null,
       originalUrl: entry.asset_url || null,
+      ...(localName ? { localName } : {}),
       caption: firstNonEmpty(entry.caption, ""),
       credits: arrayOr(entry.credits),
       sourceImageGroupId: firstNonEmpty(entry.source_image_group_id, ""),

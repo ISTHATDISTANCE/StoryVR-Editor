@@ -101,12 +101,17 @@ Use **Finish this step** before moving downstream. Inside a 3D editor, use
 completing the top-level step. If an earlier step changes, StoryVR revalidates
 completed downstream work in order, preserves steps that are still safe, and
 stops at the first scene or field that needs review. After Review story is
-complete, **Build reader** writes the current authored decisions into:
+complete, **Build story** starts a background build from a stable snapshot and
+writes the current authored decisions into:
 
 ```text
 <story-folder>/discovery/storyvr-runtime.json
 <story-folder>/webxr-adaptation/
 ```
+
+If the authored inputs change while the build is running, StoryVR leaves the
+previous runtime and reader build in place and reports the result as out of
+date so the author can build again.
 
 The editor keeps one browser-session Undo/Redo history. Use `Command-Z` and
 `Command-Shift-Z` on macOS, or `Ctrl-Z` and `Ctrl-Shift-Z`/`Ctrl-Y` on
@@ -138,9 +143,25 @@ and Grip remain reserved for UI rays and grabbing.
 
 ### Optional session data collection
 
-The editor's **Data collection** switch is off by default. Turning it on records
-clicks and selected 3D actions without recording typed values. Turning it off
-downloads a local `storyvr-interaction-log/v1` JSON file.
+The editor's **Data collection** switch is off by default. In a current Chrome
+browser, turning it on opens a folder chooser, creates a named
+`storyvr-interaction-log/v1` JSON file, and records clicks and selected 3D
+actions without recording typed values. StoryVR checkpoints new events into
+that same file while collection is on. Turning the switch off finalizes the
+file; canceling the initial folder choice leaves collection off, and a failed
+checkpoint or final save keeps the unwritten events available for retry.
+
+For a consented study that also needs activity from an original story page,
+build the optional local Chrome extension:
+
+```sh
+npm run storyvr:study-extension
+```
+
+Then load `tools/storyvr-study-extension/unpacked/` as an unpacked extension.
+An original page is observed only after its exact tab, origin, and path are
+explicitly approved and StoryVR's **Data collection** switch is on. See
+`tools/storyvr-study-extension/README.md` for the privacy boundary and setup.
 
 Open exported logs in the local session viewer:
 
@@ -177,7 +198,7 @@ environment panorama and matching-ground generation require the Codex CLI.
 
 ## Build and preview the WebXR reader
 
-After selecting **Build reader** in Review story, you can also rebuild a generic
+After selecting **Build story** in Review story, you can also rebuild a generic
 story reader directly:
 
 ```sh

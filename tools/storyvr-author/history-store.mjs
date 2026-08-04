@@ -10,6 +10,7 @@ import {
   rm,
   rmdir,
   stat,
+  readFile,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -17,6 +18,40 @@ import path from "node:path";
 
 const DEFAULT_SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_MAX_CHECKPOINTS = 128;
+
+export function createAuthorArtifactSignatureReader({ paths, environmentAssetRoot } = {}) {
+  if (!paths?.storyFolder || !paths?.analysisRoot) throw new TypeError("StoryVR author signatures require resolved author paths.");
+  const storyFolder = path.resolve(paths.storyFolder);
+  const assetRoot = path.resolve(environmentAssetRoot || path.join(storyFolder, "webxr-adaptation", "public", "environment-enhancement"));
+  assertInside(storyFolder, assetRoot, "environmentAssetRoot");
+  const digestCache = new Map();
+  return async () => checkpointSignature(await collectAuthorArtifacts(paths, assetRoot, digestCache));
+}
+
+export function createStoryBuildInputSignatureReader({ paths, environmentAssetRoot, repositoryRoot } = {}) {
+  if (!paths?.storyFolder || !paths?.analysisRoot || !paths?.resourceFolder) {
+    throw new TypeError("StoryVR build signatures require resolved author paths.");
+  }
+  const storyFolder = path.resolve(paths.storyFolder);
+  const resourceFolder = path.resolve(paths.resourceFolder);
+  const readerSource = path.join(storyFolder, "webxr-adaptation");
+  const assetRoot = path.resolve(
+    environmentAssetRoot || path.join(readerSource, "public", "environment-enhancement"),
+  );
+  const resolvedRepositoryRoot = repositoryRoot ? path.resolve(repositoryRoot) : null;
+  assertInside(storyFolder, resourceFolder, "resourceFolder");
+  assertInside(storyFolder, assetRoot, "environmentAssetRoot");
+  const digestCache = new Map();
+  return async () => storyBuildInputSignature(await collectStoryBuildInputArtifacts({
+    paths,
+    storyFolder,
+    resourceFolder,
+    readerSource,
+    assetRoot,
+    repositoryRoot: resolvedRepositoryRoot,
+    digestCache,
+  }));
+}
 
 export function createHistoryCheckpointStore({
   paths,
@@ -122,7 +157,7 @@ export function createHistoryCheckpointStore({
     if (!checkpoint) throw historyError(404, "StoryVR history checkpoint was not found in this browser session.");
     session.touchedAt = Date.now();
 
-    const rollback = await captureCheckpoint(sessionId);
+    const rollbackCheckpoint = await captureRestoreRollbackCheckpoint(session);
     try {
       const applied = await applyCheckpoint(paths, assetRoot, checkpoint, session);
       return {
@@ -132,10 +167,29 @@ export function createHistoryCheckpointStore({
         ...applied,
       };
     } catch (error) {
-      const rollbackCheckpoint = session.checkpoints.get(rollback.checkpointId);
-      if (rollbackCheckpoint) await applyCheckpoint(paths, assetRoot, rollbackCheckpoint, session).catch(() => {});
+      await applyCheckpoint(paths, assetRoot, rollbackCheckpoint, session).catch(() => {});
       throw error;
     }
+  }
+
+  async function captureRestoreRollbackCheckpoint(session) {
+    if (session.checkpoints.size < maxCheckpoints) {
+      const rollback = await captureCheckpoint(session.id);
+      return session.checkpoints.get(rollback.checkpointId);
+    }
+
+    // A full session cannot register another checkpoint, but restore still
+    // needs an exact snapshot in case applying the requested target fails.
+    session.touchedAt = Date.now();
+    const manifest = await collectAuthorArtifacts(paths, assetRoot, session.digestCache);
+    for (const entry of manifest) await ensureContentBlob(session, entry);
+    return {
+      id: null,
+      root: null,
+      signature: checkpointSignature(manifest),
+      manifest: manifest.map(({ relativePath, kind, size, digest }) => ({ relativePath, kind, size, digest })),
+      createdAt: Date.now(),
+    };
   }
 
   async function deleteSession(sessionId) {
@@ -194,6 +248,158 @@ async function collectAuthorArtifacts(paths, assetRoot, digestCache = new Map())
   return entries.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
 }
 
+async function collectStoryBuildInputArtifacts({
+  paths,
+  storyFolder,
+  resourceFolder,
+  readerSource,
+  assetRoot,
+  repositoryRoot,
+  digestCache,
+}) {
+  const entries = [];
+  const staticFiles = [
+    paths.projectPath,
+    paths.storyGraphPath,
+    paths.sourceMotionOverridesPath,
+    paths.sourceMotionPlaybackPath,
+    paths.proceduralDynamicsPath,
+    path.join(paths.analysisRoot, "environment-enhancement.json"),
+  ].filter(Boolean);
+  for (const filePath of staticFiles) {
+    await addFileIfPresent(entries, storyFolder, filePath, "build-author-json", digestCache);
+  }
+  await addJsonDirectory(entries, storyFolder, paths.decisionsRoot, digestCache);
+  const localAnimationProbeRoot = path.join(storyFolder, "analysis", "animation-logic-probe");
+  await walkNamedFiles(
+    localAnimationProbeRoot,
+    new Set(["codex-animation-judgment.json", "animation-evidence.json"]),
+    3,
+    async (filePath) => {
+      await addFileIfPresent(entries, storyFolder, filePath, "build-animation-probe", digestCache);
+    },
+  );
+  if (repositoryRoot) {
+    const referencedProbeFiles = await storyGraphAnimationProbeFiles(paths.storyGraphPath, repositoryRoot);
+    for (const filePath of referencedProbeFiles) {
+      await addExternalFileIfPresent(
+        entries,
+        repositoryRoot,
+        filePath,
+        "build-animation-probe-fallback",
+        digestCache,
+      );
+    }
+  }
+  await walkStoryBuildInputFiles(resourceFolder, async (filePath) => {
+    await addFileIfPresent(entries, storyFolder, filePath, "build-resource", digestCache);
+  });
+  await walkStoryBuildInputFiles(readerSource, async (filePath) => {
+    await addFileIfPresent(entries, storyFolder, filePath, "build-reader-source", digestCache);
+  }, { readerSource: true });
+  if (!assetRoot.startsWith(`${path.resolve(readerSource)}${path.sep}`)) {
+    await walkStoryBuildInputFiles(assetRoot, async (filePath) => {
+      await addFileIfPresent(entries, storyFolder, filePath, "build-environment-asset", digestCache);
+    });
+  }
+  const unique = new Map(entries.map((entry) => [entry.relativePath, entry]));
+  return [...unique.values()].sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+}
+
+async function storyGraphAnimationProbeFiles(storyGraphPath, repositoryRoot) {
+  let graph;
+  try {
+    graph = JSON.parse(await readFile(storyGraphPath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT" || error instanceof SyntaxError) return [];
+    throw error;
+  }
+  const judgments = new Set();
+  const visit = (value, key = "") => {
+    if (typeof value === "string") {
+      if (
+        (key === "artifactPath" || key === "path")
+        && value.split(/[\\/]/).at(-1) === "codex-animation-judgment.json"
+      ) {
+        judgments.add(path.isAbsolute(value) ? path.resolve(value) : path.resolve(repositoryRoot, value));
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const child of value) visit(child);
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const [childKey, child] of Object.entries(value)) visit(child, childKey);
+    }
+  };
+  visit(graph);
+  return [...judgments].flatMap((judgmentPath) => [
+    judgmentPath,
+    path.join(path.dirname(judgmentPath), "animation-evidence.json"),
+  ]);
+}
+
+async function walkNamedFiles(directory, names, maxDepth, visitor, depth = 0) {
+  if (depth > maxDepth) return;
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (entry.name === ".storyvr-build-fallback") continue;
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isFile() && names.has(entry.name)) await visitor(entryPath);
+    else if (entry.isDirectory()) await walkNamedFiles(entryPath, names, maxDepth, visitor, depth + 1);
+  }
+}
+
+async function addExternalFileIfPresent(entries, root, filePath, kind, digestCache) {
+  let metadata;
+  try {
+    metadata = await lstat(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  if (!metadata.isFile()) return;
+  const absolutePath = path.resolve(filePath);
+  assertInside(root, absolutePath, "StoryVR repository build artifact");
+  const relativePath = `@repository/${toPosix(path.relative(root, absolutePath))}`;
+  const digest = await digestForFile(absolutePath, metadata, digestCache);
+  entries.push({ absolutePath, relativePath, kind, size: metadata.size, digest });
+}
+
+async function walkStoryBuildInputFiles(directory, visitor, options = {}, root = directory) {
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (entry.name === ".DS_Store" || entry.name.startsWith(".generation-") || entry.name.startsWith(".backup-")) {
+      continue;
+    }
+    const entryPath = path.join(directory, entry.name);
+    const relativePath = toPosix(path.relative(root, entryPath));
+    if (
+      options.readerSource
+      && (
+        relativePath === "data/story-instance.json"
+        || relativePath.startsWith(".storyvr-template-backups/")
+        || relativePath.startsWith(".storyvr-template-updates/")
+      )
+    ) continue;
+    if (entry.isDirectory()) await walkStoryBuildInputFiles(entryPath, visitor, options, root);
+    else if (entry.isFile()) await visitor(entryPath);
+  }
+}
+
 async function addJsonDirectory(entries, storyFolder, directory, digestCache) {
   let names;
   try {
@@ -244,6 +450,15 @@ async function walkFiles(directory, visitor) {
 function checkpointSignature(manifest) {
   const hash = createHash("sha256");
   hash.update("storyvr-history-checkpoint/v2\n");
+  for (const entry of manifest) {
+    hash.update(`${entry.relativePath}\0${entry.kind}\0${entry.size}\0${entry.digest}\n`);
+  }
+  return hash.digest("hex");
+}
+
+function storyBuildInputSignature(manifest) {
+  const hash = createHash("sha256");
+  hash.update("storyvr-build-input/v1\n");
   for (const entry of manifest) {
     hash.update(`${entry.relativePath}\0${entry.kind}\0${entry.size}\0${entry.digest}\n`);
   }

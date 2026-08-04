@@ -47,6 +47,8 @@ dist-webxr-adaptation/
 .cache/
 .lab-data/
 **/.lab-data/
+tools/storyvr-study-extension/unpacked/
+tools/storyvr-study-extension/builds/
 .parcel-cache/
 .playwright-cli/
 coverage/

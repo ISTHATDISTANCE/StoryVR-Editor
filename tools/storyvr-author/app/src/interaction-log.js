@@ -1,3 +1,5 @@
+import { createInteractionLogFileInSelectedDirectory } from "./interaction-log-file.js";
+
 export const INTERACTION_LOG_SCHEMA_VERSION = "storyvr-interaction-log/v1";
 
 const INTERACTIVE_TAGS = new Set([
@@ -25,47 +27,86 @@ const SENSITIVE_DATA_KEY = /(?:password|secret|token|prompt|content|participant|
 const MAX_LABEL_LENGTH = 180;
 const MAX_DATA_ATTRIBUTES = 12;
 const MAX_DATA_VALUE_LENGTH = 160;
-const DEFAULT_MAX_EVENTS = 25_000;
+const DEFAULT_CHECKPOINT_EVENTS = 1_000;
+const DEFAULT_CHECKPOINT_BYTES = 512 * 1024;
+const DEFAULT_MAX_BUFFERED_EVENTS = 5_000;
+const DEFAULT_MAX_BUFFERED_BYTES = 2 * 1024 * 1024;
+const DEFAULT_CHECKPOINT_INTERVAL_MS = 30_000;
+const DEFAULT_CHECKPOINT_DELAY_MS = 1_350;
 const SEMANTIC_CLICK_WINDOW_MS = 1_200;
 const LABEL_ACTIVATION_WINDOW_MS = 350;
 
 export function createInteractionLogger({
   documentRef = globalThis.document,
   windowRef = globalThis.window,
-  saveLog = (payload) => requestInteractionLogDownload(payload, { documentRef, windowRef }),
+  openLog = (payload) => createInteractionLogFileInSelectedDirectory(payload, { windowRef }),
+  prepareCheckpoint = async () => null,
+  transformCheckpoint = (payload) => payload,
+  commitCheckpoint: commitPreparedCheckpoint = async () => {},
+  abortCheckpoint: abortPreparedCheckpoint = async () => {},
   getContext = () => ({}),
+  onCollectionStarted = () => {},
   now = () => new Date(),
   createSessionId = defaultSessionId,
-  maxEvents = DEFAULT_MAX_EVENTS,
+  checkpointEvents = DEFAULT_CHECKPOINT_EVENTS,
+  checkpointBytes = DEFAULT_CHECKPOINT_BYTES,
+  maxBufferedEvents = DEFAULT_MAX_BUFFERED_EVENTS,
+  maxBufferedBytes = DEFAULT_MAX_BUFFERED_BYTES,
+  checkpointIntervalMs = DEFAULT_CHECKPOINT_INTERVAL_MS,
+  checkpointDelayMs = DEFAULT_CHECKPOINT_DELAY_MS,
 } = {}) {
   if (!documentRef?.addEventListener) throw new TypeError("A document is required for interaction logging.");
-  if (typeof saveLog !== "function") throw new TypeError("A save handler is required for interaction logging.");
+  for (const callback of [openLog, prepareCheckpoint, transformCheckpoint, commitPreparedCheckpoint, abortPreparedCheckpoint, onCollectionStarted]) {
+    if (typeof callback !== "function") throw new TypeError("Interaction-log lifecycle handlers must be functions.");
+  }
 
   const listeners = new Set();
+  const encoder = new TextEncoder();
   const state = {
     enabled: false,
+    starting: false,
     saving: false,
+    checkpointing: false,
     status: "off",
     error: "",
     session: null,
     events: [],
+    deferredEvents: [],
+    bufferedBytes: 0,
+    nextSequence: 1,
+    writer: null,
     lastSaved: null,
     limitReached: false,
+    extensionSessionUsable: false,
   };
   let attached = false;
-  let savePromise = null;
+  let disposed = false;
+  let checkpointPromise = null;
+  let finalRequestPromise = null;
+  let pendingFinalTransaction = null;
+  let checkpointTimer = null;
+  let periodicTimer = null;
   let lastCapturedClick = null;
   let recentSemanticClick = null;
-
+  const setTimer = windowRef?.setTimeout?.bind(windowRef) || globalThis.setTimeout;
+  const clearTimer = windowRef?.clearTimeout?.bind(windowRef) || globalThis.clearTimeout;
+  const setPeriodicTimer = windowRef?.setInterval?.bind(windowRef) || globalThis.setInterval;
+  const clearPeriodicTimer = windowRef?.clearInterval?.bind(windowRef) || globalThis.clearInterval;
   const timestamp = () => validDate(now());
 
   function snapshot() {
+    const persisted = state.writer?.snapshot?.() || null;
     return Object.freeze({
       enabled: state.enabled,
+      starting: state.starting,
       saving: state.saving,
+      checkpointing: state.checkpointing,
       status: state.status,
       error: state.error,
       eventCount: state.events.length,
+      deferredEventCount: state.deferredEvents.length,
+      bufferedBytes: state.bufferedBytes,
+      persistedEventCount: Number(persisted?.eventCount) || 0,
       startedAt: state.session?.startedAt || null,
       limitReached: state.limitReached,
       lastSaved: state.lastSaved ? { ...state.lastSaved } : null,
@@ -86,6 +127,9 @@ export function createInteractionLogger({
   function dispose() {
     if (attached) documentRef.removeEventListener("click", handleDocumentClick, { capture: true });
     attached = false;
+    disposed = true;
+    cancelCheckpointTimer();
+    stopPeriodicCheckpoints();
     listeners.clear();
   }
 
@@ -104,125 +148,459 @@ export function createInteractionLogger({
     }
   }
 
-  function beginCollection() {
-    if (state.saving || state.enabled) return snapshot();
+  async function beginCollection() {
+    if (state.saving || state.starting || state.enabled || state.session || pendingFinalTransaction) return snapshot();
     const started = timestamp();
-    state.enabled = true;
-    state.status = "collecting";
-    state.error = "";
-    state.limitReached = false;
-    state.session = {
+    const session = {
       id: String(createSessionId()),
       startedAt: started.toISOString(),
       context: context(),
       viewport: viewportSnapshot(windowRef),
     };
-    state.events = [];
-    appendLifecycleEvent("collection-started", "Interaction data collection enabled", started);
+    const startEvent = interactionLifecycleEvent({
+      sequence: 1,
+      startedAt: session.startedAt,
+      eventTime: started,
+      type: "collection-started",
+      label: "Interaction data collection enabled",
+      context: session.context,
+    });
+    state.starting = true;
+    state.status = "choosing-location";
+    state.error = "";
+    state.limitReached = false;
     notify();
-    return snapshot();
+
+    try {
+      // openLog calls the folder chooser before any extension handshake so the
+      // browser still has the switch click's transient user activation.
+      const writer = await openLog(interactionSessionPayload(session, [startEvent], started, {}));
+      if (!writer?.appendBatch || !writer?.finalize || !writer?.snapshot) {
+        throw new Error("The selected folder did not provide a writable interaction-log file.");
+      }
+      try {
+        const extensionStart = await Promise.resolve(onCollectionStarted({
+          sessionId: session.id,
+          startedAt: session.startedAt,
+        }));
+        state.extensionSessionUsable = Boolean(extensionStart?.connected && extensionStart?.started);
+      } catch {
+        // The optional study extension must never block StoryVR-only capture.
+        state.extensionSessionUsable = false;
+      }
+      if (disposed) return snapshot();
+      state.writer = writer;
+      state.session = session;
+      state.events = [];
+      state.deferredEvents = [];
+      state.bufferedBytes = 0;
+      state.nextSequence = 2;
+      state.enabled = true;
+      state.starting = false;
+      state.status = "collecting";
+      state.error = "";
+      startPeriodicCheckpoints();
+      notify();
+      return snapshot();
+    } catch (error) {
+      const canceled = error?.name === "AbortError";
+      state.enabled = false;
+      state.starting = false;
+      state.saving = false;
+      state.checkpointing = false;
+      state.session = null;
+      state.writer = null;
+      state.events = [];
+      state.deferredEvents = [];
+      state.bufferedBytes = 0;
+      state.nextSequence = 1;
+      state.extensionSessionUsable = false;
+      state.status = canceled ? "location-canceled" : "error";
+      state.error = canceled
+        ? "Folder selection canceled; collection remains off."
+        : String(error?.message || "The interaction-log location could not be opened.");
+      notify();
+      if (!canceled) throw error;
+      return snapshot();
+    }
+  }
+
+  function setEnabled(enabled) {
+    return enabled ? beginCollection() : endCollection();
   }
 
   async function endCollection() {
-    if (state.saving) return savePromise;
-    if (!state.enabled || !state.session) return null;
-    const ended = timestamp();
-    appendLifecycleEvent("collection-stopped", "Interaction data collection disabled", ended);
+    if (state.starting) return checkpointPromise;
+    if (finalRequestPromise) return finalRequestPromise;
+    if ((!state.enabled && !pendingFinalTransaction) || !state.session) return null;
+    cancelCheckpointTimer();
+    const request = (async () => {
+      if (checkpointPromise) {
+        try {
+          await checkpointPromise;
+        } catch {
+          // A final attempt can safely follow a failed regular checkpoint.
+        }
+      }
+      if (!state.session) return null;
+      return performCheckpoint({ final: true, reason: "collection-stopped" });
+    })();
+    const tracked = request.finally(() => {
+      if (finalRequestPromise === tracked) finalRequestPromise = null;
+    });
+    finalRequestPromise = tracked;
+    return tracked;
+  }
+
+  function appendLifecycleEvent(type, label, eventTime, { force = false, dedupe = false } = {}) {
+    if (!state.session) return false;
+    if (dedupe && state.events.some((event) => event?.type === type)) return false;
+    return appendEvent(interactionLifecycleEvent({
+      sequence: state.nextSequence,
+      startedAt: state.session.startedAt,
+      eventTime,
+      type,
+      label,
+      context: context(),
+    }), { force });
+  }
+
+  function appendEvent(entry, { force = false } = {}) {
+    if (!force && state.limitReached && (
+      state.events.length >= maxBufferedEvents || state.bufferedBytes >= maxBufferedBytes
+    )) return false;
+    state.events.push(entry);
+    state.nextSequence = Math.max(state.nextSequence, (Number(entry.sequence) || 0) + 1);
+    state.bufferedBytes += interactionEventBytes(encoder, entry);
+    const overHardLimit = state.events.length >= maxBufferedEvents || state.bufferedBytes >= maxBufferedBytes;
+    if (overHardLimit) {
+      state.limitReached = true;
+      state.status = "limit-reached";
+      state.error = "The interaction buffer is full. StoryVR is retrying the selected location.";
+      notify();
+      requestCheckpoint("buffer-limit");
+      return true;
+    }
+    if (state.events.length >= checkpointEvents || state.bufferedBytes >= checkpointBytes) {
+      requestCheckpoint("buffer-threshold");
+    }
+    return true;
+  }
+
+  function requestCheckpoint(reason = "requested", { delayMs = checkpointDelayMs } = {}) {
+    if (pendingFinalTransaction) {
+      requestFinalRetry({ delayMs });
+      return snapshot();
+    }
+    if (!state.enabled || state.starting || state.saving || finalRequestPromise || !state.session) return snapshot();
+    if (checkpointTimer != null || state.checkpointing) return snapshot();
+    checkpointTimer = setTimer?.(() => {
+      checkpointTimer = null;
+      performCheckpoint({ final: false, reason }).catch(() => {});
+    }, Math.max(0, Number(delayMs) || 0));
+    checkpointTimer?.unref?.();
+    return snapshot();
+  }
+
+  function requestFinalRetry({ delayMs = Math.max(5_000, checkpointDelayMs) } = {}) {
+    if (!pendingFinalTransaction || checkpointTimer != null) return snapshot();
+    checkpointTimer = setTimer?.(() => {
+      checkpointTimer = null;
+      endCollection().catch(() => {});
+    }, Math.max(0, Number(delayMs) || 0));
+    checkpointTimer?.unref?.();
+    return snapshot();
+  }
+
+  async function performCheckpoint({ final, reason }) {
+    if (checkpointPromise) return checkpointPromise;
+    if (!state.session || !state.writer || (!state.enabled && !final)) return null;
+    const operation = final ? runFinalCheckpoint(reason) : runRegularCheckpoint(reason);
+    const tracked = operation.finally(() => {
+      if (checkpointPromise === tracked) checkpointPromise = null;
+    });
+    checkpointPromise = tracked;
+    return tracked;
+  }
+
+  async function prepareExtensionCheckpoint({ checkpointedAt, final, reason }) {
+    if (!state.extensionSessionUsable) return null;
+    const preparation = await prepareCheckpoint({
+      sessionId: state.session.id,
+      checkpointedAt: checkpointedAt.toISOString(),
+      endedAt: checkpointedAt.toISOString(),
+      final,
+      reason,
+    });
+    if (preparation?.connected && !preparation?.prepared) {
+      throw new Error(final
+        ? "The cross-tab study buffer did not finish preparing for finalization."
+        : "The cross-tab study buffer did not finish preparing a checkpoint.");
+    }
+    return preparation?.prepared ? preparation : null;
+  }
+
+  async function runRegularCheckpoint(reason) {
+    const checkpointedAt = timestamp();
+    let preparation = null;
+    let detached = [];
+    let fileWritten = false;
+    const deferredBeforeCheckpoint = state.deferredEvents;
+    state.checkpointing = true;
+    state.status = "checkpointing";
+    state.error = "";
+    notify();
+
+    try {
+      preparation = await prepareExtensionCheckpoint({ checkpointedAt, final: false, reason });
+      detached = detachStableEvents({
+        final: false,
+        cutoff: checkpointedAt.getTime() - SEMANTIC_CLICK_WINDOW_MS,
+      });
+      const basePayload = interactionSessionPayload(state.session, detached, checkpointedAt, {
+        complete: false,
+        limitReached: state.limitReached,
+      });
+      const transformedPayload = await transformCheckpoint(basePayload, preparation, { final: false, reason });
+      const partition = partitionCheckpointEvents(
+        [...state.deferredEvents, ...(Array.isArray(transformedPayload?.events) ? transformedPayload.events : [])],
+        { final: false, cutoff: checkpointedAt.getTime() - SEMANTIC_CLICK_WINDOW_MS },
+      );
+      state.deferredEvents = partition.deferred;
+      const payload = {
+        ...transformedPayload,
+        eventCount: partition.ready.length,
+        events: partition.ready,
+      };
+      if (payload.events.length) {
+        await state.writer.appendBatch(payload, { checkpointedAt });
+        fileWritten = true;
+      }
+      if (preparation?.prepared) {
+        await commitPreparedCheckpoint(preparation, {
+          sessionId: state.session.id,
+          checkpointedAt: checkpointedAt.toISOString(),
+          final: false,
+          fileWritten,
+        });
+      }
+      state.checkpointing = false;
+      state.status = "collecting";
+      state.error = "";
+      state.limitReached = state.events.length >= maxBufferedEvents || state.bufferedBytes >= maxBufferedBytes;
+      notify();
+      if (state.events.length >= checkpointEvents || state.bufferedBytes >= checkpointBytes) {
+        requestCheckpoint("buffer-remains");
+      }
+      return state.writer.snapshot();
+    } catch (error) {
+      state.deferredEvents = deferredBeforeCheckpoint;
+      restoreDetachedEvents(detached);
+      await abortPreparationQuietly(preparation, { final: false, fileWritten });
+      markCheckpointFailure(error);
+      startPeriodicCheckpoints();
+      notify();
+      requestCheckpoint("write-retry", { delayMs: Math.max(5_000, checkpointDelayMs) });
+      throw error;
+    }
+  }
+
+  async function runFinalCheckpoint(reason) {
+    cancelCheckpointTimer();
+    stopPeriodicCheckpoints();
+    const transaction = pendingFinalTransaction || {
+      checkpointedAt: timestamp(),
+      preparation: null,
+      preparationReady: false,
+      fileWritten: false,
+      fileFinalized: false,
+      extensionCommitted: false,
+      result: null,
+    };
+    const firstAttempt = !pendingFinalTransaction;
+    if (!firstAttempt && !transaction.fileFinalized) transaction.checkpointedAt = timestamp();
+    pendingFinalTransaction = transaction;
+    let detached = [];
+    let deferredBeforeAttempt = state.deferredEvents;
+    let appendedThisAttempt = false;
+
+    if (firstAttempt) {
+      appendLifecycleEvent(
+        "collection-stopped",
+        "Interaction data collection disabled",
+        transaction.checkpointedAt,
+        { force: true, dedupe: true },
+      );
+    }
     state.enabled = false;
     state.saving = true;
     state.status = "saving";
     state.error = "";
     notify();
 
-    const payload = {
-      schemaVersion: INTERACTION_LOG_SCHEMA_VERSION,
-      sessionId: state.session.id,
-      startedAt: state.session.startedAt,
-      endedAt: ended.toISOString(),
-      durationMs: Math.max(0, ended.getTime() - new Date(state.session.startedAt).getTime()),
-      sessionContext: state.session.context,
-      viewport: state.session.viewport,
-      eventCount: state.events.length,
-      events: state.events.map((entry) => ({ ...entry })),
-    };
-
-    savePromise = (async () => {
-      try {
-        const result = await saveLog(payload);
-        if (!result?.saved) throw new Error("The interaction log download was not completed.");
-        state.lastSaved = {
-          fileName: String(result.fileName || interactionLogFileName(payload)),
-          eventCount: Number(result.eventCount) || payload.eventCount,
-          savedAt: String(result.savedAt || timestamp().toISOString()),
-          method: String(result.method || "download"),
-        };
-        state.events = [];
-        state.session = null;
-        state.saving = false;
-        state.status = "saved";
-        state.error = "";
-        state.limitReached = false;
-        lastCapturedClick = null;
-        recentSemanticClick = null;
-        notify();
-        return result;
-      } catch (error) {
-        const canceled = error?.name === "AbortError";
-        state.enabled = true;
-        state.saving = false;
-        state.status = canceled ? "canceled" : "error";
-        state.error = canceled
-          ? "Save canceled; cached clicks retained."
-          : String(error?.message || "Interaction logs could not be saved.");
-        appendLifecycleEvent(
-          canceled ? "collection-save-canceled" : "collection-save-failed",
-          canceled
-            ? "Interaction log save canceled; cached clicks retained"
-            : "Interaction log save failed; cached clicks retained",
-          timestamp(),
-        );
-        notify();
-        throw error;
-      } finally {
-        savePromise = null;
+    try {
+      if (!transaction.preparationReady) {
+        transaction.preparation = await prepareExtensionCheckpoint({
+          checkpointedAt: transaction.checkpointedAt,
+          final: true,
+          reason,
+        });
+        transaction.preparationReady = true;
       }
-    })();
-    return savePromise;
-  }
 
-  function setEnabled(enabled) {
-    return enabled ? Promise.resolve(beginCollection()) : endCollection();
-  }
+      if (!transaction.fileFinalized && (!transaction.fileWritten || state.events.length || state.deferredEvents.length)) {
+        detached = detachStableEvents({ final: true, cutoff: Number.POSITIVE_INFINITY });
+        const basePayload = interactionSessionPayload(state.session, detached, transaction.checkpointedAt, {
+          complete: true,
+          limitReached: state.limitReached,
+        });
+        const preparationForAppend = transaction.fileWritten ? null : transaction.preparation;
+        const transformedPayload = await transformCheckpoint(
+          basePayload,
+          preparationForAppend,
+          { final: true, reason },
+        );
+        const partition = partitionCheckpointEvents(
+          [...state.deferredEvents, ...(Array.isArray(transformedPayload?.events) ? transformedPayload.events : [])],
+          { final: true, cutoff: Number.POSITIVE_INFINITY },
+        );
+        state.deferredEvents = [];
+        await state.writer.appendBatch({
+          ...transformedPayload,
+          eventCount: partition.ready.length,
+          events: partition.ready,
+        }, { checkpointedAt: transaction.checkpointedAt });
+        appendedThisAttempt = true;
+        transaction.fileWritten = true;
+      }
 
-  function appendLifecycleEvent(type, label, eventTime) {
-    return appendEvent({
-      sequence: state.events.length + 1,
-      timestamp: eventTime.toISOString(),
-      elapsedMs: elapsedSinceStart(eventTime, state.session?.startedAt),
-      type,
-      context: context(),
-      target: {
-        kind: "system",
-        tag: "system",
-        label,
-      },
-    });
-  }
+      if (!transaction.fileFinalized) {
+        transaction.result = await state.writer.finalize({ endedAt: transaction.checkpointedAt });
+        transaction.fileFinalized = true;
+      }
 
-  function appendEvent(entry) {
-    if (state.events.length >= maxEvents) {
-      state.limitReached = true;
-      state.status = "limit-reached";
-      state.error = "The interaction cache is full. Turn collection off to save it.";
+      if (!transaction.extensionCommitted) {
+        if (transaction.preparation?.prepared) {
+          await commitPreparedCheckpoint(transaction.preparation, {
+            sessionId: state.session.id,
+            checkpointedAt: transaction.checkpointedAt.toISOString(),
+            final: true,
+            fileWritten: transaction.fileWritten,
+          });
+        }
+        transaction.extensionCommitted = true;
+      }
+
+      return completeFinalTransaction(transaction.result || state.writer.snapshot());
+    } catch (error) {
+      if (!appendedThisAttempt) {
+        state.deferredEvents = deferredBeforeAttempt;
+        restoreDetachedEvents(detached);
+      }
+      pendingFinalTransaction = transaction;
+      markCheckpointFailure(error, { addMarker: !transaction.fileFinalized });
+      requestFinalRetry();
       notify();
-      return false;
+      throw error;
     }
-    state.events.push(entry);
-    return true;
+  }
+
+  function restoreDetachedEvents(detached) {
+    if (!detached.length) return;
+    state.events = [...detached, ...state.events];
+    state.bufferedBytes = interactionEventsBytes(encoder, state.events);
+    if (lastCapturedClick) lastCapturedClick.index += detached.length;
+  }
+
+  async function abortPreparationQuietly(preparation, { final, fileWritten }) {
+    if (!preparation?.prepared) return;
+    try {
+      await abortPreparedCheckpoint(preparation, {
+        sessionId: state.session?.id,
+        final,
+        fileWritten,
+      });
+    } catch {
+      // Preserve the original file or commit failure.
+    }
+  }
+
+  function markCheckpointFailure(error, { addMarker = true } = {}) {
+    state.enabled = true;
+    state.saving = false;
+    state.checkpointing = false;
+    state.status = "error";
+    state.error = String(error?.message || "The interaction log could not be written to the selected location.");
+    if (addMarker) {
+      appendLifecycleEvent(
+        "collection-save-failed",
+        "Interaction log write failed; buffered clicks retained",
+        timestamp(),
+        { force: true, dedupe: true },
+      );
+    }
+  }
+
+  function completeFinalTransaction(result) {
+    state.lastSaved = {
+      fileName: String(result.fileName || state.writer.snapshot().fileName || "storyvr-interactions.json"),
+      eventCount: Number(result.eventCount) || 0,
+      savedAt: timestamp().toISOString(),
+      method: String(result.method || "selected-directory"),
+    };
+    state.events = [];
+    state.deferredEvents = [];
+    state.bufferedBytes = 0;
+    state.session = null;
+    state.writer = null;
+    state.saving = false;
+    state.checkpointing = false;
+    state.enabled = false;
+    state.status = "saved";
+    state.error = "";
+    state.limitReached = false;
+    state.nextSequence = 1;
+    state.extensionSessionUsable = false;
+    pendingFinalTransaction = null;
+    lastCapturedClick = null;
+    recentSemanticClick = null;
+    notify();
+    return result;
+  }
+
+  function detachStableEvents({ final, cutoff }) {
+    let count = state.events.length;
+    if (!final) {
+      count = state.events.findIndex((event) => validDate(event?.timestamp).getTime() > cutoff);
+      if (count < 0) count = state.events.length;
+    }
+    const detached = state.events.splice(0, count);
+    if (lastCapturedClick) {
+      if (lastCapturedClick.index < count) lastCapturedClick = null;
+      else lastCapturedClick.index -= count;
+    }
+    state.bufferedBytes = interactionEventsBytes(encoder, state.events);
+    return detached;
+  }
+
+  function startPeriodicCheckpoints() {
+    if (periodicTimer != null || !Number.isFinite(checkpointIntervalMs) || checkpointIntervalMs <= 0) return;
+    periodicTimer = setPeriodicTimer?.(() => requestCheckpoint("periodic"), checkpointIntervalMs);
+    periodicTimer?.unref?.();
+  }
+
+  function stopPeriodicCheckpoints() {
+    if (periodicTimer != null) clearPeriodicTimer?.(periodicTimer);
+    periodicTimer = null;
+  }
+
+  function cancelCheckpointTimer() {
+    if (checkpointTimer != null) clearTimer?.(checkpointTimer);
+    checkpointTimer = null;
   }
 
   function handleDocumentClick(event) {
-    if (!state.enabled || state.saving || !state.session) return;
+    if (!state.enabled || state.saving || pendingFinalTransaction?.fileFinalized || !state.session) return;
     const eventTime = timestamp();
     if (matchesRecentSemanticClick(event, eventTime, recentSemanticClick)) {
       recentSemanticClick = null;
@@ -234,7 +612,7 @@ export function createInteractionLogger({
       return;
     }
     const entry = createInteractionEventRecord(event, {
-      sequence: state.events.length + 1,
+      sequence: state.nextSequence,
       startedAt: state.session.startedAt,
       eventTime,
       context: context(),
@@ -251,24 +629,25 @@ export function createInteractionLogger({
       button: finiteNumber(event.button),
       capturedAt: eventTime.getTime(),
     };
-    if (state.status !== "error" && state.status !== "limit-reached") state.status = "collecting";
-    notify();
+    if (state.status !== "error" && state.status !== "limit-reached" && !state.checkpointing) {
+      state.status = "collecting";
+    }
   }
 
   function recordSemanticClick(event, semanticTarget) {
-    if (!state.enabled || state.saving || !state.session) return false;
+    if (!state.enabled || state.saving || pendingFinalTransaction?.fileFinalized || !state.session) return false;
     const eventTime = timestamp();
     const semantic = boundedSemanticTarget(semanticTarget);
     if (event === lastCapturedClick?.event && matchesCapturedClick(event, eventTime, lastCapturedClick)) {
       const entry = state.events[lastCapturedClick.index];
       if (entry?.type === "click") {
         entry.target = { ...entry.target, semantic };
-        notify();
+        state.bufferedBytes = interactionEventsBytes(encoder, state.events);
         return true;
       }
     }
     const entry = createInteractionEventRecord(event, {
-      sequence: state.events.length + 1,
+      sequence: state.nextSequence,
       startedAt: state.session.startedAt,
       eventTime,
       context: context(),
@@ -282,7 +661,6 @@ export function createInteractionLogger({
       button: finiteNumber(event.button),
       capturedAt: eventTime.getTime(),
     };
-    notify();
     return true;
   }
 
@@ -292,81 +670,83 @@ export function createInteractionLogger({
     subscribe,
     snapshot,
     setEnabled,
+    requestCheckpoint,
     recordSemanticClick,
   });
 }
 
-export async function requestInteractionLogDownload(payload, {
-  documentRef = globalThis.document,
-  windowRef = globalThis.window,
-} = {}) {
-  const fileName = interactionLogFileName(payload);
-  const serialized = `${JSON.stringify(payload, null, 2)}\n`;
-  const BlobConstructor = windowRef?.Blob || globalThis.Blob;
-  if (typeof BlobConstructor !== "function") {
-    throw new Error("This browser cannot prepare the interaction log download.");
-  }
-  const blob = new BlobConstructor([serialized], { type: "application/json" });
-
-  if (typeof windowRef?.showSaveFilePicker === "function") {
-    const handle = await windowRef.showSaveFilePicker({
-      suggestedName: fileName,
-      types: [{
-        description: "StoryVR interaction log",
-        accept: { "application/json": [".json"] },
-      }],
-    });
-    const writable = await handle.createWritable();
-    try {
-      await writable.write(blob);
-      await writable.close();
-    } catch (error) {
-      try {
-        await writable.abort?.();
-      } catch {
-        // Preserve the original write failure.
-      }
-      throw error;
-    }
-    return {
-      saved: true,
-      fileName: downloadFileName(handle?.name || fileName),
-      eventCount: Number(payload?.eventCount) || 0,
-      method: "file-picker",
-    };
-  }
-
-  const urlApi = windowRef?.URL || globalThis.URL;
-  if (!documentRef?.createElement || !urlApi?.createObjectURL) {
-    throw new Error("This browser cannot open an interaction log download.");
-  }
-  const objectUrl = urlApi.createObjectURL(blob);
-  const anchor = documentRef.createElement("a");
-  anchor.href = objectUrl;
-  anchor.download = fileName;
-  anchor.rel = "noopener";
-  anchor.hidden = true;
-  const parent = documentRef.body || documentRef.documentElement;
-  parent?.appendChild?.(anchor);
-  try {
-    anchor.click();
-  } finally {
-    anchor.remove?.();
-    const defer = windowRef?.setTimeout || globalThis.setTimeout;
-    defer?.(() => urlApi.revokeObjectURL(objectUrl), 0);
-  }
+function interactionLifecycleEvent({ sequence, startedAt, eventTime, type, label, context }) {
   return {
-    saved: true,
-    fileName,
-    eventCount: Number(payload?.eventCount) || 0,
-    method: "browser-download",
+    sequence,
+    timestamp: eventTime.toISOString(),
+    elapsedMs: elapsedSinceStart(eventTime, startedAt),
+    type,
+    context: boundedSerializableObject(context),
+    target: {
+      kind: "system",
+      tag: "system",
+      label,
+    },
   };
 }
 
-export function interactionLogFileName(payload) {
-  const endedAt = validDate(payload?.endedAt).toISOString().replace(/[:.]/g, "-");
-  const sessionId = safeFileToken(payload?.sessionId).slice(0, 32) || "session";
-  return `storyvr-interactions-${endedAt}-${sessionId}.json`;
+function interactionSessionPayload(session, events, endedAt, { complete = false, limitReached = false } = {}) {
+  const started = validDate(session?.startedAt);
+  const ended = validDate(endedAt);
+  return {
+    schemaVersion: INTERACTION_LOG_SCHEMA_VERSION,
+    sessionId: session?.id,
+    startedAt: started.toISOString(),
+    endedAt: ended.toISOString(),
+    durationMs: Math.max(0, ended.getTime() - started.getTime()),
+    sessionContext: boundedSerializableObject(session?.context),
+    viewport: boundedSerializableObject(session?.viewport),
+    eventCount: events.length,
+    complete: Boolean(complete),
+    bufferLimitReached: Boolean(limitReached),
+    events: events.map((entry) => ({ ...entry })),
+  };
+}
+
+function interactionEventBytes(encoder, value) {
+  try {
+    return encoder.encode(JSON.stringify(value)).byteLength + 1;
+  } catch {
+    return 1;
+  }
+}
+
+function interactionEventsBytes(encoder, events) {
+  return events.reduce((total, event) => total + interactionEventBytes(encoder, event), 0);
+}
+
+function partitionCheckpointEvents(events, { final, cutoff }) {
+  const seen = new Set();
+  const ordered = events
+    .filter((event) => event && typeof event === "object" && !Array.isArray(event))
+    .filter((event, index) => {
+      const source = String(event.captureSource || event.surface || "storyvr");
+      const sourceSequence = Number(event.sourceSequence) || Number(event.sequence) || index + 1;
+      const key = `${source}:${sourceSequence}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((event, insertionIndex) => ({ event, insertionIndex }))
+    .sort((left, right) => (
+      validDate(left.event.timestamp).getTime() - validDate(right.event.timestamp).getTime()
+      || left.insertionIndex - right.insertionIndex
+    ))
+    .map(({ event }) => event);
+  if (final) return { ready: ordered, deferred: [] };
+  const ready = [];
+  const deferred = [];
+  for (const event of ordered) {
+    const extensionEvent = event.captureSource === "study-extension"
+      || (["browser", "original"].includes(event.surface) && event.captureSource !== "storyvr");
+    (extensionEvent || validDate(event.timestamp).getTime() <= cutoff ? ready : deferred).push(event);
+  }
+  return { ready, deferred };
 }
 
 export function createInteractionEventRecord(event, {
@@ -660,18 +1040,6 @@ function cssIdentifier(value) {
 
 function cssAttributeValue(value) {
   return String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"');
-}
-
-function safeFileToken(value) {
-  return String(value ?? "")
-    .replace(/[^a-zA-Z0-9_-]/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-}
-
-function downloadFileName(value) {
-  const fileName = String(value ?? "").replace(/[\\/]/g, "-").trim();
-  return fileName || "storyvr-interactions.json";
 }
 
 function defaultSessionId() {

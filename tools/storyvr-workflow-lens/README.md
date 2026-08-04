@@ -35,6 +35,6 @@ The logger leaves out typed values and sensitive data fields. A log can still in
 
 ## Interpretation limits
 
-The v1 log records clicks and some 3D selections. It does not record typing, form changes, scrolling, hover, long drags, camera moves, network results, or app errors. Screen size is saved only when logging starts. A step change is confirmed by the next recorded click, so its exact time may be unclear. Time and pause numbers show recorded activity, not attention or success.
+The v1 log records clicks and some 3D selections. Legacy exports do not record scrolling; merged study-extension exports can include the surface, page key, and coarse scroll-depth thresholds. They still do not record typing, form changes, hover, long drags, camera moves, network results, or app errors. Screen size is saved only when logging starts. A step change is confirmed by the next recorded click, so its exact time may be unclear. Time and pause numbers show recorded activity, not attention or success.
 
 A click alone does not prove that a save, step change, build, or generated result worked. The tool and Codex keep that limit clear.

@@ -8630,28 +8630,6 @@ button.interaction-ui-button-preview:hover:not(:disabled) {
   min-width: min(100%, 420px);
 }
 
-.interaction-traversal-constraint {
-  display: grid;
-  gap: 0.28rem;
-  margin: 0.8rem 0;
-  border: 1px solid rgba(0, 127, 115, 0.28);
-  border-radius: 18px;
-  padding: 0.8rem 0.95rem;
-  background:
-    radial-gradient(circle at 100% 0%, rgba(0, 127, 115, 0.13), transparent 8rem),
-    rgba(230, 248, 239, 0.72);
-  color: var(--ink);
-}
-
-.interaction-traversal-constraint strong {
-  color: var(--accent);
-}
-
-.interaction-traversal-constraint span {
-  color: var(--muted);
-  line-height: 1.42;
-}
-
 .topology-kind-pill.fixed {
   background: rgba(16, 32, 28, 0.08);
   color: var(--ink);
@@ -11044,6 +11022,8 @@ canvas.spatial-editor-mouse-controls:active {
   position: sticky;
   top: 12px;
   z-index: 50;
+  display: grid;
+  gap: 0.65rem;
   margin: -8px 0 20px;
 }
 

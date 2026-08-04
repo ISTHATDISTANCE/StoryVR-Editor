@@ -123,15 +123,23 @@ export function normalizeInteractionLog(input, { fileName = "" } = {}) {
   if (!typeSet.has("collection-stopped")) {
     warnings.push(dataWarning("missing-stop-marker", "The collection-stopped lifecycle marker is missing."));
   }
-  if (source.events.length >= 25_000) {
+  const complete = source.complete === true || source.collectionState === "complete";
+  const explicitBufferLimit = source.bufferLimitReached === true || typeSet.has("buffer-limit-reached");
+  const possibleLegacyLimit = source.events.length >= 25_000 && !complete;
+  const bufferLimitReached = explicitBufferLimit || possibleLegacyLimit;
+  if (bufferLimitReached) {
     warnings.push(dataWarning(
       "possible-event-limit",
-      "The log reached the logger's default 25,000-event cache limit and may be truncated.",
+      explicitBufferLimit
+        ? "The logger reported that a capture buffer limit was reached, so part of the session may be missing."
+        : "This older log reached the logger's former 25,000-event cache limit and may be truncated.",
       "concern",
     ));
   }
 
-  const contextlessCount = events.filter((event) => !event.stepId).length;
+  const contextlessCount = events.filter((event) => (
+    !event.stepId && ["storyvr", "unknown"].includes(event.surface)
+  )).length;
   if (contextlessCount) {
     warnings.push(dataWarning(
       "missing-step-context",
@@ -160,6 +168,8 @@ export function normalizeInteractionLog(input, { fileName = "" } = {}) {
     recordedDurationMs,
     reportedEventCount,
     eventCount: events.length,
+    complete,
+    bufferLimitReached,
     sessionContext: serializableObject(source.sessionContext),
     viewport: normalizeViewport(source.viewport),
     events: Object.freeze(events),
@@ -196,6 +206,21 @@ export function analyzeInteractionLog(input, options = {}) {
     (event) => event.action,
   );
   const modeStats = buildModeStats(events);
+  const surfaceStats = frequencyStats(
+    events,
+    (event) => event.surface || "unknown",
+    (event) => surfaceLabel(event.surface),
+  );
+  const pageStats = frequencyStats(
+    events.filter((event) => event.pageKey),
+    (event) => event.pageKey,
+    (event) => event.pageKey,
+  );
+  const scrollBucketStats = frequencyStats(
+    events.filter((event) => event.scroll?.depthBucket != null),
+    (event) => String(event.scroll.depthBucket),
+    (event) => `${event.scroll.depthBucket}%`,
+  );
   const activityBins = buildActivityBins(events, segments, normalized.durationMs, activityBinMs);
   const journey = buildJourney(segments, transitions);
 
@@ -265,6 +290,10 @@ export function analyzeInteractionLog(input, options = {}) {
       semanticKinds: Object.freeze(semanticStats),
       actions: Object.freeze(actionStats),
       modes: Object.freeze(modeStats),
+      surfaces: Object.freeze(surfaceStats),
+      pages: Object.freeze(pageStats),
+      scrollBuckets: Object.freeze(scrollBucketStats),
+      scrollEventCount: events.filter((event) => event.scroll?.depthBucket != null).length,
     }),
     journey: Object.freeze(journey),
     moments: Object.freeze(moments),
@@ -297,7 +326,8 @@ export function buildCodexEvidence(analyses) {
       "Treat each key moment as a possible explanation, not proof of what the user meant or whether the task worked.",
       "For every point, cite the session id and click numbers that support it.",
       "A long pause can mean reading, thinking, time away, or a problem. The log cannot tell which one.",
-      "Do not guess typed text, drag paths, scrolling, server results, or changes the log did not record.",
+      "Do not guess typed text, drag paths, continuous scrolling, server results, or changes the log did not record.",
+      "A scroll-depth bucket records only that a coarse threshold was reached; it does not prove reading, attention, or exact scroll motion.",
     ]),
     sessions: Object.freeze(bounded.map((analysis, index) => compactAnalysisForCodex(
       analysis,
@@ -353,15 +383,21 @@ function normalizeEvent(entry, { originalIndex, startedAtMs, warnings }) {
     ));
   }
   const context = serializableObject(source.context);
-  const target = serializableObject(source.target);
+  const details = serializableObject(source.details);
   const rawStepId = cleanString(context?.workspace?.componentId);
   const stepId = canonicalStepId(rawStepId);
+  const eventOrigin = normalizeEventOrigin(source, context, rawStepId);
+  const scroll = normalizeScrollMetadata(source, details);
+  const rawType = cleanString(source.type) || "unknown";
+  const type = normalizedEventType(rawType);
+  const sourceSequence = finiteInteger(source.sourceSequence);
+  const state = cleanString(source.state);
+  const target = normalizeEventTarget(source.target, details, type, eventOrigin);
   const stepIntent = canonicalStepId(target?.data?.selectComponent);
   const semantic = serializableObject(target.semantic);
-  const type = cleanString(source.type) || "unknown";
-  const semanticKind = cleanString(semantic.kind);
-  const action = eventAction(target, semantic);
-  const label = eventLabel(type, target, semantic);
+  const semanticKind = cleanString(semantic.kind) || cleanString(details.semanticKind) || cleanString(details.kind);
+  const action = eventAction(target, semantic, details);
+  const label = eventLabel(type, target, semantic, details, scroll);
 
   return Object.freeze({
     sequence,
@@ -369,7 +405,11 @@ function normalizeEvent(entry, { originalIndex, startedAtMs, warnings }) {
     timestamp: normalizedIsoDate(source.timestamp),
     elapsedMs,
     type,
+    ...(sourceSequence == null ? {} : { sourceSequence }),
+    ...(state ? { state } : {}),
+    ...(rawType !== type ? { rawType } : {}),
     context,
+    details,
     target,
     pointer: serializableObject(source.pointer),
     modifiers: serializableObject(source.modifiers),
@@ -379,11 +419,111 @@ function normalizeEvent(entry, { originalIndex, startedAtMs, warnings }) {
     stepIntent,
     mode: cleanString(context?.workspace?.mode) || "unknown",
     editorScene: normalizeEditorScene(context?.workspace?.editorScene),
+    surface: eventOrigin.surface,
+    pageKey: eventOrigin.pageKey,
+    scroll,
     semanticKind,
     action,
     label,
-    targetKey: interactionTargetKey(target, semantic, label),
+    targetKey: scopedInteractionTargetKey(target, semantic, label, eventOrigin, details),
   });
+}
+
+function normalizedEventType(value) {
+  return ({
+    "external-click": "click",
+    "original-story-click": "click",
+  })[value] || value;
+}
+
+function normalizeEventOrigin(source, context, rawStepId) {
+  const suppliedSource = serializableObject(source.source);
+  const page = serializableObject(context.page);
+  const explicitSurface = cleanString(
+    source.surface
+    || suppliedSource.surface
+    || context.surface
+    || page.surface,
+  );
+  const explicitPageKey = cleanString(
+    source.pageKey
+    || suppliedSource.pageKey
+    || context.pageKey
+    || page.pageKey
+    || page.key,
+  );
+  const surface = explicitSurface || (rawStepId ? "storyvr" : "unknown");
+  const pageKey = explicitPageKey || (surface === "storyvr" ? "storyvr-author" : "");
+  return Object.freeze({
+    surface,
+    pageKey,
+    explicit: Boolean(explicitSurface || explicitPageKey),
+  });
+}
+
+function normalizeScrollMetadata(source, details) {
+  const direct = serializableObject(source.scroll);
+  const nested = serializableObject(details.scroll);
+  const candidate = [
+    source.scrollBucket,
+    source.scrollPercent,
+    direct.depthBucket,
+    direct.bucketPercent,
+    direct.bucket,
+    direct.percent,
+    details.scrollBucket,
+    details.scrollPercent,
+    details.depthBucket,
+    details.bucketPercent,
+    details.bucket,
+    nested.depthBucket,
+    nested.bucketPercent,
+    nested.bucket,
+    nested.percent,
+  ].map(finiteNumber).find((value) => value != null && value >= 0 && value <= 100);
+  const direction = cleanString(direct.direction || details.scrollDirection || nested.direction).toLowerCase();
+  return Object.freeze({
+    ...(candidate == null ? {} : { depthBucket: round(candidate, 2) }),
+    ...(["up", "down"].includes(direction) ? { direction } : {}),
+  });
+}
+
+function normalizeEventTarget(value, details, type, eventOrigin) {
+  const supplied = serializableObject(value);
+  if (type !== "click") return supplied;
+  const suppliedSemantic = serializableObject(supplied.semantic);
+  const kind = cleanString(supplied.kind)
+    || cleanString(details.kind)
+    || cleanString(details.semanticKind)
+    || "external-control";
+  const label = cleanString(supplied.label) || cleanString(details.label) || "Original story interaction";
+  const action = cleanString(supplied.action) || cleanString(details.action);
+  const semanticKey = cleanString(supplied.semanticKey) || cleanString(details.semanticKey);
+  if (Object.keys(supplied).length) {
+    if (Object.keys(suppliedSemantic).length || (!semanticKey && !action)) return supplied;
+    return {
+      ...supplied,
+      semantic: {
+        kind,
+        label,
+        ...(semanticKey ? { id: semanticKey } : {}),
+        ...(action ? { action } : {}),
+      },
+    };
+  }
+  return {
+    kind,
+    ...(eventOrigin.surface === "original" ? { tag: "external" } : {}),
+    label,
+    ...((semanticKey || action || kind) ? {
+      semantic: {
+        kind,
+        label,
+        ...(semanticKey ? { id: semanticKey } : {}),
+        ...(action ? { action } : {}),
+      },
+    } : {}),
+  };
 }
 
 function canonicalStepId(value) {
@@ -410,10 +550,11 @@ function normalizeEditorScene(value) {
   return result;
 }
 
-function eventAction(target, semantic) {
+function eventAction(target, semantic, details = {}) {
   const data = target?.data || {};
   return cleanString(
     semantic?.action
+    || details.action
     || data.action
     || data.historyAction
     || data.environmentAction
@@ -423,9 +564,11 @@ function eventAction(target, semantic) {
   );
 }
 
-function eventLabel(type, target, semantic) {
+function eventLabel(type, target, semantic, details = {}, scroll = {}) {
   return cleanString(semantic?.label)
     || cleanString(target?.label)
+    || cleanString(details.label)
+    || (scroll.depthBucket == null ? "" : `Scroll reached ${scroll.depthBucket}%`)
     || lifecycleLabel(type)
     || type;
 }
@@ -436,7 +579,42 @@ function lifecycleLabel(type) {
     "collection-stopped": "Collection stopped",
     "collection-save-canceled": "Save canceled",
     "collection-save-failed": "Save failed",
+    "visibility-changed": "Page visibility changed",
+    "window-focused": "Page focused",
+    "window-blurred": "Page blurred",
+    "page-shown": "Page shown",
+    "page-hidden": "Page hidden",
+    "surface-activated": "Study surface activated",
+    "surface-deactivated": "Study surface deactivated",
+    "browser-focus-change": "Browser focus changed",
+    "buffer-limit-reached": "Capture buffer limit reached",
+    "focus-change": "Page focus changed",
+    "page-lifecycle": "Page lifecycle changed",
+    "scroll-depth": "Scroll depth changed",
+    "tab-activated": "Study tab activated",
+    "visibility-change": "Page visibility changed",
   })[type] || "";
+}
+
+function surfaceLabel(value) {
+  return ({
+    storyvr: "StoryVR",
+    browser: "Browser",
+    original: "Original story",
+    "original-story": "Original story",
+    "outside-study": "Outside study pages",
+    unknown: "Unknown surface",
+  })[cleanString(value)] || cleanString(value) || "Unknown surface";
+}
+
+function scopedInteractionTargetKey(target, semantic, fallbackLabel, eventOrigin, details) {
+  const base = interactionTargetKey(target, semantic, fallbackLabel);
+  if (!eventOrigin.explicit || (eventOrigin.surface === "storyvr" && eventOrigin.pageKey === "storyvr-author")) {
+    return base;
+  }
+  const semanticKey = cleanString(target?.semanticKey) || cleanString(details.semanticKey);
+  const identity = semanticKey ? `semantic-key:${semanticKey}` : base;
+  return `surface:${eventOrigin.surface || "unknown"}:${eventOrigin.pageKey || "unknown"}:${identity}`;
 }
 
 function interactionTargetKey(target, semantic, fallbackLabel) {
@@ -948,7 +1126,7 @@ function buildDeterministicMoments({
     }));
   }
 
-  if (normalized.eventCount >= 25_000) {
+  if (normalized.bufferLimitReached) {
     const finalEvent = events.at(-1);
     moments.push(moment({
       kind: "event-limit-reached",
@@ -956,7 +1134,7 @@ function buildDeterministicMoments({
       severity: "high",
       confidence: "medium",
       title: "Log may be incomplete",
-      summary: "The log reached its click limit, so later clicks may be missing.",
+      summary: "The capture buffer reached its limit, so later clicks may be missing.",
       startMs: finalEvent?.elapsedMs || normalized.durationMs,
       endMs: normalized.durationMs,
       stepId: finalEvent?.effectiveStepId || UNKNOWN_STEP_ID,
@@ -1066,6 +1244,10 @@ function compactAnalysisForCodex(analysis, sessionId, eventLimit) {
   }
   const semanticEvents = analysis.events.filter((event) => event.semanticKind).slice(0, 24);
   for (const event of semanticEvents) addSequence(event.sequence);
+  const crossSurfaceEvents = analysis.events.filter((event) => (
+    event.surface !== "storyvr" || event.scroll?.depthBucket != null
+  )).slice(0, 48);
+  for (const event of crossSurfaceEvents) addSequence(event.sequence);
   for (const warning of analysis.warnings) {
     for (const sequence of warning.evidenceSequences || []) addSequence(sequence);
   }
@@ -1084,8 +1266,13 @@ function compactAnalysisForCodex(analysis, sessionId, eventLimit) {
       sequence: event.sequence,
       elapsedMs: event.elapsedMs,
       type: event.type,
+      ...(event.sourceSequence == null ? {} : { sourceSequence: event.sourceSequence }),
+      ...(event.state ? { state: event.state } : {}),
       stepId: event.effectiveStepId,
       mode: event.mode,
+      surface: event.surface,
+      pageKey: event.pageKey,
+      ...(event.scroll?.depthBucket == null ? {} : { scrollDepthBucket: event.scroll.depthBucket }),
       label: event.label,
       targetKind: cleanString(event.target?.kind) || "unknown",
       semanticKind: event.semanticKind || "",
@@ -1127,6 +1314,9 @@ function compactAnalysisForCodex(analysis, sessionId, eventLimit) {
     topTargets: Object.freeze(analysis.stats.topTargets.slice(0, 16)),
     semanticKinds: analysis.stats.semanticKinds,
     modes: analysis.stats.modes,
+    surfaces: analysis.stats.surfaces,
+    pages: analysis.stats.pages,
+    scrollBuckets: analysis.stats.scrollBuckets,
     deterministicMoments: Object.freeze(deterministicMoments),
     omittedDeterministicMomentCount: Math.max(0, analysis.moments.length - deterministicMoments.length),
     dataQualityWarnings: analysis.warnings,

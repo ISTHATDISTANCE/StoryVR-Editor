@@ -579,8 +579,8 @@ function renderEventTable(analysis) {
       <tr data-event-sequence="${Number(event.sequence) || 0}" class="${Number(event.sequence) === Number(state.selectedSequence) ? "selected" : ""}" tabindex="0">
         <td class="event-time">${formatDuration(eventElapsed(event))}</td>
         <td><span class="step-chip" style="--step-color:${stepColor(stepId)}">${escapeHtml(shortStepLabel(stepId))}</span></td>
-        <td class="event-action"><strong>${escapeHtml(eventLabel(event))}</strong><small>#${Number(event.sequence) || "—"} · ${escapeHtml(event.type || "event")}</small></td>
-        <td class="event-target">${escapeHtml(semantic?.label || editorSceneLabel(event) || event.target?.locator || "—")}</td>
+        <td class="event-action"><strong>${escapeHtml(eventLabel(event))}</strong><small>#${Number(event.sequence) || "—"} · ${escapeHtml(event.type || "event")} · ${escapeHtml(eventSurfaceLabel(event))}</small></td>
+        <td class="event-target">${escapeHtml(eventEvidenceDetail(event, semantic))}</td>
         <td>${signal ? `<span class="signal-chip"><i class="${momentValence(signal)}"></i>${escapeHtml(signal.title || capitalize(momentValence(signal)))}</span>` : "—"}</td>
       </tr>
     `;
@@ -591,8 +591,11 @@ function renderEventTable(analysis) {
 
 function renderQuality(analysis) {
   const warnings = qualityWarningsFor(analysis);
+  const hasScrollBuckets = eventsFor(analysis).some((event) => event.scroll?.depthBucket != null);
   const base = [
-    "The log records clicks and some 3D actions. It does not record typing, scrolling, hovering, or how long a drag lasted.",
+    hasScrollBuckets
+      ? "Scroll markers are coarse thresholds only. They do not show exact motion, reading, attention, or how long content stayed visible."
+      : "The log records clicks and some 3D actions. It does not record typing, scrolling, hovering, or how long a drag lasted.",
     "A pause can mean reading, thinking, an interruption, or a problem. The log cannot tell which one.",
     "The log checks the current step only when a click happens. A step change is exact only when the next click confirms it.",
     "The screen size is saved only at the start, so click positions may be less accurate after a resize.",
@@ -708,7 +711,7 @@ function selectEvent(sequence, { focusTimeline = false } = {}) {
   const stepId = stepIdForEvent(event);
   const semantic = event.target?.semantic;
   const scene = editorSceneLabel(event);
-  elements.selectedEvent.innerHTML = `<span class="selection-dot" aria-hidden="true" style="background:${stepColor(stepId)};box-shadow:0 0 0 2px ${stepColor(stepId)}"></span><div><strong>${escapeHtml(eventLabel(event))} · ${formatDuration(eventElapsed(event))} · click #${Number(event.sequence) || "—"}</strong><p>${escapeHtml(stepLabel(stepId))}${scene ? ` · ${escapeHtml(scene)}` : ""}${semantic ? ` · 3D item: ${escapeHtml(semantic.label || semantic.kind)}` : ""}</p></div>`;
+  elements.selectedEvent.innerHTML = `<span class="selection-dot" aria-hidden="true" style="background:${stepColor(stepId)};box-shadow:0 0 0 2px ${stepColor(stepId)}"></span><div><strong>${escapeHtml(eventLabel(event))} · ${formatDuration(eventElapsed(event))} · event #${Number(event.sequence) || "—"}</strong><p>${escapeHtml(stepLabel(stepId))} · ${escapeHtml(eventSurfaceLabel(event))}${scene ? ` · ${escapeHtml(scene)}` : ""}${semantic ? ` · Named item: ${escapeHtml(semantic.label || semantic.kind)}` : ""}</p></div>`;
   renderTimeline(analysis);
   renderEventTable(analysis);
 }
@@ -923,8 +926,29 @@ function eventElapsed(event) {
 }
 
 function eventLabel(event) {
-  if (event.type !== "click") return lifecycleLabel(event.type);
+  if (event.type !== "click") return event.label || lifecycleLabel(event.type);
   return event.target?.semantic?.label || event.target?.label || event.target?.data?.action || event.target?.kind || "Unknown click target";
+}
+
+function eventSurfaceLabel(event) {
+  const surface = String(event?.surface || event?.source?.surface || "storyvr");
+  const pageKey = String(event?.pageKey || event?.source?.pageKey || "");
+  const label = ({
+    storyvr: "StoryVR",
+    browser: "Browser",
+    original: "Original story",
+    "original-story": "Original story",
+    "outside-study": "Outside study pages",
+    unknown: "Unknown surface",
+  })[surface] || titleFromId(surface);
+  return pageKey && !["storyvr-author", "unknown"].includes(pageKey)
+    ? `${label} · ${titleFromId(pageKey)}`
+    : label;
+}
+
+function eventEvidenceDetail(event, semantic = event?.target?.semantic) {
+  if (event?.scroll?.depthBucket != null) return `${event.scroll.depthBucket}% scroll threshold`;
+  return semantic?.label || event?.state || editorSceneLabel(event) || event?.target?.locator || eventSurfaceLabel(event) || "—";
 }
 
 function lifecycleLabel(type) {
@@ -963,7 +987,8 @@ function momentForSequence(analysis, sequence) {
 
 function tooltipForEvent(event) {
   const semantic = event.target?.semantic;
-  return `${eventLabel(event)} · ${formatDuration(eventElapsed(event))} · ${stepLabel(stepIdForEvent(event))}${semantic ? " · 3D item" : ""}`;
+  const scroll = event.scroll?.depthBucket == null ? "" : ` · ${event.scroll.depthBucket}% scroll`;
+  return `${eventLabel(event)} · ${formatDuration(eventElapsed(event))} · ${stepLabel(stepIdForEvent(event))} · ${eventSurfaceLabel(event)}${semantic ? " · Named item" : ""}${scroll}`;
 }
 
 function eventSearchText(event) {
@@ -972,6 +997,10 @@ function eventSearchText(event) {
     stepIdForEvent(event),
     stepLabel(stepIdForEvent(event)),
     eventLabel(event),
+    event.surface,
+    event.pageKey,
+    event.state,
+    event.scroll?.depthBucket == null ? "" : `${event.scroll.depthBucket}% scroll`,
     editorSceneLabel(event),
     event.target?.kind,
     event.target?.locator,

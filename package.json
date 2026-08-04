@@ -8,12 +8,13 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "check": "node --check tools/codex-json.mjs && node --check tools/animation-logic-probe/runtime-animation-collector.js && node --check tools/animation-logic-probe/analyze-animation-probe.mjs && node --check tools/animation-logic-probe/pointcloud-effect.mjs && node --check tools/storyvr-adapter/storyvr-adapter.mjs && node --check tools/storyvr-adapter/migrate-stories.mjs && node --check tools/storyvr-adapter/process-story.mjs && node --check tools/storyvr-author/engine.mjs && node --check tools/storyvr-author/server.mjs && node --check tools/storyvr-author/build-reader-dist.mjs && node --check tools/storyvr-author/point-cloud-runtime.js && node --check tools/storyvr-author/reader-template/src/main.js && node --check tools/storyvr-workflow-lens/server.mjs && node --check tools/storyvr-workflow-lens/app/main.js && python3 -m py_compile https_server.py",
+    "check": "node --check tools/codex-json.mjs && node --check tools/animation-logic-probe/runtime-animation-collector.js && node --check tools/animation-logic-probe/analyze-animation-probe.mjs && node --check tools/animation-logic-probe/pointcloud-effect.mjs && node --check tools/storyvr-adapter/storyvr-adapter.mjs && node --check tools/storyvr-adapter/migrate-stories.mjs && node --check tools/storyvr-adapter/process-story.mjs && node --check tools/storyvr-author/engine.mjs && node --check tools/storyvr-author/server.mjs && node --check tools/storyvr-author/build-reader-dist.mjs && node --check tools/storyvr-author/point-cloud-runtime.js && node --check tools/storyvr-author/reader-template/src/main.js && node --check tools/storyvr-author/app/src/interaction-log-file.js && node --check tools/storyvr-author/app/src/study-extension-bridge.js && node --check tools/storyvr-study-extension/build.mjs && node --check tools/storyvr-study-extension/src/service-worker.js && node --check tools/storyvr-workflow-lens/server.mjs && node --check tools/storyvr-workflow-lens/app/main.js && python3 -m py_compile https_server.py",
     "storyvr:story": "node tools/storyvr-adapter/process-story.mjs",
     "storyvr:author": "node tools/storyvr-author/server.mjs",
     "storyvr:author:classroom": "node tools/storyvr-author/server.mjs --story-folder ../classroom",
     "storyvr:author:shark": "node tools/storyvr-author/server.mjs --story-folder ../shark",
     "storyvr:workflow": "node tools/storyvr-workflow-lens/server.mjs",
+    "storyvr:study-extension": "node tools/storyvr-study-extension/build.mjs",
     "storyvr:scan": "node tools/storyvr-adapter/migrate-stories.mjs --scan-only --write-report",
     "storyvr:migrate": "node tools/storyvr-adapter/migrate-stories.mjs --mode dev --generate-missing",
     "storyvr:migrate:build": "node tools/storyvr-adapter/migrate-stories.mjs --mode build --generate-missing --out tools/storyvr-adapter/out-build",

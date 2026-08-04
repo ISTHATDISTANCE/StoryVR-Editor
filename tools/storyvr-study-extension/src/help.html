@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>StoryVR study logger setup</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body class="help-page">
+    <main class="help-shell">
+      <header class="brand-row">
+        <span class="brand-mark" aria-hidden="true"><span></span></span>
+        <span class="brand-name">StoryVR</span>
+        <span class="brand-tag">STUDY LOGGER</span>
+      </header>
+
+      <section class="help-hero">
+        <p class="eyebrow">APPROVED STUDY</p>
+        <h1 data-study-name>StoryVR study logger</h1>
+        <p>This extension joins activity from an explicitly approved original-story page with StoryVR's interaction log. Original-story content is recorded only when the page is approved in the extension popup and <strong>Data collection</strong> is on in StoryVR.</p>
+      </section>
+
+      <section class="help-section">
+        <h2>Before a study session</h2>
+        <ol>
+          <li>Use a separate Chrome profile for the study.</li>
+          <li>Complete the study's informed-consent procedure. Page approval in this extension is a technical access control, not a replacement for informed consent.</li>
+          <li>Open StoryVR and the original story in that same profile. Reload StoryVR once if it was already open when the extension was installed or rebuilt.</li>
+          <li>On the original story, open the extension popup and review the exact origin and path shown.</li>
+          <li>Confirm that the page is part of the consented study. If offered, leave visible control labels off unless that additional collection is needed and disclosed.</li>
+          <li>Select <strong>Approve this story page</strong>. Approval applies only to that exact page in that tab.</li>
+        </ol>
+      </section>
+
+      <section class="help-section">
+        <h2>Collect and save</h2>
+        <ol>
+          <li>Turn on <strong>Data collection</strong> in StoryVR. Select the folder where the session data should be stored. StoryVR creates a named JSON file there; canceling the folder selection leaves collection off.</li>
+          <li>Use StoryVR and switch to the approved original story as needed. A page observer records only while both approval and Data collection are active.</li>
+          <li>Keep working normally. StoryVR periodically checkpoints both event streams to that JSON file so the in-memory cache stays bounded.</li>
+          <li>Turn the switch off in StoryVR. StoryVR finalizes the same file in the selected folder without opening a second location chooser.</li>
+          <li>If a checkpoint or finalization fails, StoryVR retains the unwritten data for a retry. Successful finalization clears the remaining cache and all original-page approvals.</li>
+        </ol>
+      </section>
+
+      <section class="help-section">
+        <h2>Page approval boundary</h2>
+        <p>Any top-level HTTP or HTTPS original-story page can be approved through the popup. Approval is temporary and limited to the current tab, exact origin, and exact path. Query strings and fragments are not part of the saved page identity.</p>
+        <p>A reload of the same page keeps approval. Approval is removed when the tab moves to another path or origin, closes, is explicitly revoked, the session is successfully finalized, or the extension or browser restarts. A new or duplicated tab must be approved separately.</p>
+        <p>Only the top-level page is observed. Content inside any embedded frame is not captured.</p>
+      </section>
+
+      <section class="help-section">
+        <h2>What is collected</h2>
+        <p>While both gates are active, the extension can record clicks, safe control kinds, coarse pointer and scroll buckets, page visibility and focus, and switches between approved pages or other tabs. An outside tab produces only a generic tab-switch event; its address and content are not read.</p>
+        <p>Visible text on clicked controls is excluded unless the separate optional control-label choice is shown and selected during page approval. It may contain sensitive text and should be enabled only when the study requires and discloses it.</p>
+        <p>The extension does not record typing, form values, keystrokes, cookies, page storage, query strings, full or raw URLs, browsing history, or raw Chrome tab identifiers. The temporary cache uses session-only extension storage. StoryVR writes approved data only to the named JSON file in the folder selected when collection starts; it does not upload it.</p>
+      </section>
+
+      <section class="help-section">
+        <h2>Remove page access</h2>
+        <p>Open the extension popup on an approved original story and select <strong>Stop observing this tab</strong>. Recording from that page stops immediately. StoryVR's Data collection switch controls the full logging session.</p>
+      </section>
+    </main>
+    <script src="help.js"></script>
+  </body>
+</html>

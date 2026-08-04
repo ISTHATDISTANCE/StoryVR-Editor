@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>StoryVR study logger</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="panel">
+      <header class="brand-row">
+        <span class="brand-mark" aria-hidden="true"><span></span></span>
+        <span class="brand-name">StoryVR</span>
+        <span class="brand-tag">STUDY LOGGER</span>
+      </header>
+
+      <section class="study-card" aria-labelledby="study-heading">
+        <p class="eyebrow" id="study-heading">APPROVED STUDY</p>
+        <p class="study-name" data-study-name>Loading configuration…</p>
+      </section>
+
+      <section class="status-card" aria-labelledby="collection-heading">
+        <div class="status-row">
+          <span class="status-dot" data-status-dot aria-hidden="true"></span>
+          <div>
+            <p class="eyebrow" id="collection-heading">DATA COLLECTION</p>
+            <p class="status-value" data-collection-status role="status" aria-live="polite">Checking…</p>
+          </div>
+        </div>
+        <p class="status-note" data-status-note>Turn the switch on in StoryVR to choose a folder and start collection.</p>
+      </section>
+
+      <section class="page-card" aria-labelledby="page-heading" data-page-card>
+        <p class="eyebrow" id="page-heading">CURRENT TAB</p>
+        <p class="page-value" data-page-status role="status" aria-live="polite">Checking…</p>
+        <p class="page-display" data-page-display hidden></p>
+        <p class="page-note" data-page-note></p>
+
+        <div class="consent-panel" data-approval-panel hidden>
+          <label class="check-row">
+            <input type="checkbox" data-consent-confirmed>
+            <span class="check-copy">
+              <strong>Study page confirmation</strong>
+              <span>I confirm this exact page is part of the consented study.</span>
+            </span>
+          </label>
+
+          <label class="check-row" data-control-label-row hidden>
+            <input type="checkbox" data-capture-control-labels>
+            <span class="check-copy">
+              <strong>Include visible control labels <span class="optional-label">OPTIONAL</span></strong>
+              <span>Record visible text on clicked buttons and links. This text may contain sensitive information.</span>
+            </span>
+          </label>
+
+          <button class="action-button" type="button" data-approve-page disabled>
+            Approve this story page
+          </button>
+        </div>
+
+        <div class="revoke-panel" data-revoke-panel hidden>
+          <button class="action-button secondary" type="button" data-revoke-page>
+            Stop observing this tab
+          </button>
+        </div>
+
+        <p class="action-status" data-page-action-status role="status" aria-live="polite" hidden></p>
+      </section>
+
+      <p class="privacy-note">Original-story content is recorded only when this exact page is approved here and Data collection is on in StoryVR. StoryVR creates a named JSON file in the folder selected at the start and checkpoints it while you work.</p>
+      <a class="help-link" href="help.html" target="_blank">Setup and privacy details <span aria-hidden="true">→</span></a>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
