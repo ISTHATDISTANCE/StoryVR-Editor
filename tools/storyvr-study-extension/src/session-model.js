@@ -69,6 +69,25 @@ export function reduceStudySession(state, action, {
 
   if (type === "status") return { state: current, response: publicStatus(current) };
 
+  if (type === "cancel") {
+    const sessionId = safeToken(action.sessionId, MAX_TOKEN_LENGTH);
+    if (!sessionId) return { state: current, response: { canceled: false, error: "invalid-session" } };
+    if (!current) {
+      return { state: null, response: { canceled: true, alreadyCanceled: true, status: "off" } };
+    }
+    if (current.sessionId !== sessionId) {
+      return { state: current, response: { canceled: false, error: "session-mismatch", status: current.status } };
+    }
+    return {
+      state: null,
+      response: {
+        canceled: true,
+        status: "off",
+        discardedEventCount: current.events.length,
+      },
+    };
+  }
+
   if (type === "commit-export" && committedIdentityMatches(current, action)) {
     return { state: current, response: { committed: true, alreadyCommitted: true, status: "saved" } };
   }
@@ -137,6 +156,9 @@ export function reduceStudySession(state, action, {
       checkpointNeeded: false,
       endedAt: "",
       limitReached: false,
+      stopRequested: false,
+      stoppedAt: "",
+      stopThroughSequence: 0,
     };
     next.tabContexts = registerTabContext(next.tabContexts, action.tabId, {
       surface: "storyvr",
@@ -162,7 +184,62 @@ export function reduceStudySession(state, action, {
     };
   }
 
-  if (!current) return { state: null, response: { active: false, status: "off" } };
+  if (type === "request-stop") {
+    const sessionId = safeToken(action.sessionId, MAX_TOKEN_LENGTH);
+    if (!sessionId || current?.sessionId !== sessionId) {
+      return {
+        state: current,
+        response: {
+          stopped: false,
+          error: current ? "session-mismatch" : "session-not-collecting",
+          status: current?.status || "off",
+        },
+      };
+    }
+    if (current.status === "saved") {
+      return {
+        state: current,
+        response: {
+          stopped: true,
+          alreadyStopped: true,
+          status: "saved",
+          stoppedAt: current.endedAt,
+          stopThroughSequence: 0,
+        },
+      };
+    }
+    if (current.stopRequested) {
+      return { state: current, response: stopIntentSnapshot(current, { alreadyStopped: true }) };
+    }
+    const next = cloneState(current);
+    next.stopRequested = true;
+    next.stoppedAt = next.exportToken
+      ? next.endedAt
+      : monotonicIsoDate(action.stoppedAt, next.startedAt, now);
+    next.stopThroughSequence = next.exportToken
+      ? next.exportThroughSequence
+      : eventBoundarySequence(next.events);
+    if (!next.checkpointToken && !next.exportToken) next.status = "stop-requested";
+    next.checkpointNeeded = false;
+    if (serializedBytes(next) > maximumBytes) {
+      return { state: current, response: { stopped: false, error: "buffer-quota", status: current.status } };
+    }
+    return { state: next, response: stopIntentSnapshot(next) };
+  }
+
+  if (!current) {
+    if (type === "commit-export") {
+      return {
+        state: null,
+        response: {
+          committed: false,
+          error: "session-not-collecting",
+          status: "off",
+        },
+      };
+    }
+    return { state: null, response: { active: false, status: "off" } };
+  }
 
   if (type === "register-tab") {
     const next = cloneState(current);
@@ -291,7 +368,9 @@ export function reduceStudySession(state, action, {
       return { state: current, response: { aborted: false, error: "checkpoint-mismatch", status: current.status } };
     }
     const next = cloneState(current);
-    next.status = next.limitReached ? "limit-reached" : "collecting";
+    next.status = next.stopRequested
+      ? "stop-requested"
+      : (next.limitReached ? "limit-reached" : "collecting");
     next.statusBeforeCheckpoint = "";
     next.lastAbortedCheckpointSessionId = current.sessionId;
     next.lastAbortedCheckpointToken = current.checkpointToken;
@@ -315,12 +394,16 @@ export function reduceStudySession(state, action, {
     next.checkpointedAt = "";
     next.checkpointThroughSequence = 0;
     next.limitReached = isAtBufferLimit(next, { maximumEvents, maximumBytes });
-    next.status = next.limitReached ? "limit-reached" : "collecting";
+    next.status = next.stopRequested
+      ? "stop-requested"
+      : (next.limitReached ? "limit-reached" : "collecting");
     next.checkpointNeeded = false;
-    next.checkpointNeeded = checkpointThresholdReached(next, {
-      checkpointEventThreshold,
-      checkpointByteThreshold,
-    });
+    if (!next.stopRequested) {
+      next.checkpointNeeded = checkpointThresholdReached(next, {
+        checkpointEventThreshold,
+        checkpointByteThreshold,
+      });
+    }
     return {
       state: next,
       response: {
@@ -328,7 +411,7 @@ export function reduceStudySession(state, action, {
         active: isCapturing(next),
         status: next.status,
         remainingEventCount: next.events.length,
-        ...(wasLimitReached && !next.limitReached ? { resumedFromLimit: true } : {}),
+        ...(wasLimitReached && !next.limitReached && !next.stopRequested ? { resumedFromLimit: true } : {}),
         ...(next.checkpointNeeded ? { checkpointNeeded: true } : {}),
       },
     };
@@ -344,15 +427,19 @@ export function reduceStudySession(state, action, {
     if (current.checkpointToken) {
       return { state: current, response: { prepared: false, error: "checkpoint-in-progress", status: current.status } };
     }
-    if (!isCapturing(current) && current.status !== "limit-reached") {
+    if (!isCapturing(current) && current.status !== "limit-reached" && !current.stopRequested) {
       return { state: current, response: { prepared: false, error: "session-not-collecting", status: current.status } };
     }
     const next = cloneState(current);
     next.statusBeforePrepare = next.status;
     next.status = "prepared";
     next.exportToken = safeToken(createExportToken(), MAX_TOKEN_LENGTH) || defaultExportToken();
-    next.endedAt = monotonicIsoDate(action.endedAt, next.startedAt, now);
-    next.exportThroughSequence = eventBoundarySequence(next.events);
+    next.endedAt = next.stopRequested
+      ? next.stoppedAt
+      : monotonicIsoDate(action.endedAt, next.startedAt, now);
+    next.exportThroughSequence = next.stopRequested
+      ? next.stopThroughSequence
+      : eventBoundarySequence(next.events);
     if (serializedBytes(next) > maximumBytes) {
       return { state: current, response: { prepared: false, error: "buffer-quota", status: current.status } };
     }
@@ -364,7 +451,9 @@ export function reduceStudySession(state, action, {
       return { state: current, response: { aborted: false, error: "export-mismatch", status: current.status } };
     }
     const next = cloneState(current);
-    next.status = next.limitReached ? "limit-reached" : "collecting";
+    next.status = next.stopRequested
+      ? "stop-requested"
+      : (next.limitReached ? "limit-reached" : "collecting");
     next.statusBeforePrepare = "";
     next.lastAbortedExportSessionId = current.sessionId;
     next.lastAbortedExportToken = current.exportToken;
@@ -375,6 +464,9 @@ export function reduceStudySession(state, action, {
   }
 
   if (type === "commit-export") {
+    if (current.sessionId !== safeToken(action.sessionId, MAX_TOKEN_LENGTH)) {
+      return { state: current, response: { committed: false, error: "session-mismatch", status: current.status } };
+    }
     if (!exportIdentityMatches(current, action)) {
       return { state: current, response: { committed: false, error: "export-mismatch", status: current.status } };
     }
@@ -558,6 +650,19 @@ function checkpointSnapshot(state) {
   };
 }
 
+function stopIntentSnapshot(state, { alreadyStopped = false } = {}) {
+  return {
+    stopped: true,
+    ...(alreadyStopped ? { alreadyStopped: true } : {}),
+    sessionId: state.sessionId,
+    status: state.status,
+    stoppedAt: state.stoppedAt,
+    stopThroughSequence: state.stopThroughSequence,
+    checkpointPending: Boolean(state.checkpointToken),
+    exportPending: Boolean(state.exportToken),
+  };
+}
+
 function exportIdentityMatches(state, action) {
   return Boolean(state?.exportToken)
     && state.sessionId === safeToken(action.sessionId, MAX_TOKEN_LENGTH)
@@ -630,7 +735,14 @@ function validState(value) {
   if (value.schemaVersion !== STUDY_SESSION_SCHEMA_VERSION || !Array.isArray(value.events)) return null;
   const sessionId = safeToken(value.sessionId, MAX_TOKEN_LENGTH);
   const startedAt = storedIsoDate(value.startedAt);
-  const allowedStatuses = new Set(["collecting", "limit-reached", "checkpoint-prepared", "prepared", "saved"]);
+  const allowedStatuses = new Set([
+    "collecting",
+    "limit-reached",
+    "checkpoint-prepared",
+    "prepared",
+    "stop-requested",
+    "saved",
+  ]);
   const status = allowedStatuses.has(value.status) ? value.status : "collecting";
   if (!sessionId || !startedAt) return null;
   if (status === "saved") {
@@ -682,6 +794,7 @@ function validState(value) {
     tabContexts[tabId] = normalizedContext(context);
   }
   const storedLimitReached = status === "limit-reached" || Boolean(value.limitReached);
+  const stopRequested = status === "stop-requested" || Boolean(value.stopRequested);
   let exportToken = ["prepared", "limit-reached"].includes(status)
     ? safeToken(value.exportToken, MAX_TOKEN_LENGTH)
     : "";
@@ -696,6 +809,8 @@ function validState(value) {
   if ((status === "prepared" && !exportToken) || (status === "checkpoint-prepared" && !checkpointToken)) {
     normalizedStatus = storedLimitReached ? "limit-reached" : "collecting";
   }
+  if (normalizedStatus === "stop-requested" && !stopRequested) normalizedStatus = "collecting";
+  if (stopRequested && normalizedStatus === "collecting") normalizedStatus = "stop-requested";
   const exportThroughSequence = exportToken
     ? (nonnegativeInteger(value.exportThroughSequence) ?? eventBoundarySequence(events))
     : 0;
@@ -741,6 +856,11 @@ function validState(value) {
     endedAt: exportToken ? (storedIsoDate(value.endedAt) || startedAt) : "",
     statusBeforePrepare: status === "prepared" && value.statusBeforePrepare === "limit-reached" ? "limit-reached" : "collecting",
     limitReached: storedLimitReached,
+    stopRequested,
+    stoppedAt: stopRequested ? (storedIsoDate(value.stoppedAt) || startedAt) : "",
+    stopThroughSequence: stopRequested
+      ? (nonnegativeInteger(value.stopThroughSequence) ?? eventBoundarySequence(events))
+      : 0,
   };
 }
 
@@ -786,7 +906,9 @@ function cloneState(value) {
 }
 
 function isCapturing(state) {
-  return !state?.limitReached && ["collecting", "checkpoint-prepared"].includes(state?.status);
+  return !state?.limitReached
+    && !state?.stopRequested
+    && ["collecting", "checkpoint-prepared"].includes(state?.status);
 }
 
 function serializedBytes(value) {

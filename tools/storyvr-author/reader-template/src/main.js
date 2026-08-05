@@ -41,10 +41,10 @@ const CURRENT_SPATIAL_RELATIONS_INFERENCE_VERSION = "per-scene-exact-assets-v3";
 const SPATIAL_TRANSFORM_POSITION_LIMIT = 1_000_000;
 const SPATIAL_TRANSFORM_SCALE_LIMIT = 1_000_000;
 const ATTENTION_COMPLETION_DISTANCE_METERS = 3;
-const ATTENTION_ARROW_EDGE_NDC = 0.72;
+const ATTENTION_ARROW_EDGE_NDC = 0.56;
 const ATTENTION_ARROW_DISTANCE_METERS = 0.86;
-const ATTENTION_ARROW_RADIUS_METERS = 0.12;
-const ATTENTION_ARROW_RADIUS_NDC = 0.09;
+const ATTENTION_ARROW_RADIUS_METERS = 0.14;
+const ATTENTION_ARROW_RADIUS_NDC = 0.15;
 const ATTENTION_GLOW_OPACITY = 0.14;
 const ATTENTION_ARROW_DIRECTION_RESPONSE = 10;
 const ATTENTION_ARROW_MAX_ANGULAR_SPEED_RADIANS_PER_SECOND = Math.PI * 3;
@@ -56,7 +56,7 @@ const XR_TEXT_PANEL_HEIGHT = 0.252;
 const XR_TEXT_PANEL_RENDER_ORDER = 20_000;
 const XR_TEXT_PANEL_RAY_LENGTH = 3.2;
 const XR_CONTROLLER_CONFIGURATION_SCHEMA = "storyvr-interaction-configuration/v3";
-const XR_RESERVED_CONTROLLER_CONTROLS = new Set(["trigger", "grip"]);
+const XR_RESERVED_CONTROLLER_CONTROLS = new Set(["trigger", "grip", "menu"]);
 const XR_DIRECTIONAL_THUMBSTICK_CONTROLS = new Set([
   "thumbstick-up",
   "thumbstick-down",
@@ -1318,6 +1318,8 @@ function normalizeRuntimeAttentionReaderGuidance(value) {
   const arrow = source.arrow && typeof source.arrow === "object" ? source.arrow : {};
   const glow = source.glow && typeof source.glow === "object" ? source.glow : {};
   const requestedDistance = Number(completion.distanceMeters);
+  const requestedArrowDistanceFromCenter = Number(arrow.distanceFromCenterNdc);
+  const requestedArrowRadius = Number(arrow.radiusNdc);
   const requestedOpacity = Number(glow.opacity);
   return {
     schemaVersion,
@@ -1333,6 +1335,13 @@ function normalizeRuntimeAttentionReaderGuidance(value) {
       enabled: arrow.enabled !== false,
       visibility: "outside-view-frustum",
       placement: "camera-edge",
+      distanceFromCenterNdc: Number.isFinite(requestedArrowDistanceFromCenter)
+        ? Math.max(0.35, Math.min(0.75, requestedArrowDistanceFromCenter))
+        : ATTENTION_ARROW_EDGE_NDC,
+      radiusNdc: Number.isFinite(requestedArrowRadius)
+        ? Math.max(0.08, Math.min(0.22, requestedArrowRadius))
+        : ATTENTION_ARROW_RADIUS_NDC,
+      style: "bright-high-contrast",
     },
     glow: {
       enabled: glow.enabled !== false,
@@ -2630,25 +2639,43 @@ function createRuntimeAttentionArrow(marker) {
   shape.lineTo(0.021, 0.018);
   shape.lineTo(0.052, 0.018);
   shape.closePath();
+  const geometry = new THREE.ShapeGeometry(shape);
   const material = new THREE.MeshBasicMaterial({
-    color: 0xe5aa63,
+    color: 0xffc95e,
     transparent: true,
-    opacity: 0.86,
+    opacity: 1,
     depthTest: false,
     depthWrite: false,
     side: THREE.DoubleSide,
     toneMapped: false,
     fog: false,
   });
-  const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), material);
+  const mesh = new THREE.Mesh(geometry, material);
   mesh.renderOrder = 10_000;
   mesh.frustumCulled = false;
   mesh.userData.storyvrRuntimeAttentionArrow = true;
+  const outline = new THREE.Mesh(
+    geometry.clone(),
+    new THREE.MeshBasicMaterial({
+      color: 0x201406,
+      transparent: true,
+      opacity: 0.82,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+      fog: false,
+    }),
+  );
+  outline.scale.setScalar(1.22);
+  outline.renderOrder = 9_999;
+  outline.frustumCulled = false;
+  outline.userData.storyvrRuntimeAttentionArrowOutline = true;
   const arrow = new THREE.Group();
   arrow.name = `StoryVR attention arrow · ${marker?.id || "target"}`;
   arrow.userData.storyvrRuntimeAttentionArrow = true;
   arrow.frustumCulled = false;
-  arrow.add(mesh);
+  arrow.add(mesh, outline);
   arrow.visible = false;
   return arrow;
 }
@@ -2903,6 +2930,7 @@ function positionRuntimeAttentionArrow(
   viewerCamera,
   targetIndex = 0,
   deltaSeconds = 1 / 60,
+  arrowPolicy = null,
 ) {
   const arrow = target?.arrow;
   const bounds = target?.bounds;
@@ -2940,15 +2968,24 @@ function positionRuntimeAttentionArrow(
   arrow.userData.storyvrAttentionArrowAngle = smoothedAngle;
   x = Math.cos(smoothedAngle);
   y = Math.sin(smoothedAngle);
-  const edgeScale = ATTENTION_ARROW_EDGE_NDC / Math.max(Math.abs(x), Math.abs(y), 0.0001);
+  const requestedDistanceFromCenter = Number(arrowPolicy?.distanceFromCenterNdc);
+  const distanceFromCenterNdc = Number.isFinite(requestedDistanceFromCenter)
+    ? Math.max(0.35, Math.min(0.75, requestedDistanceFromCenter))
+    : ATTENTION_ARROW_EDGE_NDC;
+  const requestedRadius = Number(arrowPolicy?.radiusNdc);
+  const radiusNdc = Number.isFinite(requestedRadius)
+    ? Math.max(0.08, Math.min(0.22, requestedRadius))
+    : ATTENTION_ARROW_RADIUS_NDC;
+  const edgeScale = distanceFromCenterNdc / Math.max(Math.abs(x), Math.abs(y), 0.0001);
   x *= edgeScale;
   y *= edgeScale;
   const lane = ((Math.max(0, targetIndex) % 3) - 1) * 0.035;
   const length = Math.hypot(x, y) || 1;
   const laneX = (-y / length) * lane;
   const laneY = (x / length) * lane;
-  x = Math.max(-0.79, Math.min(0.79, x + laneX));
-  y = Math.max(-0.79, Math.min(0.79, y + laneY));
+  const maximumCenterNdc = Math.max(0.35, Math.min(0.82, 0.94 - radiusNdc));
+  x = Math.max(-maximumCenterNdc, Math.min(maximumCenterNdc, x + laneX));
+  y = Math.max(-maximumCenterNdc, Math.min(maximumCenterNdc, y + laneY));
   runtimeAttentionArrowNdc.set(x, y, 0).unproject(indicatorCamera);
   indicatorCamera.getWorldPosition(runtimeAttentionArrowCameraPosition);
   runtimeAttentionArrowWorld.copy(runtimeAttentionArrowNdc)
@@ -2969,7 +3006,7 @@ function positionRuntimeAttentionArrow(
     Math.abs(Number(projection[5]) || 0),
   ) / cameraDepth;
   const safeScale = maxNdcPerWorldMeter > 0
-    ? ATTENTION_ARROW_RADIUS_NDC / (ATTENTION_ARROW_RADIUS_METERS * maxNdcPerWorldMeter)
+    ? radiusNdc / (ATTENTION_ARROW_RADIUS_METERS * maxNdcPerWorldMeter)
     : 1;
   arrow.scale.setScalar(Math.max(0.01, Math.min(1, safeScale)));
   return true;
@@ -3061,6 +3098,7 @@ function updateRuntimeAttentionGuidance(renderCamera = activeRenderCamera(), del
       viewerCamera,
       targetIndex,
       deltaSeconds,
+      policy.arrow,
     )) {
       target.arrow.visible = false;
     }
@@ -3875,7 +3913,6 @@ function updateConfiguredControllerInteractions() {
     "b",
     "x",
     "y",
-    "menu",
   ];
   const controllerFrames = [];
   for (const entry of xrTextPanelControllers.values()) {

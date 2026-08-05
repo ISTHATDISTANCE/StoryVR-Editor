@@ -4755,6 +4755,10 @@ dd {
   align-items: stretch;
 }
 
+.dynamic-editor-workbench > .dynamic-preview-card {
+  grid-template-rows: max-content max-content max-content minmax(0, 1fr);
+}
+
 .source-dynamics-workbench {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -5085,6 +5089,89 @@ dd {
   color: var(--muted);
   font-size: 0.78rem;
   line-height: 1.45;
+}
+
+.dynamic-moving-object-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.dynamic-moving-object {
+  overflow: hidden;
+  border: 1px solid rgba(16, 32, 28, 0.13);
+  border-radius: 16px;
+  background: rgba(255, 253, 244, 0.88);
+}
+
+.dynamic-moving-object-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.68rem 0.72rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.dynamic-moving-object-summary::-webkit-details-marker {
+  display: none;
+}
+
+.dynamic-moving-object-summary:hover,
+.dynamic-moving-object-summary:focus-visible,
+.dynamic-moving-object-summary.selected {
+  background: rgba(0, 127, 115, 0.09);
+}
+
+.dynamic-moving-object-summary:focus-visible {
+  outline: 3px solid rgba(0, 127, 115, 0.18);
+  outline-offset: -3px;
+}
+
+.dynamic-moving-object-summary strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dynamic-moving-object-toggle {
+  display: inline-flex;
+  gap: 0.36rem;
+  align-items: center;
+  color: var(--accent);
+  font-size: 0.67rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dynamic-moving-object-toggle i {
+  width: 0.48rem;
+  height: 0.48rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translateY(-0.1rem);
+  transition: transform 160ms ease;
+}
+
+.dynamic-moving-object[open] .dynamic-moving-object-toggle i {
+  transform: rotate(225deg) translate(-0.05rem, -0.05rem);
+}
+
+.dynamic-moving-object > p {
+  margin: 0;
+  border-top: 1px solid rgba(16, 32, 28, 0.09);
+  padding: 0.68rem 0.72rem 0.76rem;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.dynamic-moving-object-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
 }
 
 .procedural-dynamics-authoring {
@@ -7677,7 +7764,7 @@ dd {
   background: rgba(16, 32, 28, 0.87);
   box-shadow: 0 3px 9px rgba(16, 32, 28, 0.25);
   transform: translate(-50%, -50%);
-  transition: top 160ms ease, left 160ms ease, background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+  transition: background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
 }
 
 .controller-model-hotspot.mapped {
@@ -9893,13 +9980,6 @@ canvas.spatial-editor-mouse-controls:active {
   cursor: crosshair;
 }
 
-.attention-inspector-badges {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.35rem;
-}
-
 @media (max-width: 780px) {
   .attention-workbench-sidebar > .attention-marker-hierarchy {
     max-height: none;
@@ -10200,52 +10280,6 @@ canvas.spatial-editor-mouse-controls:active {
 
 .final-review-viewer-shell {
   min-height: clamp(640px, 72vh, 880px);
-}
-
-.final-review-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.55rem;
-  align-items: center;
-  justify-content: flex-end;
-  border: 1px solid rgba(16, 32, 28, 0.1);
-  border-radius: 20px;
-  padding: 0.75rem;
-  background:
-    linear-gradient(135deg, rgba(255, 253, 244, 0.94), rgba(230, 248, 239, 0.62));
-}
-
-.final-review-view-rotation {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  border: 1px solid rgba(16, 32, 28, 0.12);
-  border-radius: 14px;
-  padding: 0.28rem;
-  background: rgba(255, 255, 255, 0.72);
-}
-
-.final-review-view-rotation > span {
-  padding: 0 0.35rem;
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 900;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.final-review-view-rotation > button {
-  min-height: 34px;
-  padding: 0.42rem 0.66rem;
-  border-color: transparent;
-  background: transparent;
-}
-
-.final-review-view-rotation > button[aria-pressed="true"] {
-  border-color: rgba(18, 112, 92, 0.32);
-  background: var(--accent);
-  color: #fff;
-  box-shadow: 0 5px 12px rgba(18, 112, 92, 0.16);
 }
 
 .dynamic-playback-controls {

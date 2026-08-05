@@ -164,6 +164,32 @@ async function handleControllerCommand(command, payload, tabId, context) {
     return result.response;
   }
 
+  if (command === "request-stop") {
+    const result = await queueAction({
+      type: "request-stop",
+      sessionId: value.sessionId,
+      stoppedAt: value.stoppedAt,
+    });
+    if (result.response.stopped && !result.response.alreadyStopped) {
+      await broadcastToStudyTabs({ type: "study-session-paused", reason: "stop-requested" });
+    }
+    return result.response;
+  }
+
+  if (command === "cancel-session") {
+    const approvalRegistry = await readApprovalRegistry();
+    const originalTabIds = approvedOriginalEntries(approvalRegistry).map(({ tabId: approvedTabId }) => approvedTabId);
+    const result = await queueAction({
+      type: "cancel",
+      sessionId: value.sessionId,
+    });
+    if (result.response.canceled && !result.response.alreadyCanceled) {
+      await broadcastToTabIds([tabId, ...originalTabIds], { type: "study-session-stopped" });
+      await queueMutation(() => revokeAllOriginalApprovals({ notify: true }));
+    }
+    return result.response;
+  }
+
   if (command === "prepare-export") {
     const result = await queueAction({
       type: "prepare-export",
@@ -614,6 +640,10 @@ async function updateBadge(state) {
   }
   if (state?.status === "checkpoint-prepared") {
     text = "SAVE";
+    color = "#9a5b00";
+  }
+  if (state?.status === "stop-requested") {
+    text = "OFF";
     color = "#9a5b00";
   }
   if (state?.status === "limit-reached") {

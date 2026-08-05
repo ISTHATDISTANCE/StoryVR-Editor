@@ -37,7 +37,7 @@ StoryVR remains the start, checkpoint, and finalization controller. Turning **Da
 
 While collection is on, StoryVR periodically prepares the extension cache, combines both event streams in timestamp order, and checkpoints them to the same JSON file. A checkpoint clears only the events that were written successfully; it keeps the session and original-page approvals active. If a checkpoint fails, the unwritten events stay cached for retry.
 
-Turning **Data collection** off finalizes that existing file in the selected folder. It does not open a second file or folder chooser. StoryVR clears the remaining cache and page approvals only after finalization succeeds.
+Turning **Data collection** off records an immediate collection cutoff, stops accepting new events, and finalizes that existing file in the selected folder. It does not open a second file or folder chooser. If finalization must retry, the same cutoff and buffered events are preserved. StoryVR clears the remaining cache and page approvals only after finalization succeeds.
 
 An approved original page can contribute clicks, safe control kinds, coarse pointer and scroll buckets, and page visibility and focus. Tab switching is recorded at a generic level while collection is on. For a tab that has not been approved, the extension records only that the user switched outside the study pages; it does not read or export that tab's address or content.
 

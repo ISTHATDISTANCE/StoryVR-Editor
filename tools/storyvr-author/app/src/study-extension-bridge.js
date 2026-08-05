@@ -7,6 +7,10 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
 const MAX_EXTERNAL_EVENTS = 10_000;
 const MAX_LABEL_LENGTH = 180;
 const MAX_TOKEN_LENGTH = 160;
+const OPTIONAL_SESSION_LOSS_ERRORS = new Set([
+  "session-mismatch",
+  "session-not-collecting",
+]);
 
 const EXTERNAL_EVENT_TYPES = new Set([
   "browser-focus-change",
@@ -122,25 +126,72 @@ export function createStoryvrStudyExtensionBridge({
     });
   }
 
-  function startSession({ sessionId, startedAt } = {}) {
-    return command("start-session", {
-      sessionId: safeToken(sessionId, MAX_TOKEN_LENGTH),
+  async function startSession({ sessionId, startedAt } = {}) {
+    const safeSessionId = safeToken(sessionId, MAX_TOKEN_LENGTH);
+    const payload = {
+      sessionId: safeSessionId,
       startedAt: validIsoDate(startedAt),
-    });
+    };
+    let response = await command("start-session", payload);
+    if (!isAmbiguousTimeout(response)) return response;
+    response = await command("start-session", payload);
+    if (!isAmbiguousTimeout(response)) return { ...response, startRetried: true };
+
+    const cleanup = await cancelSession({ sessionId: safeSessionId });
+    const cleanupConfirmed = Boolean(
+      cleanup?.canceled
+      || (cleanup?.connected && cleanup?.error === "session-mismatch"),
+    );
+    return {
+      connected: Boolean(response.connected || cleanup?.connected),
+      started: false,
+      startRetried: true,
+      startAmbiguous: true,
+      cleanupRequested: true,
+      cleanupConfirmed,
+      reason: cleanupConfirmed
+        ? "extension-start-unconfirmed-cleaned-up"
+        : "extension-start-unconfirmed",
+    };
   }
 
-  function prepareExport({ sessionId, endedAt } = {}) {
-    return command("prepare-export", {
+  async function requestStop({ sessionId, stoppedAt } = {}) {
+    const payload = {
+      sessionId: safeToken(sessionId, MAX_TOKEN_LENGTH),
+      stoppedAt: validIsoDate(stoppedAt),
+    };
+    let response = await command("request-stop", payload);
+    if (isAmbiguousTimeout(response)) {
+      response = await command("request-stop", payload);
+      if (!isAmbiguousTimeout(response)) response = { ...response, stopRetried: true };
+    }
+    return failOpenOptionalSessionLoss(response);
+  }
+
+  async function cancelSession({ sessionId } = {}) {
+    const payload = { sessionId: safeToken(sessionId, MAX_TOKEN_LENGTH) };
+    let response = await command("cancel-session", payload);
+    if (isAmbiguousTimeout(response)) {
+      response = await command("cancel-session", payload);
+      if (!isAmbiguousTimeout(response)) response = { ...response, cancelRetried: true };
+    }
+    return response;
+  }
+
+  async function prepareExport({ sessionId, endedAt } = {}) {
+    const response = await command("prepare-export", {
       sessionId: safeToken(sessionId, MAX_TOKEN_LENGTH),
       endedAt: validIsoDate(endedAt),
     });
+    return failOpenOptionalSessionLoss(response);
   }
 
-  function prepareCheckpoint({ sessionId, checkpointedAt } = {}) {
-    return command("prepare-checkpoint", {
+  async function prepareCheckpoint({ sessionId, checkpointedAt } = {}) {
+    const response = await command("prepare-checkpoint", {
       sessionId: safeToken(sessionId, MAX_TOKEN_LENGTH),
       checkpointedAt: validIsoDate(checkpointedAt),
     });
+    return failOpenOptionalSessionLoss(response);
   }
 
   function commitCheckpoint({ sessionId, checkpointToken } = {}) {
@@ -157,11 +208,12 @@ export function createStoryvrStudyExtensionBridge({
     });
   }
 
-  function commitExport({ sessionId, exportToken } = {}) {
-    return command("commit-export", {
+  async function commitExport({ sessionId, exportToken } = {}) {
+    const response = await command("commit-export", {
       sessionId: safeToken(sessionId, MAX_TOKEN_LENGTH),
       exportToken: safeToken(exportToken, MAX_TOKEN_LENGTH),
     });
+    return failOpenOptionalSessionLoss(response);
   }
 
   function abortExport({ sessionId, exportToken } = {}) {
@@ -195,6 +247,8 @@ export function createStoryvrStudyExtensionBridge({
 
   return Object.freeze({
     startSession,
+    requestStop,
+    cancelSession,
     prepareCheckpoint,
     commitCheckpoint,
     abortCheckpoint,
@@ -204,6 +258,27 @@ export function createStoryvrStudyExtensionBridge({
     subscribeCheckpointRequests,
     dispose,
   });
+}
+
+function isAmbiguousTimeout(response) {
+  return Boolean(response?.connected && response?.reason === "extension-timeout");
+}
+
+function failOpenOptionalSessionLoss(responseValue) {
+  const response = boundedObject(responseValue);
+  if (!response.connected || response.prepared) return response;
+  const error = safeToken(response.error, 80);
+  const status = safeToken(response.status, 80);
+  const sessionUnavailable = OPTIONAL_SESSION_LOSS_ERRORS.has(error)
+    || (status === "off" && !error);
+  if (!sessionUnavailable) return response;
+  return {
+    ...response,
+    connected: false,
+    extensionConnected: true,
+    optionalSessionUnavailable: true,
+    reason: "extension-session-unavailable",
+  };
 }
 
 export function mergeStoryvrStudyExtensionEvents(payload, extensionSnapshot) {

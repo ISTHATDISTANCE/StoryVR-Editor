@@ -46,6 +46,7 @@ export function createInteractionLogger({
   abortCheckpoint: abortPreparedCheckpoint = async () => {},
   getContext = () => ({}),
   onCollectionStarted = () => {},
+  onCollectionStopRequested = async () => ({ connected: false }),
   now = () => new Date(),
   createSessionId = defaultSessionId,
   checkpointEvents = DEFAULT_CHECKPOINT_EVENTS,
@@ -56,7 +57,7 @@ export function createInteractionLogger({
   checkpointDelayMs = DEFAULT_CHECKPOINT_DELAY_MS,
 } = {}) {
   if (!documentRef?.addEventListener) throw new TypeError("A document is required for interaction logging.");
-  for (const callback of [openLog, prepareCheckpoint, transformCheckpoint, commitPreparedCheckpoint, abortPreparedCheckpoint, onCollectionStarted]) {
+  for (const callback of [openLog, prepareCheckpoint, transformCheckpoint, commitPreparedCheckpoint, abortPreparedCheckpoint, onCollectionStarted, onCollectionStopRequested]) {
     if (typeof callback !== "function") throw new TypeError("Interaction-log lifecycle handlers must be functions.");
   }
 
@@ -78,6 +79,10 @@ export function createInteractionLogger({
     lastSaved: null,
     limitReached: false,
     extensionSessionUsable: false,
+    stopRequested: false,
+    stopRequestedAt: null,
+    extensionStopConfirmed: false,
+    cleanupRequired: false,
   };
   let attached = false;
   let disposed = false;
@@ -169,8 +174,13 @@ export function createInteractionLogger({
     state.status = "choosing-location";
     state.error = "";
     state.limitReached = false;
+    state.stopRequested = false;
+    state.stopRequestedAt = null;
+    state.extensionStopConfirmed = false;
+    state.cleanupRequired = false;
     notify();
 
+    let unsafeStartCleanup = false;
     try {
       // openLog calls the folder chooser before any extension handshake so the
       // browser still has the switch click's transient user activation.
@@ -178,16 +188,31 @@ export function createInteractionLogger({
       if (!writer?.appendBatch || !writer?.finalize || !writer?.snapshot) {
         throw new Error("The selected folder did not provide a writable interaction-log file.");
       }
+      let extensionStart = null;
       try {
-        const extensionStart = await Promise.resolve(onCollectionStarted({
+        extensionStart = await Promise.resolve(onCollectionStarted({
           sessionId: session.id,
           startedAt: session.startedAt,
         }));
-        state.extensionSessionUsable = Boolean(extensionStart?.connected && extensionStart?.started);
       } catch {
         // The optional study extension must never block StoryVR-only capture.
-        state.extensionSessionUsable = false;
       }
+      if (extensionStart?.startAmbiguous && !extensionStart?.cleanupConfirmed) {
+        state.writer = writer;
+        state.session = session;
+        state.events = [];
+        state.deferredEvents = [];
+        state.bufferedBytes = 0;
+        state.nextSequence = 2;
+        state.enabled = false;
+        state.starting = false;
+        state.extensionSessionUsable = true;
+        state.cleanupRequired = true;
+        unsafeStartCleanup = true;
+        await endCollection();
+        return snapshot();
+      }
+      state.extensionSessionUsable = Boolean(extensionStart?.connected && extensionStart?.started);
       if (disposed) return snapshot();
       state.writer = writer;
       state.session = session;
@@ -203,6 +228,7 @@ export function createInteractionLogger({
       notify();
       return snapshot();
     } catch (error) {
+      if (unsafeStartCleanup) throw error;
       const canceled = error?.name === "AbortError";
       state.enabled = false;
       state.starting = false;
@@ -215,6 +241,10 @@ export function createInteractionLogger({
       state.bufferedBytes = 0;
       state.nextSequence = 1;
       state.extensionSessionUsable = false;
+      state.stopRequested = false;
+      state.stopRequestedAt = null;
+      state.extensionStopConfirmed = false;
+      state.cleanupRequired = false;
       state.status = canceled ? "location-canceled" : "error";
       state.error = canceled
         ? "Folder selection canceled; collection remains off."
@@ -226,21 +256,49 @@ export function createInteractionLogger({
   }
 
   function setEnabled(enabled) {
+    if (state.stopRequested && state.session) return endCollection();
     return enabled ? beginCollection() : endCollection();
   }
 
   async function endCollection() {
     if (state.starting) return checkpointPromise;
     if (finalRequestPromise) return finalRequestPromise;
-    if ((!state.enabled && !pendingFinalTransaction) || !state.session) return null;
+    if ((!state.enabled && !pendingFinalTransaction && !state.stopRequested && !state.cleanupRequired) || !state.session) return null;
+    if (!state.stopRequested) {
+      state.stopRequested = true;
+      state.stopRequestedAt = timestamp();
+      state.extensionStopConfirmed = false;
+    }
+    state.enabled = false;
+    state.saving = true;
+    state.status = "saving";
+    state.error = "";
     cancelCheckpointTimer();
+    stopPeriodicCheckpoints();
+    notify();
+    const activeCheckpoint = checkpointPromise;
+    // Calling this before the first await starts the extension stop-intent
+    // handshake at the same boundary that disables local capture.
+    const extensionStop = requestExtensionStopAtCutoff();
     const request = (async () => {
-      if (checkpointPromise) {
+      if (activeCheckpoint) {
         try {
-          await checkpointPromise;
+          await activeCheckpoint;
         } catch {
           // A final attempt can safely follow a failed regular checkpoint.
         }
+      }
+      try {
+        await extensionStop;
+      } catch (error) {
+        state.saving = false;
+        state.checkpointing = false;
+        state.enabled = false;
+        state.status = "error";
+        state.error = String(error?.message || "The cross-tab study buffer did not confirm the collection cutoff.");
+        requestFinalRetry();
+        notify();
+        throw error;
       }
       if (!state.session) return null;
       return performCheckpoint({ final: true, reason: "collection-stopped" });
@@ -250,6 +308,24 @@ export function createInteractionLogger({
     });
     finalRequestPromise = tracked;
     return tracked;
+  }
+
+  async function requestExtensionStopAtCutoff() {
+    if (state.extensionStopConfirmed) return { connected: state.extensionSessionUsable, stopped: true };
+    if (!state.extensionSessionUsable) {
+      state.extensionStopConfirmed = true;
+      return { connected: false, reason: "extension-not-active" };
+    }
+    const response = await onCollectionStopRequested({
+      sessionId: state.session.id,
+      stoppedAt: state.stopRequestedAt.toISOString(),
+    });
+    if (response?.connected && !response?.stopped) {
+      throw new Error("The cross-tab study buffer did not confirm the requested OFF cutoff.");
+    }
+    state.extensionStopConfirmed = true;
+    if (!response?.connected) state.extensionSessionUsable = false;
+    return response;
   }
 
   function appendLifecycleEvent(type, label, eventTime, { force = false, dedupe = false } = {}) {
@@ -303,7 +379,7 @@ export function createInteractionLogger({
   }
 
   function requestFinalRetry({ delayMs = Math.max(5_000, checkpointDelayMs) } = {}) {
-    if (!pendingFinalTransaction || checkpointTimer != null) return snapshot();
+    if ((!pendingFinalTransaction && !(state.stopRequested && state.session)) || checkpointTimer != null) return snapshot();
     checkpointTimer = setTimer?.(() => {
       checkpointTimer = null;
       endCollection().catch(() => {});
@@ -353,10 +429,7 @@ export function createInteractionLogger({
 
     try {
       preparation = await prepareExtensionCheckpoint({ checkpointedAt, final: false, reason });
-      detached = detachStableEvents({
-        final: false,
-        cutoff: checkpointedAt.getTime() - SEMANTIC_CLICK_WINDOW_MS,
-      });
+      detached = detachBufferedEvents();
       const basePayload = interactionSessionPayload(state.session, detached, checkpointedAt, {
         complete: false,
         limitReached: state.limitReached,
@@ -364,7 +437,6 @@ export function createInteractionLogger({
       const transformedPayload = await transformCheckpoint(basePayload, preparation, { final: false, reason });
       const partition = partitionCheckpointEvents(
         [...state.deferredEvents, ...(Array.isArray(transformedPayload?.events) ? transformedPayload.events : [])],
-        { final: false, cutoff: checkpointedAt.getTime() - SEMANTIC_CLICK_WINDOW_MS },
       );
       state.deferredEvents = partition.deferred;
       const payload = {
@@ -385,11 +457,11 @@ export function createInteractionLogger({
         });
       }
       state.checkpointing = false;
-      state.status = "collecting";
+      state.status = state.stopRequested ? "saving" : "collecting";
       state.error = "";
       state.limitReached = state.events.length >= maxBufferedEvents || state.bufferedBytes >= maxBufferedBytes;
       notify();
-      if (state.events.length >= checkpointEvents || state.bufferedBytes >= checkpointBytes) {
+      if (!state.stopRequested && (state.events.length >= checkpointEvents || state.bufferedBytes >= checkpointBytes)) {
         requestCheckpoint("buffer-remains");
       }
       return state.writer.snapshot();
@@ -397,10 +469,12 @@ export function createInteractionLogger({
       state.deferredEvents = deferredBeforeCheckpoint;
       restoreDetachedEvents(detached);
       await abortPreparationQuietly(preparation, { final: false, fileWritten });
-      markCheckpointFailure(error);
-      startPeriodicCheckpoints();
+      markCheckpointFailure(error, { keepSaving: state.stopRequested });
+      if (!state.stopRequested) startPeriodicCheckpoints();
       notify();
-      requestCheckpoint("write-retry", { delayMs: Math.max(5_000, checkpointDelayMs) });
+      if (!state.stopRequested) {
+        requestCheckpoint("write-retry", { delayMs: Math.max(5_000, checkpointDelayMs) });
+      }
       throw error;
     }
   }
@@ -409,16 +483,16 @@ export function createInteractionLogger({
     cancelCheckpointTimer();
     stopPeriodicCheckpoints();
     const transaction = pendingFinalTransaction || {
-      checkpointedAt: timestamp(),
+      checkpointedAt: state.stopRequestedAt || timestamp(),
       preparation: null,
       preparationReady: false,
       fileWritten: false,
       fileFinalized: false,
       extensionCommitted: false,
+      failureMarkerRecorded: false,
       result: null,
     };
     const firstAttempt = !pendingFinalTransaction;
-    if (!firstAttempt && !transaction.fileFinalized) transaction.checkpointedAt = timestamp();
     pendingFinalTransaction = transaction;
     let detached = [];
     let deferredBeforeAttempt = state.deferredEvents;
@@ -449,7 +523,7 @@ export function createInteractionLogger({
       }
 
       if (!transaction.fileFinalized && (!transaction.fileWritten || state.events.length || state.deferredEvents.length)) {
-        detached = detachStableEvents({ final: true, cutoff: Number.POSITIVE_INFINITY });
+        detached = detachBufferedEvents();
         const basePayload = interactionSessionPayload(state.session, detached, transaction.checkpointedAt, {
           complete: true,
           limitReached: state.limitReached,
@@ -462,7 +536,6 @@ export function createInteractionLogger({
         );
         const partition = partitionCheckpointEvents(
           [...state.deferredEvents, ...(Array.isArray(transformedPayload?.events) ? transformedPayload.events : [])],
-          { final: true, cutoff: Number.POSITIVE_INFINITY },
         );
         state.deferredEvents = [];
         await state.writer.appendBatch({
@@ -498,7 +571,9 @@ export function createInteractionLogger({
         restoreDetachedEvents(detached);
       }
       pendingFinalTransaction = transaction;
-      markCheckpointFailure(error, { addMarker: !transaction.fileFinalized });
+      const addFailureMarker = !transaction.fileFinalized && !transaction.failureMarkerRecorded;
+      markCheckpointFailure(error, { addMarker: addFailureMarker });
+      if (addFailureMarker) transaction.failureMarkerRecorded = true;
       requestFinalRetry();
       notify();
       throw error;
@@ -525,17 +600,17 @@ export function createInteractionLogger({
     }
   }
 
-  function markCheckpointFailure(error, { addMarker = true } = {}) {
-    state.enabled = true;
-    state.saving = false;
+  function markCheckpointFailure(error, { addMarker = true, keepSaving = false } = {}) {
+    state.enabled = !state.stopRequested;
+    state.saving = Boolean(keepSaving);
     state.checkpointing = false;
-    state.status = "error";
+    state.status = keepSaving ? "saving" : "error";
     state.error = String(error?.message || "The interaction log could not be written to the selected location.");
     if (addMarker) {
       appendLifecycleEvent(
         "collection-save-failed",
         "Interaction log write failed; buffered clicks retained",
-        timestamp(),
+        state.stopRequestedAt || timestamp(),
         { force: true, dedupe: true },
       );
     }
@@ -561,6 +636,10 @@ export function createInteractionLogger({
     state.limitReached = false;
     state.nextSequence = 1;
     state.extensionSessionUsable = false;
+    state.stopRequested = false;
+    state.stopRequestedAt = null;
+    state.extensionStopConfirmed = false;
+    state.cleanupRequired = false;
     pendingFinalTransaction = null;
     lastCapturedClick = null;
     recentSemanticClick = null;
@@ -568,12 +647,8 @@ export function createInteractionLogger({
     return result;
   }
 
-  function detachStableEvents({ final, cutoff }) {
-    let count = state.events.length;
-    if (!final) {
-      count = state.events.findIndex((event) => validDate(event?.timestamp).getTime() > cutoff);
-      if (count < 0) count = state.events.length;
-    }
+  function detachBufferedEvents() {
+    const count = state.events.length;
     const detached = state.events.splice(0, count);
     if (lastCapturedClick) {
       if (lastCapturedClick.index < count) lastCapturedClick = null;
@@ -600,7 +675,7 @@ export function createInteractionLogger({
   }
 
   function handleDocumentClick(event) {
-    if (!state.enabled || state.saving || pendingFinalTransaction?.fileFinalized || !state.session) return;
+    if (!state.enabled || state.stopRequested || state.saving || pendingFinalTransaction?.fileFinalized || !state.session) return;
     const eventTime = timestamp();
     if (matchesRecentSemanticClick(event, eventTime, recentSemanticClick)) {
       recentSemanticClick = null;
@@ -635,7 +710,7 @@ export function createInteractionLogger({
   }
 
   function recordSemanticClick(event, semanticTarget) {
-    if (!state.enabled || state.saving || pendingFinalTransaction?.fileFinalized || !state.session) return false;
+    if (!state.enabled || state.stopRequested || state.saving || pendingFinalTransaction?.fileFinalized || !state.session) return false;
     const eventTime = timestamp();
     const semantic = boundedSemanticTarget(semanticTarget);
     if (event === lastCapturedClick?.event && matchesCapturedClick(event, eventTime, lastCapturedClick)) {
@@ -720,7 +795,7 @@ function interactionEventsBytes(encoder, events) {
   return events.reduce((total, event) => total + interactionEventBytes(encoder, event), 0);
 }
 
-function partitionCheckpointEvents(events, { final, cutoff }) {
+function partitionCheckpointEvents(events) {
   const seen = new Set();
   const ordered = events
     .filter((event) => event && typeof event === "object" && !Array.isArray(event))
@@ -738,15 +813,7 @@ function partitionCheckpointEvents(events, { final, cutoff }) {
       || left.insertionIndex - right.insertionIndex
     ))
     .map(({ event }) => event);
-  if (final) return { ready: ordered, deferred: [] };
-  const ready = [];
-  const deferred = [];
-  for (const event of ordered) {
-    const extensionEvent = event.captureSource === "study-extension"
-      || (["browser", "original"].includes(event.surface) && event.captureSource !== "storyvr");
-    (extensionEvent || validDate(event.timestamp).getTime() <= cutoff ? ready : deferred).push(event);
-  }
-  return { ready, deferred };
+  return { ready: ordered, deferred: [] };
 }
 
 export function createInteractionEventRecord(event, {

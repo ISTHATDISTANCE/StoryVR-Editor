@@ -95,14 +95,13 @@ const INTERACTION_CONTROLLER_CONTROLS = new Set([
   "b",
   "x",
   "y",
-  "menu",
   "thumbstick-press",
   "thumbstick-up",
   "thumbstick-down",
   "thumbstick-left",
   "thumbstick-right",
 ]);
-const INTERACTION_CONTROLLER_RESERVED_CONTROLS = new Set(["trigger", "squeeze"]);
+const INTERACTION_CONTROLLER_RESERVED_CONTROLS = new Set(["trigger", "squeeze", "menu"]);
 const INTERACTION_CONTROLLER_DIRECTIONAL_CONTROLS = new Set([
   "thumbstick-up",
   "thumbstick-down",
@@ -2067,10 +2066,10 @@ function controllerButtonFallbackOption(option = {}) {
     description: "Advance to the next story part with an assignable controller button without adding button geometry to the scene.",
     sourceEvidence: [],
     assetLinks: [],
-    readerImpact: "The reader uses an authored face, menu, or thumbstick control to advance when no stronger boundary-specific affordance is available.",
+    readerImpact: "The reader uses an authored face or thumbstick control to advance when no stronger boundary-specific affordance is available.",
     risks: [],
     implementationHints: [
-      "Bind only assignable face, menu, or thumbstick inputs to story actions. Keep Trigger reserved for UI ray click and scroll, and Grip reserved for grab.",
+      "Bind only assignable face or thumbstick inputs to story actions. Keep Trigger reserved for UI ray click and scroll, Grip reserved for grab, and Menu unavailable for StoryVR actions.",
     ],
     confidence: 1,
   };
@@ -2325,7 +2324,7 @@ function normalizeInteractionControllerAction(value) {
 
 function interactionControllerControlAvailable(handedness, control) {
   if (handedness === "left" && ["a", "b"].includes(control)) return false;
-  if (handedness === "right" && ["x", "y", "menu"].includes(control)) return false;
+  if (handedness === "right" && ["x", "y"].includes(control)) return false;
   return true;
 }
 
@@ -9408,6 +9407,9 @@ function attentionReaderGuidanceRuntimePolicy() {
       enabled: true,
       visibility: "outside-view-frustum",
       placement: "camera-edge",
+      distanceFromCenterNdc: 0.56,
+      radiusNdc: 0.15,
+      style: "bright-high-contrast",
     },
     glow: {
       enabled: true,

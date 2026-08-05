@@ -47,6 +47,7 @@ function setCollectionStatus(status) {
     off: ["Collection is off", "Turn it on in StoryVR to choose a folder and start a new data file."],
     collecting: ["Collection is on", "StoryVR checkpoints the named JSON file in the selected folder while you work."],
     "checkpoint-prepared": ["Writing checkpoint", "StoryVR is updating the JSON file in the folder selected at the start."],
+    "stop-requested": ["Collection is off", "StoryVR is finishing the JSON file at the moment the switch was turned off."],
     prepared: ["Finalizing data", "StoryVR is completing the same JSON file without another location chooser."],
     saved: ["Collection is off", "The data file was finalized in its selected folder."],
     "limit-reached": ["Collection is paused", "Return to StoryVR so it can retry the checkpoint in the selected folder."],

@@ -151,7 +151,6 @@ const INTERACTION_CONTROLLER_PROFILES = Object.freeze({
           Object.freeze({ id: "thumbstick-down", label: "Thumbstick down", thumbstick: true, directional: true }),
           Object.freeze({ id: "thumbstick-left", label: "Thumbstick left", thumbstick: true, directional: true }),
           Object.freeze({ id: "thumbstick-right", label: "Thumbstick right", thumbstick: true, directional: true }),
-          Object.freeze({ id: "menu", label: "Menu" }),
         ]),
       }),
       Object.freeze({
@@ -451,9 +450,6 @@ const state = {
   finalReviewPendingTransition: null,
   finalReviewCompletedAttentionKeys: new Set(),
   finalReviewViewerCameraState: null,
-  finalReviewViewRotationMode: "reader",
-  finalReviewSceneOrbitCameraState: null,
-  finalReviewReaderLookCameraState: null,
   finalReviewPlaying: true,
   finalReviewTextPanelMinimized: false,
   finalReviewTextPanelOffset: { x: 0, y: 0 },
@@ -510,6 +506,7 @@ let appliedStoryvrBrowserEntry = null;
 let storyvrPopRollbackEntryId = null;
 let activeStoryvrPointerGestureFinalizer = null;
 let spatialBeatNavigationPending = false;
+let dynamicBeatNavigationPending = false;
 let environmentBeatNavigationPending = false;
 let attentionBeatNavigationPending = false;
 
@@ -577,6 +574,7 @@ const studyExtensionBridge = createStoryvrStudyExtensionBridge();
 const interactionLogger = createInteractionLogger({
   getContext: interactionLogContext,
   onCollectionStarted: (session) => studyExtensionBridge.startSession(session),
+  onCollectionStopRequested: (request) => studyExtensionBridge.requestStop(request),
   prepareCheckpoint: prepareInteractionLogCheckpoint,
   transformCheckpoint: (payload, extensionSnapshot) => (
     mergeStoryvrStudyExtensionEvents(payload, extensionSnapshot)
@@ -607,6 +605,7 @@ async function commitInteractionLogCheckpoint(preparation, { sessionId, final })
       sessionId,
       checkpointToken: preparation.checkpointToken,
     });
+  if (final && response?.connected === false) return;
   if (!response?.connected || !response?.committed) {
     throw new Error(final
       ? "The cross-tab study buffer could not be confirmed as finalized."
@@ -1450,8 +1449,8 @@ function storyvrRouteOwnsCheckpointCompletion(route) {
   return !route?.editorScene || route?.componentId === "transition-pacing";
 }
 
-async function prepareStoryvrRouteExit(fromRoute, toRoute, options = {}) {
-  if (storyvrNavigationRoutesEqual(fromRoute, toRoute) && options.persistSameRoute !== true) return false;
+async function prepareStoryvrRouteExit(fromRoute, toRoute) {
+  if (storyvrNavigationRoutesEqual(fromRoute, toRoute)) return false;
   await synchronizeActiveStoryvrAuthoringControl();
   const componentId = fromRoute.componentId;
   const componentChanged = componentId !== toRoute.componentId;
@@ -1508,19 +1507,10 @@ async function requestStoryvrBrowserNavigation(route, options = {}) {
   storyvrNavigationRequestPending = true;
   storyvrNavigationRequestPromise = (async () => {
     const fromRoute = currentStoryvrBrowserNavigation();
-    let navigation = normalizeStoryvrBrowserNavigation(route);
-    const refreshBeforeApply = options.refreshBeforeApply === true;
-    if (storyvrNavigationRoutesEqual(fromRoute, navigation) && !refreshBeforeApply) return false;
+    const navigation = normalizeStoryvrBrowserNavigation(route);
+    if (storyvrNavigationRoutesEqual(fromRoute, navigation)) return false;
     try {
-      await prepareStoryvrRouteExit(fromRoute, navigation, {
-        persistSameRoute: refreshBeforeApply,
-      });
-      if (refreshBeforeApply) await refresh(false);
-      navigation = normalizeStoryvrBrowserNavigation(route);
-      if (storyvrNavigationRoutesEqual(currentStoryvrBrowserNavigation(), navigation)) {
-        applyStoryvrBrowserNavigation(navigation);
-        return true;
-      }
+      await prepareStoryvrRouteExit(fromRoute, navigation);
       if (options.mode === "back") {
         window.history.back();
         return true;
@@ -2867,8 +2857,9 @@ function renderBeatTimeline() {
         }).join("")}
         </ol>
       </div>
-      ${renderSourceGraphSpatialPreview()}
-      ${renderSourceGraphFullTextDetail()}
+      ${sourceGraphFullTextDetail()
+        ? renderSourceGraphFullTextDetail()
+        : renderSourceGraphSpatialPreview()}
       </div>
     </section>
   `;
@@ -6241,6 +6232,7 @@ function renderDynamicGeometryEditorWorkspace(component, proposal, ready, sceneC
   const transmissionStory = storyProfileId(state.data) === "transmission";
   return `
     <section class="panel asset-topology-panel spatial-relations-panel spatial-editor-mode dynamic-geometry-panel dynamic-editor-mode" data-dynamic-workspace-mode="editor">
+      ${renderDynamicBeatEdgeNavigation(sceneContext)}
       <div class="panel-head">
         <div>
           <p class="eyebrow">${escapeHtml(participantComponentLabel(component.id, component.label))} · ${escapeHtml(spatialSceneContextLabel(sceneContext))}</p>
@@ -6254,7 +6246,7 @@ function renderDynamicGeometryEditorWorkspace(component, proposal, ready, sceneC
       ${renderDynamicGeometryStatus()}
       <div class="spatial-relations-workbench storyvr-spatial-workbench dynamic-geometry-workbench dynamic-editor-workbench">
         <div class="spatial-workbench-sidebar storyvr-spatial-sidebar dynamic-workbench-sidebar">
-          ${renderDynamicSceneObjectHierarchy(sceneEntities)}
+          ${renderDynamicSceneObjectHierarchy(sceneEntities, sceneContext)}
           ${renderProceduralDynamicsAuthoring(sceneContext, ready)}
         </div>
         ${proposal ? renderDynamicPreview(proposal, sceneContext) : renderDynamicEmptyState(component)}
@@ -6276,6 +6268,36 @@ function renderDynamicGeometryStatus() {
   return `<p class="source-graph-status">${escapeHtml(state.output.sourceMotionLinksSaved || state.output.dynamic)}</p>`;
 }
 
+function renderDynamicBeatEdgeNavigation(sceneContext) {
+  const navigation = spatialBeatNavigationState(sceneContext);
+  const button = (direction, beat, context) => {
+    const isPrevious = direction === "previous";
+    const label = context
+      ? `${isPrevious ? "Previous" : "Next"} story part, Card ${navigation.currentIndex + (isPrevious ? 0 : 2)}: ${beat.title || beat.id}`
+      : `No ${isPrevious ? "previous" : "next"} story part`;
+    return `
+      <button
+        type="button"
+        class="spatial-beat-edge-button dynamic-beat-edge-button ${direction}"
+        data-dynamic-beat-navigation="${direction}"
+        aria-label="${escapeHtml(label)}"
+        title="${escapeHtml(label)}"
+        ${context ? "" : "disabled"}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="${isPrevious ? "M14.5 5 7.5 12l7 7" : "M9.5 5 16.5 12l-7 7"}"></path>
+        </svg>
+      </button>
+    `;
+  };
+  return `
+    <nav class="spatial-beat-edge-navigation dynamic-beat-edge-navigation" aria-label="Move between story parts">
+      ${button("previous", navigation.previousBeat, navigation.previousContext)}
+      ${button("next", navigation.nextBeat, navigation.nextContext)}
+    </nav>
+  `;
+}
+
 function dynamicSceneObjectEntities(sceneContext = activeDynamicSceneContext()) {
   return spatialEditorSceneEntities(lockedSpatialRelationsContract(), sceneContext);
 }
@@ -6291,15 +6313,66 @@ function ensureDynamicSceneObjectSelection(entities = dynamicSceneObjectEntities
   return state.selectedDynamicEntityId;
 }
 
-function renderDynamicSceneObjectHierarchy(entities) {
-  const selectedEntityId = ensureDynamicSceneObjectSelection(entities);
-  return renderSpatialHierarchy(entities, {
-    selectedEntityIds: selectedEntityId ? [selectedEntityId] : [],
-    primaryEntityId: selectedEntityId,
-    selectionAttribute: "data-dynamic-select-entity",
-    ariaLabel: "Dynamics scene object hierarchy",
-    className: "dynamic-scene-object-hierarchy",
+function proceduralDynamicsActorMotionDescription(actor) {
+  const trajectory = actor?.trajectory || actor?.motion || {};
+  const kind = String(trajectory.kind || trajectory.type || "movement");
+  const hasBuiltInAnimation = Boolean(String(
+    actor?.clip?.clipName
+    || actor?.clip?.name
+    || actor?.animation?.clipName
+    || "",
+  ).trim());
+  let description = "Moves through the scene using the generated motion.";
+  if (kind === "school-orbit") {
+    const speed = Number(trajectory.angularSpeedRadiansPerSecond);
+    const pace = Number.isFinite(speed) && speed <= 0.1
+      ? "Slowly circles"
+      : "Circles";
+    const direction = ["clockwise", "counterclockwise"].includes(trajectory.direction)
+      ? ` ${trajectory.direction}`
+      : "";
+    const sways = Number(trajectory.verticalSwayMeters) >= 0.08;
+    description = `${pace}${direction} around the reader${sways ? " with a gentle up-and-down motion" : ""}.`;
+  } else if (kind === "waypoint-loop") {
+    description = "Follows a looping path through the scene.";
+  }
+  return hasBuiltInAnimation
+    ? `${description} Its built-in animation plays while it moves.`
+    : description;
+}
+
+function renderDynamicSceneObjectHierarchy(entities, sceneContext = activeDynamicSceneContext()) {
+  const plan = activeProceduralDynamicsPlan(sceneContext);
+  const entityById = new Map(entities.map((entity) => [String(entity.id), entity]));
+  const movingObjects = (plan?.actors || []).flatMap((actor) => {
+    const entityId = String(actor?.entityId || actor?.targetEntityId || "").trim();
+    const entity = entityById.get(entityId);
+    return entity ? [{ actor, entity }] : [];
   });
+  const selectedEntityId = ensureDynamicSceneObjectSelection(
+    movingObjects.length ? movingObjects.map(({ entity }) => entity) : entities,
+  );
+  return `
+    <aside class="spatial-hierarchy dynamic-scene-object-hierarchy" aria-label="Dynamics scene object hierarchy">
+      <div class="visual-card-head"><h3>Scene objects</h3></div>
+      <div class="spatial-hierarchy-scroll">
+        <div class="dynamic-moving-object-list">
+          ${movingObjects.map(({ actor, entity }) => `
+            <details class="dynamic-moving-object" data-dynamic-moving-object="${escapeHtml(entity.id)}">
+              <summary
+                class="dynamic-moving-object-summary ${entity.id === selectedEntityId ? "selected selection-primary" : ""}"
+                data-dynamic-select-entity="${escapeHtml(entity.id)}"
+              >
+                <strong>${escapeHtml(spatialRelationEntityLabel(entity))}</strong>
+                <span class="dynamic-moving-object-toggle">Motion <i aria-hidden="true"></i></span>
+              </summary>
+              <p>${escapeHtml(proceduralDynamicsActorMotionDescription(actor))}</p>
+            </details>
+          `).join("") || `<p class="dynamic-moving-object-empty">No added movement yet.</p>`}
+        </div>
+      </div>
+    </aside>
+  `;
 }
 
 function proceduralDynamicsScope(sceneContext) {
@@ -6362,15 +6435,6 @@ function proceduralDynamicsCandidateImpact(candidate) {
     checkpointsMadeStale: uniqueStrings(impact.checkpointsMadeStale || []),
     unmetRequirements,
   };
-}
-
-function proceduralDynamicsCurrentSceneAssetIds(sceneContext) {
-  const beat = spatialSceneBeat(sceneContext);
-  if (!beat) return [];
-  const graphBeat = (state.data?.graph?.beats || []).find((candidate) => candidate.id === sceneContext.beatId) || beat;
-  const option = sourceGraphVariantOption(sceneContext);
-  const scene = spatialSceneRecordForContext(lockedSpatialRelationsContract(), sceneContext);
-  return spatialSceneLinkedAssetIds(scene, graphBeat, option, sceneContext);
 }
 
 function proceduralDynamicsLockedSceneTargets(sceneContext) {
@@ -6451,82 +6515,6 @@ function proceduralDynamicsCandidateMatchesLocalScene(candidate, sceneContext) {
   return !proceduralDynamicsCandidateMotionOnlyViolation(candidate, sceneContext);
 }
 
-function proceduralDynamicsActorParameterSummary(actor, index, sceneContext = null) {
-  const trajectory = actor?.trajectory || actor?.motion || {};
-  const kind = String(trajectory.kind || trajectory.type || "movement").replace(/-/g, " ");
-  const details = [];
-  if (Number.isFinite(Number(trajectory.radiusMeters))) details.push(`radius ${Number(trajectory.radiusMeters).toFixed(1)} m`);
-  if (Number.isFinite(Number(trajectory.heightMeters))) details.push(`height ${Number(trajectory.heightMeters).toFixed(1)} m`);
-  if (Number.isFinite(Number(trajectory.angularSpeedRadiansPerSecond))) {
-    details.push(`angular speed ${Number(trajectory.angularSpeedRadiansPerSecond).toFixed(2)} rad/s`);
-  }
-  if (Number.isFinite(Number(trajectory.durationSeconds))) details.push(`${Number(trajectory.durationSeconds).toFixed(1)} s loop`);
-  if (Array.isArray(trajectory.waypoints)) details.push(`${trajectory.waypoints.length} waypoints`);
-  const clipName = actor?.clip?.clipName || actor?.clip?.name || actor?.animation?.clipName;
-  if (clipName) details.push(`clip ${clipName}`);
-  const entityId = String(actor?.entityId || actor?.targetEntityId || "").trim();
-  const target = proceduralDynamicsLockedSceneTargets(sceneContext)
-    .find((entity) => String(entity.id) === entityId);
-  const assetId = target?.assetId || actor?.assetId;
-  const asset = assetId ? findAssetById(assetId) : null;
-  const label = asset?.label || asset?.name || asset?.id || entityId || `Model ${index + 1}`;
-  return `${label} · existing instance · ${kind}${details.length ? ` · ${details.join(" · ")}` : ""}`;
-}
-
-function renderProceduralDynamicsCandidateImpact(candidate, sceneContext) {
-  if (!candidate) return "";
-  const motionPlan = proceduralDynamicsCandidateMotionPlan(candidate);
-  const impact = proceduralDynamicsCandidateImpact(candidate);
-  const linkedAssetCount = proceduralDynamicsCurrentSceneAssetIds(sceneContext).length;
-  const placedModelCount = proceduralDynamicsLockedSceneTargets(sceneContext).length;
-  const motionTargetCount = (motionPlan?.actors || []).length;
-  const checkpointDrafts = impact.checkpointsMadeDraft;
-  const checkpointStale = impact.checkpointsMadeStale;
-  return `
-    <section class="procedural-dynamics-impact" data-procedural-dynamics-impact>
-      <div class="procedural-dynamics-impact-head">
-        <div>
-          <p class="eyebrow">Movement-only preview</p>
-          <h4>Saved scene inputs stay locked</h4>
-        </div>
-        <span>Assets, placement &amp; count locked</span>
-      </div>
-      <div class="procedural-dynamics-impact-grid">
-        <article>
-          <span>Locked scene inputs</span>
-          <strong>${linkedAssetCount} linked asset${linkedAssetCount === 1 ? "" : "s"} · ${placedModelCount} placed 3D model${placedModelCount === 1 ? "" : "s"}</strong>
-          <p>Apply cannot add, remove, replace, hide, resize, or rewrite any saved position, rotation, or scale.</p>
-        </article>
-        <article>
-          <span>Generated movement</span>
-          <strong>${motionPlan ? `${motionTargetCount} existing 3D model${motionTargetCount === 1 ? "" : "s"} assigned movement` : "No valid movement plan"}</strong>
-          <ul>
-            ${(motionPlan?.actors || []).map((actor, index) => `<li>${escapeHtml(proceduralDynamicsActorParameterSummary(actor, index, sceneContext))}</li>`).join("")
-              || "<li>No object movement details supplied.</li>"}
-          </ul>
-        </article>
-      </div>
-      ${checkpointDrafts.length || checkpointStale.length ? `
-        <div class="procedural-dynamics-checkpoint-impact">
-          ${checkpointDrafts.length ? `<span>Changes after Apply: ${escapeHtml(checkpointDrafts.map((id) => participantComponentLabel(id, id)).join(", "))}</span>` : ""}
-          ${checkpointStale.length ? `<span>Needs review: ${escapeHtml(checkpointStale.map((id) => participantComponentLabel(id, id)).join(", "))}</span>` : ""}
-        </div>
-      ` : ""}
-      ${impact.materiallyChanged === false ? `
-        <p class="procedural-dynamics-material-warning" role="alert">
-          This regeneration is not materially different from the previous preview. Revise the description before applying it.
-        </p>
-      ` : ""}
-      ${impact.unmetRequirements.length ? `
-        <div class="procedural-dynamics-unmet" role="alert">
-          <strong>Prompt requirements not yet met</strong>
-          <ul>${impact.unmetRequirements.map((requirement) => `<li>${escapeHtml(requirement)}</li>`).join("")}</ul>
-        </div>
-      ` : ""}
-    </section>
-  `;
-}
-
 function proceduralDynamicsPromptForScene(sceneContext) {
   const sceneKey = proceduralDynamicsSceneKey(sceneContext);
   if (Object.prototype.hasOwnProperty.call(state.proceduralDynamicsUi.promptsByScene, sceneKey)) {
@@ -6560,43 +6548,12 @@ function proceduralDynamicsPlanRuntimeCount(plan) {
   return proceduralDynamicsPlanActorCount(plan);
 }
 
-function proceduralDynamicsPlanCountLabel(plan) {
-  const targetCount = proceduralDynamicsPlanActorCount(plan);
-  return `${targetCount} object${targetCount === 1 ? "" : "s"} moving`;
-}
-
-function proceduralDynamicsPlanMotionLabels(plan) {
-  return [...new Set((plan?.actors || []).map((actor) => (
-    actor?.trajectory?.kind || actor?.trajectory?.type || actor?.motion?.type || "movement"
-  )).filter(Boolean))];
-}
-
-function renderProceduralDynamicsPlanSummary(plan, source) {
-  if (!plan) return "";
-  const targetCount = proceduralDynamicsPlanActorCount(plan);
-  const labels = proceduralDynamicsPlanMotionLabels(plan);
-  const summary = String(plan.summary || plan.intent || "").trim();
-  return `
-    <article class="procedural-dynamics-plan-summary" data-procedural-dynamics-plan-source="${escapeHtml(source)}">
-      <div>
-        <span>${source === "candidate" ? "Generated preview" : "Applied movement"}</span>
-        <strong>${targetCount} existing 3D model${targetCount === 1 ? "" : "s"} assigned movement</strong>
-      </div>
-      ${summary ? `<p>${escapeHtml(summary)}</p>` : ""}
-      <small>${escapeHtml(labels.length ? labels.join(" · ") : "Validated generated movement")}</small>
-    </article>
-  `;
-}
-
 function renderProceduralDynamicsAuthoring(sceneContext, ready) {
   const scope = proceduralDynamicsScope(sceneContext);
   const sceneKey = scope.sceneKey;
   const candidate = proceduralDynamicsCandidate(sceneContext);
   const storedPlan = proceduralDynamicsStoredPlan(sceneContext);
   const prompt = proceduralDynamicsPromptForScene(sceneContext);
-  const previewPlan = candidate
-    ? proceduralDynamicsCandidateMotionPlan(candidate)
-    : storedPlan;
   const impact = proceduralDynamicsCandidateImpact(candidate);
   const candidateIsStale = Boolean(
     candidate
@@ -6618,7 +6575,6 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
     || candidateHasUnmetRequirements
     || candidateLacksMaterialChange;
   const busy = Boolean(state.proceduralDynamicsUi.busyByScene[sceneKey]);
-  const status = state.proceduralDynamicsUi.statusByScene[sceneKey] || "";
   const error = state.proceduralDynamicsUi.errorsByScene[sceneKey] || "";
   const staleMessage = candidateIsStale
     ? "The description changed. Generate a new preview before applying movement."
@@ -6684,13 +6640,12 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
           >Remove generated movement</button>
         ` : ""}
       </div>
-      ${renderProceduralDynamicsPlanSummary(previewPlan, candidate ? "candidate" : "stored")}
-      ${candidate ? renderProceduralDynamicsCandidateImpact(candidate, sceneContext) : ""}
       <p
-        class="procedural-dynamics-message ${error || staleMessage ? "error" : status ? "success" : ""}"
+        class="procedural-dynamics-message ${error || staleMessage ? "error" : ""}"
         data-procedural-dynamics-message
         aria-live="polite"
-      >${escapeHtml(error || staleMessage || status)}</p>
+        ${error || staleMessage ? "" : "hidden"}
+      >${escapeHtml(error || staleMessage)}</p>
     </section>
   `;
 }
@@ -8976,44 +8931,10 @@ function storyBuildActivityTitle() {
   return "Story build";
 }
 
-function storyBuildErrorComponentFromMessage(error) {
-  const message = String(error || "");
-  const componentPatterns = [
-    ["source-graph", /\b(?:Source Graph|Story order)\b/i],
-    [SPATIAL_RELATIONS_COMPONENT_ID, /\b(?:Spatial Relations|Place objects)\b/i],
-    ["environment-enhancement", /\b(?:Environment Enhancement|Set the scene)\b/i],
-    [ATTENTION_GUIDANCE_COMPONENT_ID, /\b(?:Attention Guidance|Guide attention)\b/i],
-    ["dynamic-geometry", /\b(?:Dynamic Geometry|Dynamics|Object movement)\b/i],
-    ["inter-beat-dynamics", /\b(?:Inter-beat Dynamics|Transition|Scene changes)\b/i],
-    ["interaction-control", /\b(?:Interaction Control|Reader actions)\b/i],
-  ];
-  return componentPatterns.find(([, pattern]) => pattern.test(message))?.[0] || null;
-}
-
-function storyBuildActivityAction() {
-  let componentId = "transition-pacing";
-  if (state.storyBuildUi.phase === "error") {
-    const output = storyBuildOutput();
-    const diagnostic = firstStageErrorDiagnostic(output);
-    componentId = diagnostic
-      ? stageErrorComponentId("transition-pacing", diagnostic)
-      : storyBuildErrorComponentFromMessage(output?.error || state.storyBuildUi.status) || componentId;
-  }
-  if (componentId === "transition-pacing") {
-    return { componentId, label: "View build" };
-  }
-  const component = componentById(componentId);
-  return {
-    componentId,
-    label: `Open ${participantComponentLabel(componentId, component?.label)}`,
-  };
-}
-
 function renderStoryBuildActivity() {
   if (!state.storyBuildUi.noticeVisible || state.storyBuildUi.phase === "idle") return "";
   const busy = Boolean(state.storyBuildUi.busy);
   const error = state.storyBuildUi.phase === "error";
-  const action = storyBuildActivityAction();
   return `
     <section
       class="background-task-banner ${error ? "error" : busy ? "running" : "ready"}"
@@ -9027,7 +8948,6 @@ function renderStoryBuildActivity() {
         <span data-story-build-activity-status>${escapeHtml(state.storyBuildUi.status || "StoryVR is building the WebXR story in the background.")}</span>
       </div>
       <div class="background-task-actions">
-        <button type="button" data-story-build-open-review data-story-build-target="${escapeHtml(action.componentId)}">${escapeHtml(action.label)}</button>
         ${busy ? "" : `<button type="button" data-story-build-dismiss>Dismiss</button>`}
       </div>
     </section>
@@ -9059,12 +8979,6 @@ function updateStoryBuildActivityDom() {
     const status = banner.querySelector("[data-story-build-activity-status]");
     if (status) status.textContent = state.storyBuildUi.status || "StoryVR is building the WebXR story in the background.";
     const actions = banner.querySelector(".background-task-actions");
-    const open = actions?.querySelector("[data-story-build-open-review]");
-    const action = storyBuildActivityAction();
-    if (open) {
-      open.textContent = action.label;
-      open.dataset.storyBuildTarget = action.componentId;
-    }
     const dismiss = actions?.querySelector("[data-story-build-dismiss]");
     if (busy) dismiss?.remove();
     else if (actions && !dismiss) {
@@ -9081,13 +8995,6 @@ function updateStoryBuildActivityDom() {
 }
 
 function bindStoryBuildActivityEvents() {
-  const openReview = document.querySelector("[data-story-build-open-review]");
-  if (openReview && openReview.dataset.storyBuildActivityBound !== "true") {
-    openReview.dataset.storyBuildActivityBound = "true";
-    openReview.addEventListener("click", () => {
-      openStoryBuildActivity();
-    });
-  }
   const dismiss = document.querySelector("[data-story-build-dismiss]");
   if (dismiss && dismiss.dataset.storyBuildActivityBound !== "true") {
     dismiss.dataset.storyBuildActivityBound = "true";
@@ -9096,23 +9003,6 @@ function bindStoryBuildActivityEvents() {
       updateStoryBuildActivityDom();
     });
   }
-}
-
-async function openStoryBuildActivity() {
-  const action = storyBuildActivityAction();
-  const refreshBeforeApply = state.storyBuildUi.phase === "error";
-  const opened = await requestStoryvrBrowserNavigation(
-    createStoryvrNavigationRoute(action.componentId),
-    { refreshBeforeApply },
-  );
-  if (action.componentId !== "transition-pacing") return opened;
-  window.requestAnimationFrame(() => {
-    const panel = document.querySelector("[data-story-build-panel]");
-    if (!panel) return;
-    panel.scrollIntoView({ behavior: "smooth", block: "start" });
-    panel.focus({ preventScroll: true });
-  });
-  return opened;
 }
 
 function environmentSelectionTitle(manifest) {
@@ -9733,7 +9623,6 @@ function renderAttentionGuidanceWorkspace(component) {
       <div class="spatial-relations-workbench attention-guidance-workbench">
         <div class="spatial-workbench-sidebar attention-workbench-sidebar">
           ${renderAttentionMarkerHierarchy(markers, scene)}
-          ${renderAttentionGuidanceInspector(marker)}
         </div>
         ${renderAttentionGuidanceViewport(beat, marker, sceneContext, scene)}
       </div>
@@ -9947,20 +9836,6 @@ function renderAttentionGuidanceViewport(beat, marker, sceneContext, scene) {
       </div>
       <p class="topology-viewer-hint storyvr-spatial-footer">Orange focus markers are authoring indicators only.</p>
     </section>
-  `;
-}
-
-function renderAttentionGuidanceInspector(marker) {
-  if (!marker) return "";
-  return `
-    <aside class="topology-inspector spatial-inspector attention-inspector">
-      <div class="spatial-inspector-head">
-        <div><p class="eyebrow">${escapeHtml(attentionTargetKindLabel(marker))}</p><h3 data-attention-inspector-title>${escapeHtml(attentionMarkerLabel(marker))}</h3></div>
-        <div class="attention-inspector-badges">
-          <span class="text-comfort-badge ${marker.manual ? "warning" : "good"}" data-attention-manual-badge>${escapeHtml(marker.manual ? attentionMarkerEditLabel(marker) : "inferred")}</span>
-        </div>
-      </div>
-    </aside>
   `;
 }
 
@@ -10426,7 +10301,6 @@ function renderInteractionControllerDiagram(hand, configuration) {
         { input: "thumbstick-press", inputs: ["thumbstick-press", "thumbstick-up", "thumbstick-down", "thumbstick-left", "thumbstick-right"], label: "Thumbstick", node: "thumbstick", targetX: 42, targetY: 30, mapX: 2, mapY: 5, lineX: 32, lineY: 28 },
         { input: "x", label: "X button", node: "x_button", targetX: 61, targetY: 24, mapX: 68, mapY: 5, lineX: 68, lineY: 12 },
         { input: "y", label: "Y button", node: "y_button", targetX: 70, targetY: 33, mapX: 71, mapY: 22, lineX: 71, lineY: 29 },
-        { input: "menu", label: "Menu", node: "", targetX: 27, targetY: 38, mapX: 2, mapY: 63, lineX: 32, lineY: 70 },
       ]
     : [
         { input: "thumbstick-press", inputs: ["thumbstick-press", "thumbstick-up", "thumbstick-down", "thumbstick-left", "thumbstick-right"], label: "Thumbstick", node: "thumbstick", targetX: 58, targetY: 30, mapX: 67, mapY: 5, lineX: 68, lineY: 28 },
@@ -11305,7 +11179,6 @@ function renderFinalReviewStorySceneCard(beat, option, context, index, selectedI
 function renderFinalReviewSpatialEditor(beat, index, beats, sceneContext) {
   const region = microhabitatForBeat(beat);
   const sceneAssetLabel = finalReviewSceneAssetLabel(beat, sceneContext);
-  const viewRotationMode = normalizeFinalReviewViewRotationMode(state.finalReviewViewRotationMode);
   return `
     <section class="topology-diagram-card topology-3d-card final-review-preview-card storyvr-spatial-surface" data-final-review-spatial-editor>
       <div class="visual-card-head storyvr-spatial-surface-head">
@@ -11323,13 +11196,6 @@ function renderFinalReviewSpatialEditor(beat, index, beats, sceneContext) {
           <p data-final-review-beat-copy>${escapeHtml(shortText(beat?.text || "No story text available.", 260))}</p>
         </div>
       </div>
-      <div class="final-review-controls storyvr-spatial-toolbar" role="toolbar" aria-label="Reader preview controls">
-        <div class="final-review-view-rotation" role="group" aria-label="Drag view behavior">
-          <span>View</span>
-          <button type="button" data-final-review-view-rotation="scene" aria-pressed="${viewRotationMode === "scene"}">Orbit scene</button>
-          <button type="button" data-final-review-view-rotation="reader" aria-pressed="${viewRotationMode === "reader"}">Reader view</button>
-        </div>
-      </div>
       <div class="topology-viewer-shell final-review-viewer-shell storyvr-spatial-viewer" data-final-review-viewer="${escapeHtml(spatialSceneRequestKey(sceneContext) || beat?.id || "none")}" tabindex="0" role="application" aria-label="Final StoryVR reader preview with the text panel attached to the reader's left hand">
         <div class="topology-viewer-status">Loading final spatial editor...</div>
       </div>
@@ -11339,7 +11205,7 @@ function renderFinalReviewSpatialEditor(beat, index, beats, sceneContext) {
           <li>Drag the panel text or use the mouse wheel to scroll.</li>
           <li>Drag the panel title or Aa control to reposition it.</li>
           <li>Drag the reader hand to reposition it.</li>
-          <li><span data-final-review-view-rotation-hint>${escapeHtml(finalReviewViewRotationHint(viewRotationMode))}</span></li>
+          <li>Right-drag to look around from the reader.</li>
           <li>Use WASD to move. In VR, Trigger scrolls text and Grip moves the panel.</li>
         </ul>
       </details>
@@ -11389,7 +11255,7 @@ function renderPreviewQa() {
   const canCompile = storyBuildCanStart();
   const blocking = canCompile ? null : compileBlockingGuidance();
   return `
-    <section class="panel" data-story-build-panel tabindex="-1">
+    <section class="panel" data-story-build-panel>
       <div class="panel-head">
         <div>
           <p class="eyebrow">Reader output</p>
@@ -11828,6 +11694,9 @@ function bindDynamicGeometryCanvasEvents() {
     }));
   }
   document.querySelector("[data-dynamic-close-save]")?.addEventListener("click", () => closeDynamicSceneEditor());
+  for (const button of document.querySelectorAll("[data-dynamic-beat-navigation]")) {
+    button.addEventListener("click", () => navigateDynamicSceneEditor(button.dataset.dynamicBeatNavigation));
+  }
   for (const button of document.querySelectorAll("[data-dynamic-select-entity]")) {
     button.addEventListener("click", () => {
       const entityId = button.dataset.dynamicSelectEntity;
@@ -11883,9 +11752,10 @@ function bindProceduralDynamicsAuthoringEvents() {
           ? candidateMotionOnlyViolation || "This scene's locked assets or saved object placement changed after generation. Generate a new preview before applying."
           : candidateHasUnmetRequirements
             ? "Resolve the unmet prompt requirements by revising and regenerating before applying."
-            : candidateLacksMaterialChange
+          : candidateLacksMaterialChange
               ? "This preview is not materially different. Revise the description and regenerate."
         : "";
+      message.hidden = !message.textContent;
       message.classList.toggle(
         "error",
         candidateIsStale
@@ -12869,6 +12739,33 @@ async function closeDynamicSceneEditor() {
   await returnToDynamicCanvasWithBrowserHistory();
 }
 
+async function navigateDynamicSceneEditor(direction) {
+  if (!state.dynamicEditorScene || state.busy || dynamicBeatNavigationPending) return;
+  const navigation = spatialBeatNavigationState(activeDynamicSceneContext());
+  const targetContext = direction === "previous" ? navigation.previousContext : navigation.nextContext;
+  if (!targetContext) return;
+  dynamicBeatNavigationPending = true;
+  for (const button of document.querySelectorAll("[data-dynamic-beat-navigation]")) {
+    button.disabled = true;
+    button.classList.add("is-saving");
+    button.setAttribute("aria-busy", "true");
+  }
+  try {
+    await requestStoryvrBrowserNavigation(
+      createStoryvrNavigationRoute("dynamic-geometry", targetContext),
+      { mode: "replace" },
+    );
+  } catch (error) {
+    state.output = {
+      error: `Current scene could not be saved. You are still in this scene: ${error.message}`,
+      diagnostics: error.diagnostics || [],
+    };
+    render();
+  } finally {
+    dynamicBeatNavigationPending = false;
+  }
+}
+
 async function closeEnvironmentSceneEditor() {
   if (!state.environmentEditorScene || state.busy) return;
   await returnToEnvironmentCanvasWithBrowserHistory();
@@ -13353,6 +13250,7 @@ function bindEvents() {
         variantGroupId: textPreview.dataset.sourceGraphTextVariantGroup || null,
         variantOptionId: textPreview.dataset.sourceGraphTextVariantOption || null,
       };
+      state.sourceGraphSpatialPreview = null;
       renderPreservingScroll();
     });
   }
@@ -13862,12 +13760,6 @@ function bindEvents() {
         .find((context) => sourceGraphTransitionContextMatches(context, selectedContext));
       if (!validContext) return;
       openFinalReviewScene(validContext);
-    });
-  }
-
-  for (const button of document.querySelectorAll("[data-final-review-view-rotation]")) {
-    button.addEventListener("click", () => {
-      setFinalReviewViewRotationMode(finalReviewViewer, button.dataset.finalReviewViewRotation);
     });
   }
 
@@ -17773,28 +17665,9 @@ function updateTopologyKeyboardMovement(viewer, delta) {
   move.normalize().multiplyScalar(delta * 2.8);
   viewer.camera.position.add(move);
   viewer.controls.target.add(move);
-  if (viewer.viewRotationMode === "reader" && viewer.readerLookPosition) {
+  if (viewer.readerLookPosition) {
     viewer.readerLookPosition.add(move);
   }
-}
-
-function normalizeFinalReviewViewRotationMode(value) {
-  return value === "reader" ? "reader" : "scene";
-}
-
-function finalReviewViewRotationHint(mode) {
-  return normalizeFinalReviewViewRotationMode(mode) === "reader"
-    ? "Look around from the reader"
-    : "Orbit the scene";
-}
-
-function updateFinalReviewViewRotationUi(mode) {
-  const normalizedMode = normalizeFinalReviewViewRotationMode(mode);
-  for (const button of document.querySelectorAll("[data-final-review-view-rotation]")) {
-    button.setAttribute("aria-pressed", String(button.dataset.finalReviewViewRotation === normalizedMode));
-  }
-  const hint = document.querySelector("[data-final-review-view-rotation-hint]");
-  if (hint) hint.textContent = finalReviewViewRotationHint(normalizedMode);
 }
 
 function syncFinalReviewReaderUiVisibility(viewer) {
@@ -17814,7 +17687,7 @@ function finalReviewAuthoredReaderTransform(viewer) {
 }
 
 function applyFinalReviewAuthoredReaderPose(viewer) {
-  if (!viewer || viewer.disposed || viewer.viewRotationMode !== "reader") return false;
+  if (!viewer || viewer.disposed) return false;
   const transform = finalReviewAuthoredReaderTransform(viewer);
   if (!transform) return false;
   const position = new THREE.Vector3().fromArray(transform.position);
@@ -17840,7 +17713,7 @@ function applyFinalReviewAuthoredReaderPose(viewer) {
 }
 
 function resetFinalReviewReaderLookAnchor(viewer) {
-  if (!viewer || viewer.disposed || viewer.viewRotationMode !== "reader") return false;
+  if (!viewer || viewer.disposed) return false;
   viewer.readerLookPosition ||= new THREE.Vector3();
   viewer.readerLookDirection ||= new THREE.Vector3();
   viewer.readerLookPosition.copy(viewer.camera.position);
@@ -17852,48 +17725,8 @@ function resetFinalReviewReaderLookAnchor(viewer) {
   return true;
 }
 
-function setFinalReviewViewRotationMode(viewer, requestedMode) {
-  const nextMode = normalizeFinalReviewViewRotationMode(requestedMode);
-  state.finalReviewViewRotationMode = nextMode;
-  if (!viewer || viewer.disposed) {
-    updateFinalReviewViewRotationUi(nextMode);
-    return nextMode;
-  }
-  const previousMode = normalizeFinalReviewViewRotationMode(viewer.viewRotationMode);
-  if (previousMode === nextMode) {
-    syncFinalReviewReaderUiVisibility(viewer);
-    updateFinalReviewViewRotationUi(nextMode);
-    return nextMode;
-  }
-  if (previousMode === "reader") {
-    state.finalReviewReaderLookCameraState = previewCameraState(viewer);
-  } else {
-    state.finalReviewSceneOrbitCameraState = previewCameraState(viewer);
-  }
-  const storedCameraState = nextMode === "reader"
-    ? state.finalReviewReaderLookCameraState
-    : state.finalReviewSceneOrbitCameraState;
-  const restoredStoredCameraState = applyFinalReviewViewerCameraState(viewer, storedCameraState);
-  if (!restoredStoredCameraState && nextMode === "scene") {
-    viewer.controls.target.set(0, 0.78, 0);
-    viewer.controls.update();
-  }
-  viewer.viewRotationMode = nextMode;
-  viewer.controls.enablePan = true;
-  if (nextMode === "reader") {
-    if (!restoredStoredCameraState) applyFinalReviewAuthoredReaderPose(viewer);
-    resetFinalReviewReaderLookAnchor(viewer);
-  } else {
-    viewer.readerLookPosition = null;
-    viewer.readerLookDistance = null;
-  }
-  syncFinalReviewReaderUiVisibility(viewer);
-  updateFinalReviewViewRotationUi(nextMode);
-  return nextMode;
-}
-
 function stabilizeFinalReviewReaderLook(viewer) {
-  if (!viewer || viewer.disposed || viewer.viewRotationMode !== "reader") return false;
+  if (!viewer || viewer.disposed) return false;
   if (!viewer.readerLookPosition || !Number.isFinite(viewer.readerLookDistance)) {
     return resetFinalReviewReaderLookAnchor(viewer);
   }
@@ -20804,7 +20637,6 @@ function initializeFinalReviewViewer(active) {
     xrRayRotation: new THREE.Matrix4(),
     xrSessionStartHandler: null,
     xrSessionEndHandler: null,
-    viewRotationMode: normalizeFinalReviewViewRotationMode(state.finalReviewViewRotationMode),
     readerLookPosition: null,
     readerLookDirection: new THREE.Vector3(),
     readerLookDistance: null,
@@ -20817,7 +20649,7 @@ function initializeFinalReviewViewer(active) {
   // reader entry, then preserve the captured pose through later beat rebuilds.
   if (canRestoreCameraState) {
     applyFinalReviewViewerCameraState(viewer, restoredCameraState);
-  } else if (viewer.viewRotationMode === "reader") {
+  } else {
     applyFinalReviewAuthoredReaderPose(viewer);
   }
   resetFinalReviewReaderLookAnchor(viewer);
@@ -21153,7 +20985,7 @@ function initializeFinalReviewViewer(active) {
       if (viewer.disposed) return;
       if (
         !canRestoreCameraState
-        && !(viewer.viewRotationMode === "reader" && viewer.readerLookPosition)
+        && !viewer.readerLookPosition
       ) {
         fitInheritedTopologyPreviewCamera(viewer, root);
       }
@@ -21189,7 +21021,7 @@ function initializeFinalReviewViewer(active) {
       if (viewer.disposed) return;
       if (
         !canRestoreCameraState
-        && !(viewer.viewRotationMode === "reader" && viewer.readerLookPosition)
+        && !viewer.readerLookPosition
       ) {
         fitInheritedTopologyPreviewCamera(viewer, root);
       }
@@ -21793,19 +21625,33 @@ function interactionControllerComponentCenter(root, nodeName) {
   return bounds.isEmpty() ? null : bounds.getCenter(new THREE.Vector3());
 }
 
-function projectInteractionControllerHotspots(viewer) {
-  if (!viewer?.modelRoot) return;
+function cacheInteractionControllerHotspotProjections(viewer) {
+  if (!viewer?.modelRoot) return [];
   viewer.modelRoot.updateWorldMatrix(true, true);
-  for (const hotspot of viewer.container.querySelectorAll("[data-controller-model-node]")) {
+  const connectorById = new Map(
+    [...viewer.container.querySelectorAll("[data-controller-model-connector]")]
+      .map((connector) => [connector.dataset.controllerModelConnector, connector]),
+  );
+  return [...viewer.container.querySelectorAll("[data-controller-model-node]")].map((hotspot) => {
     const center = interactionControllerComponentCenter(viewer.modelRoot, hotspot.dataset.controllerModelNode);
-    if (!center) continue;
-    center.project(viewer.camera);
-    const x = THREE.MathUtils.clamp((center.x * 0.5 + 0.5) * 100, 8, 92);
-    const y = THREE.MathUtils.clamp((-center.y * 0.5 + 0.5) * 100, 8, 92);
+    if (!center) return null;
+    return {
+      hotspot,
+      connector: connectorById.get(hotspot.dataset.controllerHotspot) || null,
+      center,
+      projectedCenter: new THREE.Vector3(),
+    };
+  }).filter(Boolean);
+}
+
+function projectInteractionControllerHotspots(viewer) {
+  for (const projection of viewer?.hotspotProjections || []) {
+    projection.projectedCenter.copy(projection.center).project(viewer.camera);
+    const x = THREE.MathUtils.clamp((projection.projectedCenter.x * 0.5 + 0.5) * 100, 8, 92);
+    const y = THREE.MathUtils.clamp((-projection.projectedCenter.y * 0.5 + 0.5) * 100, 8, 92);
+    const { hotspot, connector } = projection;
     hotspot.style.setProperty("--hotspot-x", `${x}%`);
     hotspot.style.setProperty("--hotspot-y", `${y}%`);
-    const connector = [...viewer.container.querySelectorAll("[data-controller-model-connector]")]
-      .find((line) => line.dataset.controllerModelConnector === hotspot.dataset.controllerHotspot);
     connector?.setAttribute("x2", String(x));
     connector?.setAttribute("y2", String(y));
   }
@@ -21874,7 +21720,8 @@ function initializeInteractionControllerModel(container) {
   scene.add(fill);
 
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = false;
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
   controls.enablePan = false;
   controls.enableZoom = true;
   controls.rotateSpeed = 0.58;
@@ -21889,17 +21736,32 @@ function initializeInteractionControllerModel(container) {
     renderer,
     controls,
     modelRoot: null,
+    hotspotProjections: [],
+    animationId: null,
+    requestFrame: null,
     resizeObserver: null,
     disposed: false,
   };
   interactionControllerModelViewers.push(viewer);
 
-  const draw = () => {
+  const requestFrame = () => {
+    if (viewer.disposed || viewer.animationId !== null) return;
+    viewer.animationId = requestAnimationFrame(() => {
+      viewer.animationId = null;
+      if (viewer.disposed) return;
+      controls.update();
+      renderer.render(scene, camera);
+      projectInteractionControllerHotspots(viewer);
+    });
+  };
+  viewer.requestFrame = requestFrame;
+  controls.addEventListener("change", requestFrame);
+
+  const drawImmediately = () => {
     if (viewer.disposed) return;
     renderer.render(scene, camera);
     projectInteractionControllerHotspots(viewer);
   };
-  controls.addEventListener("change", draw);
 
   const resize = () => {
     if (viewer.disposed) return;
@@ -21908,7 +21770,7 @@ function initializeInteractionControllerModel(container) {
     camera.aspect = nextWidth / nextHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(nextWidth, nextHeight);
-    draw();
+    requestFrame();
   };
   viewer.resizeObserver = new ResizeObserver(resize);
   viewer.resizeObserver.observe(container);
@@ -21929,18 +21791,19 @@ function initializeInteractionControllerModel(container) {
       }
     });
     scene.add(viewer.modelRoot);
+    viewer.hotspotProjections = cacheInteractionControllerHotspotProjections(viewer);
     highlightInteractionControllerComponents(viewer);
     fitInteractionControllerCamera(viewer);
     container.querySelector("[data-controller-model-status]")?.remove();
     container.classList.add("loaded");
-    draw();
+    requestFrame();
   }, undefined, () => {
     if (viewer.disposed) return;
     const status = container.querySelector("[data-controller-model-status]");
     if (status) status.textContent = "Controller model unavailable";
     container.classList.add("error");
   });
-  draw();
+  drawImmediately();
 }
 
 function initializeInteractionControllerModels(active) {
@@ -21953,7 +21816,9 @@ function initializeInteractionControllerModels(active) {
 function disposeInteractionControllerModelViewers() {
   for (const viewer of interactionControllerModelViewers) {
     viewer.disposed = true;
+    if (viewer.animationId !== null) cancelAnimationFrame(viewer.animationId);
     viewer.resizeObserver?.disconnect();
+    if (viewer.requestFrame) viewer.controls?.removeEventListener("change", viewer.requestFrame);
     viewer.controls?.dispose();
     disposeObject(viewer.scene);
     viewer.renderer?.dispose();
@@ -23189,7 +23054,6 @@ function updateFinalReviewAttentionGuidance(viewer, renderCamera = viewer?.camer
   const camera = viewer.renderer?.xr?.isPresenting
     ? viewer.renderer.xr.getCamera(renderCamera)
     : renderCamera;
-  const completionEnabled = viewer.renderer?.xr?.isPresenting || viewer.viewRotationMode === "reader";
   const readerPosition = camera.getWorldPosition(new THREE.Vector3());
   for (let index = 0; index < viewer.attentionTargets.length; index += 1) {
     const target = viewer.attentionTargets[index];
@@ -23205,8 +23069,7 @@ function updateFinalReviewAttentionGuidance(viewer, renderCamera = viewer?.camer
     const distance = bounds
       ? finalReviewAttentionTargetDistanceToPoint(target, readerPosition)
       : Infinity;
-    const shouldComplete = completionEnabled
-      && !completed
+    const shouldComplete = !completed
       && targetVisible
       && Number.isFinite(distance)
       && distance <= 3;
@@ -23396,7 +23259,7 @@ function finalReviewRenderCamera(viewer) {
   // Final Review is the authored reader experience. Source cameras may still
   // drive captured animation and presentation state, but rendering through one
   // would bypass the Spatial Relations reader pose and the camera controlled by
-  // Reader look / Orbit scene.
+  // reader look direction.
   return readerCamera;
 }
 
@@ -26594,19 +26457,13 @@ function selectAttentionMarkerInViewer(markerId) {
   }
   const pill = document.querySelector(".attention-preview-card .attention-kind-pill");
   if (pill) pill.textContent = marker ? attentionMarkerLabel(marker) : "No focus marker";
-  syncAttentionInspectorFromSelection();
+  syncAttentionMarkerListFromSelection();
 }
 
-function syncAttentionInspectorFromSelection() {
+function syncAttentionMarkerListFromSelection() {
   const scene = attentionSceneRecordForContext(state.attentionGuidanceDraft, activeAttentionSceneContext());
   const marker = selectedAttentionMarker(scene);
   if (!marker) return;
-  const badge = document.querySelector("[data-attention-manual-badge]");
-  if (badge) {
-    badge.textContent = marker.manual ? attentionMarkerEditLabel(marker) : "inferred";
-    badge.classList.toggle("warning", marker.manual);
-    badge.classList.toggle("good", !marker.manual);
-  }
   for (const item of document.querySelectorAll("[data-attention-select-marker]")) {
     if (item.dataset.attentionSelectMarker !== marker.id) continue;
     const status = item.querySelector("em");
@@ -35723,7 +35580,7 @@ function interactionControllerProfile(profileId) {
 
 function interactionControllerInputIsReserved(value) {
   const input = String(value || "").trim().toLowerCase().replace(/[ _]+/g, "-");
-  return input === "trigger" || input === "squeeze" || input === "grip";
+  return input === "trigger" || input === "squeeze" || input === "grip" || input === "menu";
 }
 
 function interactionReaderTransformForContext(context) {

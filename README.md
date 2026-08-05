@@ -131,15 +131,22 @@ toggling, right-drag orbiting, and middle-drag panning.
 Set the scene is a Generate-only flow that uses the signed-in Codex CLI to
 create a story-part-scoped panorama and matching near-ground texture. Guide
 attention can target a visible GLB, named part, image plane, or a manually
-placed scene point; the built reader uses a sparkle plus an edge arrow until
-the reader reaches the target.
+placed scene point; the built reader uses a sparkle plus a large high-contrast
+arrow placed well inside the headset's peripheral edge until the reader reaches
+the target.
+
+Object movement shows the moving scene objects with expandable motion
+descriptions and provides edge buttons for moving directly to the previous or
+next story part. Review story always uses the authored Reader camera; right-drag
+looks around from that reader pose.
 
 Reader actions uses one shared Quest controller mapping across
 controller-button scene changes. Its defaults keep A/X for Next/Previous, use the
 left stick for continuous forward/backward movement and strafing, and use the
 right stick for 45-degree snap turns, ground-plane teleport on Up, and a
 180-degree turn on Down. Locomotion stays on directional stick inputs; Trigger
-and Grip remain reserved for UI rays and grabbing.
+and Grip remain reserved for UI rays and grabbing, and Menu is unavailable for
+StoryVR actions.
 
 ### Optional session data collection
 
@@ -147,9 +154,10 @@ The editor's **Data collection** switch is off by default. In a current Chrome
 browser, turning it on opens a folder chooser, creates a named
 `storyvr-interaction-log/v1` JSON file, and records clicks and selected 3D
 actions without recording typed values. StoryVR checkpoints new events into
-that same file while collection is on. Turning the switch off finalizes the
-file; canceling the initial folder choice leaves collection off, and a failed
-checkpoint or final save keeps the unwritten events available for retry.
+that same file while collection is on. Turning the switch off stops new capture
+at that moment and finalizes the same file; canceling the initial folder choice
+leaves collection off, and a failed checkpoint or final save keeps the cutoff
+and unwritten events available for retry.
 
 For a consented study that also needs activity from an original story page,
 build the optional local Chrome extension:
