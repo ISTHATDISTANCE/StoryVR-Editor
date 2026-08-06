@@ -2409,6 +2409,19 @@ function visibleFlowComponents() {
   return [...leading, ...visible.filter((component) => !leading.includes(component))];
 }
 
+function nextStoryvrFlowComponent(componentId) {
+  const flow = visibleFlowComponents();
+  const index = flow.findIndex((component) => component.id === componentId);
+  return index >= 0 ? flow[index + 1] || null : null;
+}
+
+async function advanceAfterFinishingStoryvrStep(componentId) {
+  if (state.activeId !== componentId) return false;
+  const nextComponent = nextStoryvrFlowComponent(componentId);
+  if (!nextComponent) return false;
+  return requestStoryvrBrowserNavigation(createStoryvrNavigationRoute(nextComponent.id));
+}
+
 function participantStepEyebrow(componentId) {
   const flow = visibleFlowComponents();
   const index = Math.max(0, flow.findIndex((component) => component.id === componentId));
@@ -9732,7 +9745,9 @@ function renderAttentionStoryCard(beat, option, context, index, primary) {
 
 function renderAttentionEmptyTargets(scene) {
   const reconciliation = attentionSceneReconciliation(scene);
-  const candidates = attentionSceneCandidates(scene);
+  const allCandidates = attentionSceneCandidates(scene);
+  const dismissedCandidateIds = new Set(attentionDismissedCandidateIds(scene));
+  const candidates = allCandidates.filter((candidate) => !dismissedCandidateIds.has(candidate.id));
   const rejectedCount = Number(scene?.evaluation?.rejectedCandidateCount) || 0;
   if (reconciliation.status === "conflict") {
     return `<div class="attention-empty-targets is-rejected"><span aria-hidden="true">×</span><strong>No focus marker was added</strong><p>The suggestions did not match a visible object in this scene.</p></div>`;
@@ -13116,21 +13131,29 @@ async function flushEnvironmentDraft() {
 
 async function handleEnvironmentCheckpointAction(action, options = {}) {
   if (!options.skipHistory) {
-    return withAuthorHistory("Save setting", async () => {
-      state.output = null;
-      await handleEnvironmentCheckpointAction(action, { skipHistory: true });
-      if (state.output?.error) {
-        const error = new Error(state.output.error);
-        error.diagnostics = state.output.diagnostics || [];
-        throw error;
-      }
-    }, {
-      persistent: true,
-      componentId: "environment-enhancement",
-    }).catch((error) => {
+    let completed = false;
+    try {
+      await withAuthorHistory("Save setting", async () => {
+        state.output = null;
+        await handleEnvironmentCheckpointAction(action, { skipHistory: true });
+        if (state.output?.error) {
+          const error = new Error(state.output.error);
+          error.diagnostics = state.output.diagnostics || [];
+          throw error;
+        }
+      }, {
+        persistent: true,
+        componentId: "environment-enhancement",
+      });
+      completed = true;
+    } catch (error) {
       state.output = { error: error.message, diagnostics: error.diagnostics || [] };
       render();
-    });
+    }
+    if (completed && action === "save") {
+      await advanceAfterFinishingStoryvrStep("environment-enhancement");
+    }
+    return;
   }
   if (state.environmentUi.operationBusy || state.environmentUi.generationBusy) return;
   state.environmentUi.operationBusy = true;
@@ -16334,6 +16357,7 @@ async function handleAction(action, options = {}) {
   const component = componentById(state.activeId);
   const historySpec = options.skipHistory ? null : historySpecForAction(action, component);
   if (historySpec) {
+    let completed = false;
     try {
       await withAuthorHistory(historySpec.label, async () => {
         state.output = null;
@@ -16347,9 +16371,13 @@ async function handleAction(action, options = {}) {
         persistent: historySpec.persistent,
         componentId: component.id,
       });
+      completed = true;
     } catch (error) {
       state.output = { error: error.message, diagnostics: error.diagnostics || [] };
       render();
+    }
+    if (completed && (action === "save-graph" || action === "save-checkpoint")) {
+      await advanceAfterFinishingStoryvrStep(component.id);
     }
     return;
   }
@@ -25985,6 +26013,18 @@ function initializeAttentionGuidanceViewer(active) {
   window.addEventListener("pointerup", viewer.pointerUpHandler);
   window.addEventListener("pointercancel", viewer.pointerCancelHandler);
   viewer.keyDownHandler = (event) => {
+    const editable = /^(input|textarea|select)$/i.test(event.target?.tagName || "") || event.target?.isContentEditable;
+    if (
+      !editable
+      && !event.metaKey
+      && !event.ctrlKey
+      && !event.altKey
+      && !event.repeat
+      && ["Backspace", "Delete"].includes(event.key)
+    ) {
+      if (removeSelectedAttentionMarker(viewer)) event.preventDefault();
+      return;
+    }
     if (event.key !== "Escape" || !viewer.manualAttentionPlacementActive) return;
     event.preventDefault();
     cancelManualAttentionTargetPlacement(viewer);
@@ -26335,7 +26375,9 @@ function attentionManualPlacementPosition(viewer, raycaster) {
 function evaluateAttentionGuidanceScene(viewer) {
   const scene = viewer?.attentionScene;
   if (!scene) return false;
-  const candidates = attentionSceneCandidates(scene);
+  const allCandidates = attentionSceneCandidates(scene);
+  const dismissedCandidateIds = new Set(attentionDismissedCandidateIds(scene));
+  const candidates = allCandidates.filter((candidate) => !dismissedCandidateIds.has(candidate.id));
   const existing = new Map(attentionSceneMarkers(scene).map((marker) => [marker.id, marker]));
   const markers = [];
   let rejectedCandidateCount = 0;
@@ -26389,6 +26431,10 @@ function evaluateAttentionGuidanceScene(viewer) {
     status: "evaluated",
     resolvedCandidateCount: markers.length,
     rejectedCandidateCount,
+    intentionallyEmpty: candidates.length === 0,
+    reason: candidates.length === 0
+      ? allCandidates.length ? "author-removed-focus-markers" : "no-clear-visible-candidates"
+      : null,
   };
   const changed = previousSignature !== nextSignature;
   if (changed) {
@@ -33554,6 +33600,11 @@ function attentionSceneCandidates(scene) {
   return (Array.isArray(scene?.candidates) ? scene.candidates : []).map(normalizeAttentionCandidate).filter(Boolean);
 }
 
+function attentionDismissedCandidateIds(scene) {
+  const candidateIds = new Set(attentionSceneCandidates(scene).map((candidate) => candidate.id));
+  return uniqueStrings(scene?.dismissedCandidateIds || []).filter((candidateId) => candidateIds.has(candidateId));
+}
+
 function dedupeAttentionCandidates(candidates) {
   return [...new Map((candidates || []).filter(Boolean).map((candidate) => [candidate.id, candidate])).values()];
 }
@@ -33645,12 +33696,14 @@ function attentionSceneDiagnostics(scene) {
       evidenceRefs: Array.isArray(diagnostic.evidenceRefs) ? diagnostic.evidenceRefs.map(String) : [],
     }));
   const rejectedCount = Number(scene?.evaluation?.rejectedCandidateCount) || 0;
+  const dismissedCandidateIds = new Set(attentionDismissedCandidateIds(scene));
   if (scene?.evaluated === true && rejectedCount > 0 && !diagnostics.some((diagnostic) => diagnostic.code === "live-geometry-rejected")) {
     diagnostics.push({
       code: "live-geometry-rejected",
       channel: "validation",
       message: `${rejectedCount} inferred target${rejectedCount === 1 ? "" : "s"} failed live visible-geometry validation.`,
       candidateIds: attentionSceneCandidates(scene)
+        .filter((candidate) => !dismissedCandidateIds.has(candidate.id))
         .filter((candidate) => !attentionSceneMarkers(scene).some((marker) => marker.id === candidate.id))
         .map((candidate) => candidate.id),
       evidenceRefs: [],
@@ -33711,6 +33764,7 @@ function attentionGuidanceForSave() {
   clean.coordinateSpace = "spatial-scene";
   for (const scene of attentionAllSceneRecords(clean)) {
     scene.candidates = attentionSceneCandidates(scene);
+    scene.dismissedCandidateIds = attentionDismissedCandidateIds(scene);
     scene.reconciliation = attentionSceneReconciliation(scene);
     scene.markers = attentionSceneMarkers(scene);
     scene.evaluated = scene.evaluated === true;
@@ -33971,6 +34025,9 @@ function addAttentionTargetMarkers({ viewer, scene, entries, historyLabel }) {
   ));
   if (!scene || !validEntries.length || viewer?.locked) return false;
   const historyStarted = beginAuthorHistory(historyLabel || "Add focus marker", ATTENTION_GUIDANCE_COMPONENT_ID);
+  const addedCandidateIds = new Set(validEntries.map(({ candidate }) => candidate.id));
+  scene.dismissedCandidateIds = attentionDismissedCandidateIds(scene)
+    .filter((candidateId) => !addedCandidateIds.has(candidateId));
   scene.candidates = dedupeAttentionCandidates([
     ...attentionSceneCandidates(scene),
     ...validEntries.map(({ candidate }) => cloneJson(candidate)),
@@ -33997,6 +34054,36 @@ function addAttentionTargetMarkers({ viewer, scene, entries, historyLabel }) {
     intentionallyEmpty: false,
   };
   state.selectedAttentionMarkerId = validEntries.at(-1).candidate.id;
+  commitAttentionDraftMutation({ immediate: true });
+  if (historyStarted) finalizePersistentAuthorHistory(flushAttentionGuidanceAutosave);
+  renderPreservingScroll();
+  return true;
+}
+
+function removeSelectedAttentionMarker(viewer = textViewer) {
+  const scene = attentionSceneRecordForContext(state.attentionGuidanceDraft, activeAttentionSceneContext());
+  const markers = attentionSceneMarkers(scene);
+  const selectedIndex = markers.findIndex((marker) => marker.id === state.selectedAttentionMarkerId);
+  if (!scene || selectedIndex < 0 || viewer?.locked === true) return false;
+  const historyStarted = beginAuthorHistory("Remove focus marker", ATTENTION_GUIDANCE_COMPONENT_ID);
+  const removedMarker = markers[selectedIndex];
+  const nextMarkers = markers.filter((marker) => marker.id !== removedMarker.id);
+  scene.dismissedCandidateIds = uniqueStrings([
+    ...attentionDismissedCandidateIds(scene),
+    removedMarker.id,
+  ]);
+  scene.markers = nextMarkers;
+  scene.evaluated = true;
+  const activeCandidateCount = attentionSceneCandidates(scene)
+    .filter((candidate) => !scene.dismissedCandidateIds.includes(candidate.id)).length;
+  scene.evaluation = {
+    status: "evaluated",
+    resolvedCandidateCount: nextMarkers.length,
+    rejectedCandidateCount: Math.max(0, activeCandidateCount - nextMarkers.length),
+    intentionallyEmpty: activeCandidateCount === 0,
+    reason: activeCandidateCount === 0 ? "author-removed-focus-markers" : null,
+  };
+  state.selectedAttentionMarkerId = nextMarkers[Math.min(selectedIndex, nextMarkers.length - 1)]?.id || null;
   commitAttentionDraftMutation({ immediate: true });
   if (historyStarted) finalizePersistentAuthorHistory(flushAttentionGuidanceAutosave);
   renderPreservingScroll();

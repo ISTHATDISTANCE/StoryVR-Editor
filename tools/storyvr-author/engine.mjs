@@ -71,6 +71,12 @@ const SPATIAL_TRANSFORM_POSITION_LIMIT = 1_000_000;
 const SPATIAL_TRANSFORM_SCALE_LIMIT = 1_000_000;
 const TEXT_PANEL_CLEARANCE_STRATEGY = "visible-bounds-push-v2";
 const SPATIAL_RELATIONS_OPTION_ID = "spatial-relations-inferred-layout";
+const DYNAMICS_CODEX_IMAGE_ATTACHMENT_LIMIT = 24;
+const DYNAMICS_CODEX_IMAGE_CANDIDATE_SCAN_LIMIT = 96;
+const DYNAMICS_CODEX_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+const DYNAMICS_CODEX_IMAGE_TOTAL_BYTES = 20 * 1024 * 1024;
+const DYNAMICS_CODEX_IMAGE_EXTENSIONS = new Set([".jpeg", ".jpg", ".png", ".webp"]);
+const PNG_FILE_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const SPATIAL_TRAVERSAL_SCHEMA_VERSION = "storyvr-spatial-traversal/v1";
 const TEXT_PANEL_ATTACHMENT_POLICY = "reader-hand";
 const INTERACTION_CONTROL_BOUNDARY_SCHEMA_VERSION = "storyvr-interaction-control-boundaries/v3";
@@ -1178,6 +1184,7 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
     ?? null;
   const libraryContext = dynamicsLibraryContext(state);
   const previousPlan = normalizePreviousDynamicsPlan(previousPlanInput, libraryContext);
+  const imagePaths = dynamicsSceneImageAttachmentPaths(libraryContext.sceneImages);
   let engine = { provider: "codex-cli" };
   let intent;
   try {
@@ -1185,17 +1192,21 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
       context: libraryContext,
       prompt: request.prompt,
       previousPlan,
-      generateJson: options.proceduralDynamicsGenerateJson || (async (prompt) => {
+      generateJson: async (prompt) => {
+        if (options.proceduralDynamicsGenerateJson) {
+          return options.proceduralDynamicsGenerateJson(prompt, { imagePaths: [...imagePaths] });
+        }
         if (options.aiProvider === "openai") throw new Error("Codex provider is not available for this request.");
         const codexBin = options.codexBin || process.env.CODEX_BIN || "codex";
         const result = await runCodexExec(codexBin, prompt, {
           cwd: options.codexWorkspace || REPO_ROOT,
           timeoutMs: options.codexTimeoutMs || 180_000,
           requestLabel: "Codex object movement request",
+          imagePaths,
         });
         engine = { provider: "codex-cli", codexBin };
         return parseJsonObject(extractCodexFinalText(result.stdout) || result.stdout);
-      }),
+      },
     });
   } catch (error) {
     const motionPlan = createFallbackMotionPlan(libraryContext, request.prompt, previousPlan);
@@ -1380,8 +1391,9 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
 function dynamicsLibraryContext(state) {
   const spatialRelations = state.decisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations || null;
   const spatialScene = dynamicsSpatialSceneForContext(spatialRelations, state.context.scene);
+  const spatialEntities = spatialScene?.entities || [];
   const libraryById = new Map(state.libraryAssets.map((asset) => [asset.assetId, asset]));
-  const assets = (spatialScene?.entities || [])
+  const assets = spatialEntities
     .filter((entity) => entity?.kind === "glb" && entity.id && entity.assetId)
     .map((entity) => {
       const libraryAsset = libraryById.get(entity.assetId);
@@ -1392,11 +1404,50 @@ function dynamicsLibraryContext(state) {
       };
     })
     .filter(Boolean);
+  const runtimeById = new Map((state.runtime?.assets || []).map((asset) => [asset?.id, asset]));
+  const attachmentIndexByPath = new Map();
+  const sceneImages = spatialEntities
+    .filter((entity) => entity?.kind === "image-plane" && entity.id && entity.assetId)
+    .map((entity) => {
+      const runtimeAsset = runtimeById.get(entity.assetId) || null;
+      const attachment = state.sceneImageAttachments?.get(entity.assetId) || null;
+      let attachmentIndex = attachment?.path ? attachmentIndexByPath.get(attachment.path) || null : null;
+      if (!attachmentIndex && attachment?.path && attachmentIndexByPath.size < DYNAMICS_CODEX_IMAGE_ATTACHMENT_LIMIT) {
+        attachmentIndex = attachmentIndexByPath.size + 1;
+        attachmentIndexByPath.set(attachment.path, attachmentIndex);
+      }
+      return {
+        kind: "image-plane",
+        entityId: entity.id,
+        assetId: entity.assetId,
+        label: proceduralDynamicsAssetLabel(runtimeAsset, entity.assetId),
+        transform: cloneJson(entity.transform || null),
+        image: cloneJson(entity.image || null),
+        ...(attachment?.contentHash ? { attachmentContentHash: attachment.contentHash } : {}),
+        ...(attachmentIndex ? {
+          attachmentIndex,
+          attachmentPath: attachment.path,
+        } : {}),
+      };
+    });
   return {
     scene: state.context.scene,
     assets,
+    sceneImages,
     linkedAssetIds: uniqueStrings(assets.map((asset) => asset.assetId)),
   };
+}
+
+function dynamicsSceneImageAttachmentPaths(sceneImages) {
+  return [...(Array.isArray(sceneImages) ? sceneImages : [])]
+    .filter((image) => image?.attachmentIndex && image?.attachmentPath)
+    .sort((left, right) => left.attachmentIndex - right.attachmentIndex)
+    .filter((image, index, images) => index === 0 || image.attachmentIndex !== images[index - 1].attachmentIndex)
+    .map((image) => image.attachmentPath);
+}
+
+function dynamicsSceneImageSignatureRecords(sceneImages) {
+  return (Array.isArray(sceneImages) ? sceneImages : []).map(({ attachmentPath: _attachmentPath, ...image }) => image);
 }
 
 function normalizePreviousDynamicsPlan(value, context) {
@@ -1471,6 +1522,7 @@ function dynamicsSpatialSceneForContext(contract, scene) {
 function dynamicsSceneBaseline(state) {
   const spatial = state.decisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations || null;
   const attention = state.decisions[ATTENTION_GUIDANCE_COMPONENT_ID]?.attentionGuidance || null;
+  const motionContext = dynamicsLibraryContext(state);
   return {
     proceduralDynamicsRevision: state.proceduralDynamics.revision,
     sourceGraphSignature: dynamicsJsonSignature({
@@ -1480,8 +1532,9 @@ function dynamicsSceneBaseline(state) {
     attentionGuidanceSignature: dynamicsAttentionGuidanceSignature(attention),
     motionContextSignature: dynamicsJsonSignature({
       sceneKey: state.context.scene.sceneKey,
-      linkedAssetIds: [...dynamicsLibraryContext(state).linkedAssetIds].sort(),
-      assets: dynamicsLibraryContext(state).assets,
+      linkedAssetIds: [...motionContext.linkedAssetIds].sort(),
+      assets: motionContext.assets,
+      sceneImages: dynamicsSceneImageSignatureRecords(motionContext.sceneImages),
     }),
     assetInventorySignature: dynamicsJsonSignature(state.libraryAssets),
   };
@@ -5451,6 +5504,11 @@ async function proceduralDynamicsRequestState(options, rawSceneContext) {
       statusCode: 409,
     });
   }
+  const sceneImageAttachments = await proceduralDynamicsImageAttachments(
+    paths,
+    runtime,
+    context.sceneAssetIds || context.linkedAssetIds || [],
+  );
   return {
     paths,
     runtime,
@@ -5459,8 +5517,86 @@ async function proceduralDynamicsRequestState(options, rawSceneContext) {
     context,
     currentSceneAssetIds: [...(context.sceneAssetIds || context.linkedAssetIds || [])],
     libraryAssets: proceduralDynamicsLibraryAssets(graph, runtime),
+    sceneImageAttachments,
     proceduralDynamics: await readProceduralDynamicsStore(paths, graph, runtime, contextsByScene),
   };
+}
+
+async function proceduralDynamicsImageAttachments(paths, runtime, sceneAssetIds) {
+  const attachments = new Map();
+  let resourceRoot;
+  try {
+    resourceRoot = await realpath(paths.resourceFolder);
+  } catch {
+    return attachments;
+  }
+  const runtimeById = new Map((runtime?.assets || []).map((asset) => [asset?.id, asset]));
+  const candidateAssets = uniqueStrings(sceneAssetIds)
+    .map((assetId) => runtimeById.get(assetId))
+    .filter((asset) => spatialVisualAssetKind(asset) === "image-plane")
+    .slice(0, DYNAMICS_CODEX_IMAGE_CANDIDATE_SCAN_LIMIT);
+  const attachmentByPath = new Map();
+  let acceptedAttachmentCount = 0;
+  let totalBytes = 0;
+  for (const asset of candidateAssets) {
+    const assetPath = String(asset?.path || "").trim();
+    if (!assetPath || !DYNAMICS_CODEX_IMAGE_EXTENSIONS.has(path.extname(assetPath).toLowerCase())) continue;
+    try {
+      const candidatePath = await realpath(path.resolve(resourceRoot, assetPath));
+      const relativePath = path.relative(resourceRoot, candidatePath);
+      if (!relativePath || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) continue;
+      if (attachmentByPath.has(candidatePath)) {
+        const cached = attachmentByPath.get(candidatePath);
+        if (cached) attachments.set(asset.id, cached);
+        continue;
+      }
+      if (acceptedAttachmentCount >= DYNAMICS_CODEX_IMAGE_ATTACHMENT_LIMIT) {
+        attachmentByPath.set(candidatePath, null);
+        continue;
+      }
+      const info = await stat(candidatePath);
+      if (!info.isFile() || info.size <= 0 || info.size > DYNAMICS_CODEX_IMAGE_MAX_BYTES) {
+        attachmentByPath.set(candidatePath, null);
+        continue;
+      }
+      if (totalBytes + info.size > DYNAMICS_CODEX_IMAGE_TOTAL_BYTES) {
+        attachmentByPath.set(candidatePath, null);
+        continue;
+      }
+      const image = await readFile(candidatePath);
+      if (!dynamicsCodexImageMediaType(image)) {
+        attachmentByPath.set(candidatePath, null);
+        continue;
+      }
+      if (image.byteLength > DYNAMICS_CODEX_IMAGE_MAX_BYTES
+        || totalBytes + image.byteLength > DYNAMICS_CODEX_IMAGE_TOTAL_BYTES) {
+        attachmentByPath.set(candidatePath, null);
+        continue;
+      }
+      totalBytes += image.byteLength;
+      const attachment = {
+        path: candidatePath,
+        contentHash: createHash("sha256").update(image).digest("hex"),
+      };
+      attachmentByPath.set(candidatePath, attachment);
+      acceptedAttachmentCount += 1;
+      attachments.set(asset.id, attachment);
+    } catch {
+      // Remote-only, missing, unsupported, or unsafe images remain metadata-only prompt context.
+    }
+  }
+  return attachments;
+}
+
+function dynamicsCodexImageMediaType(image) {
+  if (!Buffer.isBuffer(image)) return null;
+  if (image.length >= PNG_FILE_SIGNATURE.length
+    && image.subarray(0, PNG_FILE_SIGNATURE.length).equals(PNG_FILE_SIGNATURE)) return "image/png";
+  if (image.length >= 3 && image[0] === 0xff && image[1] === 0xd8 && image[2] === 0xff) return "image/jpeg";
+  if (image.length >= 12
+    && image.toString("ascii", 0, 4) === "RIFF"
+    && image.toString("ascii", 8, 12) === "WEBP") return "image/webp";
+  return null;
 }
 
 function proceduralDynamicsContexts(graph, runtime, spatialRelations = null) {
@@ -5505,13 +5641,7 @@ function proceduralDynamicsLibraryAssets(graph, runtime) {
     .filter(isRuntimeModelAsset)
     .map((asset) => ({
       assetId: asset.id,
-      label: asset.caption
-        || asset.title
-        || asset.name
-        || asset.filename
-        || (asset.path ? path.basename(asset.path) : "")
-        || asset.id
-        || asset.role,
+      label: proceduralDynamicsAssetLabel(asset, asset.id),
       clips: tracks
         .filter((track) => track?.kind === "clip" && track.assetId === asset.id)
         .map((track) => ({
@@ -5523,6 +5653,30 @@ function proceduralDynamicsLibraryAssets(graph, runtime) {
           durationSeconds: Number.isFinite(Number(track.duration)) ? Number(track.duration) : null,
         })),
     }));
+}
+
+function proceduralDynamicsAssetLabel(asset, fallback = "") {
+  return proceduralDynamicsAssetText(asset?.caption)
+    || proceduralDynamicsAssetText(asset?.title)
+    || proceduralDynamicsAssetText(asset?.name)
+    || proceduralDynamicsAssetText(asset?.filename)
+    || (asset?.path ? path.basename(asset.path) : "")
+    || asset?.id
+    || asset?.role
+    || fallback;
+}
+
+function proceduralDynamicsAssetText(value) {
+  if (typeof value === "string") return value.trim();
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  return firstNonEmptyString(
+    value.text,
+    value.label,
+    value.title,
+    value.name,
+    value.alt,
+    value.description,
+  );
 }
 
 async function readProceduralDynamicsStore(paths, graph, runtime, contextsInput = null) {
@@ -9242,8 +9396,13 @@ function sanitizeAttentionGuidanceScene(value, base) {
     ...[...selectedManualTargetIds].map((id) => manualTargetOptionById.get(id)),
   ]);
   const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  const dismissedCandidateIds = uniqueStrings(source.dismissedCandidateIds)
+    .filter((id) => candidateById.has(id));
+  const dismissedCandidateIdSet = new Set(dismissedCandidateIds);
   const seen = new Set();
-  const markers = (source.markers || []).map((marker) => {
+  const markers = (source.markers || []).filter((marker) => (
+    !dismissedCandidateIdSet.has(String(marker?.id || "").trim())
+  )).map((marker) => {
     const id = String(marker?.id || "").trim();
     const candidate = candidateById.get(id);
     if (!candidate) {
@@ -9255,15 +9414,17 @@ function sanitizeAttentionGuidanceScene(value, base) {
     seen.add(id);
     return sanitizeAttentionGuidanceMarker(marker, candidate);
   });
-  const intentionallyEmpty = candidateById.size === 0;
+  const activeCandidateCount = candidates.filter((candidate) => !dismissedCandidateIdSet.has(candidate.id)).length;
+  const intentionallyEmpty = activeCandidateCount === 0;
   const evaluated = intentionallyEmpty || source.evaluated === true || source.evaluation?.status === "evaluated";
   const resolvedCandidateCount = markers.length;
-  const rejectedCandidateCount = evaluated ? Math.max(0, candidateById.size - markers.length) : 0;
+  const rejectedCandidateCount = evaluated ? Math.max(0, activeCandidateCount - markers.length) : 0;
   const reconciliation = sanitizeAttentionGuidanceReconciliation(source.reconciliation, base.reconciliation);
   return {
     ...base,
     coordinateSpace: "spatial-scene",
     candidates: candidates.map((candidate) => cloneJson(candidate)),
+    dismissedCandidateIds,
     manualTargetOptions: (base.manualTargetOptions || []).map((candidate) => cloneJson(candidate)),
     reconciliation,
     markers,
@@ -9273,7 +9434,9 @@ function sanitizeAttentionGuidanceScene(value, base) {
       resolvedCandidateCount,
       rejectedCandidateCount,
       intentionallyEmpty,
-      reason: intentionallyEmpty ? "no-clear-visible-candidates" : null,
+      reason: intentionallyEmpty
+        ? candidateById.size ? "author-removed-focus-markers" : "no-clear-visible-candidates"
+        : null,
       ...(evaluated && source.evaluation?.evaluatedAt ? { evaluatedAt: String(source.evaluation.evaluatedAt) } : {}),
     },
   };
@@ -13396,6 +13559,10 @@ async function generateWithOpenAI(context, options = {}) {
 function runCodexExec(codexBin, prompt, options) {
   return new Promise((resolve, reject) => {
     const requestLabel = options.requestLabel || "Codex proposal request";
+    const imageArgs = [...new Set((Array.isArray(options.imagePaths) ? options.imagePaths : [])
+      .filter((imagePath) => typeof imagePath === "string" && path.isAbsolute(imagePath)))]
+      .slice(0, DYNAMICS_CODEX_IMAGE_ATTACHMENT_LIMIT)
+      .map((imagePath) => `--image=${imagePath}`);
     const args = [
       "--ask-for-approval",
       "never",
@@ -13408,6 +13575,7 @@ function runCodexExec(codexBin, prompt, options) {
       "--cd",
       options.cwd,
       "--skip-git-repo-check",
+      ...imageArgs,
       "-",
     ];
     const child = spawn(codexBin, args, {

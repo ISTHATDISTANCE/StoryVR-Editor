@@ -73,6 +73,11 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Story URL path to advertise first. Can be repeated.",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show bind, root, alternate-host, and discovered-story details at startup.",
+    )
     return parser.parse_args()
 
 
@@ -376,19 +381,25 @@ def main() -> int:
     httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
 
     base_url = f"https://{advertised_hosts[0]}:{args.port}"
-    print(f"Serving {root}", flush=True)
-    print(f"Bind address: {bind_host}:{args.port}", flush=True)
-    print(f"Root URL: {base_url}/", flush=True)
+    if args.verbose:
+        print(f"Serving {root}", flush=True)
+        print(f"Bind address: {bind_host}:{args.port}", flush=True)
+        print(f"Root URL: {base_url}/", flush=True)
     print_story_urls(base_url, story_paths)
-    print_jingchen_urls(base_url, discover_jingchen_stories(root))
-    if args.lan and public_hosts:
-        print(f"Preferred headset host: {public_hosts[0]} (Wi-Fi when active)", flush=True)
-    elif args.lan:
+
+    if args.lan and not public_hosts:
         print("No active LAN IPv4 address detected; only local URLs are available.", flush=True)
-    for host in advertised_hosts[1:]:
-        print_story_urls(f"https://{host}:{args.port}", story_paths, prefix="Also available")
-        print_jingchen_urls(f"https://{host}:{args.port}", discover_jingchen_stories(root))
-    print("The browser may show a certificate warning because this is a local self-signed certificate.", flush=True)
+
+    if args.verbose:
+        discovered_stories = discover_jingchen_stories(root)
+        print_jingchen_urls(base_url, discovered_stories)
+        if args.lan and public_hosts:
+            print(f"Preferred headset host: {public_hosts[0]} (Wi-Fi when active)", flush=True)
+        for host in advertised_hosts[1:]:
+            alternate_url = f"https://{host}:{args.port}"
+            print_story_urls(alternate_url, story_paths, prefix="Also available")
+            print_jingchen_urls(alternate_url, discovered_stories)
+        print("The browser may show a certificate warning because this is a local self-signed certificate.", flush=True)
     print("Press Ctrl+C to stop.", flush=True)
 
     try:

@@ -96,13 +96,14 @@ Work through the eight participant-facing steps in order:
 7. Reader actions
 8. Review story
 
-Use **Finish this step** before moving downstream. Inside a 3D editor, use
-**Save scene and return** to return to that step's story canvas without
-completing the top-level step. If an earlier step changes, StoryVR revalidates
-completed downstream work in order, preserves steps that are still safe, and
-stops at the first scene or field that needs review. After Review story is
-complete, **Build story** starts a background build from a stable snapshot and
-writes the current authored decisions into:
+Select **Finish this step** to complete a top-level step and open the next step
+automatically. Inside a 3D editor, use **Save scene and return** to return to
+that step's story canvas without completing the top-level step. If an earlier
+step changes, StoryVR revalidates completed downstream work in order, preserves
+steps that are still safe, and stops at the first scene or field that needs
+review. Review story stays open after completion so **Build story** remains an
+explicit action. It starts a background build from a stable snapshot and writes
+the current authored decisions into:
 
 ```text
 <story-folder>/discovery/storyvr-runtime.json
@@ -133,12 +134,16 @@ create a story-part-scoped panorama and matching near-ground texture. Guide
 attention can target a visible GLB, named part, image plane, or a manually
 placed scene point; the built reader uses a sparkle plus a large high-contrast
 arrow placed well inside the headset's peripheral edge until the reader reaches
-the target.
+the target. Select a focus marker and press Delete or Backspace to remove it;
+the removal persists across scene reloads, and the target can be added again.
 
 Object movement shows the moving scene objects with expandable motion
 descriptions and provides edge buttons for moving directly to the previous or
-next story part. Review story always uses the authored Reader camera; right-drag
-looks around from that reader pose.
+next story part. Codex can use exact-scene PNG, JPEG, and WebP image planes as
+attached visual context for a movement request, but those images remain static
+and cannot become motion actors or have their authored placement changed.
+Review story always uses the authored Reader camera; right-drag looks around
+from that reader pose.
 
 Reader actions uses one shared Quest controller mapping across
 controller-button scene changes. Its defaults keep A/X for Next/Previous, use the
@@ -230,6 +235,8 @@ python3 https_server.py \
 
 The server listens at `https://127.0.0.1:8443/` by default and creates a
 self-signed certificate under `.certs/` on first use.
+Pass `--verbose` when you also need bind, root, alternate-host, and discovered
+story details at startup.
 
 For a headset on the same local network, bind to the LAN interface and use the
 printed headset URL:
