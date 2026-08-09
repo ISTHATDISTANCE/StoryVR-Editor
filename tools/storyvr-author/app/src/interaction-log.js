@@ -34,7 +34,15 @@ const DEFAULT_MAX_BUFFERED_BYTES = 2 * 1024 * 1024;
 const DEFAULT_CHECKPOINT_INTERVAL_MS = 30_000;
 const DEFAULT_CHECKPOINT_DELAY_MS = 1_350;
 const SEMANTIC_CLICK_WINDOW_MS = 1_200;
+const DRAG_COMPATIBILITY_CLICK_WINDOW_MS = 250;
 const LABEL_ACTIVATION_WINDOW_MS = 350;
+const MAX_DRAG_DURATION_MS = 60 * 60 * 1_000;
+const MAX_DRAG_PATH_POINTS = 256;
+const MAX_DRAG_OBJECTS = 128;
+const MAX_DRAG_POINTER_COORDINATE = 1_000_000;
+const MAX_DRAG_TRANSFORM_COMPONENT = 1_000_000;
+const SPATIAL_TRANSFORM_OPERATIONS = new Set(["translate", "rotate", "scale"]);
+const SPATIAL_TRANSFORM_AXES = new Set(["X", "Y", "Z", "XY", "XZ", "YZ", "XYZ", "E", "XYZE"]);
 
 export function createInteractionLogger({
   documentRef = globalThis.document,
@@ -93,6 +101,8 @@ export function createInteractionLogger({
   let periodicTimer = null;
   let lastCapturedClick = null;
   let recentSemanticClick = null;
+  let pendingDragCompatibilityClick = null;
+  let dragCompatibilityClickTimer = null;
   const setTimer = windowRef?.setTimeout?.bind(windowRef) || globalThis.setTimeout;
   const clearTimer = windowRef?.clearTimeout?.bind(windowRef) || globalThis.clearTimeout;
   const setPeriodicTimer = windowRef?.setInterval?.bind(windowRef) || globalThis.setInterval;
@@ -134,6 +144,7 @@ export function createInteractionLogger({
     attached = false;
     disposed = true;
     cancelCheckpointTimer();
+    cancelDragCompatibilityClickTimer();
     stopPeriodicCheckpoints();
     listeners.clear();
   }
@@ -643,6 +654,8 @@ export function createInteractionLogger({
     pendingFinalTransaction = null;
     lastCapturedClick = null;
     recentSemanticClick = null;
+    pendingDragCompatibilityClick = null;
+    cancelDragCompatibilityClickTimer();
     notify();
     return result;
   }
@@ -674,9 +687,47 @@ export function createInteractionLogger({
     checkpointTimer = null;
   }
 
+  function cancelDragCompatibilityClickTimer() {
+    if (dragCompatibilityClickTimer != null) clearTimer?.(dragCompatibilityClickTimer);
+    dragCompatibilityClickTimer = null;
+  }
+
+  function armDragCompatibilityClick(event, eventTime) {
+    cancelDragCompatibilityClickTimer();
+    const pending = {
+      target: event?.target,
+      clientX: finiteNumber(event?.clientX),
+      clientY: finiteNumber(event?.clientY),
+      button: finiteNumber(event?.button),
+      pointerId: finiteNumber(event?.pointerId),
+      pointerType: cleanText(event?.pointerType, 20),
+      sourceTimeStamp: finiteNumber(event?.timeStamp),
+      capturedAt: eventTime.getTime(),
+    };
+    pendingDragCompatibilityClick = pending;
+    // A compatibility click is dispatched immediately after pointerup. Expire
+    // the guard on the next task so a later intentional click at the same
+    // canvas coordinate cannot be mistaken for the drag's synthetic click.
+    dragCompatibilityClickTimer = setTimer?.(() => {
+      if (pendingDragCompatibilityClick === pending) pendingDragCompatibilityClick = null;
+      dragCompatibilityClickTimer = null;
+    }, 0);
+    dragCompatibilityClickTimer?.unref?.();
+  }
+
   function handleDocumentClick(event) {
     if (!state.enabled || state.stopRequested || state.saving || pendingFinalTransaction?.fileFinalized || !state.session) return;
     const eventTime = timestamp();
+    if (matchesDragCompatibilityClick(event, eventTime, pendingDragCompatibilityClick)) {
+      pendingDragCompatibilityClick = null;
+      cancelDragCompatibilityClickTimer();
+      return;
+    }
+    if (pendingDragCompatibilityClick
+      && eventTime.getTime() - pendingDragCompatibilityClick.capturedAt > DRAG_COMPATIBILITY_CLICK_WINDOW_MS) {
+      pendingDragCompatibilityClick = null;
+      cancelDragCompatibilityClickTimer();
+    }
     if (matchesRecentSemanticClick(event, eventTime, recentSemanticClick)) {
       recentSemanticClick = null;
       return;
@@ -739,6 +790,25 @@ export function createInteractionLogger({
     return true;
   }
 
+  function recordDrag(event, semanticTarget, dragDetails) {
+    if (!state.enabled || state.stopRequested || state.saving || pendingFinalTransaction?.fileFinalized || !state.session) return false;
+    const eventTime = timestamp();
+    const entry = createDragEventRecord(event, {
+      sequence: state.nextSequence,
+      startedAt: state.session.startedAt,
+      eventTime,
+      context: context(),
+      semanticTarget,
+      dragDetails,
+    });
+    if (!appendEvent(entry)) return false;
+    // TransformControls releases before the browser dispatches its immediate
+    // compatibility click. Suppress that click without masking a later click.
+    armDragCompatibilityClick(event, eventTime);
+    lastCapturedClick = null;
+    return true;
+  }
+
   return Object.freeze({
     start,
     dispose,
@@ -747,6 +817,7 @@ export function createInteractionLogger({
     setEnabled,
     requestCheckpoint,
     recordSemanticClick,
+    recordDrag,
   });
 }
 
@@ -835,6 +906,30 @@ export function createInteractionEventRecord(event, {
     target,
     pointer: pointerSnapshot(event, targetElement),
     modifiers: modifierSnapshot(event),
+  };
+}
+
+export function createDragEventRecord(event, {
+  sequence,
+  startedAt,
+  eventTime = new Date(),
+  context = {},
+  semanticTarget = null,
+  dragDetails = {},
+  targetElement = interactionElementForEvent(event),
+} = {}) {
+  const entry = createInteractionEventRecord(event, {
+    sequence,
+    startedAt,
+    eventTime,
+    context,
+    semanticTarget,
+    targetElement,
+  });
+  return {
+    ...entry,
+    type: "drag",
+    drag: boundedDragDetails(dragDetails),
   };
 }
 
@@ -1006,6 +1101,21 @@ function matchesRecentSemanticClick(event, eventTime, semantic) {
     && samePointerTarget(event, semantic);
 }
 
+function matchesDragCompatibilityClick(event, eventTime, pending) {
+  if (!pending || eventTime.getTime() - pending.capturedAt > DRAG_COMPATIBILITY_CLICK_WINDOW_MS) return false;
+  if (!samePointerTarget(event, pending)) return false;
+  const eventPointerId = finiteNumber(event?.pointerId);
+  if (pending.pointerId != null && eventPointerId != null && eventPointerId !== pending.pointerId) return false;
+  const eventPointerType = cleanText(event?.pointerType, 20);
+  if (pending.pointerType && eventPointerType && eventPointerType !== pending.pointerType) return false;
+  const eventTimeStamp = finiteNumber(event?.timeStamp);
+  if (pending.sourceTimeStamp != null && eventTimeStamp != null) {
+    const delta = eventTimeStamp - pending.sourceTimeStamp;
+    if (delta < 0 || delta > DRAG_COMPATIBILITY_CLICK_WINDOW_MS) return false;
+  }
+  return true;
+}
+
 function samePointerTarget(event, record) {
   return event?.target === record.target
     && coordinateMatches(finiteNumber(event?.clientX), record.clientX)
@@ -1030,6 +1140,102 @@ function boundedSemanticTarget(value) {
     candidateId: cleanText(source.candidateId, MAX_DATA_VALUE_LENGTH),
     action: cleanText(source.action, MAX_DATA_VALUE_LENGTH),
   });
+}
+
+function boundedDragDetails(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const durationMs = boundedDragNumber(source.durationMs, {
+    minimum: 0,
+    maximum: MAX_DRAG_DURATION_MS,
+    digits: 1,
+  }) ?? 0;
+  const requestedOperation = cleanText(source.operation, 32).toLowerCase();
+  const requestedAxis = cleanText(source.axis, 16).toUpperCase();
+  let previousElapsedMs = 0;
+  const path = boundedArraySample(source.path, MAX_DRAG_PATH_POINTS)
+    .map((point) => {
+      if (!point || typeof point !== "object" || Array.isArray(point)) return null;
+      const elapsedMs = boundedDragNumber(point.elapsedMs, {
+        minimum: 0,
+        maximum: durationMs,
+        digits: 1,
+      });
+      const clientX = boundedDragNumber(point.clientX, {
+        minimum: -MAX_DRAG_POINTER_COORDINATE,
+        maximum: MAX_DRAG_POINTER_COORDINATE,
+        digits: 2,
+      });
+      const clientY = boundedDragNumber(point.clientY, {
+        minimum: -MAX_DRAG_POINTER_COORDINATE,
+        maximum: MAX_DRAG_POINTER_COORDINATE,
+        digits: 2,
+      });
+      if (elapsedMs == null || clientX == null || clientY == null) return null;
+      previousElapsedMs = Math.max(previousElapsedMs, elapsedMs);
+      return { elapsedMs: previousElapsedMs, clientX, clientY };
+    })
+    .filter(Boolean);
+  const objects = (Array.isArray(source.objects) ? source.objects : [])
+    .slice(0, MAX_DRAG_OBJECTS)
+    .map(boundedDragObject)
+    .filter(Boolean);
+  return {
+    kind: "spatial-transform",
+    operation: SPATIAL_TRANSFORM_OPERATIONS.has(requestedOperation) ? requestedOperation : "transform",
+    axis: SPATIAL_TRANSFORM_AXES.has(requestedAxis) ? requestedAxis : "free",
+    durationMs,
+    path,
+    objects,
+  };
+}
+
+function boundedDragObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const identity = removeEmptyValues({
+    entityId: cleanText(value.entityId, MAX_DATA_VALUE_LENGTH),
+    assetId: cleanText(value.assetId, MAX_DATA_VALUE_LENGTH),
+    label: cleanText(value.label, MAX_LABEL_LENGTH),
+  });
+  const before = boundedDragTransform(value.before);
+  const after = boundedDragTransform(value.after);
+  if (!Object.keys(identity).length || !before || !after) return null;
+  return { ...identity, before, after };
+}
+
+function boundedDragTransform(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const position = boundedDragTuple(value.position, 3, MAX_DRAG_TRANSFORM_COMPONENT);
+  const quaternion = boundedDragTuple(value.quaternion, 4, 1);
+  const scale = boundedDragTuple(value.scale, 3, MAX_DRAG_TRANSFORM_COMPONENT);
+  return position && quaternion && scale ? { position, quaternion, scale } : null;
+}
+
+function boundedDragTuple(value, length, maximumMagnitude) {
+  if (!Array.isArray(value) || value.length < length) return null;
+  const result = value.slice(0, length).map((component) => boundedDragNumber(component, {
+    minimum: -maximumMagnitude,
+    maximum: maximumMagnitude,
+    digits: 6,
+  }));
+  return result.every((component) => component != null) ? result : null;
+}
+
+function boundedArraySample(value, maximumLength) {
+  if (!Array.isArray(value) || !value.length || maximumLength <= 0) return [];
+  if (value.length <= maximumLength) return value.slice();
+  if (maximumLength === 1) return [value[value.length - 1]];
+  return Array.from({ length: maximumLength }, (_, index) => (
+    value[Math.round(index * (value.length - 1) / (maximumLength - 1))]
+  ));
+}
+
+function boundedDragNumber(value, { minimum, maximum, digits }) {
+  if (value == null || value === "" || typeof value === "boolean") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  const bounded = Math.min(maximum, Math.max(minimum, number));
+  const result = round(bounded, digits);
+  return Object.is(result, -0) ? 0 : result;
 }
 
 function boundedSerializableObject(value) {

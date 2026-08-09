@@ -4,12 +4,15 @@ import {
   buildCodexEvidence,
   normalizeInteractionLog,
 } from "/lib/interaction-analysis.mjs";
+import { buildSessionSummary } from "/lib/session-summary.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const TIMELINE_WIDTH = 1200;
-const TIMELINE_HEIGHT = 300;
+const TIMELINE_HEIGHT = 210;
 const TIMELINE_LEFT = 12;
 const TIMELINE_RIGHT = 12;
+const TIMELINE_PLOT_TOP = 28;
+const TIMELINE_PLOT_BOTTOM = TIMELINE_HEIGHT - 8;
 const PLOT_WIDTH = TIMELINE_WIDTH - TIMELINE_LEFT - TIMELINE_RIGHT;
 const STEP_COLORS = Object.freeze({
   "source-graph": "#d9ede5",
@@ -23,27 +26,31 @@ const STEP_COLORS = Object.freeze({
   unknown: "#e7e9e7",
 });
 const FALLBACK_STEPS = Object.freeze([
-  { id: "source-graph", label: "Source Graph" },
-  { id: "spatial-relations", label: "Spatial Relations" },
-  { id: "environment-enhancement", label: "Environment" },
-  { id: "attention-guidance", label: "Attention" },
-  { id: "dynamic-geometry", label: "Dynamics" },
-  { id: "inter-beat-dynamics", label: "Transition" },
-  { id: "interaction-control", label: "Interaction" },
-  { id: "transition-pacing", label: "Final Review" },
+  { id: "source-graph", label: "Story order" },
+  { id: "spatial-relations", label: "Place objects" },
+  { id: "environment-enhancement", label: "Set the scene" },
+  { id: "attention-guidance", label: "Guide attention" },
+  { id: "dynamic-geometry", label: "Object movement" },
+  { id: "inter-beat-dynamics", label: "Scene changes" },
+  { id: "interaction-control", label: "Reader actions" },
+  { id: "transition-pacing", label: "Review story" },
 ]);
 const STEPS = normalizedStepDefinitions(STEP_DEFINITIONS);
 const STEP_BY_ID = new Map([...STEPS, { id: "unknown", label: "Unknown step" }].map((step, index) => [step.id, { ...step, index }]));
 const MAX_TIMELINE_EVENTS = 1_100;
 const TABLE_PAGE_SIZE = 60;
+const MAX_VISIBLE_CODEX_ANNOTATIONS = 6;
+const CODEX_ANNOTATION_ROW_HEIGHT = 128;
 
 const elements = Object.fromEntries([
-  "workspace", "load-demo", "log-files", "session-select", "session-subtitle", "export-analysis", "clear-logs",
+  "workspace", "load-demo", "log-files", "session-title",
+  "session-story-status", "session-story-title", "session-story-summary",
   "metric-duration", "metric-duration-note", "metric-events", "metric-events-note", "metric-steps", "metric-steps-note",
   "metric-moments", "metric-moments-note", "step-legend", "timeline-svg", "timeline-tooltip", "timeline-scrubber",
   "window-label", "selected-event", "pan-left", "pan-right", "zoom-in", "zoom-out", "reset-view", "moment-count",
-  "moment-list", "step-dwell", "journey-path", "rhythm-chart", "rhythm-summary", "click-field", "clickmap-summary",
-  "target-mix", "codex-status", "run-codex", "codex-results", "event-search", "event-step-filter", "event-table-body",
+  "moment-list", "step-dwell", "journey-path", "rhythm-chart", "rhythm-summary", "interaction-field", "interaction-map-summary",
+  "target-mix", "codex-status", "run-codex", "codex-results", "codex-key", "codex-annotation-label",
+  "event-search", "event-step-filter", "event-table-body",
   "event-table-count", "show-more-events", "quality-list", "drop-overlay", "toast",
 ].map((id) => [camelId(id), document.getElementById(id)]));
 
@@ -57,8 +64,13 @@ const state = {
   viewEndMs: 1,
   tableLimit: TABLE_PAGE_SIZE,
   codexStatus: null,
-  codexResults: new Map(),
+  codexResults: new WeakMap(),
+  codexEvidenceLookups: new WeakMap(),
+  codexAnnotationPages: new WeakMap(),
+  codexRun: null,
+  loadEpoch: 0,
   toastTimer: null,
+  resizeFrame: null,
   dragDepth: 0,
 };
 
@@ -72,17 +84,6 @@ function bindControls() {
     await importFiles([...event.target.files]);
     event.target.value = "";
   });
-  elements.sessionSelect.addEventListener("change", () => selectSession(Number(elements.sessionSelect.value)));
-  elements.clearLogs.addEventListener("click", () => {
-    state.analyses = [];
-    state.activeIndex = 0;
-    state.selectedSequence = null;
-    state.codexResults.clear();
-    renderEmptyState();
-    showToast("Imported logs cleared. Load the demonstration or import another log.");
-  });
-  elements.exportAnalysis.addEventListener("click", downloadDerivedAnalysis);
-
   elements.zoomIn.addEventListener("click", () => zoomTimeline(0.56));
   elements.zoomOut.addEventListener("click", () => zoomTimeline(1.75));
   elements.panLeft.addEventListener("click", () => panTimeline(-0.32));
@@ -98,7 +99,7 @@ function bindControls() {
   });
   elements.timelineSvg.addEventListener("click", handleTimelineActivation);
   elements.timelineSvg.addEventListener("keydown", (event) => {
-    if ((event.key === "Enter" || event.key === " ") && event.target.closest?.("[data-event-sequence]")) {
+    if ((event.key === "Enter" || event.key === " ") && event.target.closest?.("[data-event-sequence], [data-moment-id]")) {
       event.preventDefault();
       handleTimelineActivation(event);
     }
@@ -118,7 +119,7 @@ function bindControls() {
       for (const candidate of document.querySelectorAll("[data-moment-filter]")) {
         const selected = candidate === tab;
         candidate.classList.toggle("active", selected);
-        candidate.setAttribute("aria-selected", String(selected));
+        candidate.setAttribute("aria-pressed", String(selected));
       }
       renderMoments(activeAnalysis());
     });
@@ -152,12 +153,42 @@ function bindControls() {
     if (!row) return;
     selectEvent(Number(row.dataset.eventSequence), { focusTimeline: true });
   });
+  elements.eventTableBody.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const row = event.target.closest("[data-event-sequence]");
+    if (!row) return;
+    event.preventDefault();
+    selectEvent(Number(row.dataset.eventSequence), { focusTimeline: true });
+  });
   elements.showMoreEvents.addEventListener("click", () => {
     state.tableLimit += TABLE_PAGE_SIZE;
     renderEventTable(activeAnalysis());
   });
 
   elements.runCodex.addEventListener("click", runCodexAnalysis);
+  elements.codexResults.addEventListener("click", (event) => {
+    const pageControl = event.target.closest("[data-codex-page-action]");
+    if (pageControl) {
+      const analysis = activeAnalysis();
+      if (!analysis) return;
+      const currentPage = state.codexAnnotationPages.get(analysis) || 0;
+      state.codexAnnotationPages.set(analysis, Math.max(0, currentPage + Number(pageControl.dataset.codexPageAction || 0)));
+      renderCodexResults(state.codexResults.get(analysis), analysis);
+      return;
+    }
+    const annotation = event.target.closest("[data-codex-moment-id]");
+    if (!annotation) return;
+    const moment = activeCodexMoments().find((candidate) => candidate.id === annotation.dataset.codexMomentId);
+    if (moment) focusCodexMoment(moment);
+  });
+  window.addEventListener("resize", () => {
+    if (state.resizeFrame) cancelAnimationFrame(state.resizeFrame);
+    state.resizeFrame = requestAnimationFrame(() => {
+      state.resizeFrame = null;
+      const analysis = activeAnalysis();
+      if (analysis) renderTimeline(analysis);
+    });
+  });
 
   document.addEventListener("dragenter", (event) => {
     if (!hasFileDrag(event)) return;
@@ -183,21 +214,25 @@ function bindControls() {
 }
 
 async function loadDemo({ announce = false } = {}) {
+  const loadEpoch = ++state.loadEpoch;
+  cancelCodexRun();
   elements.workspace.setAttribute("aria-busy", "true");
   try {
     const response = await fetch("/sample-interaction-log.json", { cache: "no-store" });
     if (!response.ok) throw new Error(`Demo request returned HTTP ${response.status}.`);
     const payload = await response.json();
+    if (loadEpoch !== state.loadEpoch) return;
     const analysis = analyzePayload(payload, "demonstration-log.json");
     state.analyses = [analysis];
     state.activeIndex = 0;
-    state.codexResults.clear();
+    state.codexResults = new WeakMap();
+    state.codexAnnotationPages = new WeakMap();
     selectSession(0);
     if (announce) showToast("Demonstration session restored.");
   } catch (error) {
-    renderEmptyState(error.message);
+    if (loadEpoch === state.loadEpoch) renderEmptyState(error.message);
   } finally {
-    elements.workspace.setAttribute("aria-busy", "false");
+    if (loadEpoch === state.loadEpoch) elements.workspace.setAttribute("aria-busy", "false");
   }
 }
 
@@ -207,23 +242,29 @@ async function importFiles(files) {
     showToast("Choose one or more StoryVR log files in JSON format.");
     return;
   }
+  const loadEpoch = ++state.loadEpoch;
+  cancelCodexRun();
   elements.workspace.setAttribute("aria-busy", "true");
   const imported = [];
   const errors = [];
   for (const file of jsonFiles) {
     try {
       const parsed = JSON.parse(await file.text());
+      if (loadEpoch !== state.loadEpoch) return;
       const payloads = interactionPayloadsFromJson(parsed);
       if (!payloads.length) throw new Error("No StoryVR session was found in this file.");
       payloads.forEach((payload, index) => imported.push(analyzePayload(payload, payloads.length > 1 ? `${file.name} · ${index + 1}` : file.name)));
     } catch (error) {
+      if (loadEpoch !== state.loadEpoch) return;
       errors.push(`${file.name}: ${error.message}`);
     }
   }
+  if (loadEpoch !== state.loadEpoch) return;
   if (imported.length) {
     state.analyses = imported;
     state.activeIndex = 0;
-    state.codexResults.clear();
+    state.codexResults = new WeakMap();
+    state.codexAnnotationPages = new WeakMap();
     selectSession(0);
   }
   elements.workspace.setAttribute("aria-busy", "false");
@@ -252,9 +293,9 @@ function selectSession(index) {
   state.selectedSequence = null;
   state.highlightedStepId = null;
   state.tableLimit = TABLE_PAGE_SIZE;
-  renderSessionOptions();
   resetTimelineView({ render: false });
   renderAll();
+  if (state.codexStatus || state.codexRun) syncCodexControl();
 }
 
 function renderAll() {
@@ -269,18 +310,19 @@ function renderAll() {
   renderStepDwell(analysis);
   renderJourney(analysis);
   renderRhythm(analysis);
-  renderClickField(analysis);
+  renderInteractionField(analysis);
   renderTargetMix(analysis);
   renderEventTable(analysis);
   renderQuality(analysis);
-  renderCodexResults(state.codexResults.get(sessionIdFor(analysis)) || null);
-  elements.exportAnalysis.disabled = false;
-  elements.clearLogs.disabled = false;
 }
 
 function renderEmptyState(error = "") {
-  renderSessionOptions();
-  elements.sessionSubtitle.textContent = error || "No session loaded. Import a StoryVR log file.";
+  elements.workspace.setAttribute("aria-busy", "false");
+  elements.sessionTitle.textContent = "No session loaded";
+  elements.sessionStoryStatus.textContent = "No session loaded";
+  elements.sessionStoryStatus.classList.remove("complete");
+  elements.sessionStoryTitle.textContent = "Import a log to see the workflow";
+  elements.sessionStorySummary.textContent = error || "The session path, time by step, and noteworthy moments will appear here.";
   for (const [key, value] of [["metricDuration", "—"], ["metricEvents", "—"], ["metricSteps", "—"], ["metricMoments", "—"]]) elements[key].textContent = value;
   elements.timelineSvg.replaceChildren(svgText(600, 150, error || "Import a log to reveal the authoring journey.", "axis-label"));
   elements.stepLegend.replaceChildren();
@@ -288,47 +330,47 @@ function renderEmptyState(error = "") {
   elements.stepDwell.replaceChildren();
   elements.journeyPath.replaceChildren();
   elements.rhythmChart.replaceChildren();
-  elements.clickField.replaceChildren();
+  elements.interactionField.replaceChildren();
   elements.targetMix.replaceChildren();
   elements.eventTableBody.replaceChildren();
   elements.eventTableCount.textContent = "0 events";
   elements.qualityList.innerHTML = '<div class="quality-item"><i>i</i><span>Import a StoryVR log to see what it recorded and what it missed.</span></div>';
-  elements.selectedEvent.innerHTML = '<span class="selection-dot" aria-hidden="true"></span><div><strong>No click selected</strong><p>Load a session to see click details.</p></div>';
-  elements.exportAnalysis.disabled = true;
-  elements.clearLogs.disabled = true;
+  elements.selectedEvent.innerHTML = '<span class="selection-dot" aria-hidden="true"></span><div><strong>No interaction selected</strong><p>Load a session to see click and drag details.</p></div>';
   elements.runCodex.disabled = true;
   elements.codexResults.hidden = true;
-}
-
-function renderSessionOptions() {
-  elements.sessionSelect.innerHTML = state.analyses.length
-    ? state.analyses.map((analysis, index) => `<option value="${index}" ${index === state.activeIndex ? "selected" : ""}>${escapeHtml(sessionOptionLabel(analysis, index))}</option>`).join("")
-    : '<option value="">No session loaded</option>';
-  elements.sessionSelect.disabled = !state.analyses.length;
+  elements.codexResults.replaceChildren();
+  elements.codexAnnotationLabel.hidden = true;
+  elements.codexKey.hidden = true;
+  if (state.codexStatus) syncCodexControl();
 }
 
 function renderSessionOverview(analysis) {
   const story = sessionStory(analysis);
   const title = story.title || story.slug || "Untitled StoryVR story";
-  const started = sessionStartedAt(analysis);
-  const date = started ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(started)) : "time unavailable";
-  elements.sessionSubtitle.textContent = `${title} · ${date} · ${analysis.fileName || "interaction log"}`;
+  elements.sessionTitle.textContent = title;
+  const summary = buildSessionSummary(analysis);
+  elements.sessionStoryStatus.textContent = summary.status;
+  elements.sessionStoryStatus.classList.toggle("complete", summary.fullWorkflow);
+  elements.sessionStoryTitle.textContent = summary.headline;
+  elements.sessionStorySummary.textContent = summary.description;
 }
 
 function renderMetrics(analysis) {
   const duration = sessionDuration(analysis);
-  const events = eventsFor(analysis).filter((event) => event.type === "click");
+  const clicks = eventsFor(analysis).filter((event) => event.type === "click");
+  const drags = eventsFor(analysis).filter((event) => event.type === "drag");
+  const interactionCount = clicks.length + drags.length;
   const visited = visitedSteps(analysis);
   const moments = momentsFor(analysis);
   elements.metricDuration.textContent = formatDuration(duration);
-  elements.metricDurationNote.textContent = duration >= 60_000 ? `${formatNumber(duration / 60_000, 1)} minutes recorded` : "Time recorded";
-  elements.metricEvents.textContent = String(events.length);
-  elements.metricEventsNote.textContent = `${formatRate(events.length, duration)} clicks / min`;
-  elements.metricSteps.textContent = String(visited.length);
-  elements.metricStepsNote.textContent = `Of ${STEPS.length} StoryVR steps`;
-  elements.metricMoments.textContent = String(moments.length);
+  elements.metricDurationNote.textContent = "Recorded session length";
+  elements.metricEvents.textContent = String(interactionCount);
+  elements.metricEventsNote.textContent = `${clicks.length} click${clicks.length === 1 ? "" : "s"} · ${drags.length} spatial drag${drags.length === 1 ? "" : "s"}`;
+  elements.metricSteps.textContent = `${visited.length}/${STEPS.length}`;
+  elements.metricStepsNote.textContent = "StoryVR steps visited";
   const concernCount = moments.filter((moment) => momentValence(moment) === "concern").length;
-  elements.metricMomentsNote.textContent = concernCount ? `${concernCount} need${concernCount === 1 ? "s" : ""} attention` : "Key points found in the log";
+  elements.metricMoments.textContent = String(concernCount);
+  elements.metricMomentsNote.textContent = `${moments.length} key moment${moments.length === 1 ? "" : "s"} found`;
 }
 
 function renderStepLegend(analysis) {
@@ -355,7 +397,7 @@ function renderTimeline(analysis) {
       <rect width="8" height="8" fill="white"></rect><rect width="3" height="8" fill="#b8c2bc"></rect>
     </pattern>
     <mask id="uncertain-mask"><rect width="100%" height="100%" fill="url(#uncertain-pattern)"></rect></mask>
-    <clipPath id="plot-clip"><rect x="${TIMELINE_LEFT}" y="28" width="${PLOT_WIDTH}" height="264" rx="4"></rect></clipPath>
+    <clipPath id="plot-clip"><rect x="${TIMELINE_LEFT}" y="${TIMELINE_PLOT_TOP}" width="${PLOT_WIDTH}" height="${TIMELINE_PLOT_BOTTOM - TIMELINE_PLOT_TOP}" rx="4"></rect></clipPath>
   `;
   svg.append(defs);
 
@@ -370,7 +412,7 @@ function renderTimeline(analysis) {
     const highlighted = !state.highlightedStepId || state.highlightedStepId === stepId;
     segmentsGroup.append(svgElement("rect", {
       class: `segment${segment.uncertain || segment.boundaryConfidence === "uncertain" || segment.startReason === "observed-context" ? " uncertain" : ""}`,
-      x: xFor(clippedStart), y: 28, width: Math.max(1, xFor(clippedEnd) - xFor(clippedStart)), height: 264,
+      x: xFor(clippedStart), y: TIMELINE_PLOT_TOP, width: Math.max(1, xFor(clippedEnd) - xFor(clippedStart)), height: TIMELINE_PLOT_BOTTOM - TIMELINE_PLOT_TOP,
       fill: stepColor(stepId), opacity: highlighted ? 0.82 : 0.22,
     }));
     if (xFor(clippedEnd) - xFor(clippedStart) > 76) {
@@ -385,23 +427,26 @@ function renderTimeline(analysis) {
   for (let index = 0; index <= tickCount; index += 1) {
     const time = start + range * index / tickCount;
     const x = xFor(time);
-    svg.append(svgElement("line", { x1: x, y1: 28, x2: x, y2: 292, class: "grid-line" }));
+    svg.append(svgElement("line", { x1: x, y1: TIMELINE_PLOT_TOP, x2: x, y2: TIMELINE_PLOT_BOTTOM, class: "grid-line" }));
     const label = svgText(x, 18, formatTimelineTick(time, range), "axis-label");
     label.setAttribute("text-anchor", index === 0 ? "start" : index === tickCount ? "end" : "middle");
     svg.append(label);
   }
-  for (const y of [100, 172, 244]) svg.append(svgElement("line", { x1: TIMELINE_LEFT, y1: y, x2: TIMELINE_WIDTH - TIMELINE_RIGHT, y2: y, class: "lane-line" }));
+  svg.append(svgElement("line", { x1: TIMELINE_LEFT, y1: 126, x2: TIMELINE_WIDTH - TIMELINE_RIGHT, y2: 126, class: "lane-line" }));
 
   const visibleEvents = sampledVisibleEvents(eventsFor(analysis), start, end, MAX_TIMELINE_EVENTS);
   const eventGroup = svgElement("g", { "clip-path": "url(#plot-clip)" });
   for (const event of visibleEvents) {
     const stepId = stepIdForEvent(event);
     const highlighted = !state.highlightedStepId || state.highlightedStepId === stepId;
-    const x = xFor(eventElapsed(event));
+    const drag = event.type === "drag";
+    const eventEndMs = eventElapsed(event);
+    const eventStartMs = eventInteractionStart(event);
+    const x = xFor(clamp(eventEndMs, start, end));
     const semantic = Boolean(event.target?.semantic);
-    const lifecycle = event.type !== "click";
-    const laneBase = lifecycle ? 204 : semantic ? 132 : 61;
-    const y = laneBase + ((Number(event.sequence) || 0) % 5 - 2) * 4;
+    const lifecycle = !["click", "drag"].includes(event.type);
+    const laneBase = 86;
+    const y = laneBase + ((Number(event.sequence) || 0) % 7 - 3) * 4;
     const selected = Number(event.sequence) === Number(state.selectedSequence);
     const wrapper = svgElement("g", {
       class: "event-marker",
@@ -410,14 +455,24 @@ function renderTimeline(analysis) {
       opacity: highlighted ? 1 : 0.18,
       role: "button",
       tabindex: "0",
-      "aria-label": `${formatDuration(eventElapsed(event))}, ${stepLabel(stepId)}, ${eventLabel(event)}`,
+      "aria-label": `${formatDuration(eventStartMs)}${drag ? ` to ${formatDuration(eventEndMs)}` : ""}, ${stepLabel(stepId)}, ${eventLabel(event)}`,
     });
-    wrapper.append(svgElement("circle", { class: "event-hit", cx: x, cy: y, r: 10, fill: "transparent" }));
-    if (semantic) {
-      wrapper.append(svgElement("rect", { class: "event-shape", x: x - 4.2, y: y - 4.2, width: 8.4, height: 8.4, rx: 1, fill: "#b7533f", stroke: selected ? "#13251f" : "white", "stroke-width": selected ? 2.4 : 1.2, transform: `rotate(45 ${x} ${y})` }));
-    } else if (lifecycle) {
-      wrapper.append(svgElement("rect", { class: "event-shape", x: x - 4, y: y - 4, width: 8, height: 8, rx: 2, fill: "#6d7b75", stroke: selected ? "#13251f" : "white", "stroke-width": selected ? 2.4 : 1.2 }));
+    if (drag) {
+      const startX = xFor(clamp(eventStartMs, start, end));
+      const spanX = Math.min(startX, x);
+      const spanWidth = Math.max(7, Math.abs(x - startX));
+      wrapper.append(svgElement("rect", { class: "event-hit", x: spanX - 4, y: y - 11, width: spanWidth + 8, height: 22, rx: 11, fill: "transparent" }));
+      wrapper.append(svgElement("rect", { class: "event-shape drag-span", x: spanX, y: y - 5, width: spanWidth, height: 10, rx: 5, fill: "#7448a8", stroke: selected ? "#13251f" : "white", "stroke-width": selected ? 2.4 : 1.2 }));
+      wrapper.append(svgElement("circle", { class: "drag-cap", cx: spanX, cy: y, r: 2.5, fill: "white" }));
+      wrapper.append(svgElement("path", { class: "drag-cap", d: `M ${spanX + spanWidth} ${y - 4} l 4 4 l -4 4 l -4 -4 z`, fill: "white" }));
     } else {
+      wrapper.append(svgElement("circle", { class: "event-hit", cx: x, cy: y, r: 10, fill: "transparent" }));
+    }
+    if (!drag && semantic) {
+      wrapper.append(svgElement("rect", { class: "event-shape", x: x - 4.2, y: y - 4.2, width: 8.4, height: 8.4, rx: 1, fill: "#b7533f", stroke: selected ? "#13251f" : "white", "stroke-width": selected ? 2.4 : 1.2, transform: `rotate(45 ${x} ${y})` }));
+    } else if (!drag && lifecycle) {
+      wrapper.append(svgElement("rect", { class: "event-shape", x: x - 4, y: y - 4, width: 8, height: 8, rx: 2, fill: "#6d7b75", stroke: selected ? "#13251f" : "white", "stroke-width": selected ? 2.4 : 1.2 }));
+    } else if (!drag) {
       wrapper.append(svgElement("circle", { class: "event-shape", cx: x, cy: y, r: selected ? 5.4 : 4.1, fill: "#147b6d", stroke: selected ? "#13251f" : "white", "stroke-width": selected ? 2.4 : 1.2 }));
     }
     eventGroup.append(wrapper);
@@ -435,8 +490,8 @@ function renderTimeline(analysis) {
     const x = xFor(at);
     momentCollisionLevel = x - previousMomentX < 16 ? (momentCollisionLevel + 1) % 3 : 0;
     previousMomentX = x;
-    const markerY = 178 + momentCollisionLevel * 19;
-    momentGroup.append(svgElement("line", { class: "moment-stem", x1: x, y1: markerY + 1, x2: x, y2: 232, stroke: color, opacity: 0.72 }));
+    const markerY = 158 + momentCollisionLevel * 12;
+    momentGroup.append(svgElement("line", { class: "moment-stem", x1: x, y1: markerY + 1, x2: x, y2: 196, stroke: color, opacity: 0.72 }));
     const marker = svgElement("path", {
       d: `M ${x} ${markerY} l -6 -10 h 12 z`, fill: color, stroke: "white", "stroke-width": 1.2,
       class: "event-marker", tabindex: "0", role: "button", "data-moment-id": moment.id,
@@ -446,30 +501,25 @@ function renderTimeline(analysis) {
     momentGroup.append(marker);
   }
   svg.append(momentGroup);
-
-  const bins = activityBinsFor(analysis, start, end);
-  const maxCount = Math.max(1, ...bins.map(activityBinCount));
-  const activityGroup = svgElement("g", { "clip-path": "url(#plot-clip)" });
-  for (const bin of bins) {
-    const binStart = numberOr(bin.startMs, bin.start, start);
-    const binEnd = numberOr(bin.endMs, bin.end, binStart + range / Math.max(1, bins.length));
-    const binCount = activityBinCount(bin);
-    const height = Math.max(2, binCount / maxCount * 38);
-    activityGroup.append(svgElement("rect", {
-      class: `activity-bar${binCount >= maxCount * 0.78 ? " hot" : ""}`,
-      x: xFor(binStart) + 1, y: 290 - height, width: Math.max(2, xFor(binEnd) - xFor(binStart) - 2), height,
-      rx: 2,
-    }));
-  }
-  svg.append(activityGroup);
   updateTimelineWindowControls(analysis);
+  renderCodexResults(state.codexResults.get(analysis) || null, analysis);
 }
 
 function renderMoments(analysis) {
   const all = momentsFor(analysis);
-  const visible = state.momentFilter === "all" ? all : all.filter((moment) => momentValence(moment) === state.momentFilter);
-  elements.momentCount.textContent = String(visible.length);
-  elements.momentList.innerHTML = visible.length ? visible.map((moment) => {
+  const routineProgress = all.filter(isRoutineProgressMoment);
+  const visible = (state.momentFilter === "all"
+    ? all.filter((moment) => !isRoutineProgressMoment(moment)).sort(compareMomentPriority)
+    : all.filter((moment) => momentValence(moment) === state.momentFilter).sort((a, b) => momentStart(a) - momentStart(b)));
+  const progressSummary = state.momentFilter === "all" && routineProgress.length ? `
+    <article class="moment-card progress-summary">
+      <i class="moment-valence good" aria-hidden="true"></i>
+      <span><strong>Moved forward ${routineProgress.length} ${routineProgress.length === 1 ? "time" : "times"}</strong><p>The step path above shows the routine forward changes. Open Progress details to inspect each one.</p></span>
+      <time>${routineProgress.length} changes</time>
+    </article>
+  ` : "";
+  elements.momentCount.textContent = state.momentFilter === "all" ? `${all.length} found` : String(visible.length);
+  const momentCards = visible.map((moment) => {
     const valence = momentValence(moment);
     return `
       <button class="moment-card" type="button" data-moment-id="${escapeHtml(moment.id)}">
@@ -478,7 +528,10 @@ function renderMoments(analysis) {
         <time>${formatDuration(momentStart(moment))}</time>
       </button>
     `;
-  }).join("") : `<div class="empty-list">No ${state.momentFilter === "all" ? "" : `${state.momentFilter} `}moments in this session.</div>`;
+  }).join("");
+  elements.momentList.innerHTML = momentCards || progressSummary
+    ? `${momentCards}${progressSummary}`
+    : `<div class="empty-list">No ${state.momentFilter === "all" ? "highlight" : state.momentFilter} moments in this session.</div>`;
 }
 
 function renderStepDwell(analysis) {
@@ -502,8 +555,8 @@ function renderJourney(analysis) {
     const stepId = typeof node === "string" ? node : node.stepId || node.componentId || "unknown";
     const previous = index ? (typeof nodes[index - 1] === "string" ? nodes[index - 1] : nodes[index - 1].stepId || nodes[index - 1].componentId) : null;
     const backward = previous && stepIndex(stepId) < stepIndex(previous);
-    const arrow = index ? `<span class="journey-arrow ${backward ? "backward" : ""}" aria-label="${backward ? "backward transition" : "forward transition"}">${backward ? "↶" : "→"}</span>` : "";
-    return `<span class="journey-hop">${arrow}<span class="journey-node" style="--step-color:${stepColor(stepId)}">${escapeHtml(shortStepLabel(stepId))}</span></span>`;
+    const arrow = index ? `<span class="journey-arrow ${backward ? "backward" : ""}" aria-label="${backward ? "backward transition" : "forward transition"}"></span>` : "";
+    return `<span class="journey-hop">${arrow}<span class="journey-node" style="--step-color:${stepColor(stepId)}">${escapeHtml(stepLabel(stepId))}</span></span>`;
   }).join("");
 }
 
@@ -511,53 +564,65 @@ function renderRhythm(analysis) {
   const bins = activityBinsFor(analysis, 0, sessionDuration(analysis));
   const max = Math.max(1, ...bins.map(activityBinCount));
   const pauseMoments = momentsFor(analysis).filter((moment) => /pause|idle|quiet/i.test(`${moment.kind || ""} ${moment.title || ""}`));
-  elements.rhythmSummary.textContent = `${bins.reduce((sum, bin) => sum + activityBinCount(bin), 0)} clicks · ${pauseMoments.length} pause${pauseMoments.length === 1 ? "" : "s"}`;
+  elements.rhythmSummary.textContent = `${bins.reduce((sum, bin) => sum + activityBinCount(bin), 0)} interactions · ${pauseMoments.length} pause${pauseMoments.length === 1 ? "" : "s"}`;
   elements.rhythmChart.innerHTML = bins.length ? bins.map((bin) => {
     const count = activityBinCount(bin);
     const stepId = bin.dominantStepId || bin.stepId || bin.componentId || "unknown";
-    return `<i class="rhythm-bin ${bin.isPause ? "pause" : ""}" style="--height:${Math.max(3, count / max * 100)}%;--step-color:${stepColor(stepId)}" data-label="${escapeHtml(`${formatDuration(numberOr(bin.startMs, bin.start, 0))}: ${count} clicks`)}"></i>`;
+    return `<i class="rhythm-bin ${bin.isPause ? "pause" : ""}" style="--height:${Math.max(3, count / max * 100)}%;--step-color:${stepColor(stepId)}" data-label="${escapeHtml(`${formatDuration(numberOr(bin.startMs, bin.start, 0))}: ${count} interactions`)}"></i>`;
   }).join("") : '<div class="empty-list">Not enough timing data.</div>';
 }
 
-function renderClickField(analysis) {
+function renderInteractionField(analysis) {
   const viewport = sessionViewport(analysis);
   const width = Number(viewport.width);
   const height = Number(viewport.height);
-  const events = eventsFor(analysis).filter((event) => event.type === "click" && Number.isFinite(Number(event.pointer?.clientX)) && Number.isFinite(Number(event.pointer?.clientY)));
-  if (!events.length || !(width > 0 && height > 0)) {
-    elements.clickField.innerHTML = '<div class="empty-list">Viewport click coordinates unavailable.</div>';
-    elements.clickmapSummary.textContent = "No coordinates";
+  const clicks = eventsFor(analysis).filter((event) => event.type === "click" && Number.isFinite(Number(event.pointer?.clientX)) && Number.isFinite(Number(event.pointer?.clientY)));
+  const drags = eventsFor(analysis).filter((event) => event.type === "drag" && Array.isArray(event.drag?.path) && event.drag.path.length >= 2);
+  if ((!clicks.length && !drags.length) || !(width > 0 && height > 0)) {
+    elements.interactionField.innerHTML = '<div class="empty-list">Viewport interaction coordinates unavailable.</div>';
+    elements.interactionMapSummary.textContent = "No coordinates";
     return;
   }
-  const sampled = evenlySample(events, 180);
-  elements.clickField.innerHTML = sampled.map((event) => {
+  const sampledClicks = evenlySample(clicks, 180);
+  const sampledDrags = evenlySample(drags, 72);
+  const dragPaths = sampledDrags.map((event) => {
+    const points = event.drag.path.map((point) => `${clamp(Number(point.clientX), 0, width)},${clamp(Number(point.clientY), 0, height)}`).join(" ");
+    const first = event.drag.path[0];
+    const last = event.drag.path.at(-1);
+    const title = `${eventLabel(event)} · ${formatDuration(event.drag.durationMs)} · ${event.drag.path.length} path points`;
+    return `<g class="interaction-drag" style="--step-color:${stepColor(stepIdForEvent(event))}"><title>${escapeHtml(title)}</title><polyline class="interaction-path interaction-path-halo" points="${points}"></polyline><polyline class="interaction-path" points="${points}"></polyline><circle class="drag-path-start" cx="${clamp(Number(first.clientX), 0, width)}" cy="${clamp(Number(first.clientY), 0, height)}" r="5"></circle><path class="drag-path-end" d="${diamondPath(clamp(Number(last.clientX), 0, width), clamp(Number(last.clientY), 0, height), 7)}"></path></g>`;
+  }).join("");
+  const clickDots = sampledClicks.map((event) => {
     const x = clamp(Number(event.pointer.clientX) / width * 100, 0, 100);
     const y = clamp(Number(event.pointer.clientY) / height * 100, 0, 100);
     const semantic = Boolean(event.target?.semantic);
     return `<i class="click-dot ${semantic ? "semantic" : ""}" style="--x:${x}%;--y:${y}%;--step-color:${stepColor(stepIdForEvent(event))}" title="${escapeHtml(`${formatDuration(eventElapsed(event))} · ${eventLabel(event)}`)}"></i>`;
   }).join("");
-  elements.clickmapSummary.textContent = `${events.length} positioned`;
+  elements.interactionField.innerHTML = `<svg class="interaction-path-layer" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">${dragPaths}</svg>${clickDots}`;
+  elements.interactionMapSummary.textContent = `${clicks.length} click${clicks.length === 1 ? "" : "s"} · ${drags.length} drag${drags.length === 1 ? "" : "s"}`;
 }
 
 function renderTargetMix(analysis) {
   const clicks = eventsFor(analysis).filter((event) => event.type === "click");
+  const drags = eventsFor(analysis).filter((event) => event.type === "drag");
   const semantic = clicks.filter((event) => event.target?.semantic).length;
   const unknown = clicks.filter((event) => !event.target || ["unknown", "canvas"].includes(String(event.target.kind || "").toLowerCase()) && !event.target?.semantic).length;
   const dom = Math.max(0, clicks.length - semantic - unknown);
-  const total = Math.max(1, clicks.length);
+  const total = Math.max(1, clicks.length + drags.length);
   const topTargets = targetStatsFor(analysis).slice(0, 5);
   elements.targetMix.innerHTML = `
     <div class="target-ring-wrap">
-      <div class="target-ring" style="--dom-share:${dom / total * 100}%;--semantic-share:${semantic / total * 100}%" data-total="${clicks.length}"></div>
+      <div class="target-ring" style="--dom-end:${dom / total * 100}%;--semantic-end:${(dom + semantic) / total * 100}%;--drag-end:${(dom + semantic + drags.length) / total * 100}%"><span>${clicks.length + drags.length}</span></div>
       <div class="target-legend">
         <span><span><i style="--color:var(--teal)"></i>Interface</span><b>${dom}</b></span>
         <span><span><i style="--color:var(--coral)"></i>Named 3D controls</span><b>${semantic}</b></span>
+        <span><span><i style="--color:#7448a8"></i>Spatial drags</span><b>${drags.length}</b></span>
         <span><span><i style="--color:#c9d1cc"></i>Unknown / canvas</span><b>${unknown}</b></span>
       </div>
     </div>
     <div class="top-targets">
       <h3>Most repeated targets</h3>
-      ${topTargets.length ? topTargets.map((target) => `<div class="top-target-row"><span title="${escapeHtml(target.label || target.key || "Unknown item")}">${escapeHtml(target.label || target.key || "Unknown item")}</span><b>${Number(target.count) || 0}</b></div>`).join("") : '<span class="event-target">No repeated clicks.</span>'}
+      ${topTargets.length ? topTargets.map((target) => `<div class="top-target-row"><span title="${escapeHtml(target.label || target.key || "Unknown item")}">${escapeHtml(target.label || target.key || "Unknown item")}</span><b>${Number(target.count) || 0}</b></div>`).join("") : '<span class="event-target">No repeated interactions.</span>'}
     </div>
   `;
 }
@@ -579,7 +644,7 @@ function renderEventTable(analysis) {
       <tr data-event-sequence="${Number(event.sequence) || 0}" class="${Number(event.sequence) === Number(state.selectedSequence) ? "selected" : ""}" tabindex="0">
         <td class="event-time">${formatDuration(eventElapsed(event))}</td>
         <td><span class="step-chip" style="--step-color:${stepColor(stepId)}">${escapeHtml(shortStepLabel(stepId))}</span></td>
-        <td class="event-action"><strong>${escapeHtml(eventLabel(event))}</strong><small>#${Number(event.sequence) || "—"} · ${escapeHtml(event.type || "event")} · ${escapeHtml(eventSurfaceLabel(event))}</small></td>
+        <td class="event-action"><strong>${escapeHtml(eventLabel(event))}</strong><small>#${Number(event.sequence) || "—"} · ${escapeHtml(event.type || "event")}${event.type === "drag" ? ` · ${escapeHtml(dragMetadataLabel(event))}` : ""} · ${escapeHtml(eventSurfaceLabel(event))}</small></td>
         <td class="event-target">${escapeHtml(eventEvidenceDetail(event, semantic))}</td>
         <td>${signal ? `<span class="signal-chip"><i class="${momentValence(signal)}"></i>${escapeHtml(signal.title || capitalize(momentValence(signal)))}</span>` : "—"}</td>
       </tr>
@@ -595,10 +660,11 @@ function renderQuality(analysis) {
   const base = [
     hasScrollBuckets
       ? "Scroll markers are coarse thresholds only. They do not show exact motion, reading, attention, or how long content stayed visible."
-      : "The log records clicks and some 3D actions. It does not record typing, scrolling, hovering, or how long a drag lasted.",
+      : "The log does not record typing, continuous scrolling, or hovering.",
+    "Spatial transform drags record the moved object, duration, pointer path, and before/after transform. Camera movement and other long drags are not captured.",
     "A pause can mean reading, thinking, an interruption, or a problem. The log cannot tell which one.",
-    "The log checks the current step only when a click happens. A step change is exact only when the next click confirms it.",
-    "The screen size is saved only at the start, so click positions may be less accurate after a resize.",
+    "A workflow navigation click is assigned to the step being left. Its destination is exact only when the next recorded workflow context confirms it.",
+    "The screen size is saved only at the start, so click positions and drag paths may be less accurate after a resize.",
   ];
   const items = [...new Set([...warnings, ...base])].slice(0, 8);
   elements.qualityList.innerHTML = items.map((item, index) => `<div class="quality-item"><i>${index < warnings.length ? "!" : "i"}</i><span>${escapeHtml(typeof item === "string" ? item : item.message || item.summary || String(item))}</span></div>`).join("");
@@ -610,68 +676,189 @@ async function refreshCodexStatus() {
     const status = await response.json();
     if (!response.ok) throw new Error(status.error || `HTTP ${response.status}`);
     state.codexStatus = status;
-    const available = Boolean(status.authenticated ?? status.codexAuthenticated ?? status.available);
-    elements.codexStatus.classList.toggle("unavailable", !available);
-    elements.codexStatus.innerHTML = `<i></i><span>${escapeHtml(available ? `Codex ready${status.version ? ` · ${status.version}` : ""}` : status.message || status.authText || "Codex is not signed in")}</span>`;
-    elements.runCodex.disabled = !available || !activeAnalysis();
   } catch (error) {
-    state.codexStatus = { available: false };
-    elements.codexStatus.classList.add("unavailable");
-    elements.codexStatus.innerHTML = `<i></i><span>Codex unavailable · ${escapeHtml(error.message)}</span>`;
-    elements.runCodex.disabled = true;
+    state.codexStatus = { available: false, message: `Codex unavailable · ${error.message}` };
   }
+  syncCodexControl();
 }
 
 async function runCodexAnalysis() {
   const analysis = activeAnalysis();
-  if (!analysis) return;
-  elements.runCodex.disabled = true;
-  elements.runCodex.textContent = "Reviewing session…";
-  elements.codexStatus.classList.add("running");
-  elements.codexStatus.innerHTML = "<i></i><span>Codex is reviewing a short log summary…</span>";
+  if (!analysis || state.codexRun) return;
+  const token = Symbol("codex-run");
+  const run = { token, analysis, controller: new AbortController(), cancelled: false };
+  state.codexRun = run;
+  syncCodexControl();
+  let failureMessage = "";
   try {
     const digest = buildCodexEvidence([analysis]);
     const response = await fetch("/api/analyze", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ digest }),
+      signal: run.controller.signal,
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || `Analysis returned HTTP ${response.status}.`);
+    if (run.cancelled || state.codexRun?.token !== token || !state.analyses.includes(analysis)) return;
     const codex = result.analysis || result;
-    state.codexResults.set(sessionIdFor(analysis), codex);
-    renderCodexResults(codex);
-    elements.codexStatus.innerHTML = `<i></i><span>Codex review complete${codex.engine?.version ? ` · ${escapeHtml(codex.engine.version)}` : ""}</span>`;
-    showToast("Codex review added to the current session.");
+    state.codexResults.set(analysis, codex);
+    state.codexAnnotationPages.set(analysis, 0);
+    if (activeAnalysis() === analysis) renderTimeline(analysis);
+    showToast("Codex insights added to the timeline.");
   } catch (error) {
-    elements.codexStatus.classList.add("unavailable");
-    elements.codexStatus.innerHTML = `<i></i><span>Codex review failed · ${escapeHtml(error.message)}</span>`;
-    showToast(`Codex review failed: ${error.message}`, 6500);
+    if (run.cancelled || error.name === "AbortError") return;
+    failureMessage = error.message;
+    showToast(`Codex insight generation failed: ${error.message}`, 6500);
   } finally {
-    elements.codexStatus.classList.remove("running");
-    elements.runCodex.textContent = "Review current session";
-    elements.runCodex.disabled = !(state.codexStatus?.authenticated ?? state.codexStatus?.codexAuthenticated ?? state.codexStatus?.available);
+    if (state.codexRun?.token === token) state.codexRun = null;
+    if (!run.cancelled) {
+      const active = activeAnalysis();
+      if (active) renderCodexResults(state.codexResults.get(active) || null, active);
+      syncCodexControl(failureMessage && active === analysis ? `Codex insight generation failed · ${failureMessage}` : "");
+    }
   }
 }
 
-function renderCodexResults(result) {
-  if (!result) {
+function cancelCodexRun() {
+  const run = state.codexRun;
+  if (!run) return;
+  run.cancelled = true;
+  state.codexRun = null;
+  run.controller.abort();
+}
+
+function renderCodexResults(result, analysis = activeAnalysis()) {
+  if (!result || !analysis) {
     elements.codexResults.hidden = true;
     elements.codexResults.replaceChildren();
-    elements.runCodex.disabled = !(state.codexStatus?.authenticated ?? state.codexStatus?.codexAuthenticated ?? state.codexStatus?.available) || !activeAnalysis();
+    elements.codexAnnotationLabel.hidden = true;
+    elements.codexKey.hidden = true;
+    updateCodexButtonState();
     return;
   }
   const overview = result.overview || result.summary || {};
-  const headline = typeof overview === "string" ? "Codex session review" : overview.headline || overview.title || "Codex session review";
-  const summary = typeof overview === "string" ? overview : overview.summary || overview.description || "Codex found a few points to review.";
-  const moments = Array.isArray(result.moments) ? result.moments.slice(0, 6) : [];
+  const summary = typeof overview === "string" ? overview : overview.summary || overview.description || "Codex found a few evidence-linked points to review.";
+  const start = Math.max(0, state.viewStartMs);
+  const end = Math.max(start + 1, state.viewEndMs);
+  const visibleMoments = activeCodexMoments(result)
+    .filter((moment) => momentStart(moment) >= start && momentStart(moment) <= end)
+    .sort((a, b) => momentStart(a) - momentStart(b));
+  const pageCount = Math.max(1, Math.ceil(visibleMoments.length / MAX_VISIBLE_CODEX_ANNOTATIONS));
+  const requestedPage = state.codexAnnotationPages.get(analysis) || 0;
+  const page = clamp(requestedPage, 0, pageCount - 1);
+  state.codexAnnotationPages.set(analysis, page);
+  const pageStart = page * MAX_VISIBLE_CODEX_ANNOTATIONS;
+  const moments = visibleMoments.slice(pageStart, pageStart + MAX_VISIBLE_CODEX_ANNOTATIONS);
+  const annotationSpan = clamp(240 / Math.max(1, elements.timelineSvg.getBoundingClientRect().width) * 100, 18, 96);
+  const placements = placeCodexAnnotations(moments, start, end, annotationSpan);
+  const rowCount = Math.max(1, ...placements.map((placement) => placement.row + 1));
   elements.codexResults.innerHTML = `
-    <article class="codex-summary-card"><strong>${escapeHtml(headline)}</strong><p>${escapeHtml(summary)}</p></article>
-    <div class="codex-moments">
-      ${moments.length ? moments.map((moment) => `<article class="codex-moment-card"><header><strong>${escapeHtml(moment.title || capitalize(moment.valence || "moment"))}</strong><time>${formatDuration(numberOr(moment.startMs, moment.atMs, 0))}</time></header><p>${escapeHtml(moment.description || moment.interpretation || moment.summary || "Evidence-linked observation")}</p></article>`).join("") : '<article class="codex-moment-card"><p>No additional moments were returned.</p></article>'}
+    <div class="codex-annotation-summary">
+      <span><i aria-hidden="true">✦</i><strong>Generated overview</strong></span>
+      <p>${escapeHtml(summary)}</p>
+      ${pageCount > 1 ? `
+        <div class="codex-annotation-pagination" aria-label="Generated insight pages">
+          <small>Showing ${pageStart + 1}–${pageStart + moments.length} of ${visibleMoments.length} insights in this view.</small>
+          <span>
+            <button type="button" data-codex-page-action="-1" ${page === 0 ? "disabled" : ""}>Previous insights</button>
+            <button type="button" data-codex-page-action="1" ${page === pageCount - 1 ? "disabled" : ""}>Next insights</button>
+          </span>
+        </div>
+      ` : ""}
     </div>
+    ${placements.length ? `
+      <div class="codex-annotation-track" style="--annotation-height:${28 + rowCount * CODEX_ANNOTATION_ROW_HEIGHT}px">
+        ${placements.map(({ moment, x, row, alignment }) => codexAnnotationHtml(moment, analysis, x, row, alignment)).join("")}
+      </div>
+    ` : '<p class="codex-empty-view">No generated insights fall inside this view. Choose <strong>Full session</strong> to see every annotation.</p>'}
   `;
   elements.codexResults.hidden = false;
+  elements.codexAnnotationLabel.hidden = false;
+  elements.codexKey.hidden = false;
+  updateCodexButtonState();
+}
+
+function syncCodexControl(overrideMessage = "") {
+  const available = codexIsAvailable();
+  const active = activeAnalysis();
+  const result = active ? state.codexResults.get(active) : null;
+  let message = overrideMessage;
+  if (!message && state.codexRun) message = "Codex is generating evidence-linked insights…";
+  if (!message && result) {
+    const count = activeCodexMoments(result).length;
+    message = `${count} insight${count === 1 ? "" : "s"} generated${result.engine?.version ? ` · ${result.engine.version}` : ""}`;
+  }
+  if (!message && available) message = `Codex ready${state.codexStatus?.version ? ` · ${state.codexStatus.version}` : ""}`;
+  if (!message) message = state.codexStatus?.message || state.codexStatus?.authText || "Codex is not signed in";
+  const unavailable = !available || /failed/i.test(overrideMessage);
+  elements.codexStatus.classList.toggle("unavailable", unavailable);
+  elements.codexStatus.classList.toggle("running", Boolean(state.codexRun));
+  elements.codexStatus.innerHTML = `<i></i><span>${escapeHtml(message)}</span>`;
+  updateCodexButtonState();
+}
+
+function updateCodexButtonState() {
+  const active = activeAnalysis();
+  const result = active ? state.codexResults.get(active) : null;
+  const label = elements.runCodex.querySelector(".codex-button-label");
+  if (label) label.textContent = state.codexRun ? "Generating insights…" : result ? "Regenerate insights" : "Generate insights";
+  elements.runCodex.disabled = !active || !codexIsAvailable() || Boolean(state.codexRun);
+}
+
+function codexIsAvailable() {
+  return Boolean(state.codexStatus?.authenticated ?? state.codexStatus?.codexAuthenticated ?? state.codexStatus?.available);
+}
+
+function activeCodexMoments(result = activeAnalysis() ? state.codexResults.get(activeAnalysis()) : null) {
+  return Array.isArray(result?.moments) ? result.moments : [];
+}
+
+function placeCodexAnnotations(moments, start, end, annotationSpan = 23) {
+  const range = Math.max(1, end - start);
+  const halfSpan = annotationSpan / 2;
+  const rowEnds = [];
+  return moments.map((moment) => {
+    const x = clamp((momentStart(moment) - start) / range * 100, 0, 100);
+    const alignment = x < halfSpan ? "start" : x > 100 - halfSpan ? "end" : "center";
+    const left = alignment === "start" ? x : alignment === "end" ? x - annotationSpan : x - halfSpan;
+    const right = alignment === "start" ? x + annotationSpan : alignment === "end" ? x : x + halfSpan;
+    let row = rowEnds.findIndex((rowEnd) => left - rowEnd >= 1.5);
+    if (row < 0) row = rowEnds.length;
+    rowEnds[row] = right;
+    return { moment, x, row, alignment };
+  });
+}
+
+function codexAnnotationHtml(moment, analysis, x, row, alignment) {
+  const sequences = momentSequences(moment, analysis);
+  const firstEvent = sequences.length ? eventsFor(analysis).find((event) => Number(event.sequence) === sequences[0]) : null;
+  const stepId = moment.stepId || (firstEvent ? stepIdForEvent(firstEvent) : "unknown");
+  const evidenceLabel = sequences.length
+    ? `${sequences.length === 1 ? "event" : "events"} ${sequences.slice(0, 3).map((sequence) => `#${sequence}`).join(", ")}${sequences.length > 3 ? ` +${sequences.length - 3}` : ""}`
+    : "evidence-linked";
+  const accessibleEvidenceLabel = sequences.length
+    ? `${sequences.length === 1 ? "event" : "events"} ${sequences.map((sequence) => `#${sequence}`).join(", ")}`
+    : evidenceLabel;
+  const valence = momentValence(moment);
+  const description = moment.summary || moment.description || moment.interpretation || "Evidence-linked observation";
+  const recommendation = String(moment.recommendation || "").trim();
+  const fullCopy = `${description}${recommendation ? ` Suggested follow-up: ${recommendation}` : ""}`;
+  const startTime = momentStart(moment);
+  const endTime = Math.max(startTime, numberOr(moment.endMs, moment.atMs, startTime));
+  const timeLabel = endTime > startTime ? `${formatDuration(startTime)}–${formatDuration(endTime)}` : formatDuration(startTime);
+  return `
+    <button class="codex-annotation ${valence} align-${alignment}" type="button"
+      data-codex-moment-id="${escapeHtml(moment.id || `codex-${row}`)}"
+      style="--annotation-x:${x.toFixed(3)}%;--annotation-top:${22 + row * CODEX_ANNOTATION_ROW_HEIGHT}px;--annotation-pin-offset:${15 + row * CODEX_ANNOTATION_ROW_HEIGHT}px"
+      title="${escapeHtml(fullCopy)}"
+      aria-label="${escapeHtml(`${moment.title || capitalize(valence)}, ${timeLabel}, ${stepLabel(stepId)}, ${accessibleEvidenceLabel}. ${fullCopy}`)}">
+      <span class="codex-annotation-pin" aria-hidden="true">✦</span>
+      <span class="codex-annotation-heading"><strong>${escapeHtml(moment.title || capitalize(valence))}</strong><time>${timeLabel}</time></span>
+      <span class="codex-annotation-meta">${escapeHtml(stepLabel(stepId))} · ${escapeHtml(evidenceLabel)}</span>
+      <span class="codex-annotation-copy">${escapeHtml(fullCopy)}</span>
+    </button>
+  `;
 }
 
 function handleTimelineActivation(event) {
@@ -711,7 +898,9 @@ function selectEvent(sequence, { focusTimeline = false } = {}) {
   const stepId = stepIdForEvent(event);
   const semantic = event.target?.semantic;
   const scene = editorSceneLabel(event);
-  elements.selectedEvent.innerHTML = `<span class="selection-dot" aria-hidden="true" style="background:${stepColor(stepId)};box-shadow:0 0 0 2px ${stepColor(stepId)}"></span><div><strong>${escapeHtml(eventLabel(event))} · ${formatDuration(eventElapsed(event))} · event #${Number(event.sequence) || "—"}</strong><p>${escapeHtml(stepLabel(stepId))} · ${escapeHtml(eventSurfaceLabel(event))}${scene ? ` · ${escapeHtml(scene)}` : ""}${semantic ? ` · Named item: ${escapeHtml(semantic.label || semantic.kind)}` : ""}</p></div>`;
+  const contextLine = `${stepLabel(stepId)} · ${eventSurfaceLabel(event)}${scene ? ` · ${scene}` : ""}${semantic && event.type !== "drag" ? ` · Named item: ${semantic.label || semantic.kind}` : ""}`;
+  const dragLine = event.type === "drag" ? `<p class="drag-detail"><strong>${escapeHtml(dragMetadataLabel(event))}</strong><br>${escapeHtml(dragTransformDetail(event))}</p>` : "";
+  elements.selectedEvent.innerHTML = `<span class="selection-dot${event.type === "drag" ? " drag" : ""}" aria-hidden="true" style="background:${stepColor(stepId)};box-shadow:0 0 0 2px ${stepColor(stepId)}"></span><div><strong>${escapeHtml(eventLabel(event))} · ${formatDuration(eventElapsed(event))} · event #${Number(event.sequence) || "—"}</strong><p>${escapeHtml(contextLine)}</p>${dragLine}</div>`;
   renderTimeline(analysis);
   renderEventTable(analysis);
 }
@@ -726,6 +915,16 @@ function focusMoment(moment) {
   if (sequence != null) selectEvent(Number(sequence));
   else renderTimeline(analysis);
   elements.timelineSvg.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function focusCodexMoment(moment) {
+  const momentId = String(moment?.id || "");
+  focusMoment(moment);
+  requestAnimationFrame(() => {
+    const annotation = [...elements.codexResults.querySelectorAll("[data-codex-moment-id]")]
+      .find((candidate) => candidate.dataset.codexMomentId === momentId);
+    annotation?.focus({ preventScroll: true });
+  });
 }
 
 function resetTimelineView({ render = true } = {}) {
@@ -781,29 +980,6 @@ function timelineMsAtClientX(clientX) {
   const rect = elements.timelineSvg.getBoundingClientRect();
   const normalized = clamp((clientX - rect.left) / Math.max(1, rect.width), 0, 1);
   return state.viewStartMs + normalized * (state.viewEndMs - state.viewStartMs);
-}
-
-function downloadDerivedAnalysis() {
-  const analysis = activeAnalysis();
-  if (!analysis) return;
-  const exportPayload = {
-    schemaVersion: "storyvr-workflow-lens-export/v1",
-    exportedAt: new Date().toISOString(),
-    source: {
-      sessionId: sessionIdFor(analysis),
-      fileName: analysis.fileName || null,
-      originalSchemaVersion: analysis.session?.schemaVersion || analysis.schemaVersion || "storyvr-interaction-log/v1",
-    },
-    analysis,
-    codexAnalysis: state.codexResults.get(sessionIdFor(analysis)) || null,
-  };
-  const blob = new Blob([`${JSON.stringify(exportPayload, null, 2)}\n`], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `storyvr-workflow-analysis-${safeFileToken(sessionIdFor(analysis))}.json`;
-  anchor.click();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function activeAnalysis() {
@@ -862,7 +1038,7 @@ function journeyFor(analysis) {
 function activityBinsFor(analysis, start, end) {
   const supplied = analysis?.timeline?.activityBins || analysis?.activityBins || analysis?.rhythmBins;
   if (Array.isArray(supplied) && supplied.length) return supplied.filter((bin) => numberOr(bin.endMs, bin.end, end) >= start && numberOr(bin.startMs, bin.start, start) <= end);
-  const events = eventsFor(analysis).filter((event) => eventElapsed(event) >= start && eventElapsed(event) <= end && event.type === "click");
+  const events = eventsFor(analysis).filter((event) => eventElapsed(event) >= start && eventInteractionStart(event) <= end && ["click", "drag"].includes(event.type));
   const count = Math.min(72, Math.max(12, Math.ceil(Math.sqrt(Math.max(1, events.length)) * 3)));
   const width = Math.max(1, (end - start) / count);
   const bins = Array.from({ length: count }, (_, index) => ({ startMs: start + index * width, endMs: start + (index + 1) * width, count: 0, stepId: "unknown" }));
@@ -878,8 +1054,10 @@ function targetStatsFor(analysis) {
   const supplied = analysis?.stats?.topTargets || analysis?.targetStats?.topTargets || analysis?.topTargets || (Array.isArray(analysis?.targetStats) ? analysis.targetStats : null);
   if (Array.isArray(supplied)) return supplied;
   const counts = new Map();
-  for (const event of eventsFor(analysis).filter((candidate) => candidate.type === "click")) {
-    const label = event.target?.semantic?.label || event.target?.label || event.target?.locator || "Unknown target";
+  for (const event of eventsFor(analysis).filter((candidate) => ["click", "drag"].includes(candidate.type))) {
+    const label = event.type === "drag"
+      ? eventLabel(event)
+      : event.target?.semantic?.label || event.target?.label || event.target?.locator || "Unknown target";
     counts.set(label, (counts.get(label) || 0) + 1);
   }
   return [...counts].map(([label, count]) => ({ label, count })).sort((left, right) => right.count - left.count);
@@ -895,14 +1073,6 @@ function sessionDuration(analysis) {
   if (direct != null && direct >= 0) return direct;
   const events = eventsFor(analysis);
   return Math.max(1, ...events.map(eventElapsed));
-}
-
-function sessionIdFor(analysis) {
-  return String(analysis?.source?.sessionId || analysis?.session?.sessionId || analysis?.session?.id || analysis?.sessionId || analysis?.id || "session");
-}
-
-function sessionStartedAt(analysis) {
-  return analysis?.source?.startedAt || analysis?.session?.startedAt || analysis?.startedAt || null;
 }
 
 function sessionStory(analysis) {
@@ -925,7 +1095,17 @@ function eventElapsed(event) {
   return Math.max(0, numberOr(event.elapsedMs, event.atMs, 0));
 }
 
+function eventInteractionStart(event) {
+  return Math.max(0, eventElapsed(event) - (event.type === "drag" ? Math.max(0, Number(event.drag?.durationMs) || 0) : 0));
+}
+
 function eventLabel(event) {
+  if (event.type === "drag") {
+    const object = event.drag?.objects?.[0];
+    const objectLabel = object?.label || object?.entityId || object?.assetId || "spatial object";
+    const extra = Math.max(0, (event.drag?.objects?.length || 0) - 1);
+    return `${titleFromId(event.drag?.operation || "drag")} ${objectLabel}${extra ? ` +${extra}` : ""}`;
+  }
   if (event.type !== "click") return event.label || lifecycleLabel(event.type);
   return event.target?.semantic?.label || event.target?.label || event.target?.data?.action || event.target?.kind || "Unknown click target";
 }
@@ -948,7 +1128,45 @@ function eventSurfaceLabel(event) {
 
 function eventEvidenceDetail(event, semantic = event?.target?.semantic) {
   if (event?.scroll?.depthBucket != null) return `${event.scroll.depthBucket}% scroll threshold`;
+  if (event?.type === "drag") return dragTransformDetail(event);
   return semantic?.label || event?.state || editorSceneLabel(event) || event?.target?.locator || eventSurfaceLabel(event) || "—";
+}
+
+function dragMetadataLabel(event) {
+  const drag = event?.drag || {};
+  const operation = titleFromId(drag.operation || "drag");
+  const axis = drag.axis && drag.axis !== "unknown" ? ` · ${String(drag.axis).toUpperCase()} axis` : "";
+  const count = Array.isArray(drag.objects) ? drag.objects.length : 0;
+  return `${operation}${axis} · ${formatDuration(drag.durationMs || 0)} · ${count} object${count === 1 ? "" : "s"}`;
+}
+
+function dragTransformDetail(event) {
+  const objects = Array.isArray(event?.drag?.objects) ? event.drag.objects : [];
+  if (!objects.length) return "Spatial drag · object details unavailable";
+  return objects.map((object) => {
+    const label = object.label || object.entityId || object.assetId || "Spatial object";
+    return `${label}: ${transformSummary(object.before)} → ${transformSummary(object.after)}`;
+  }).join("; ");
+}
+
+function transformSummary(transform) {
+  if (!transform || typeof transform !== "object") return "transform unavailable";
+  const parts = [];
+  for (const [key, label] of [["position", "position"], ["rotation", "rotation"], ["quaternion", "rotation quaternion"], ["scale", "scale"]]) {
+    if (transform[key] != null) parts.push(`${label} ${vectorSummary(transform[key])}`);
+  }
+  if (parts.length) return parts.join(", ");
+  const compact = JSON.stringify(transform);
+  return compact && compact !== "{}" ? compact : "transform unavailable";
+}
+
+function vectorSummary(value) {
+  const values = Array.isArray(value)
+    ? value.slice(0, 4)
+    : value && typeof value === "object"
+      ? ["x", "y", "z", "w"].filter((key) => Object.hasOwn(value, key)).map((key) => value[key])
+      : [value];
+  return `(${values.map((entry) => Number.isFinite(Number(entry)) ? formatNumber(Number(entry), 3) : String(entry)).join(", ")})`;
 }
 
 function lifecycleLabel(type) {
@@ -962,33 +1180,74 @@ function editorSceneLabel(event) {
 }
 
 function momentValence(moment) {
-  const value = String(moment?.valence || moment?.type || moment?.category || "watch").toLowerCase();
+  const value = String(moment?.sentiment || moment?.valence || moment?.type || moment?.category || "watch").toLowerCase();
   if (["good", "positive", "success"].includes(value)) return "good";
   if (["bad", "negative", "friction", "concern", "needs-attention", "error"].includes(value)) return "concern";
   return "watch";
+}
+
+function isRoutineProgressMoment(moment) {
+  if (momentValence(moment) !== "good") return false;
+  return /confirmed-forward-progress|moved to the next step/i.test(`${moment?.kind || ""} ${moment?.title || ""}`);
+}
+
+function compareMomentPriority(a, b) {
+  const priority = { concern: 0, watch: 1, good: 2 };
+  return (priority[momentValence(a)] ?? 3) - (priority[momentValence(b)] ?? 3)
+    || momentStart(a) - momentStart(b);
 }
 
 function momentStart(moment) {
   return Math.max(0, numberOr(moment?.startMs, moment?.atMs, moment?.elapsedMs, 0));
 }
 
-function momentSequences(moment) {
+function momentSequences(moment, analysis = activeAnalysis()) {
   const direct = moment?.eventSequences || moment?.sequences;
   if (Array.isArray(direct)) return direct.map(Number).filter(Number.isFinite);
   if (Array.isArray(moment?.evidence)) {
     return moment.evidence.map((entry) => Number(entry?.sequence ?? entry)).filter(Number.isFinite);
   }
+  if (Array.isArray(moment?.evidenceIds) && analysis) {
+    const lookup = codexEvidenceLookup(analysis);
+    return moment.evidenceIds
+      .map((id) => lookup.get(String(id)))
+      .filter(Boolean)
+      .sort((a, b) => a.elapsedMs - b.elapsedMs || a.sequence - b.sequence)
+      .map((entry) => entry.sequence);
+  }
   return [];
 }
 
 function momentForSequence(analysis, sequence) {
-  return momentsFor(analysis).find((moment) => momentSequences(moment).includes(Number(sequence)));
+  return momentsFor(analysis).find((moment) => momentSequences(moment, analysis).includes(Number(sequence)));
+}
+
+function codexEvidenceLookup(analysis) {
+  const cached = state.codexEvidenceLookups.get(analysis);
+  if (cached) return cached;
+  const result = new Map();
+  const digest = buildCodexEvidence([analysis]);
+  for (const session of Array.isArray(digest.sessions) ? digest.sessions : []) {
+    for (const event of Array.isArray(session.evidenceEvents) ? session.evidenceEvents : []) {
+      const sequence = Number(event.sequence);
+      if (!Number.isFinite(sequence)) continue;
+      const id = event.evidenceId || `${session.sessionId}:${sequence}`;
+      result.set(String(id), {
+        sequence,
+        elapsedMs: numberOr(event.elapsedMs, 0),
+        stepId: event.stepId || "unknown",
+      });
+    }
+  }
+  state.codexEvidenceLookups.set(analysis, result);
+  return result;
 }
 
 function tooltipForEvent(event) {
   const semantic = event.target?.semantic;
   const scroll = event.scroll?.depthBucket == null ? "" : ` · ${event.scroll.depthBucket}% scroll`;
-  return `${eventLabel(event)} · ${formatDuration(eventElapsed(event))} · ${stepLabel(stepIdForEvent(event))} · ${eventSurfaceLabel(event)}${semantic ? " · Named item" : ""}${scroll}`;
+  const drag = event.type === "drag" ? ` · ${dragMetadataLabel(event)}` : "";
+  return `${eventLabel(event)} · ${formatDuration(eventElapsed(event))} · ${stepLabel(stepIdForEvent(event))} · ${eventSurfaceLabel(event)}${semantic ? " · Named item" : ""}${drag}${scroll}`;
 }
 
 function eventSearchText(event) {
@@ -1007,16 +1266,27 @@ function eventSearchText(event) {
     event.target?.semantic?.kind,
     event.target?.semantic?.id,
     event.target?.semantic?.assetId,
+    event.drag?.kind,
+    event.drag?.operation,
+    event.drag?.axis,
+    event.drag?.durationMs,
+    ...(event.drag?.objects || []).flatMap((object) => [
+      object.label,
+      object.entityId,
+      object.assetId,
+      JSON.stringify(object.before || {}),
+      JSON.stringify(object.after || {}),
+    ]),
   ].filter(Boolean).join(" ").toLowerCase();
 }
 
 function sampledVisibleEvents(events, start, end, maximum) {
-  const visible = events.filter((event) => eventElapsed(event) >= start && eventElapsed(event) <= end);
+  const visible = events.filter((event) => eventElapsed(event) >= start && eventInteractionStart(event) <= end);
   return evenlySample(visible, maximum);
 }
 
 function activityBinCount(bin) {
-  return Math.max(0, numberOr(bin?.count, bin?.clickCount, bin?.eventCount, 0));
+  return Math.max(0, numberOr(bin?.interactionCount, bin?.count, bin?.clickCount, 0));
 }
 
 function evenlySample(values, maximum) {
@@ -1025,12 +1295,6 @@ function evenlySample(values, maximum) {
   const stride = (values.length - 1) / (maximum - 1);
   for (let index = 0; index < maximum; index += 1) sampled.push(values[Math.round(index * stride)]);
   return sampled;
-}
-
-function sessionOptionLabel(analysis, index) {
-  const story = sessionStory(analysis);
-  const label = story.title || story.slug || analysis.fileName || `Session ${index + 1}`;
-  return `${label} · ${formatDuration(sessionDuration(analysis))}`;
 }
 
 function normalizedStepDefinitions(value) {
@@ -1044,15 +1308,7 @@ function stepLabel(stepId) {
 }
 
 function shortStepLabel(stepId) {
-  const labels = {
-    "environment-enhancement": "Environment",
-    "attention-guidance": "Attention",
-    "dynamic-geometry": "Dynamics",
-    "inter-beat-dynamics": "Transition",
-    "interaction-control": "Interaction",
-    "transition-pacing": "Final Review",
-  };
-  return labels[stepId] || stepLabel(stepId);
+  return stepLabel(stepId);
 }
 
 function stepColor(stepId) {
@@ -1084,11 +1340,6 @@ function formatTimelineTick(milliseconds, range) {
   return formatDuration(milliseconds);
 }
 
-function formatRate(count, durationMs) {
-  if (!(durationMs > 0)) return "0";
-  return formatNumber(count / durationMs * 60_000, 1);
-}
-
 function formatNumber(value, digits = 0) {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: digits }).format(Number(value) || 0);
 }
@@ -1115,6 +1366,10 @@ function svgText(x, y, text, className) {
   return element;
 }
 
+function diamondPath(x, y, radius) {
+  return `M ${x} ${y - radius} L ${x + radius} ${y} L ${x} ${y + radius} L ${x - radius} ${y} Z`;
+}
+
 function showToast(message, duration = 4000) {
   clearTimeout(state.toastTimer);
   elements.toast.textContent = message;
@@ -1124,10 +1379,6 @@ function showToast(message, duration = 4000) {
 
 function hasFileDrag(event) {
   return [...(event.dataTransfer?.types || [])].includes("Files");
-}
-
-function safeFileToken(value) {
-  return String(value || "session").replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "session";
 }
 
 function titleFromId(value) {

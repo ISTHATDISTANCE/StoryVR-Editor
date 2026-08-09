@@ -1,8 +1,8 @@
 /**
  * Pure analysis helpers for StoryVR interaction-log exports.
  *
- * The authoring logger records click context during the document capture phase.
- * Consequently, a click on a workflow step still carries the source step in
+ * The authoring logger records interaction context during capture. Consequently,
+ * a click on a workflow step still carries the source step in
  * `event.context.workspace.componentId`. A destination in
  * `event.target.data.selectComponent` becomes a corrected boundary only when
  * the next event carrying workflow context confirms that destination.
@@ -20,6 +20,7 @@ const DEFAULT_RAGE_CLICK_COUNT = 3;
 const MAX_CODEX_EVIDENCE_SESSIONS = 24;
 const MAX_CODEX_TOTAL_EVIDENCE_EVENTS = 2_048;
 const MAX_CODEX_EVIDENCE_EVENTS = 240;
+const INTERACTION_TYPES = new Set(["click", "drag"]);
 
 export const STEP_DEFINITIONS = Object.freeze([
   stepDefinition("source-graph", "Story order", "#4f73c9", 0),
@@ -196,12 +197,12 @@ export function analyzeInteractionLog(input, options = {}) {
   const stepDwell = buildStepDwell(segments, events, normalized.durationMs);
   const targetStats = buildTargetStats(events);
   const semanticStats = frequencyStats(
-    events.filter((event) => event.type === "click" && event.semanticKind),
+    events.filter((event) => isInteractionEvent(event) && event.semanticKind),
     (event) => event.semanticKind,
     (event) => event.semanticKind,
   );
   const actionStats = frequencyStats(
-    events.filter((event) => event.type === "click" && event.action),
+    events.filter((event) => isInteractionEvent(event) && event.action),
     (event) => event.action,
     (event) => event.action,
   );
@@ -283,12 +284,19 @@ export function analyzeInteractionLog(input, options = {}) {
     navigationCorrections: Object.freeze(corrections),
     unconfirmedNavigationIntents: Object.freeze(unconfirmedIntents),
     stats: Object.freeze({
+      interactionCount: events.filter(isInteractionEvent).length,
       clickCount: events.filter((event) => event.type === "click").length,
-      lifecycleEventCount: events.filter((event) => event.type !== "click").length,
+      dragCount: events.filter((event) => event.type === "drag").length,
+      lifecycleEventCount: events.filter((event) => !isInteractionEvent(event)).length,
       targetKinds: Object.freeze(targetStats.kinds),
       topTargets: Object.freeze(targetStats.targets),
       semanticKinds: Object.freeze(semanticStats),
       actions: Object.freeze(actionStats),
+      dragOperations: Object.freeze(frequencyStats(
+        events.filter((event) => event.type === "drag"),
+        (event) => event.drag.operation || "unknown",
+        (event) => event.drag.operation || "Unknown operation",
+      )),
       modes: Object.freeze(modeStats),
       surfaces: Object.freeze(surfaceStats),
       pages: Object.freeze(pageStats),
@@ -324,9 +332,10 @@ export function buildCodexEvidence(analyses) {
     sourceSchemaVersion: LOG_SCHEMA_VERSION,
     analysisGuardrails: Object.freeze([
       "Treat each key moment as a possible explanation, not proof of what the user meant or whether the task worked.",
-      "For every point, cite the session id and click numbers that support it.",
+      "For every point, cite the session id and event numbers that support it.",
       "A long pause can mean reading, thinking, time away, or a problem. The log cannot tell which one.",
-      "Do not guess typed text, drag paths, continuous scrolling, server results, or changes the log did not record.",
+      "Spatial transform drags can include an object, duration, pointer path, and before/after transform. Do not infer camera movement or other drag behavior that was not recorded.",
+      "Do not guess typed text, continuous scrolling, server results, or changes the log did not record.",
       "A scroll-depth bucket records only that a coarse threshold was reached; it does not prove reading, attention, or exact scroll motion.",
     ]),
     sessions: Object.freeze(bounded.map((analysis, index) => compactAnalysisForCodex(
@@ -390,14 +399,18 @@ function normalizeEvent(entry, { originalIndex, startedAtMs, warnings }) {
   const scroll = normalizeScrollMetadata(source, details);
   const rawType = cleanString(source.type) || "unknown";
   const type = normalizedEventType(rawType);
+  const drag = type === "drag" ? normalizeDragMetadata(source.drag, elapsedMs) : Object.freeze({});
   const sourceSequence = finiteInteger(source.sourceSequence);
   const state = cleanString(source.state);
   const target = normalizeEventTarget(source.target, details, type, eventOrigin);
   const stepIntent = canonicalStepId(target?.data?.selectComponent);
   const semantic = serializableObject(target.semantic);
-  const semanticKind = cleanString(semantic.kind) || cleanString(details.semanticKind) || cleanString(details.kind);
-  const action = eventAction(target, semantic, details);
-  const label = eventLabel(type, target, semantic, details, scroll);
+  const semanticKind = cleanString(semantic.kind)
+    || cleanString(details.semanticKind)
+    || cleanString(details.kind)
+    || (type === "drag" ? drag.kind : "");
+  const action = eventAction(target, semantic, details, drag);
+  const label = eventLabel(type, target, semantic, details, scroll, drag);
 
   return Object.freeze({
     sequence,
@@ -411,6 +424,7 @@ function normalizeEvent(entry, { originalIndex, startedAtMs, warnings }) {
     context,
     details,
     target,
+    ...(type === "drag" ? { drag } : {}),
     pointer: serializableObject(source.pointer),
     modifiers: serializableObject(source.modifiers),
     rawStepId,
@@ -425,7 +439,9 @@ function normalizeEvent(entry, { originalIndex, startedAtMs, warnings }) {
     semanticKind,
     action,
     label,
-    targetKey: scopedInteractionTargetKey(target, semantic, label, eventOrigin, details),
+    targetKey: type === "drag"
+      ? scopedDragTargetKey(drag, eventOrigin, label)
+      : scopedInteractionTargetKey(target, semantic, label, eventOrigin, details),
   });
 }
 
@@ -485,6 +501,57 @@ function normalizeScrollMetadata(source, details) {
   return Object.freeze({
     ...(candidate == null ? {} : { depthBucket: round(candidate, 2) }),
     ...(["up", "down"].includes(direction) ? { direction } : {}),
+  });
+}
+
+function normalizeDragMetadata(value, eventElapsedMs) {
+  const source = serializableObject(value);
+  const durationMs = Math.min(
+    Math.max(0, eventElapsedMs),
+    nonnegativeFiniteNumber(source.durationMs) || 0,
+  );
+  const kind = cleanString(source.kind) || "drag";
+  const operation = cleanString(source.operation) || "unknown";
+  const axis = cleanString(source.axis) || "unknown";
+  const path = (Array.isArray(source.path) ? source.path : [])
+    .map((point) => {
+      const elapsedMs = nonnegativeFiniteNumber(point?.elapsedMs);
+      const clientX = finiteNumber(point?.clientX);
+      const clientY = finiteNumber(point?.clientY);
+      if (elapsedMs == null || clientX == null || clientY == null) return null;
+      return Object.freeze({
+        elapsedMs: round(Math.min(durationMs, elapsedMs), 3),
+        clientX: round(clientX, 3),
+        clientY: round(clientY, 3),
+      });
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.elapsedMs - right.elapsedMs);
+  const objects = (Array.isArray(source.objects) ? source.objects : [])
+    .map((object) => {
+      if (!object || typeof object !== "object" || Array.isArray(object)) return null;
+      const entityId = cleanString(object.entityId);
+      const assetId = cleanString(object.assetId);
+      const label = cleanString(object.label);
+      const before = deepFreeze(serializableObject(object.before));
+      const after = deepFreeze(serializableObject(object.after));
+      if (!entityId && !assetId && !label && !Object.keys(before).length && !Object.keys(after).length) return null;
+      return Object.freeze({
+        ...(entityId ? { entityId } : {}),
+        ...(assetId ? { assetId } : {}),
+        ...(label ? { label } : {}),
+        before,
+        after,
+      });
+    })
+    .filter(Boolean);
+  return Object.freeze({
+    kind,
+    operation,
+    axis,
+    durationMs: round(durationMs, 3),
+    path: Object.freeze(path),
+    objects: Object.freeze(objects),
   });
 }
 
@@ -550,10 +617,11 @@ function normalizeEditorScene(value) {
   return result;
 }
 
-function eventAction(target, semantic, details = {}) {
+function eventAction(target, semantic, details = {}, drag = {}) {
   const data = target?.data || {};
   return cleanString(
     semantic?.action
+    || drag.operation
     || details.action
     || data.action
     || data.historyAction
@@ -564,7 +632,13 @@ function eventAction(target, semantic, details = {}) {
   );
 }
 
-function eventLabel(type, target, semantic, details = {}, scroll = {}) {
+function eventLabel(type, target, semantic, details = {}, scroll = {}, drag = {}) {
+  if (type === "drag") {
+    const objects = drag.objects || [];
+    const objectLabel = objects[0]?.label || objects[0]?.entityId || objects[0]?.assetId || "spatial object";
+    const extraCount = Math.max(0, objects.length - 1);
+    return `${drag.operation || "Drag"} · ${objectLabel}${extraCount ? ` +${extraCount}` : ""}`;
+  }
   return cleanString(semantic?.label)
     || cleanString(target?.label)
     || cleanString(details.label)
@@ -615,6 +689,18 @@ function scopedInteractionTargetKey(target, semantic, fallbackLabel, eventOrigin
   const semanticKey = cleanString(target?.semanticKey) || cleanString(details.semanticKey);
   const identity = semanticKey ? `semantic-key:${semanticKey}` : base;
   return `surface:${eventOrigin.surface || "unknown"}:${eventOrigin.pageKey || "unknown"}:${identity}`;
+}
+
+function scopedDragTargetKey(drag, eventOrigin, fallbackLabel) {
+  const objectIdentity = (drag.objects || [])
+    .map((object) => object.entityId || object.assetId || object.label)
+    .filter(Boolean)
+    .join("|");
+  const base = `drag:${drag.kind || "drag"}:${objectIdentity || cleanString(fallbackLabel) || "target"}`;
+  if (!eventOrigin.explicit || (eventOrigin.surface === "storyvr" && eventOrigin.pageKey === "storyvr-author")) {
+    return base;
+  }
+  return `surface:${eventOrigin.surface || "unknown"}:${eventOrigin.pageKey || "unknown"}:${base}`;
 }
 
 function interactionTargetKey(target, semantic, fallbackLabel) {
@@ -735,7 +821,10 @@ function buildStepTimeline(normalized, corrections) {
       startSequence: boundary.sequence,
       endSequence: next?.sequence || normalized.events.at(-1)?.sequence || null,
       eventCount: 0,
+      interactionCount: 0,
       clickCount: 0,
+      dragCount: 0,
+      semanticInteractionCount: 0,
       semanticClickCount: 0,
       modeCounts: {},
     };
@@ -747,7 +836,10 @@ function buildStepTimeline(normalized, corrections) {
     const effectiveStepId = event.stepId || segment?.stepId || UNKNOWN_STEP_ID;
     if (segment) {
       segment.eventCount += 1;
+      if (isInteractionEvent(event)) segment.interactionCount += 1;
       if (event.type === "click") segment.clickCount += 1;
+      if (event.type === "drag") segment.dragCount += 1;
+      if (isInteractionEvent(event) && event.semanticKind) segment.semanticInteractionCount += 1;
       if (event.type === "click" && event.semanticKind) segment.semanticClickCount += 1;
       segment.modeCounts[event.mode] = (segment.modeCounts[event.mode] || 0) + 1;
     }
@@ -812,7 +904,10 @@ function buildStepDwell(segments, events, durationMs) {
       percentage: 0,
       visitCount: 0,
       eventCount: 0,
+      interactionCount: 0,
       clickCount: 0,
+      dragCount: 0,
+      semanticInteractionCount: 0,
       semanticClickCount: 0,
       firstEnteredMs: segment.startMs,
       lastExitedMs: segment.endMs,
@@ -820,7 +915,10 @@ function buildStepDwell(segments, events, durationMs) {
     row.durationMs += segment.durationMs;
     row.visitCount += 1;
     row.eventCount += segment.eventCount;
+    row.interactionCount += segment.interactionCount;
     row.clickCount += segment.clickCount;
+    row.dragCount += segment.dragCount;
+    row.semanticInteractionCount += segment.semanticInteractionCount;
     row.semanticClickCount += segment.semanticClickCount;
     row.firstEnteredMs = Math.min(row.firstEnteredMs, segment.startMs);
     row.lastExitedMs = Math.max(row.lastExitedMs, segment.endMs);
@@ -838,8 +936,11 @@ function buildStepDwell(segments, events, durationMs) {
       percentage: 0,
       visitCount: 0,
       eventCount: 1,
+      interactionCount: isInteractionEvent(event) ? 1 : 0,
       clickCount: event.type === "click" ? 1 : 0,
-      semanticClickCount: event.semanticKind ? 1 : 0,
+      dragCount: event.type === "drag" ? 1 : 0,
+      semanticInteractionCount: isInteractionEvent(event) && event.semanticKind ? 1 : 0,
+      semanticClickCount: event.type === "click" && event.semanticKind ? 1 : 0,
       firstEnteredMs: event.elapsedMs,
       lastExitedMs: event.elapsedMs,
     });
@@ -854,21 +955,29 @@ function buildStepDwell(segments, events, durationMs) {
 }
 
 function buildTargetStats(events) {
-  const clicks = events.filter((event) => event.type === "click");
-  const kinds = frequencyStats(clicks, (event) => cleanString(event.target?.kind) || "unknown", (event) => cleanString(event.target?.kind) || "Unknown");
+  const interactions = events.filter(isInteractionEvent);
+  const kinds = frequencyStats(
+    interactions,
+    (event) => event.type === "drag" ? event.drag.kind : cleanString(event.target?.kind) || "unknown",
+    (event) => event.type === "drag" ? event.drag.kind : cleanString(event.target?.kind) || "Unknown",
+  );
   const targetMap = new Map();
-  for (const event of clicks) {
+  for (const event of interactions) {
     const row = targetMap.get(event.targetKey) || {
       key: event.targetKey,
       label: event.label,
-      kind: cleanString(event.target?.kind) || "unknown",
+      kind: event.type === "drag" ? event.drag.kind : cleanString(event.target?.kind) || "unknown",
       semanticKind: event.semanticKind || "",
       action: event.action || "",
       count: 0,
+      clickCount: 0,
+      dragCount: 0,
       firstSequence: event.sequence,
       lastSequence: event.sequence,
     };
     row.count += 1;
+    if (event.type === "click") row.clickCount += 1;
+    if (event.type === "drag") row.dragCount += 1;
     row.lastSequence = event.sequence;
     targetMap.set(event.targetKey, row);
   }
@@ -885,7 +994,9 @@ function buildModeStats(events) {
   return frequencyStats(events, (event) => event.mode || "unknown", (event) => event.mode || "unknown")
     .map((row) => Object.freeze({
       ...row,
+      interactionCount: events.filter((event) => event.mode === row.key && isInteractionEvent(event)).length,
       clickCount: events.filter((event) => event.mode === row.key && event.type === "click").length,
+      dragCount: events.filter((event) => event.mode === row.key && event.type === "drag").length,
     }));
 }
 
@@ -909,7 +1020,10 @@ function buildActivityBins(events, segments, durationMs, binMs) {
     startMs: index * binMs,
     endMs: Math.min(durationMs, (index + 1) * binMs),
     eventCount: 0,
+    interactionCount: 0,
     clickCount: 0,
+    dragCount: 0,
+    semanticInteractionCount: 0,
     semanticClickCount: 0,
     stepEventCounts: {},
     stepDurationMs: {},
@@ -921,7 +1035,10 @@ function buildActivityBins(events, segments, durationMs, binMs) {
     const index = Math.min(binCount - 1, Math.max(0, Math.floor(event.elapsedMs / binMs)));
     const bin = bins[index];
     bin.eventCount += 1;
+    if (isInteractionEvent(event)) bin.interactionCount += 1;
     if (event.type === "click") bin.clickCount += 1;
+    if (event.type === "drag") bin.dragCount += 1;
+    if (isInteractionEvent(event) && event.semanticKind) bin.semanticInteractionCount += 1;
     if (event.type === "click" && event.semanticKind) bin.semanticClickCount += 1;
     bin.stepEventCounts[event.effectiveStepId] = (bin.stepEventCounts[event.effectiveStepId] || 0) + 1;
     bin.modeCounts[event.mode] = (bin.modeCounts[event.mode] || 0) + 1;
@@ -1044,8 +1161,8 @@ function buildDeterministicMoments({
       confidence: "high",
       title: failed ? "Log save failed" : "Log save canceled",
       summary: failed
-        ? "The browser could not save the log. The clicks stayed in memory so the user could try again."
-        : "The save was canceled. The clicks stayed in memory so the user could try again.",
+        ? "The browser could not save the log. The recorded interactions stayed in memory so the user could try again."
+        : "The save was canceled. The recorded interactions stayed in memory so the user could try again.",
       startMs: event.elapsedMs,
       endMs: event.elapsedMs,
       stepId: event.effectiveStepId,
@@ -1053,42 +1170,44 @@ function buildDeterministicMoments({
     }));
   }
 
-  const clicks = events.filter((event) => event.type === "click");
-  for (let index = 1; index < clicks.length; index += 1) {
-    const before = clicks[index - 1];
-    const after = clicks[index];
-    const gapMs = after.elapsedMs - before.elapsedMs;
+  const interactions = events.filter(isInteractionEvent);
+  for (let index = 1; index < interactions.length; index += 1) {
+    const before = interactions[index - 1];
+    const after = interactions[index];
+    const gapMs = interactionStartMs(after) - interactionEndMs(before);
     if (gapMs < pauseThresholdMs) continue;
     moments.push(moment({
       kind: "long-pause",
       valence: "watch",
       severity: "info",
       confidence: "low",
-      title: "Long pause in clicks",
-      summary: `No clicks were recorded for ${formatDuration(gapMs)}. The user may have been reading, thinking, away, or doing something this log does not record.`,
-      startMs: before.elapsedMs,
-      endMs: after.elapsedMs,
+      title: "Long pause in interactions",
+      summary: `No clicks or captured drags were recorded for ${formatDuration(gapMs)}. The user may have been reading, thinking, away, or doing something this log does not record.`,
+      startMs: interactionEndMs(before),
+      endMs: interactionStartMs(after),
       stepId: before.effectiveStepId,
       evidence: [before, after],
       metrics: { gapMs },
     }));
   }
 
-  const semanticClicks = clicks.filter((event) => event.semanticKind);
-  if (semanticClicks.length) {
-    const semanticKinds = [...new Set(semanticClicks.map((event) => event.semanticKind))];
+  const semanticInteractions = interactions.filter((event) => event.semanticKind);
+  if (semanticInteractions.length) {
+    const semanticKinds = [...new Set(semanticInteractions.map((event) => event.semanticKind))];
+    const clickCount = semanticInteractions.filter((event) => event.type === "click").length;
+    const dragCount = semanticInteractions.filter((event) => event.type === "drag").length;
     moments.push(moment({
       kind: "semantic-3d-engagement",
       valence: "good",
       severity: "info",
       confidence: "high",
       title: "Used 3D controls",
-      summary: `${semanticClicks.length} clicks on named 3D objects or controls were recorded.`,
-      startMs: semanticClicks[0].elapsedMs,
-      endMs: semanticClicks.at(-1).elapsedMs,
-      stepId: semanticClicks[0].effectiveStepId,
-      evidence: representativeEvents(semanticClicks, 8),
-      metrics: { clickCount: semanticClicks.length, semanticKinds },
+      summary: `${semanticInteractions.length} named 3D interaction${semanticInteractions.length === 1 ? " was" : "s were"} recorded (${clickCount} click${clickCount === 1 ? "" : "s"}, ${dragCount} drag${dragCount === 1 ? "" : "s"}).`,
+      startMs: interactionStartMs(semanticInteractions[0]),
+      endMs: interactionEndMs(semanticInteractions.at(-1)),
+      stepId: semanticInteractions[0].effectiveStepId,
+      evidence: representativeEvents(semanticInteractions, 8),
+      metrics: { interactionCount: semanticInteractions.length, clickCount, dragCount, semanticKinds },
     }));
   }
 
@@ -1134,7 +1253,7 @@ function buildDeterministicMoments({
       severity: "high",
       confidence: "medium",
       title: "Log may be incomplete",
-      summary: "The capture buffer reached its limit, so later clicks may be missing.",
+      summary: "The capture buffer reached its limit, so later interactions may be missing.",
       startMs: finalEvent?.elapsedMs || normalized.durationMs,
       endMs: normalized.durationMs,
       stepId: finalEvent?.effectiveStepId || UNKNOWN_STEP_ID,
@@ -1173,6 +1292,14 @@ function rageClickClusters(events, minimumCount, windowMs) {
   return clusters.sort((left, right) => left[0].elapsedMs - right[0].elapsedMs);
 }
 
+function interactionStartMs(event) {
+  return Math.max(0, event.elapsedMs - (event.type === "drag" ? event.drag.durationMs || 0 : 0));
+}
+
+function interactionEndMs(event) {
+  return Math.max(0, event.elapsedMs);
+}
+
 function moment({ kind, valence, severity, confidence, title, summary, startMs, endMs, stepId, evidence, metrics = {} }) {
   return {
     id: "",
@@ -1198,6 +1325,24 @@ function eventCitation(event) {
     type: event.type,
     stepId: event.effectiveStepId || event.stepId || UNKNOWN_STEP_ID,
     label: event.label,
+    ...(event.type === "drag" ? { drag: compactDragEvidence(event.drag) } : {}),
+  });
+}
+
+function compactDragEvidence(drag = {}) {
+  return Object.freeze({
+    kind: drag.kind || "drag",
+    operation: drag.operation || "unknown",
+    axis: drag.axis || "unknown",
+    durationMs: drag.durationMs || 0,
+    pathPointCount: Array.isArray(drag.path) ? drag.path.length : 0,
+    objects: Object.freeze((drag.objects || []).slice(0, 12).map((object) => Object.freeze({
+      ...(object.entityId ? { entityId: object.entityId } : {}),
+      ...(object.assetId ? { assetId: object.assetId } : {}),
+      ...(object.label ? { label: object.label } : {}),
+      before: JSON.stringify(object.before || {}),
+      after: JSON.stringify(object.after || {}),
+    }))),
   });
 }
 
@@ -1244,6 +1389,8 @@ function compactAnalysisForCodex(analysis, sessionId, eventLimit) {
   }
   const semanticEvents = analysis.events.filter((event) => event.semanticKind).slice(0, 24);
   for (const event of semanticEvents) addSequence(event.sequence);
+  const dragEvents = analysis.events.filter((event) => event.type === "drag").slice(0, 48);
+  for (const event of dragEvents) addSequence(event.sequence);
   const crossSurfaceEvents = analysis.events.filter((event) => (
     event.surface !== "storyvr" || event.scroll?.depthBucket != null
   )).slice(0, 48);
@@ -1277,6 +1424,7 @@ function compactAnalysisForCodex(analysis, sessionId, eventLimit) {
       targetKind: cleanString(event.target?.kind) || "unknown",
       semanticKind: event.semanticKind || "",
       action: event.action || "",
+      ...(event.type === "drag" ? { drag: compactDragEvidence(event.drag) } : {}),
     }));
   const suppliedSequences = new Set(compactEvents.map((event) => event.sequence));
   const deterministicMoments = analysis.moments
@@ -1292,20 +1440,27 @@ function compactAnalysisForCodex(analysis, sessionId, eventLimit) {
     story: analysis.session.story,
     durationMs: analysis.session.durationMs,
     eventCount: analysis.source.eventCount,
+    interactionCount: analysis.stats.interactionCount,
     clickCount: analysis.stats.clickCount,
+    dragCount: analysis.stats.dragCount,
     journey: analysis.journey,
     stepDwell: Object.freeze(analysis.stepDwell.map((row) => Object.freeze({
       stepId: row.stepId,
       durationMs: row.durationMs,
       percentage: row.percentage,
       visitCount: row.visitCount,
+      interactionCount: row.interactionCount,
       clickCount: row.clickCount,
+      dragCount: row.dragCount,
     }))),
     transitions: analysis.transitions,
     activityBins: Object.freeze(analysis.timeline.activityBins.map((bin) => Object.freeze({
       startMs: bin.startMs,
       endMs: bin.endMs,
+      interactionCount: bin.interactionCount,
       clickCount: bin.clickCount,
+      dragCount: bin.dragCount,
+      semanticInteractionCount: bin.semanticInteractionCount,
       semanticClickCount: bin.semanticClickCount,
       dominantStepId: bin.dominantStepId,
       momentIds: bin.momentIds,
@@ -1368,6 +1523,16 @@ function serializableObject(value) {
   } catch {
     return {};
   }
+}
+
+function deepFreeze(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const nested of Object.values(value)) deepFreeze(nested);
+  return Object.freeze(value);
+}
+
+function isInteractionEvent(event) {
+  return INTERACTION_TYPES.has(event?.type);
 }
 
 function cleanString(value) {

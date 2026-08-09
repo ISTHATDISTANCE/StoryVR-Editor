@@ -97,6 +97,13 @@ const SOURCE_GRAPH_MODEL_THUMBNAIL_WIDTH = 256;
 const SOURCE_GRAPH_MODEL_THUMBNAIL_HEIGHT = 222;
 const FINAL_REVIEW_XR_TEXT_PANEL_WIDTH = 0.46;
 const FINAL_REVIEW_XR_TEXT_PANEL_HEIGHT = 0.252;
+const TEXT_PANEL_ACTION_HORIZONTAL_MARGIN = 0.04;
+const TEXT_PANEL_ACTION_MINIMUM_GAP = 0.04;
+const TEXT_PANEL_ACTION_CENTER_Y = 0.85;
+const TEXT_PANEL_ACTION_MIN_WIDTH = 0.08;
+const TEXT_PANEL_ACTION_MAX_WIDTH = 0.42;
+const TEXT_PANEL_ACTION_MIN_HEIGHT = 0.06;
+const TEXT_PANEL_ACTION_MAX_HEIGHT = 0.08;
 const READER_UI_RENDER_ORDER = 20_000;
 const FINAL_REVIEW_DESKTOP_PANEL_REFERENCE_FOV = 42;
 const FINAL_REVIEW_DIRECT_GHOST_OPACITY = 0.32;
@@ -116,6 +123,7 @@ const IN_BEAT_INTERACTIONS_SCHEMA = "storyvr-in-beat-interactions/v1";
 const CURRENT_SPATIAL_RELATIONS_INFERENCE_VERSION = "per-scene-exact-assets-v3";
 const SPATIAL_TRANSFORM_POSITION_LIMIT = 1_000_000;
 const SPATIAL_TRANSFORM_SCALE_LIMIT = 1_000_000;
+const MAX_SPATIAL_TRANSFORM_DRAG_PATH_POINTS = 256;
 const STORY_BUILD_STATUS_POLL_MS = 500;
 const STORY_BUILD_STATUS_RETRY_MS = 750;
 const STORY_BUILD_STATUS_MAX_CONSECUTIVE_FAILURES = 3;
@@ -1412,6 +1420,7 @@ function finalizeActiveStoryvrCanvasGesture() {
     : (isSpatialRelationsComponentId(state.activeId) || state.activeId === ATTENTION_GUIDANCE_COMPONENT_ID)
       ? textViewer
       : null;
+  if (viewer?.spatialTransformDrag) finalizeInterruptedSpatialTransformDrag(viewer);
   const transformControls = viewer?.transformControls;
   const transformActive = Boolean(
     transformControls?.dragging
@@ -5282,8 +5291,77 @@ function assetIcon(asset) {
   return "ASSET";
 }
 
-function shortText(value) {
-  return String(value || "").replace(/\s+/g, " ").trim();
+function shortText(value, maxLength) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  const numericLimit = Number(maxLength);
+  if (!Number.isFinite(numericLimit)) return text;
+  const limit = Math.max(0, Math.floor(numericLimit));
+  const characters = Array.from(text);
+  if (characters.length <= limit) return text;
+  if (limit === 0) return "";
+  if (limit === 1) return "…";
+  return `${characters.slice(0, limit - 1).join("").trimEnd()}…`;
+}
+
+function normalizeTextPanelActionPresentation(presentation, {
+  fallbackLabel = "Select",
+  fallbackPosition = [0.5, TEXT_PANEL_ACTION_CENTER_Y],
+  fallbackSize = [0.32, TEXT_PANEL_ACTION_MAX_HEIGHT],
+} = {}) {
+  const finiteValue = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const width = THREE.MathUtils.clamp(
+    finiteValue(presentation?.size?.[0], fallbackSize[0]),
+    TEXT_PANEL_ACTION_MIN_WIDTH,
+    TEXT_PANEL_ACTION_MAX_WIDTH,
+  );
+  const height = THREE.MathUtils.clamp(
+    finiteValue(presentation?.size?.[1], fallbackSize[1]),
+    TEXT_PANEL_ACTION_MIN_HEIGHT,
+    TEXT_PANEL_ACTION_MAX_HEIGHT,
+  );
+  const minimumX = TEXT_PANEL_ACTION_HORIZONTAL_MARGIN + (width / 2);
+  const maximumX = 1 - TEXT_PANEL_ACTION_HORIZONTAL_MARGIN - (width / 2);
+  return {
+    ...(presentation || {}),
+    label: shortText(presentation?.label || fallbackLabel, 80) || fallbackLabel,
+    position: [
+      THREE.MathUtils.clamp(finiteValue(presentation?.position?.[0], fallbackPosition[0]), minimumX, maximumX),
+      TEXT_PANEL_ACTION_CENTER_Y,
+    ],
+    size: [width, height],
+  };
+}
+
+function textPanelActionPresentationsOverlap(left, right, minimumGap = TEXT_PANEL_ACTION_MINIMUM_GAP) {
+  if (!left || !right) return false;
+  const leftRightEdge = left.position[0] + (left.size[0] / 2);
+  const rightLeftEdge = right.position[0] - (right.size[0] / 2);
+  return rightLeftEdge - leftRightEdge < minimumGap;
+}
+
+function normalizeTextPanelActionPair(left, right, {
+  leftVisible = true,
+  rightVisible = true,
+} = {}) {
+  let normalizedLeft = normalizeTextPanelActionPresentation(left);
+  let normalizedRight = normalizeTextPanelActionPresentation(right);
+  if (leftVisible && rightVisible && textPanelActionPresentationsOverlap(normalizedLeft, normalizedRight)) {
+    normalizedLeft = {
+      ...normalizedLeft,
+      position: [
+        TEXT_PANEL_ACTION_HORIZONTAL_MARGIN + (normalizedLeft.size[0] / 2),
+        TEXT_PANEL_ACTION_CENTER_Y,
+      ],
+    };
+    normalizedRight = {
+      ...normalizedRight,
+      position: [
+        1 - TEXT_PANEL_ACTION_HORIZONTAL_MARGIN - (normalizedRight.size[0] / 2),
+        TEXT_PANEL_ACTION_CENTER_Y,
+      ],
+    };
+  }
+  return [normalizedLeft, normalizedRight];
 }
 
 function dedupeAssetReferences(assets) {
@@ -10376,11 +10454,14 @@ function renderInteractionControllerEditor(editorContext) {
 function renderInteractionUiPanelEditor(editorContext) {
   const configuration = editorContext.configuration;
   const button = configuration.buttons[0];
+  const previewButton = normalizeTextPanelActionPresentation(button, {
+    fallbackLabel: "Continue",
+  });
   const beat = interactionPreviewBeatForSceneContext(selectedInteractionControlBase(), editorContext.sceneContext) || editorContext.beat;
   const option = sourceGraphVariantOption(editorContext.sceneContext);
   const title = option?.label || beat?.title || editorContext.fromLabel;
   const body = option?.text || beat?.text || beat?.excerpt || "";
-  const style = `left:${button.position[0] * 100}%;top:${button.position[1] * 100}%;width:${button.size[0] * 100}%;height:${button.size[1] * 100}%`;
+  const style = `left:${previewButton.position[0] * 100}%;top:${previewButton.position[1] * 100}%;width:${previewButton.size[0] * 100}%;height:${previewButton.size[1] * 100}%`;
   return `
     <div class="interaction-option-editor ui-panel" data-interaction-option-editor="ui-button-press">
       <div class="interaction-editor-toolbar"><div><strong>Final reader text panel</strong><span>${escapeHtml(editorContext.fromLabel)} → ${escapeHtml(editorContext.toLabel)}</span></div><span class="interaction-default-pill">Ray-clickable</span></div>
@@ -10388,18 +10469,18 @@ function renderInteractionUiPanelEditor(editorContext) {
         <section class="interaction-config-card interaction-ui-panel-stage">
           <div class="interaction-ui-panel-preview" data-interaction-ui-panel-preview>
             <div class="interaction-ui-panel-copy"><small>StoryVR</small><h3>${escapeHtml(title)}</h3><p>${escapeHtml(body || "No story text is available for this choice.")}</p></div>
-            <button type="button" class="interaction-ui-button-preview" data-interaction-ui-button-preview style="${style}" aria-label="Drag button to position it on the text panel">${escapeHtml(button.label)}</button>
+            <button type="button" class="interaction-ui-button-preview" data-interaction-ui-button-preview style="${style}" aria-label="Drag button to position it on the text panel">${escapeHtml(previewButton.label)}</button>
           </div>
           <p class="topology-viewer-hint">This uses the active choice’s exact authored title and story text. Drag the button to place it; the final reader consumes the same normalized position and label.</p>
         </section>
         <aside class="interaction-config-card">
           <h3>Button</h3>
-          <label>Text<input data-interaction-ui-button-label value="${escapeHtml(button.label)}" maxlength="80" /></label>
+          <label>Text<input data-interaction-ui-button-label value="${escapeHtml(previewButton.label)}" maxlength="80" /></label>
           <div class="interaction-transform-grid compact">
-            <label>Horizontal position<input type="number" min="0" max="1" step="0.01" data-interaction-ui-button-position="0" value="${formatNumber(button.position[0])}" /></label>
-            <label>Vertical position<input type="number" min="0" max="1" step="0.01" data-interaction-ui-button-position="1" value="${formatNumber(button.position[1])}" /></label>
-            <label>Width<input type="number" min="0.08" max="0.9" step="0.01" data-interaction-ui-button-size="0" value="${formatNumber(button.size[0])}" /></label>
-            <label>Height<input type="number" min="0.06" max="0.4" step="0.01" data-interaction-ui-button-size="1" value="${formatNumber(button.size[1])}" /></label>
+            <label>Horizontal position<input type="number" min="0" max="1" step="0.01" data-interaction-ui-button-position="0" value="${formatNumber(previewButton.position[0])}" /></label>
+            <label>Vertical center<input type="number" min="${TEXT_PANEL_ACTION_CENTER_Y}" max="${TEXT_PANEL_ACTION_CENTER_Y}" step="0.01" data-interaction-ui-button-position="1" value="${formatNumber(previewButton.position[1])}" readonly /></label>
+            <label>Width<input type="number" min="${TEXT_PANEL_ACTION_MIN_WIDTH}" max="${TEXT_PANEL_ACTION_MAX_WIDTH}" step="0.01" data-interaction-ui-button-size="0" value="${formatNumber(previewButton.size[0])}" /></label>
+            <label>Height<input type="number" min="${TEXT_PANEL_ACTION_MIN_HEIGHT}" max="${TEXT_PANEL_ACTION_MAX_HEIGHT}" step="0.01" data-interaction-ui-button-size="1" value="${formatNumber(previewButton.size[1])}" /></label>
           </div>
           <p class="muted">Coordinates are normalized to the panel, so the layout remains stable across desktop and headset rendering sizes.</p>
         </aside>
@@ -12216,12 +12297,12 @@ function bindInteractionOptionEditorEvents() {
 
   root.querySelector("[data-interaction-ui-button-label]")?.addEventListener("change", (event) => {
     commitInteractionEditorMutation("Edit UI button text", (configuration) => {
-      configuration.buttons[0].label = event.currentTarget.value;
+      configuration.buttons[0].label = shortText(event.currentTarget.value, 80) || "Continue";
     });
   });
   root.querySelector("[data-interaction-ui-button-label]")?.addEventListener("input", (event) => {
     const preview = root.querySelector("[data-interaction-ui-button-preview]");
-    if (preview) preview.textContent = event.currentTarget.value || "Continue";
+    if (preview) preview.textContent = shortText(event.currentTarget.value, 80) || "Continue";
   });
   for (const input of root.querySelectorAll("[data-interaction-ui-button-position], [data-interaction-ui-button-size]")) {
     input.addEventListener("change", () => {
@@ -12229,6 +12310,11 @@ function bindInteractionOptionEditorEvents() {
         const property = input.hasAttribute("data-interaction-ui-button-position") ? "position" : "size";
         const index = Number(input.dataset.interactionUiButtonPosition ?? input.dataset.interactionUiButtonSize);
         configuration.buttons[0][property][index] = Number(input.value);
+        const normalized = normalizeTextPanelActionPresentation(configuration.buttons[0], {
+          fallbackLabel: "Continue",
+        });
+        configuration.buttons[0].position = normalized.position;
+        configuration.buttons[0].size = normalized.size;
       });
     });
   }
@@ -12527,10 +12613,15 @@ function bindInteractionUiButtonDrag(root) {
       const rect = panel.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
       const button = editorContext.configuration.buttons[0];
-      button.position = [
-        Math.max(button.size[0] / 2, Math.min(1 - button.size[0] / 2, (moveEvent.clientX - rect.left) / rect.width)),
-        Math.max(button.size[1] / 2, Math.min(1 - button.size[1] / 2, (moveEvent.clientY - rect.top) / rect.height)),
-      ];
+      const normalized = normalizeTextPanelActionPresentation({
+        ...button,
+        position: [
+          (moveEvent.clientX - rect.left) / rect.width,
+          (moveEvent.clientY - rect.top) / rect.height,
+        ],
+      }, { fallbackLabel: "Continue" });
+      button.position = normalized.position;
+      button.size = normalized.size;
       preview.style.left = `${button.position[0] * 100}%`;
       preview.style.top = `${button.position[1] * 100}%`;
     };
@@ -21183,9 +21274,27 @@ function updateFinalReviewTextPanelViewport(viewer) {
   const group = viewer?.finalReviewTextGroup;
   if (!group || viewer.renderer?.xr?.isPresenting || viewer.xrGrabEntry) return;
   const side = viewer.readerHandRig?.handedness === "right" ? -1 : 1;
-  const offsetX = Number(state.finalReviewTextPanelOffset?.x) || 0;
-  const offsetY = Number(state.finalReviewTextPanelOffset?.y) || 0;
-  group.position.set((0.25 * side) + offsetX, 0.115 + offsetY, -0.32);
+  const camera = finalReviewRenderCamera(viewer);
+  const numericAspect = Number(camera?.aspect || viewer?.camera?.aspect);
+  const compactness = THREE.MathUtils.clamp(
+    (0.92 - (Number.isFinite(numericAspect) ? numericAspect : 1)) / 0.46,
+    0,
+    1,
+  );
+  const maximumOffsetX = THREE.MathUtils.lerp(0.2, 0.04, compactness);
+  const offsetX = THREE.MathUtils.clamp(
+    Number(state.finalReviewTextPanelOffset?.x) || 0,
+    -maximumOffsetX,
+    maximumOffsetX,
+  );
+  const maximumOffsetY = THREE.MathUtils.lerp(0.35, 0.12, compactness);
+  const offsetY = THREE.MathUtils.clamp(
+    Number(state.finalReviewTextPanelOffset?.y) || 0,
+    -maximumOffsetY,
+    maximumOffsetY,
+  );
+  const safePanelX = THREE.MathUtils.lerp(0.25, 0.08, compactness);
+  group.position.set((safePanelX * side) + offsetX, 0.115 + offsetY, -0.32);
   group.rotation.set(-0.16, -0.12 * side, 0);
 }
 
@@ -22001,11 +22110,11 @@ function setFinalReviewTextPanelScrollLine(viewer, value) {
 }
 
 function makeFinalReviewTextPanelButton(presentation, action, targetContext, disabled) {
-  const widthRatio = THREE.MathUtils.clamp(Number(presentation?.size?.[0]) || 0.32, 0.04, 1);
-  const heightRatio = THREE.MathUtils.clamp(Number(presentation?.size?.[1]) || 0.12, 0.04, 1);
-  const x = THREE.MathUtils.clamp(Number(presentation?.position?.[0]) || 0.5, widthRatio / 2, 1 - (widthRatio / 2));
-  const y = THREE.MathUtils.clamp(Number(presentation?.position?.[1]) || 0.86, heightRatio / 2, 1 - (heightRatio / 2));
-  const label = String(presentation?.label || "Select").trim();
+  const safePresentation = normalizeTextPanelActionPresentation(presentation);
+  const widthRatio = safePresentation.size[0];
+  const heightRatio = safePresentation.size[1];
+  const [x, y] = safePresentation.position;
+  const label = safePresentation.label;
   const mesh = new THREE.Mesh(
     new THREE.PlaneGeometry(
       FINAL_REVIEW_XR_TEXT_PANEL_WIDTH * widthRatio,
@@ -22033,8 +22142,28 @@ function makeFinalReviewTextPanelButton(presentation, action, targetContext, dis
   mesh.userData.finalReviewTextPanelDisabled = Boolean(disabled);
   mesh.userData.finalReviewVariantTargetContext = targetContext;
   mesh.userData.finalReviewTextPanelLabel = label;
-  mesh.userData.finalReviewTextPanelButtonId = presentation?.id || null;
+  mesh.userData.finalReviewTextPanelButtonId = safePresentation.id || null;
   return mesh;
+}
+
+function canvasEllipsizedText(ctx, text, maxWidth) {
+  const value = String(text || "");
+  if (ctx.measureText(value).width <= maxWidth) return value;
+  const characters = Array.from(value);
+  let lower = 0;
+  let upper = characters.length;
+  let fitted = "…";
+  while (lower <= upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    const candidate = `${characters.slice(0, middle).join("").trimEnd()}…`;
+    if (ctx.measureText(candidate).width <= maxWidth) {
+      fitted = candidate;
+      lower = middle + 1;
+    } else {
+      upper = middle - 1;
+    }
+  }
+  return fitted;
 }
 
 function makeFinalReviewTextPanelButtonTexture(label) {
@@ -22049,16 +22178,18 @@ function makeFinalReviewTextPanelButtonTexture(label) {
   context.strokeStyle = "rgba(110, 216, 194, 0.96)";
   context.strokeRect(8, 8, canvas.width - 16, canvas.height - 16);
   context.fillStyle = "#f6f2e7";
-  const buttonLabel = String(label || "Select").slice(0, 80);
+  const buttonLabel = shortText(label || "Select", 80);
+  const maximumLabelWidth = canvas.width - 56;
   let fontSize = 58;
   context.font = `800 ${fontSize}px sans-serif`;
-  while (fontSize > 24 && context.measureText(buttonLabel).width > canvas.width - 56) {
+  while (fontSize > 24 && context.measureText(buttonLabel).width > maximumLabelWidth) {
     fontSize -= 2;
     context.font = `800 ${fontSize}px sans-serif`;
   }
+  const fittedLabel = canvasEllipsizedText(context, buttonLabel, maximumLabelWidth);
   context.textAlign = "center";
   context.textBaseline = "middle";
-  context.fillText(buttonLabel, canvas.width / 2, (canvas.height / 2) + 3);
+  context.fillText(fittedLabel, canvas.width / 2, (canvas.height / 2) + 3, maximumLabelWidth);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   return texture;
@@ -22464,9 +22595,10 @@ function finalReviewTextPanelVariantLayout(canvasHeight) {
     ? Number(canvasHeight)
     : 512;
   return {
-    bodyMaxLines: 4,
-    statusBaseline: Math.round(height * 0.74),
-    controlBandTop: Math.round(height * 0.78),
+    bodyMaxLines: 3,
+    statusBaseline: Math.round(height * 0.66),
+    footerBaseline: Math.round(height * 0.735),
+    controlBandTop: Math.round(height * 0.77),
   };
 }
 
@@ -22479,8 +22611,7 @@ function makeFinalReviewTextTexture(beat, region, variantState = null, requested
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   drawRoundRect(ctx, 24, 24, canvas.width - 48, canvas.height - 48, 34, "rgba(255,253,244,1)");
   ctx.fillStyle = "#10201c";
-  ctx.font = "900 48px Avenir Next, Gill Sans, sans-serif";
-  wrapCanvasText(ctx, shortText(beat?.title || "Story part", 86), 64, 96, 900, 54, 2);
+  drawFittedFinalReviewTitle(ctx, beat?.title || "Story part", 64, 96, 800);
   ctx.fillStyle = "#354842";
   ctx.font = "700 30px Avenir Next, Gill Sans, sans-serif";
   const pagination = wrapCanvasText(
@@ -22514,7 +22645,7 @@ function makeFinalReviewTextTexture(beat, region, variantState = null, requested
   const footer = pagination.maxScrollLine > 0
     ? `Drag / wheel / Trigger-drag to scroll · lines ${pagination.scrollLine + 1}–${Math.min(pagination.lineCount, pagination.scrollLine + pagination.maxLines)} of ${pagination.lineCount} · Grip / title to move`
     : "Trigger for UI buttons · Grip to grab";
-  ctx.fillText(footer, 64, 478, 896);
+  ctx.fillText(footer, 64, variantLayout?.footerBaseline || 478, 896);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.userData.storyvrTextPanelPagination = pagination;
@@ -22526,16 +22657,62 @@ function canvasWrappedTextLines(ctx, text, maxWidth) {
   const lines = [];
   let line = "";
   for (const word of words) {
-    const next = line ? `${line} ${word}` : word;
-    if (ctx.measureText(next).width > maxWidth && line) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = next;
+    const chunks = [];
+    let chunk = "";
+    for (const character of Array.from(word)) {
+      const nextChunk = `${chunk}${character}`;
+      if (chunk && ctx.measureText(nextChunk).width > maxWidth) {
+        chunks.push(chunk);
+        chunk = character;
+      } else {
+        chunk = nextChunk;
+      }
+    }
+    if (chunk) chunks.push(chunk);
+    for (const [chunkIndex, wordChunk] of chunks.entries()) {
+      const separator = line && chunkIndex === 0 ? " " : "";
+      const next = `${line}${separator}${wordChunk}`;
+      if (line && ctx.measureText(next).width > maxWidth) {
+        lines.push(line);
+        line = wordChunk;
+      } else {
+        line = next;
+      }
     }
   }
   if (line) lines.push(line);
   return lines.length ? lines : [""];
+}
+
+function drawFittedFinalReviewTitle(ctx, text, x, y, maxWidth) {
+  const title = shortText(text || "Story part", 86);
+  const maximumLines = 2;
+  const minimumFontSize = 32;
+  let fontSize = 48;
+  let lineHeight = 54;
+  let lines = [];
+  do {
+    ctx.font = `900 ${fontSize}px Avenir Next, Gill Sans, sans-serif`;
+    lineHeight = Math.round(fontSize * 1.125);
+    lines = canvasWrappedTextLines(ctx, title, maxWidth);
+    if (lines.length <= maximumLines || fontSize === minimumFontSize) break;
+    fontSize = Math.max(minimumFontSize, fontSize - 2);
+  } while (fontSize >= minimumFontSize);
+  const visibleLines = lines.slice(0, maximumLines);
+  if (lines.length > maximumLines && visibleLines.length) {
+    const lastIndex = visibleLines.length - 1;
+    visibleLines[lastIndex] = canvasEllipsizedText(ctx, `${visibleLines[lastIndex]}…`, maxWidth);
+  }
+  visibleLines.forEach((line, index) => {
+    ctx.fillText(line, x, y + (index * lineHeight), maxWidth);
+  });
+  return {
+    fontSize,
+    lineHeight,
+    lineCount: lines.length,
+    renderedLineCount: visibleLines.length,
+    truncated: lines.length > maximumLines,
+  };
 }
 
 function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight, maxLines, requestedScrollLine = 0) {
@@ -25360,6 +25537,7 @@ function initializeSpatialRelationsViewer(active) {
     transformSelectionGroup: null,
     transformSelectionStart: null,
     transformMutationActive: false,
+    spatialTransformDrag: null,
     selectionHelpers: [],
     selectionPointerGesture: null,
     selectionMarquee,
@@ -25406,6 +25584,25 @@ function initializeSpatialRelationsViewer(active) {
     viewer.navigationTransformFinalized = false;
     pushSpatialUndoSnapshot();
     const selectedEntities = selectedSpatialRelationEntities(draft);
+    const primaryEntity = selectedSpatialRelationEntity(draft) || selectedEntities[0] || null;
+    viewer.spatialTransformDrag = primaryEntity
+      ? {
+          pointerId: null,
+          startedAt: null,
+          moved: false,
+          operation: String(transformControls.mode || state.spatialTransformMode || "translate"),
+          axis: String(transformControls.axis || ""),
+          semanticTarget: {
+            kind: "spatial-scene-object",
+            label: spatialRelationEntityLabel(primaryEntity) || primaryEntity.id,
+            entityId: primaryEntity.id,
+            assetId: primaryEntity.assetId,
+            action: "drag-spatial-object",
+          },
+          objects: selectedEntities.map(spatialTransformDragObjectSnapshot).filter(Boolean),
+          path: [],
+        }
+      : null;
     viewer.transformScaleStart = transformControls.object?.scale?.clone?.() || null;
     viewer.transformScaleDriverIndex = null;
     viewer.transformSelectionStart = selectedEntities.length > 1
@@ -25538,6 +25735,12 @@ function initializeSpatialRelationsViewer(active) {
   viewer.pointerDownHandler = (event) => {
     if (event.button !== 0 || event.isPrimary === false) return;
     const startedOnTransformGizmo = Boolean(transformControls.dragging || transformControls.axis);
+    if (startedOnTransformGizmo && viewer.spatialTransformDrag) {
+      viewer.spatialTransformDrag.pointerId = event.pointerId;
+      viewer.spatialTransformDrag.startedAt = spatialTransformDragEventTime(event);
+      viewer.spatialTransformDrag.eventTarget = event.target || renderer.domElement;
+      appendSpatialTransformDragPoint(viewer.spatialTransformDrag, event);
+    }
     const entityId = startedOnTransformGizmo ? null : spatialEntityIdAtPointer(event);
     viewer.selectionPointerGesture = {
       pointerId: event.pointerId,
@@ -25557,13 +25760,19 @@ function initializeSpatialRelationsViewer(active) {
   viewer.pointerMoveHandler = (event) => {
     const gesture = viewer.selectionPointerGesture;
     if (!gesture || gesture.pointerId !== event.pointerId) return;
+    appendSpatialTransformDragPoint(viewer.spatialTransformDrag, event);
     const deltaX = event.clientX - gesture.clientX;
     const deltaY = event.clientY - gesture.clientY;
     gesture.currentX = event.clientX;
     gesture.currentY = event.clientY;
     if (deltaX * deltaX + deltaY * deltaY <= clickMovementThresholdSquared) return;
     gesture.moved = true;
-    if (gesture.startedOnTransformGizmo) return;
+    if (gesture.startedOnTransformGizmo) {
+      if (viewer.spatialTransformDrag?.pointerId === event.pointerId) {
+        viewer.spatialTransformDrag.moved = true;
+      }
+      return;
+    }
     event.preventDefault();
     updateSpatialSelectionMarquee(
       selectionMarquee,
@@ -25587,9 +25796,17 @@ function initializeSpatialRelationsViewer(active) {
     const deltaX = event.clientX - gesture.clientX;
     const deltaY = event.clientY - gesture.clientY;
     const moved = gesture.moved || deltaX * deltaX + deltaY * deltaY > clickMovementThresholdSquared;
+    if (gesture.startedOnTransformGizmo) {
+      if (viewer.spatialTransformDrag?.pointerId === event.pointerId) {
+        viewer.spatialTransformDrag.moved ||= moved;
+      }
+      if (event.button === 0 && !viewer.disposed && !transformControls.dragging) {
+        finalizeSpatialTransformDrag(viewer, event);
+      } else viewer.spatialTransformDrag = null;
+      return;
+    }
     if (
       event.button !== 0
-      || gesture.startedOnTransformGizmo
       || viewer.disposed
       || transformControls.dragging
     ) return;
@@ -25642,6 +25859,18 @@ function initializeSpatialRelationsViewer(active) {
     }
   };
   viewer.pointerCancelHandler = (event) => {
+    if (viewer.spatialTransformDrag?.pointerId === event.pointerId) {
+      const gesture = viewer.selectionPointerGesture;
+      if (gesture?.pointerId === event.pointerId) {
+        const deltaX = event.clientX - gesture.clientX;
+        const deltaY = event.clientY - gesture.clientY;
+        viewer.spatialTransformDrag.moved ||= gesture.moved
+          || deltaX * deltaX + deltaY * deltaY > clickMovementThresholdSquared;
+      }
+      hideSelectionMarquee();
+      finalizeInterruptedSpatialTransformDrag(viewer, event);
+      return;
+    }
     if (viewer.selectionPointerGesture?.pointerId !== event.pointerId) return;
     viewer.selectionPointerGesture = null;
     hideSelectionMarquee();
@@ -27584,6 +27813,131 @@ function updateSpatialSelectionMarquee(element, selectionRectangle, containerRec
   element.style.height = `${selectionRectangle.height}px`;
 }
 
+function spatialTransformDragEventTime(event) {
+  const eventTime = Number(event?.timeStamp);
+  if (Number.isFinite(eventTime) && eventTime >= 0) return eventTime;
+  const performanceTime = Number(globalThis.performance?.now?.());
+  return Number.isFinite(performanceTime) ? performanceTime : Date.now();
+}
+
+function appendSpatialTransformDragPoint(drag, event) {
+  if (!drag || drag.pointerId !== event?.pointerId) return false;
+  const clientX = Number(event.clientX);
+  const clientY = Number(event.clientY);
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
+  const startedAt = Number.isFinite(drag.startedAt)
+    ? drag.startedAt
+    : spatialTransformDragEventTime(event);
+  const point = {
+    clientX,
+    clientY,
+    elapsedMs: Math.max(0, spatialTransformDragEventTime(event) - startedAt),
+  };
+  if (!Array.isArray(drag.path)) drag.path = [];
+  if (drag.path.length >= MAX_SPATIAL_TRANSFORM_DRAG_PATH_POINTS) {
+    const compacted = [drag.path[0]];
+    for (let index = 2; index < drag.path.length; index += 2) compacted.push(drag.path[index]);
+    drag.path = compacted;
+  }
+  drag.path.push(point);
+  return true;
+}
+
+function spatialTransformDragObjectSnapshot(entity) {
+  if (!entity?.id) return null;
+  return {
+    entityId: String(entity.id),
+    assetId: entity.assetId ? String(entity.assetId) : null,
+    label: spatialRelationEntityLabel(entity) || String(entity.id),
+    before: normalizeSpatialTransform(entity.transform, entity.inferredTransform),
+  };
+}
+
+function finalizeSpatialTransformDrag(viewer, event, options = {}) {
+  const drag = viewer?.spatialTransformDrag;
+  if (!drag || drag.pointerId !== event?.pointerId) return false;
+  appendSpatialTransformDragPoint(drag, event);
+  viewer.spatialTransformDrag = null;
+  const endedAt = spatialTransformDragEventTime(event);
+  const startedAt = Number.isFinite(drag.startedAt) ? drag.startedAt : endedAt;
+  const durationMs = Math.max(0, endedAt - startedAt);
+  const objects = drag.objects.map((object) => {
+    const entity = spatialRelationEntityById(state.spatialRelationsDraft, object.entityId);
+    return {
+      ...object,
+      after: entity
+        ? normalizeSpatialTransform(entity.transform, entity.inferredTransform)
+        : normalizeSpatialTransform(object.before),
+    };
+  });
+  const transformChanged = objects.some((object) => !spatialTransformsEqual(object.before, object.after));
+  if (!drag.moved && !transformChanged) return false;
+  const path = drag.path.map((point) => ({
+    ...point,
+    elapsedMs: Math.min(durationMs, point.elapsedMs),
+  }));
+  return interactionLogger.recordDrag(event, drag.semanticTarget, {
+    durationMs,
+    path,
+    operation: drag.operation,
+    axis: drag.axis,
+    objects,
+    ...(options.interrupted === true ? { interrupted: true } : {}),
+  });
+}
+
+function spatialTransformDragInterruptionEvent(viewer, event = null) {
+  const drag = viewer?.spatialTransformDrag;
+  if (!drag) return null;
+  if (event?.pointerId === drag.pointerId) return event;
+  const lastPoint = Array.isArray(drag.path) ? drag.path[drag.path.length - 1] : null;
+  return {
+    type: "pointercancel",
+    pointerId: drag.pointerId,
+    clientX: Number.isFinite(lastPoint?.clientX) ? lastPoint.clientX : 0,
+    clientY: Number.isFinite(lastPoint?.clientY) ? lastPoint.clientY : 0,
+    button: 0,
+    target: drag.eventTarget || viewer?.renderer?.domElement || null,
+    timeStamp: spatialTransformDragEventTime(null),
+  };
+}
+
+function finalizeInterruptedSpatialTransformDrag(viewer, event = null) {
+  const drag = viewer?.spatialTransformDrag;
+  if (!drag) return false;
+  const interruptionEvent = spatialTransformDragInterruptionEvent(viewer, event);
+  const transformControls = viewer?.transformControls;
+  const domElement = transformControls?.domElement || viewer?.renderer?.domElement;
+  if (transformControls?._onPointerMove && domElement?.removeEventListener) {
+    domElement.removeEventListener("pointermove", transformControls._onPointerMove);
+  }
+  let controlError = null;
+  try {
+    if (transformControls?.dragging) {
+      if (typeof transformControls.pointerUp === "function") transformControls.pointerUp(null);
+      else transformControls.dispatchEvent?.({ type: "mouseUp" });
+    }
+  } catch (error) {
+    controlError = error;
+  } finally {
+    if (transformControls) {
+      transformControls.dragging = false;
+      transformControls.axis = null;
+    }
+    if (viewer?.controls) viewer.controls.enabled = true;
+  }
+  const pointerId = drag.pointerId;
+  let logged = false;
+  try {
+    logged = finalizeSpatialTransformDrag(viewer, interruptionEvent, { interrupted: true });
+  } finally {
+    if (domElement?.hasPointerCapture?.(pointerId)) domElement.releasePointerCapture?.(pointerId);
+    if (viewer.selectionPointerGesture?.pointerId === pointerId) viewer.selectionPointerGesture = null;
+  }
+  if (controlError) throw controlError;
+  return logged;
+}
+
 function syncSpatialSelectionHelpers(viewer, objects) {
   if (!viewer?.scene) return;
   for (const helper of viewer.selectionHelpers || []) {
@@ -28374,25 +28728,15 @@ function makeTextPanelTexture(beat, placement, kind) {
 }
 
 function drawWrappedCanvasText(ctx, text, x, y, maxWidth, lineHeight, maxLines) {
-  const words = String(text || "").replace(/\s+/g, " ").trim().split(" ");
-  let line = "";
-  let lineCount = 0;
-  for (const word of words) {
-    const test = line ? `${line} ${word}` : word;
-    if (ctx.measureText(test).width > maxWidth && line) {
-      lineCount += 1;
-      if (lineCount >= maxLines) {
-        ctx.fillText(`${line.replace(/\s+\S*$/, "")}...`, x, y);
-        return;
-      }
-      ctx.fillText(line, x, y);
-      line = word;
-      y += lineHeight;
-    } else {
-      line = test;
-    }
+  const lines = canvasWrappedTextLines(ctx, text, maxWidth);
+  const visibleLines = lines.slice(0, maxLines);
+  if (lines.length > maxLines && visibleLines.length) {
+    const lastIndex = visibleLines.length - 1;
+    visibleLines[lastIndex] = canvasEllipsizedText(ctx, `${visibleLines[lastIndex]}…`, maxWidth);
   }
-  if (line && lineCount < maxLines) ctx.fillText(line, x, y);
+  visibleLines.forEach((line, index) => {
+    ctx.fillText(line, x, y + (index * lineHeight), maxWidth);
+  });
 }
 
 function makeTextAnchorMarker(position, labelText) {
@@ -31481,6 +31825,7 @@ function disposeContextLayeringViewer() {
 
 function disposeTextComfortViewer() {
   if (!textViewer) return;
+  if (textViewer.spatialTransformDrag) finalizeInterruptedSpatialTransformDrag(textViewer);
   textViewer.disposed = true;
   if (textViewer.animationId) cancelAnimationFrame(textViewer.animationId);
   if (textViewer.resizeHandler) window.removeEventListener("resize", textViewer.resizeHandler);
@@ -31497,6 +31842,7 @@ function disposeTextComfortViewer() {
     }
     textViewer.selectionPointerGesture = null;
   }
+  textViewer.spatialTransformDrag = null;
   textViewer.selectionMarquee?.remove?.();
   textViewer.transformControls?.detach?.();
   textViewer.transformControls?.dispose?.();
@@ -32603,7 +32949,7 @@ function finalReviewVariantButtonPresentation(record, fallbackLabel, fallbackPos
     : null;
   const authoredLayout = record?.overridden === true || record?.authored === true;
   const position = authoredLayout && Array.isArray(button?.position) ? button.position : fallbackPosition;
-  const size = authoredLayout && Array.isArray(button?.size) ? button.size : [0.32, 0.12];
+  const size = authoredLayout && Array.isArray(button?.size) ? button.size : [0.32, 0.08];
   const finiteValue = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
   return {
     id: String(button?.id || ""),
@@ -32614,21 +32960,9 @@ function finalReviewVariantButtonPresentation(record, fallbackLabel, fallbackPos
     ],
     size: [
       THREE.MathUtils.clamp(finiteValue(size?.[0], 0.32), 0.04, 1),
-      THREE.MathUtils.clamp(finiteValue(size?.[1], 0.12), 0.04, 1),
+      THREE.MathUtils.clamp(finiteValue(size?.[1], 0.08), 0.04, 1),
     ],
   };
-}
-
-function finalReviewVariantButtonPresentationsOverlap(left, right) {
-  if (!left || !right) return false;
-  const leftWidth = Number(left.size?.[0]) || 0.32;
-  const leftHeight = Number(left.size?.[1]) || 0.12;
-  const rightWidth = Number(right.size?.[0]) || 0.32;
-  const rightHeight = Number(right.size?.[1]) || 0.12;
-  return Math.abs((Number(left.position?.[0]) || 0.5) - (Number(right.position?.[0]) || 0.5))
-      < ((leftWidth + rightWidth) / 2)
-    && Math.abs((Number(left.position?.[1]) || 0.86) - (Number(right.position?.[1]) || 0.86))
-      < ((leftHeight + rightHeight) / 2);
 }
 
 function finalReviewTextPanelVariantState(beat, sceneContext) {
@@ -32653,17 +32987,18 @@ function finalReviewTextPanelVariantState(beat, sceneContext) {
   let previousPresentation = finalReviewVariantButtonPresentation(
     previousInteraction,
     group.control?.previousLabel || "Previous",
-    [0.2, 0.86],
+    [0.2, TEXT_PANEL_ACTION_CENTER_Y],
   );
   let nextPresentation = finalReviewVariantButtonPresentation(
     nextInteraction,
     group.control?.nextLabel || "Next",
-    [0.8, 0.86],
+    [0.8, TEXT_PANEL_ACTION_CENTER_Y],
   );
-  if (!previousDisabled && !nextDisabled && finalReviewVariantButtonPresentationsOverlap(previousPresentation, nextPresentation)) {
-    previousPresentation = { ...previousPresentation, position: [0.2, 0.86] };
-    nextPresentation = { ...nextPresentation, position: [0.8, 0.86] };
-  }
+  [previousPresentation, nextPresentation] = normalizeTextPanelActionPair(
+    previousPresentation,
+    nextPresentation,
+    { leftVisible: !previousDisabled, rightVisible: !nextDisabled },
+  );
   return {
     group,
     selectedOption,
@@ -35975,10 +36310,10 @@ function interactionDefaultConfiguration(kind, context = {}) {
     const edge = context.edge || null;
     const targetLabel = edge ? storyVariantEndpointLabel(edge.to) : "Continue";
     const defaultPosition = context.variantDirection === "previous"
-      ? [0.2, 0.86]
+      ? [0.2, TEXT_PANEL_ACTION_CENTER_Y]
       : context.variantDirection === "next"
-        ? [0.8, 0.86]
-        : [0.5, 0.86];
+        ? [0.8, TEXT_PANEL_ACTION_CENTER_Y]
+        : [0.5, TEXT_PANEL_ACTION_CENTER_Y];
     return {
       schemaVersion: INTERACTION_CONFIGURATION_SCHEMA,
       type: "ui-button-press",
@@ -35987,7 +36322,7 @@ function interactionDefaultConfiguration(kind, context = {}) {
         label: targetLabel,
         action: edge ? "select-variant" : "next-beat",
         position: defaultPosition,
-        size: [0.32, 0.12],
+        size: [0.32, TEXT_PANEL_ACTION_MAX_HEIGHT],
       }],
     };
   }
@@ -36077,16 +36412,17 @@ function normalizeInteractionConfiguration(value, kind, context = {}) {
       .slice(0, 8)
       .map((button, index) => {
         const fallback = fallbackButtons[index] || fallbackButtons[0];
-        const x = interactionFiniteNumber(button?.position?.[0], fallback.position[0], 0, 1);
-        const y = interactionFiniteNumber(button?.position?.[1], fallback.position[1], 0, 1);
-        const width = interactionFiniteNumber(button?.size?.[0], fallback.size[0], 0.08, 0.9);
-        const height = interactionFiniteNumber(button?.size?.[1], fallback.size[1], 0.06, 0.4);
+        const presentation = normalizeTextPanelActionPresentation(button, {
+          fallbackLabel: fallback.label || "Continue",
+          fallbackPosition: fallback.position,
+          fallbackSize: fallback.size,
+        });
         return {
           id: String(button?.id || fallback.id || `button-${index + 1}`).trim(),
-          label: String(button?.label || fallback.label || "Continue").trim().slice(0, 80),
+          label: presentation.label,
           action: String(button?.action || fallback.action || "next-beat").trim(),
-          position: [Math.max(width / 2, Math.min(1 - width / 2, x)), Math.max(height / 2, Math.min(1 - height / 2, y))],
-          size: [width, height],
+          position: presentation.position,
+          size: presentation.size,
         };
       });
     return { ...defaults, buttons };

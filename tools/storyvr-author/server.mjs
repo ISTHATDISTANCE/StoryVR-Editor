@@ -77,6 +77,7 @@ const options = {
 };
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../..");
+const READER_DIST_BUILD_SCRIPT = path.join(REPO_ROOT, "tools", "storyvr-author", "build-reader-dist.mjs");
 const environmentPaths = resolveAuthorPaths(options);
 const environmentRepoRoot = hostingRootForPath(environmentPaths.storyFolder, REPO_ROOT);
 const environmentStore = createEnvironmentStore({
@@ -1213,7 +1214,8 @@ async function storyBuildReaderRun() {
     ? `node ${shellQuote(toPosix(path.relative(REPO_ROOT, instanceBuildScript)))} && `
     : "";
   const devCommand = `cd ${shellQuote(REPO_ROOT)} && ${instanceBuildPrefix}npx vite --host 127.0.0.1 --port ${devPort} --strictPort`;
-  const buildCommand = `cd ${shellQuote(REPO_ROOT)} && ${instanceBuildPrefix}npx vite build ${shellQuote(live.readerSourcePath)} --outDir ../dist-webxr-adaptation --base /${live.distPath}/ --emptyOutDir`;
+  const distFolder = path.join(environmentPaths.storyFolder, "dist-webxr-adaptation");
+  const buildCommand = `cd ${shellQuote(REPO_ROOT)} && ${instanceBuildPrefix}node ${shellQuote(READER_DIST_BUILD_SCRIPT)} ${shellQuote(live.readerSource)} ${shellQuote(distFolder)} ${shellQuote(live.buildBase)} ${shellQuote(REPO_ROOT)}`;
   const hostingRootArgument = layout.hostingRoot === REPO_ROOT
     ? ""
     : ` --root ${shellQuote(toPosix(path.relative(REPO_ROOT, layout.hostingRoot)))}`;

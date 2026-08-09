@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { build } from "vite";
@@ -11,6 +12,37 @@ if (!readerSourceArgument || !distFolderArgument || !buildBase || !dependencyRoo
 const readerSource = path.resolve(readerSourceArgument);
 const distFolder = path.resolve(distFolderArgument);
 const dependencyRoot = path.resolve(dependencyRootArgument);
+const textLayoutContractVersion = "storyvr-text-layout/v1";
+const textLayoutScriptMarker = `const STORYVR_TEXT_LAYOUT_CONTRACT_VERSION = "${textLayoutContractVersion}";`;
+const textLayoutStylesMarker = `/* STORYVR_TEXT_LAYOUT_CONTRACT_VERSION: ${textLayoutContractVersion} */`;
+
+function sourceHasExactMarker(source, marker) {
+  return String(source || "").split(/\r?\n/).some((line) => line.trim() === marker);
+}
+
+async function requireTextLayoutContract(filePath, marker, label) {
+  let source = "";
+  try {
+    source = await readFile(filePath, "utf8");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  if (!sourceHasExactMarker(source, marker)) {
+    throw new Error(`${label} ${filePath} is missing the ${textLayoutContractVersion} layout contract.`);
+  }
+}
+
+await requireTextLayoutContract(
+  path.join(readerSource, "src", "main.js"),
+  textLayoutScriptMarker,
+  "Reader source",
+);
+await requireTextLayoutContract(
+  path.join(readerSource, "src", "styles.css"),
+  textLayoutStylesMarker,
+  "Reader stylesheet",
+);
+
 const threePackageRoot = path.join(dependencyRoot, "node_modules", "three");
 const aliases = existsSync(threePackageRoot)
   ? [

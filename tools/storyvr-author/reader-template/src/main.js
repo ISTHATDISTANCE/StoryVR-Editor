@@ -55,6 +55,7 @@ const XR_TEXT_PANEL_WIDTH = 0.46;
 const XR_TEXT_PANEL_HEIGHT = 0.252;
 const XR_TEXT_PANEL_RENDER_ORDER = 20_000;
 const XR_TEXT_PANEL_RAY_LENGTH = 3.2;
+const STORYVR_TEXT_LAYOUT_CONTRACT_VERSION = "storyvr-text-layout/v1";
 const XR_CONTROLLER_CONFIGURATION_SCHEMA = "storyvr-interaction-configuration/v3";
 const XR_RESERVED_CONTROLLER_CONTROLS = new Set(["trigger", "grip", "menu"]);
 const XR_DIRECTIONAL_THUMBSTICK_CONTROLS = new Set([
@@ -184,6 +185,15 @@ const environmentInfo = document.querySelector("#environment-info");
 const prevButton = document.querySelector("#prev-beat");
 const nextButton = document.querySelector("#next-beat");
 const xrButtonSlot = document.querySelector("#xr-button-slot");
+
+function dockRuntimeStatusInReaderPanel() {
+  if (!status || !readerContent || status.parentElement === readerContent) return false;
+  readerContent.insertBefore(status, beatProgress || readerContent.firstChild);
+  status.classList.add("reader-status-inline");
+  return true;
+}
+
+dockRuntimeStatusInReaderPanel();
 
 const READER_STORY_GUIDANCE_PROFILES = Object.freeze({
   "shark-season-attacks-survival-tips": Object.freeze({
@@ -380,6 +390,7 @@ let xrTextPanelScrollGesture = null;
 let textPanelMinimized = false;
 let readerPanelDrag = null;
 let suppressReaderPanelToggleClick = false;
+let readerPanelResizeObserver = null;
 
 storyTitle.textContent = runtime.title || runtime.slug || "Interactive story";
 decisionRow.replaceChildren();
@@ -2083,10 +2094,15 @@ function normalizeRuntimeInteractionConfiguration(value, policy) {
       : source.button && typeof source.button === "object" ? [source.button] : [];
     const buttons = rawButtons.flatMap((button, index) => {
       if (!button || typeof button !== "object") return [];
-      const position = finiteInteractionArray(button.position, 2, [0.5, 0.86])
-        .map((component) => THREE.MathUtils.clamp(component, 0, 1));
-      const size = finiteInteractionArray(button.size, 2, [0.32, 0.12])
-        .map((component) => THREE.MathUtils.clamp(component, 0.04, 1));
+      const requestedPosition = finiteInteractionArray(button.position, 2, [0.5, 0.85]);
+      const requestedSize = finiteInteractionArray(button.size, 2, [0.32, 0.08]);
+      const widthRatio = THREE.MathUtils.clamp(requestedSize[0], 0.08, 0.42);
+      const heightRatio = THREE.MathUtils.clamp(requestedSize[1], 0.06, 0.08);
+      const position = [
+        THREE.MathUtils.clamp(requestedPosition[0], 0.04 + (widthRatio / 2), 0.96 - (widthRatio / 2)),
+        0.85,
+      ];
+      const size = [widthRatio, heightRatio];
       return [{
         ...button,
         id: String(button.id || `button-${index + 1}`),
@@ -5541,6 +5557,7 @@ function buildBeatStrip() {
     });
   }
   partPicker?.addEventListener("toggle", () => {
+    requestAnimationFrame(clampReaderPanelToViewport);
     if (!partPicker.open) return;
     requestAnimationFrame(() => {
       beatStrip.querySelector('[aria-current="step"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -6048,12 +6065,12 @@ function renderRuntimeVariantControls(group, selectedOption, interactionControl)
   const previousPresentation = runtimeTextPanelButtonPresentation(
     previousOption ? runtimeVariantInteractionForEdge(group, selectedOption.id, previousOption.id) : null,
     group.control.previousLabel,
-    [0.2, 0.86],
+    [0.2, 0.85],
   );
   const nextPresentation = runtimeTextPanelButtonPresentation(
     nextOption ? runtimeVariantInteractionForEdge(group, selectedOption.id, nextOption.id) : null,
     group.control.nextLabel,
-    [0.8, 0.86],
+    [0.8, 0.85],
   );
   const hasUiButton = !previousDisabled || !nextDisabled;
   variantControls.hidden = false;
@@ -7217,16 +7234,21 @@ function makeRuntimeTextPanelButtonTexture(label) {
   context.strokeStyle = "rgba(110, 216, 194, 0.96)";
   context.strokeRect(8, 8, canvas.width - 16, canvas.height - 16);
   context.fillStyle = "#f6f2e7";
-  const buttonLabel = String(label || "Select").slice(0, 80);
-  let fontSize = 58;
-  context.font = `800 ${fontSize}px sans-serif`;
-  while (fontSize > 24 && context.measureText(buttonLabel).width > canvas.width - 56) {
-    fontSize -= 2;
-    context.font = `800 ${fontSize}px sans-serif`;
-  }
+  const labelLayout = runtimeBoundedCanvasTextLayout(context, String(label || "Select"), {
+    maxWidth: canvas.width - 64,
+    maxLines: 2,
+    maxFontSize: 58,
+    minFontSize: 20,
+    fontWeight: 800,
+    lineHeightRatio: 1.04,
+  });
   context.textAlign = "center";
   context.textBaseline = "middle";
-  context.fillText(buttonLabel, canvas.width / 2, (canvas.height / 2) + 3);
+  const centerY = (canvas.height / 2) + 3;
+  labelLayout.lines.forEach((line, index) => {
+    const lineY = centerY + (index - ((labelLayout.lines.length - 1) / 2)) * labelLayout.lineHeight;
+    context.fillText(line, canvas.width / 2, lineY);
+  });
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   return texture;
@@ -7262,12 +7284,12 @@ function runtimeTextPanelVariantState(beat) {
     previousPresentation: runtimeTextPanelButtonPresentation(
       previousInteraction,
       group.control.previousLabel || "Previous choice",
-      [0.2, 0.86],
+      [0.2, 0.85],
     ),
     nextPresentation: runtimeTextPanelButtonPresentation(
       nextInteraction,
       group.control.nextLabel || "Next choice",
-      [0.8, 0.86],
+      [0.8, 0.85],
     ),
   };
 }
@@ -7286,26 +7308,73 @@ function runtimeTextPanelButtonPresentation(record, fallbackLabel, fallbackPosit
       || configuration.buttons[0]
     : null;
   const authoredLayout = record?.overridden === true || record?.authored === true;
+  const requestedPosition = finiteInteractionArray(
+    authoredLayout ? button?.position : fallbackPosition,
+    2,
+    fallbackPosition,
+  );
+  const requestedSize = finiteInteractionArray(
+    authoredLayout ? button?.size : [0.32, 0.08],
+    2,
+    [0.32, 0.08],
+  );
+  const widthRatio = THREE.MathUtils.clamp(requestedSize[0], 0.08, 0.42);
+  const heightRatio = THREE.MathUtils.clamp(requestedSize[1], 0.06, 0.08);
+  const minimumX = 0.04 + (widthRatio / 2);
+  const maximumX = 0.96 - (widthRatio / 2);
   return {
     id: String(button?.id || ""),
     label: readerChoicePresentationLabel(button?.label || fallbackLabel || "Select"),
     action: String(button?.action || "select-variant"),
-    position: finiteInteractionArray(authoredLayout ? button?.position : fallbackPosition, 2, fallbackPosition)
-      .map((component) => THREE.MathUtils.clamp(component, 0, 1)),
-    size: finiteInteractionArray(authoredLayout ? button?.size : [0.32, 0.12], 2, [0.32, 0.12])
-      .map((component) => THREE.MathUtils.clamp(component, 0.04, 1)),
+    position: [THREE.MathUtils.clamp(requestedPosition[0], minimumX, maximumX), 0.85],
+    size: [widthRatio, heightRatio],
   };
+}
+
+function runtimeSafeTextPanelVariantPresentations(
+  previousPresentation,
+  nextPresentation,
+  previousVisible = true,
+  nextVisible = true,
+) {
+  const normalize = (presentation, fallbackX) => {
+    const size = finiteInteractionArray(presentation?.size, 2, [0.32, 0.08]);
+    const widthRatio = THREE.MathUtils.clamp(size[0], 0.08, 0.42);
+    const heightRatio = THREE.MathUtils.clamp(size[1], 0.06, 0.08);
+    const position = finiteInteractionArray(presentation?.position, 2, [fallbackX, 0.85]);
+    return {
+      ...presentation,
+      position: [
+        THREE.MathUtils.clamp(position[0], 0.04 + (widthRatio / 2), 0.96 - (widthRatio / 2)),
+        0.85,
+      ],
+      size: [widthRatio, heightRatio],
+    };
+  };
+  const previous = normalize(previousPresentation, 0.2);
+  const next = normalize(nextPresentation, 0.8);
+  if (previousVisible && nextVisible) {
+    const gap = next.position[0] - (next.size[0] / 2)
+      - (previous.position[0] + (previous.size[0] / 2));
+    if (gap < 0.04) {
+      const combinedWidth = previous.size[0] + 0.04 + next.size[0];
+      const startX = (1 - combinedWidth) / 2;
+      previous.position[0] = startX + (previous.size[0] / 2);
+      next.position[0] = startX + previous.size[0] + 0.04 + (next.size[0] / 2);
+    }
+  }
+  return { previous, next };
 }
 
 function applyRuntimeTextPanelButtonPresentation(control, presentation) {
   if (!control || !presentation) return;
   const label = String(presentation.label || "Select").trim();
-  const position = finiteInteractionArray(presentation.position, 2, [0.5, 0.86]);
-  const size = finiteInteractionArray(presentation.size, 2, [0.32, 0.12]);
-  const widthRatio = THREE.MathUtils.clamp(size[0], 0.04, 1);
-  const heightRatio = THREE.MathUtils.clamp(size[1], 0.04, 1);
-  const x = THREE.MathUtils.clamp(position[0], widthRatio / 2, 1 - (widthRatio / 2));
-  const y = THREE.MathUtils.clamp(position[1], heightRatio / 2, 1 - (heightRatio / 2));
+  const position = finiteInteractionArray(presentation.position, 2, [0.5, 0.85]);
+  const size = finiteInteractionArray(presentation.size, 2, [0.32, 0.08]);
+  const widthRatio = THREE.MathUtils.clamp(size[0], 0.08, 0.42);
+  const heightRatio = THREE.MathUtils.clamp(size[1], 0.06, 0.08);
+  const x = THREE.MathUtils.clamp(position[0], 0.04 + (widthRatio / 2), 0.96 - (widthRatio / 2));
+  const y = 0.85;
   const signature = JSON.stringify([label, x, y, widthRatio, heightRatio]);
   if (control.userData.storyvrTextPanelPresentationSignature !== signature) {
     const previousGeometry = control.geometry;
@@ -7336,8 +7405,14 @@ function syncRuntimeTextPanelVariantControls(variantState) {
   if (!root || !previousButton || !nextButton) return;
   root.visible = Boolean(variantState && (!variantState.previousDisabled || !variantState.nextDisabled));
   if (variantState) {
-    applyRuntimeTextPanelButtonPresentation(previousButton, variantState.previousPresentation);
-    applyRuntimeTextPanelButtonPresentation(nextButton, variantState.nextPresentation);
+    const presentations = runtimeSafeTextPanelVariantPresentations(
+      variantState.previousPresentation,
+      variantState.nextPresentation,
+      !variantState.previousDisabled,
+      !variantState.nextDisabled,
+    );
+    applyRuntimeTextPanelButtonPresentation(previousButton, presentations.previous);
+    applyRuntimeTextPanelButtonPresentation(nextButton, presentations.next);
   }
   setRuntimeTextPanelControlDisabled(previousButton, !variantState || variantState.previousDisabled);
   setRuntimeTextPanelControlDisabled(nextButton, !variantState || variantState.nextDisabled);
@@ -7398,11 +7473,8 @@ function configureReaderPanelMouseDragging() {
     readerPanelDrag.moved = true;
     readerPanel.setPointerCapture?.(event.pointerId);
     if (readerPanelDrag.toggle) suppressReaderPanelToggleClick = true;
-    const rect = readerPanel.getBoundingClientRect();
-    const maximumLeft = Math.max(0, window.innerWidth - rect.width);
-    const maximumTop = Math.max(0, window.innerHeight - rect.height);
-    readerPanel.style.left = `${THREE.MathUtils.clamp(readerPanelDrag.left + deltaX, 0, maximumLeft)}px`;
-    readerPanel.style.top = `${THREE.MathUtils.clamp(readerPanelDrag.top + deltaY, 0, maximumTop)}px`;
+    readerPanel.style.right = "auto";
+    positionReaderPanelWithinHud(readerPanelDrag.left + deltaX, readerPanelDrag.top + deltaY);
     readerPanel.classList.add("dragging");
     event.preventDefault();
   });
@@ -7422,13 +7494,53 @@ function configureReaderPanelMouseDragging() {
   };
   readerPanel.addEventListener("pointerup", finishDrag);
   readerPanel.addEventListener("pointercancel", finishDrag);
+  if (typeof ResizeObserver === "function") {
+    readerPanelResizeObserver?.disconnect?.();
+    readerPanelResizeObserver = new ResizeObserver(() => clampReaderPanelToViewport());
+    readerPanelResizeObserver.observe(readerPanel);
+  }
+  requestAnimationFrame(clampReaderPanelToViewport);
+}
+
+function readerPanelReservedHudTop() {
+  const partPicker = beatStrip?.querySelector?.("#part-picker");
+  const rectangles = [
+    partPicker?.querySelector?.("summary"),
+    partPicker?.open ? partPicker.querySelector?.(".part-picker-list") : null,
+  ].map(runtimeVisibleHudRectangle).filter(Boolean);
+  return rectangles.length
+    ? Math.min(window.innerHeight, ...rectangles.map((rectangle) => rectangle.top))
+    : window.innerHeight;
+}
+
+function readerPanelSafeBottom() {
+  return Math.max(0, readerPanelReservedHudTop() - 12);
+}
+
+function positionReaderPanelWithinHud(requestedLeft, requestedTop) {
+  if (!readerPanel) return;
+  const safeBottom = readerPanelSafeBottom();
+  const maximumPanelHeight = Math.max(0, Math.min(window.innerHeight - 112, safeBottom - 12));
+  const maxHeight = `${maximumPanelHeight}px`;
+  if (readerPanel.style.maxHeight !== maxHeight) readerPanel.style.maxHeight = maxHeight;
+  const rect = readerPanel.getBoundingClientRect();
+  readerPanel.style.left = `${THREE.MathUtils.clamp(requestedLeft, 0, Math.max(0, window.innerWidth - rect.width))}px`;
+  readerPanel.style.top = `${THREE.MathUtils.clamp(requestedTop, 0, Math.max(0, safeBottom - rect.height))}px`;
 }
 
 function clampReaderPanelToViewport() {
-  if (!readerPanel || !readerPanel.style.left || !readerPanel.style.top) return;
+  if (!readerPanel) return;
   const rect = readerPanel.getBoundingClientRect();
-  readerPanel.style.left = `${THREE.MathUtils.clamp(rect.left, 0, Math.max(0, window.innerWidth - rect.width))}px`;
-  readerPanel.style.top = `${THREE.MathUtils.clamp(rect.top, 0, Math.max(0, window.innerHeight - rect.height))}px`;
+  if (readerPanel.style.left && readerPanel.style.top) {
+    positionReaderPanelWithinHud(rect.left, rect.top);
+    return;
+  }
+  const maximumPanelHeight = Math.max(
+    0,
+    Math.min(window.innerHeight - 112, readerPanelSafeBottom() - rect.top),
+  );
+  const maxHeight = `${maximumPanelHeight}px`;
+  if (readerPanel.style.maxHeight !== maxHeight) readerPanel.style.maxHeight = maxHeight;
 }
 
 function setRuntimeTextPanelReveal(panel, opacity) {
@@ -8036,8 +8148,9 @@ function runtimeTextPanelVariantLayout(canvasHeight) {
     : 560;
   return {
     bodyMaxLines: 5,
-    statusBaseline: Math.round(height * 0.74),
-    controlBandTop: Math.round(height * 0.78),
+    statusBaseline: Math.round(height * 0.68),
+    footerBaseline: Math.round(height * 0.745),
+    controlBandTop: Math.round(height * 0.77),
   };
 }
 
@@ -8053,28 +8166,45 @@ function makeRuntimeTextPanelTexture(title, text, placement, variantState = null
   context.lineWidth = 10;
   context.strokeRect(12, 12, canvas.width - 24, canvas.height - 24);
   context.fillStyle = "#6ed8c2";
-  context.font = "700 46px sans-serif";
-  context.fillText(String(title || "Story part").slice(0, 58), 54, 78);
+  context.textAlign = "left";
+  context.textBaseline = "alphabetic";
+  const titleLayout = runtimeBoundedCanvasTextLayout(context, String(title || "Story part"), {
+    maxWidth: 816,
+    maxLines: 2,
+    maxFontSize: 46,
+    minFontSize: 28,
+    fontWeight: 700,
+    lineHeightRatio: 1.08,
+  });
+  titleLayout.lines.forEach((line, index) => {
+    context.fillText(line, 54, 78 + index * titleLayout.lineHeight);
+  });
   context.fillStyle = "#f6f2e7";
   context.font = "34px sans-serif";
+  const titleUsesSecondLine = titleLayout.lines.length > 1;
+  const bodyStartY = titleUsesSecondLine ? 174 : 142;
+  const bodyMaxLines = Math.max(1, (variantLayout?.bodyMaxLines || 8) - (titleUsesSecondLine ? 1 : 0));
   const pagination = drawRuntimeWrappedText(
     context,
     String(text || ""),
     54,
-    142,
+    bodyStartY,
     916,
     48,
-    variantLayout?.bodyMaxLines || 8,
+    bodyMaxLines,
     requestedScrollLine,
   );
   if (variantState) {
     context.fillStyle = "rgba(246, 242, 231, 0.72)";
-    context.font = "700 25px sans-serif";
+    context.font = "700 22px sans-serif";
     context.fillText(
-      `${variantState.selectedOption.label} \u00b7 ${variantState.selectedIndex + 1} of ${variantState.group.options.length}`,
+      runtimeEllipsizeCanvasText(
+        context,
+        `${variantState.selectedOption.label} \u00b7 ${variantState.selectedIndex + 1} of ${variantState.group.options.length}`,
+        916,
+      ),
       54,
       variantLayout.statusBaseline,
-      916,
     );
     context.strokeStyle = "rgba(110, 216, 194, 0.24)";
     context.lineWidth = 2;
@@ -8084,11 +8214,15 @@ function makeRuntimeTextPanelTexture(title, text, placement, variantState = null
     context.stroke();
   }
   context.fillStyle = "rgba(246, 242, 231, 0.58)";
-  context.font = "24px sans-serif";
+  context.font = variantLayout ? "18px sans-serif" : "24px sans-serif";
   const footer = pagination.maxScrollLine > 0
     ? `Hold Trigger and move vertically to scroll \u00b7 lines ${pagination.scrollLine + 1}\u2013${Math.min(pagination.lineCount, pagination.scrollLine + pagination.maxLines)} of ${pagination.lineCount} \u00b7 A Next \u00b7 X Previous`
     : "Trigger selects buttons \u00b7 Grip grabs objects \u00b7 A Next \u00b7 X Previous";
-  context.fillText(footer, 54, 526, 916);
+  context.fillText(
+    runtimeEllipsizeCanvasText(context, footer, 916),
+    54,
+    variantLayout?.footerBaseline || 526,
+  );
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.needsUpdate = true;
@@ -8096,21 +8230,87 @@ function makeRuntimeTextPanelTexture(title, text, placement, variantState = null
   return texture;
 }
 
-function runtimeWrappedTextLines(context, text, maxWidth) {
-  const words = text.split(/\s+/).filter(Boolean);
-  const lines = [];
-  let line = "";
-  for (const word of words) {
-    const next = line ? `${line} ${word}` : word;
-    if (context.measureText(next).width <= maxWidth) {
-      line = next;
+function runtimeSplitCanvasToken(context, token, maxWidth) {
+  const fragments = [];
+  let fragment = "";
+  for (const symbol of Array.from(String(token || ""))) {
+    const candidate = `${fragment}${symbol}`;
+    if (!fragment || context.measureText(candidate).width <= maxWidth) {
+      fragment = candidate;
       continue;
     }
-    if (line) lines.push(line);
-    line = word;
+    fragments.push(fragment);
+    fragment = symbol;
   }
-  if (line) lines.push(line);
+  if (fragment) fragments.push(fragment);
+  return fragments.length ? fragments : [""];
+}
+
+function runtimeWrappedTextLines(context, text, maxWidth) {
+  const lines = [];
+  for (const paragraph of String(text ?? "").split(/\r?\n/)) {
+    const words = paragraph.trim().split(/\s+/).filter(Boolean);
+    if (!words.length) {
+      lines.push("");
+      continue;
+    }
+    let line = "";
+    for (const word of words) {
+      for (const fragment of runtimeSplitCanvasToken(context, word, maxWidth)) {
+        const next = line ? `${line} ${fragment}` : fragment;
+        if (context.measureText(next).width <= maxWidth) {
+          line = next;
+          continue;
+        }
+        if (line) lines.push(line);
+        line = fragment;
+      }
+    }
+    if (line) lines.push(line);
+  }
   return lines.length ? lines : [""];
+}
+
+function runtimeEllipsizeCanvasText(context, text, maxWidth) {
+  const value = String(text || "");
+  if (context.measureText(value).width <= maxWidth) return value;
+  const symbols = Array.from(value.replace(/\u2026$/, "").trimEnd());
+  while (symbols.length && context.measureText(`${symbols.join("")}\u2026`).width > maxWidth) symbols.pop();
+  return symbols.length ? `${symbols.join("")}\u2026` : "";
+}
+
+function runtimeBoundedCanvasTextLayout(context, text, options = {}) {
+  const maxWidth = Math.max(1, Number(options.maxWidth) || 1);
+  const maxLines = Math.max(1, Math.floor(Number(options.maxLines) || 1));
+  const maxFontSize = Math.max(1, Math.floor(Number(options.maxFontSize) || 16));
+  const minFontSize = Math.min(maxFontSize, Math.max(1, Math.floor(Number(options.minFontSize) || maxFontSize)));
+  const fontWeight = String(options.fontWeight || 400);
+  const fontFamily = String(options.fontFamily || "sans-serif");
+  const lineHeightRatio = Math.max(1, Number(options.lineHeightRatio) || 1.1);
+  let lines = [""];
+  let fontSize = maxFontSize;
+  for (; fontSize >= minFontSize; fontSize -= 2) {
+    context.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
+    lines = runtimeWrappedTextLines(context, text, maxWidth);
+    if (lines.length <= maxLines) break;
+  }
+  fontSize = Math.max(minFontSize, fontSize);
+  context.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
+  const truncated = lines.length > maxLines;
+  const visibleLines = lines.slice(0, maxLines);
+  if (truncated) {
+    visibleLines[maxLines - 1] = runtimeEllipsizeCanvasText(
+      context,
+      `${visibleLines[maxLines - 1]}\u2026`,
+      maxWidth,
+    );
+  }
+  return {
+    lines: visibleLines,
+    fontSize,
+    lineHeight: Math.ceil(fontSize * lineHeightRatio),
+    truncated,
+  };
 }
 
 function drawRuntimeWrappedText(context, text, x, y, maxWidth, lineHeight, maxLines, requestedScrollLine = 0) {
@@ -9660,6 +9860,93 @@ function sharedTimelineAnnotationIsReaderVisible(definition) {
   return Boolean(id && authoredText && hasTarget);
 }
 
+function runtimeRectangleIntersects(first, second, gap = 0) {
+  if (!first || !second) return false;
+  const spacing = Math.max(0, Number(gap) || 0);
+  return first.left < second.right + spacing
+    && first.right > second.left - spacing
+    && first.top < second.bottom + spacing
+    && first.bottom > second.top - spacing;
+}
+
+function runtimeClampedAnnotationRectangle(rectangle, bounds, margin = 12) {
+  const spacing = Math.max(0, Number(margin) || 0);
+  const width = Math.max(0, Number(rectangle?.width) || 0);
+  const height = Math.max(0, Number(rectangle?.height) || 0);
+  const minimumLeft = bounds.left + spacing;
+  const maximumLeft = bounds.right - spacing - width;
+  const minimumTop = bounds.top + spacing;
+  const maximumTop = bounds.bottom - spacing - height;
+  const left = maximumLeft >= minimumLeft
+    ? Math.min(maximumLeft, Math.max(minimumLeft, Number(rectangle?.left) || minimumLeft))
+    : bounds.left + (bounds.width - width) / 2;
+  const top = maximumTop >= minimumTop
+    ? Math.min(maximumTop, Math.max(minimumTop, Number(rectangle?.top) || minimumTop))
+    : bounds.top + (bounds.height - height) / 2;
+  return { left, top, right: left + width, bottom: top + height, width, height };
+}
+
+function runtimeResolveAnnotationRectangle(preferredRectangle, bounds, occupiedRectangles = [], margin = 12, gap = 6) {
+  const base = runtimeClampedAnnotationRectangle(preferredRectangle, bounds, margin);
+  const collides = (candidate) => occupiedRectangles.some(
+    (occupied) => runtimeRectangleIntersects(candidate, occupied, gap),
+  );
+  if (!collides(base)) return base;
+  const stepX = Math.max(1, base.width + gap);
+  const stepY = Math.max(1, base.height + gap);
+  const maximumRing = Math.max(
+    1,
+    Math.ceil(bounds.width / stepX) + 1,
+    Math.ceil(bounds.height / stepY) + 1,
+  );
+  const visited = new Set([`${Math.round(base.left * 10)}:${Math.round(base.top * 10)}`]);
+  for (let ring = 1; ring <= maximumRing; ring += 1) {
+    for (let row = -ring; row <= ring; row += 1) {
+      for (let column = -ring; column <= ring; column += 1) {
+        if (Math.max(Math.abs(row), Math.abs(column)) !== ring) continue;
+        const candidate = runtimeClampedAnnotationRectangle({
+          left: base.left + column * stepX,
+          top: base.top + row * stepY,
+          width: base.width,
+          height: base.height,
+        }, bounds, margin);
+        const key = `${Math.round(candidate.left * 10)}:${Math.round(candidate.top * 10)}`;
+        if (visited.has(key)) continue;
+        visited.add(key);
+        if (!collides(candidate)) return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+function runtimeVisibleHudRectangle(element) {
+  if (!element?.getBoundingClientRect || element.hidden) return null;
+  const computed = typeof getComputedStyle === "function" ? getComputedStyle(element) : null;
+  if (computed?.display === "none" || computed?.visibility === "hidden") return null;
+  const bounds = element.getBoundingClientRect();
+  if (!(bounds.width > 0 && bounds.height > 0)) return null;
+  return {
+    left: bounds.left,
+    top: bounds.top,
+    right: bounds.right,
+    bottom: bounds.bottom,
+    width: bounds.width,
+    height: bounds.height,
+  };
+}
+
+function runtimeAnnotationHudRectangles() {
+  const partPicker = beatStrip?.querySelector?.("#part-picker");
+  const candidates = [
+    readerPanel,
+    status && !readerPanel?.contains?.(status) ? status : null,
+    partPicker?.querySelector?.("summary"),
+    partPicker?.open ? partPicker.querySelector?.(".part-picker-list") : null,
+  ];
+  return candidates.map(runtimeVisibleHudRectangle).filter(Boolean);
+}
+
 function initializeSharedTimelineAnnotations(playback) {
   if (typeof document === "undefined" || !stage || !playback?.sharedTimeline) return;
   const presentation = playback.contract?.presentation?.annotations;
@@ -9672,6 +9959,7 @@ function initializeSharedTimelineAnnotations(playback) {
     const element = document.createElement("div");
     element.dataset.storyvrAnnotation = id;
     element.textContent = label;
+    element.title = label;
     const background = definition.background ?? presentationStyle.background ?? "rgba(255,253,244,0.9)";
     const transparentBackground = !background || String(background).trim().toLowerCase() === "transparent";
     Object.assign(element.style, {
@@ -9686,7 +9974,14 @@ function initializeSharedTimelineAnnotations(playback) {
       background: String(background || "transparent"),
       font: `${Number(definition.fontWeight ?? presentationStyle.fontWeight) || 600} 12px/1.25 system-ui, sans-serif`,
       maxWidth: String(definition.maxWidth ?? presentationStyle.maxWidth ?? "min(32rem, calc(100vw - 24px))"),
+      maxHeight: "min(12rem, 30vh)",
       whiteSpace: String(definition.whiteSpace ?? presentationStyle.whiteSpace ?? "normal"),
+      overflowWrap: "anywhere",
+      wordBreak: "break-word",
+      overflow: "hidden",
+      display: "-webkit-box",
+      WebkitBoxOrient: "vertical",
+      WebkitLineClamp: "6",
       textAlign: "center",
       opacity: "0",
       transform: "translate(-50%, -100%)",
@@ -9713,41 +10008,39 @@ function updateSharedTimelineAnnotations(playback, renderCamera) {
   }
   setSharedTimelineAnnotationsHidden(playback, false);
   const stageBounds = stage.getBoundingClientRect();
-  const readerPanelBounds = !textPanelMinimized && readerPanel?.getBoundingClientRect
-    ? readerPanel.getBoundingClientRect()
-    : null;
-  const readerPanelOccupiesLeftEdge = readerPanelBounds
-    && readerPanelBounds.left <= stageBounds.left + 24
-    && readerPanelBounds.right < stageBounds.right - 24;
-  const readableStageLeft = readerPanelOccupiesLeftEdge ? readerPanelBounds.right : stageBounds.left;
+  const occupiedRectangles = runtimeAnnotationHudRectangles();
   for (const entry of playback.annotationTargets.values()) {
     if (!entry.targetNode?.getWorldPosition) continue;
     entry.targetNode.getWorldPosition(entry.worldPosition);
     entry.worldPosition.project(renderCamera);
+    const inView = entry.worldPosition.z >= -1 && entry.worldPosition.z <= 1;
+    const opacity = Number.parseFloat(entry.element.style.opacity);
+    if (!inView || (Number.isFinite(opacity) && opacity <= 0.001)) {
+      if (entry.element.style.visibility !== "hidden") entry.element.style.visibility = "hidden";
+      continue;
+    }
     const x = stageBounds.left + (entry.worldPosition.x * 0.5 + 0.5) * stageBounds.width;
     const y = stageBounds.top + (-entry.worldPosition.y * 0.5 + 0.5) * stageBounds.height;
     const offset = entry.definition?.offset || {};
     const elementBounds = entry.element.getBoundingClientRect();
     const presentationStyle = playback.contract?.presentation?.annotations || {};
     const margin = Math.max(0, Number(entry.definition?.viewportMargin ?? presentationStyle.viewportMargin) || 12);
-    const unclampedLeft = x + (Number(offset.x) || 0);
-    const unclampedTop = y + (Number(offset.y) || 0);
-    const minimumLeft = readableStageLeft + margin + elementBounds.width / 2;
-    const maximumLeft = stageBounds.right - margin - elementBounds.width / 2;
-    const minimumTop = stageBounds.top + margin + elementBounds.height;
-    const maximumTop = stageBounds.bottom - margin;
-    const clampedLeft = maximumLeft >= minimumLeft
-      ? THREE.MathUtils.clamp(unclampedLeft, minimumLeft, maximumLeft)
-      : stageBounds.left + stageBounds.width / 2;
-    const clampedTop = maximumTop >= minimumTop
-      ? THREE.MathUtils.clamp(unclampedTop, minimumTop, maximumTop)
-      : stageBounds.top + stageBounds.height / 2;
-    const left = `${clampedLeft}px`;
-    const top = `${clampedTop}px`;
-    const visibility = entry.worldPosition.z >= -1 && entry.worldPosition.z <= 1 ? "visible" : "hidden";
+    const resolved = runtimeResolveAnnotationRectangle({
+      left: x + (Number(offset.x) || 0) - (elementBounds.width / 2),
+      top: y + (Number(offset.y) || 0) - elementBounds.height,
+      width: elementBounds.width,
+      height: elementBounds.height,
+    }, stageBounds, occupiedRectangles, margin, 6);
+    if (!resolved) {
+      if (entry.element.style.visibility !== "hidden") entry.element.style.visibility = "hidden";
+      continue;
+    }
+    occupiedRectangles.push(resolved);
+    const left = `${resolved.left - stageBounds.left + (resolved.width / 2)}px`;
+    const top = `${resolved.bottom - stageBounds.top}px`;
     if (entry.element.style.left !== left) entry.element.style.left = left;
     if (entry.element.style.top !== top) entry.element.style.top = top;
-    if (entry.element.style.visibility !== visibility) entry.element.style.visibility = visibility;
+    if (entry.element.style.visibility !== "visible") entry.element.style.visibility = "visible";
   }
 }
 

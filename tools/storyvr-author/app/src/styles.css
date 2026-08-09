@@ -630,6 +630,30 @@ h3 {
   min-width: 0;
 }
 
+.panel-head :where(h1, h2, h3, p),
+.visual-card-head :where(h2, h3, p),
+.source-graph-status,
+.stage-blocking-error > :where(strong, p),
+.blocking-stage-panel :where(h2, p),
+.blocking-control-notice :where(strong, p),
+.compiler-status-row :where(strong, p),
+.reader-run-handoff :where(h3, p, code),
+.final-review-active-beat :where(strong, span, p),
+.source-graph-spatial-preview-status,
+.model-viewer-status,
+.topology-viewer-status,
+.motion-link-status,
+.environment-apply-status,
+.environment-generation-status,
+.interaction-boundary-status,
+.interaction-controller-model-status,
+.spatial-clipboard-status,
+.spatial-propagation-status,
+.spatial-apply-status,
+.background-task-copy :where(strong, span) {
+  overflow-wrap: anywhere;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;
@@ -3228,6 +3252,10 @@ button.source-graph-beat-summary:hover:not(:disabled) {
   margin-bottom: 0.85rem;
 }
 
+.visual-card-head > * {
+  min-width: 0;
+}
+
 .visual-card-head h3 {
   margin: 0;
 }
@@ -4065,6 +4093,10 @@ button.source-graph-beat-summary:hover:not(:disabled) {
   align-items: flex-start;
 }
 
+.compiler-status-row > * {
+  min-width: 0;
+}
+
 .compiler-status-row .pill {
   flex: 0 0 auto;
 }
@@ -4653,6 +4685,14 @@ dd {
   font-weight: 900;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.topology-kind-pill {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: center;
+  white-space: normal;
 }
 
 .topology-kind-pill.single {
@@ -7877,6 +7917,10 @@ fieldset.controller-model-mapping {
   align-content: start;
   gap: 0.65rem;
   max-width: 88%;
+  max-height: 68%;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
   pointer-events: none;
 }
 
@@ -7906,12 +7950,13 @@ fieldset.controller-model-mapping {
   z-index: 3;
   display: grid;
   transform: translate(-50%, -50%);
-  min-width: 112px;
-  min-height: 42px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   place-items: center;
   border: 2px solid rgba(110, 216, 194, 0.96);
   border-radius: 10px;
-  padding: 0.45rem 0.65rem;
+  padding: 1px 6px;
   background: rgba(8, 22, 19, 0.98);
   color: #f6f2e7;
   box-shadow: 0 8px 18px rgba(8, 22, 19, 0.28);
@@ -7920,8 +7965,10 @@ fieldset.controller-model-mapping {
   font-weight: 900;
   line-height: 1.1;
   text-align: center;
+  text-overflow: ellipsis;
   touch-action: none;
   user-select: none;
+  white-space: nowrap;
 }
 
 .interaction-ui-button-preview:hover,
@@ -10255,6 +10302,7 @@ canvas.spatial-editor-mouse-controls:active {
 .final-review-active-beat > div {
   display: grid;
   gap: 0.16rem;
+  min-width: 0;
 }
 
 .final-review-active-beat strong,

@@ -6,6 +6,32 @@ const MAX_PENDING_SEQUENCE_RANGES = 256;
 export async function createInteractionLogFileInSelectedDirectory(payload, {
   windowRef = globalThis.window,
 } = {}) {
+  const demoCapture = new URLSearchParams(windowRef?.location?.search || "").has("demo-capture");
+  if (demoCapture && typeof windowRef?.navigator?.storage?.getDirectory === "function") {
+    const suggestedName = interactionLogFileName(payload);
+    const storageRoot = await windowRef.navigator.storage.getDirectory();
+    const fileHandle = await storageRoot.getFileHandle(suggestedName, { create: true });
+    const fileName = fileHandle.name || suggestedName;
+    const writer = createInteractionLogFileWriter({ fileHandle, fileName });
+    await writer.initialize(payload);
+    return Object.freeze({
+      appendBatch: writer.appendBatch,
+      async finalize(options) {
+        const result = await writer.finalize(options);
+        const file = await fileHandle.getFile();
+        const url = windowRef.URL.createObjectURL(file);
+        const link = windowRef.document.createElement("a");
+        link.href = url;
+        link.download = fileName;
+        link.click();
+        windowRef.setTimeout(() => windowRef.URL.revokeObjectURL(url), 30_000);
+        return result;
+      },
+      initialize: writer.initialize,
+      snapshot: writer.snapshot,
+    });
+  }
+
   if (typeof windowRef?.showDirectoryPicker !== "function") {
     throw new Error("This browser cannot select a folder for the interaction log. Use a current Chrome browser.");
   }

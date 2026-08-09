@@ -87,6 +87,14 @@ const IN_BEAT_INTERACTIONS_SCHEMA_VERSION = "storyvr-in-beat-interactions/v1";
 const INTERACTION_CONTROLLER_INPUT_RESERVATIONS_SCHEMA_VERSION = "storyvr-controller-input-reservations/v1";
 const VARIANT_TEXT_PANEL_SELECTION_POLICY = "Text panel selection";
 const VARIANT_UI_BUTTON_PRESS_POLICY = "UI button press";
+const INTERACTION_UI_BUTTON_ACTION_CENTER_Y = 0.85;
+const INTERACTION_UI_BUTTON_HORIZONTAL_MARGIN = 0.04;
+const INTERACTION_UI_BUTTON_GAP = 0.04;
+const INTERACTION_UI_BUTTON_MIN_WIDTH = 0.08;
+const INTERACTION_UI_BUTTON_MAX_WIDTH = 0.42;
+const INTERACTION_UI_BUTTON_MIN_HEIGHT = 0.06;
+const INTERACTION_UI_BUTTON_MAX_HEIGHT = 0.08;
+const INTERACTION_UI_BUTTON_MAX_COUNT = 8;
 const CONTROLLER_BUTTON_PRESS_LABEL = "Controller button press";
 const DIRECT_MANIPULATION_LABEL = "Direct manipulation";
 const LEGACY_BUTTON_STEPPING_LABEL = "Button stepping";
@@ -286,6 +294,9 @@ const READER_TEMPLATE_MANIFEST_SCHEMA_VERSION = "storyvr-reader-template-manifes
 const READER_TEMPLATE_MANIFEST_FILE = ".storyvr-reader-template.json";
 const READER_TEMPLATE_CUSTOM_OPT_OUT_PATTERN = /@storyvr-custom-reader|storyvr-template-managed\s*:\s*false/i;
 const READER_DIST_BUILD_SCHEMA_VERSION = "storyvr-reader-dist-build/v1";
+const STORYVR_TEXT_LAYOUT_CONTRACT_VERSION = "storyvr-text-layout/v1";
+const STORYVR_TEXT_LAYOUT_CONTRACT_MARKER = `const STORYVR_TEXT_LAYOUT_CONTRACT_VERSION = "${STORYVR_TEXT_LAYOUT_CONTRACT_VERSION}";`;
+const STORYVR_TEXT_LAYOUT_CSS_CONTRACT_MARKER = `/* STORYVR_TEXT_LAYOUT_CONTRACT_VERSION: ${STORYVR_TEXT_LAYOUT_CONTRACT_VERSION} */`;
 const READER_DIST_BUILD_SCRIPT = fileURLToPath(new URL("./build-reader-dist.mjs", import.meta.url));
 const PERFORMANCE_OPTIMIZATION_SCHEMA_VERSION = "storyvr-performance-optimization/v1";
 const PERFORMANCE_OPTIMIZATION_PROFILES = new Set(["quality", "balanced", "performance"]);
@@ -2465,6 +2476,61 @@ function interactionUiButtonVector(value, fallback, labels, minimum = 0) {
   );
 }
 
+function interactionUiButtonHorizontalGap(left, right) {
+  const [first, second] = left.position[0] <= right.position[0] ? [left, right] : [right, left];
+  return (second.position[0] - second.size[0] / 2) - (first.position[0] + first.size[0] / 2);
+}
+
+function interactionUiButtonLayoutNumber(value) {
+  return Number(Number(value).toFixed(12));
+}
+
+function interactionUiButtonsNeedHorizontalReflow(buttons, minimumGap) {
+  for (let leftIndex = 0; leftIndex < buttons.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < buttons.length; rightIndex += 1) {
+      if (interactionUiButtonHorizontalGap(buttons[leftIndex], buttons[rightIndex]) < minimumGap - 1e-9) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function interactionUiButtonReflowGap(buttonCount) {
+  const availableWidth = 1 - INTERACTION_UI_BUTTON_HORIZONTAL_MARGIN * 2;
+  return INTERACTION_UI_BUTTON_GAP * Math.max(0, buttonCount - 1)
+      <= availableWidth - INTERACTION_UI_BUTTON_MIN_WIDTH * buttonCount + 1e-9
+    ? INTERACTION_UI_BUTTON_GAP
+    : 0;
+}
+
+function reflowInteractionUiButtons(buttons) {
+  if (buttons.length < 2) return buttons;
+  const availableWidth = 1 - INTERACTION_UI_BUTTON_HORIZONTAL_MARGIN * 2;
+  const requestedWidth = buttons.reduce((total, button) => total + button.size[0], 0);
+  const gap = interactionUiButtonReflowGap(buttons.length);
+  const availableButtonWidth = availableWidth - gap * (buttons.length - 1);
+  const minimumButtonWidth = INTERACTION_UI_BUTTON_MIN_WIDTH * buttons.length;
+  const requestedExtraWidth = requestedWidth - minimumButtonWidth;
+  const availableExtraWidth = availableButtonWidth - minimumButtonWidth;
+  const extraWidthScale = requestedExtraWidth > availableExtraWidth
+    ? availableExtraWidth / requestedExtraWidth
+    : 1;
+  const widths = buttons.map((button) => (
+    INTERACTION_UI_BUTTON_MIN_WIDTH
+      + (button.size[0] - INTERACTION_UI_BUTTON_MIN_WIDTH) * extraWidthScale
+  ));
+  const rowWidth = widths.reduce((total, width) => total + width, 0) + gap * (buttons.length - 1);
+  let cursor = 0.5 - rowWidth / 2;
+  for (const [index, button] of buttons.entries()) {
+    const width = widths[index];
+    button.size[0] = interactionUiButtonLayoutNumber(width);
+    button.position[0] = interactionUiButtonLayoutNumber(cursor + width / 2);
+    cursor += width + gap;
+  }
+  return buttons;
+}
+
 function sanitizeInteractionUiButtons(value, context = {}) {
   const supplied = Array.isArray(value)
     ? value
@@ -2472,28 +2538,62 @@ function sanitizeInteractionUiButtons(value, context = {}) {
       ? [value]
       : [];
   const source = supplied.length ? supplied : [{}];
-  const defaultPosition = context.variantDirection === "previous"
-    ? [0.2, 0.86]
-    : context.variantDirection === "next"
-      ? [0.8, 0.86]
-      : [0.5, 0.86];
   const buttons = new Map();
-  for (const [index, raw] of source.slice(0, 24).entries()) {
+  for (const [index, raw] of source.slice(0, INTERACTION_UI_BUTTON_MAX_COUNT).entries()) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
     const fallbackId = index === 0
       ? interactionConfigurationString(context.edgeId || context.buttonId, "ui-button", 160)
       : `ui-button-${index + 1}`;
     const id = interactionConfigurationString(raw.id, fallbackId, 160);
+    const requestedSize = interactionUiButtonVector(
+      raw.size,
+      [0.32, INTERACTION_UI_BUTTON_MAX_HEIGHT],
+      ["width", "height"],
+    );
+    const size = [
+      interactionUiButtonLayoutNumber(Math.max(
+        INTERACTION_UI_BUTTON_MIN_WIDTH,
+        Math.min(requestedSize[0], INTERACTION_UI_BUTTON_MAX_WIDTH),
+      )),
+      interactionUiButtonLayoutNumber(Math.max(
+        INTERACTION_UI_BUTTON_MIN_HEIGHT,
+        Math.min(requestedSize[1], INTERACTION_UI_BUTTON_MAX_HEIGHT),
+      )),
+    ];
+    let minimumX = INTERACTION_UI_BUTTON_HORIZONTAL_MARGIN + size[0] / 2;
+    let maximumX = 1 - INTERACTION_UI_BUTTON_HORIZONTAL_MARGIN - size[0] / 2;
+    if (context.variantDirection === "previous") {
+      maximumX = Math.min(maximumX, 0.5 - INTERACTION_UI_BUTTON_GAP / 2 - size[0] / 2);
+    } else if (context.variantDirection === "next") {
+      minimumX = Math.max(minimumX, 0.5 + INTERACTION_UI_BUTTON_GAP / 2 + size[0] / 2);
+    }
+    const defaultX = context.variantDirection === "previous"
+      ? minimumX
+      : context.variantDirection === "next"
+        ? maximumX
+        : 0.5;
+    const requestedPosition = interactionUiButtonVector(
+      raw.position,
+      [defaultX, INTERACTION_UI_BUTTON_ACTION_CENTER_Y],
+      ["x", "y"],
+    );
     const button = {
       id,
       label: interactionConfigurationString(raw.label, interactionUiButtonLabel(context), 80),
       action: interactionConfigurationString(raw.action, "select-variant", 80),
-      position: interactionUiButtonVector(raw.position, defaultPosition, ["x", "y"]),
-      size: interactionUiButtonVector(raw.size, [0.32, 0.12], ["width", "height"], 0.04),
+      position: [
+        interactionUiButtonLayoutNumber(Math.max(minimumX, Math.min(maximumX, requestedPosition[0]))),
+        INTERACTION_UI_BUTTON_ACTION_CENTER_Y,
+      ],
+      size,
     };
     buttons.set(id, button);
   }
-  return [...buttons.values()];
+  const sanitized = [...buttons.values()];
+  const minimumGap = interactionUiButtonReflowGap(sanitized.length);
+  return interactionUiButtonsNeedHorizontalReflow(sanitized, minimumGap)
+    ? reflowInteractionUiButtons(sanitized)
+    : sanitized;
 }
 
 function interactionConfigurationTolerance(value, defaults, ranges) {
@@ -5140,6 +5240,12 @@ function finalTuningDirectivesForPrompt(prompt) {
   };
 }
 
+function readerSourceHasTextLayoutContract(source, marker = STORYVR_TEXT_LAYOUT_CONTRACT_MARKER) {
+  return String(source || "").split(/\r?\n/).some((line) => (
+    line.trim() === marker
+  ));
+}
+
 export async function ensureReaderApp(paths, runtime) {
   const readerSource = path.join(paths.storyFolder, "webxr-adaptation");
   const manifestPath = path.join(readerSource, READER_TEMPLATE_MANIFEST_FILE);
@@ -5203,6 +5309,22 @@ export async function ensureReaderApp(paths, runtime) {
         updatePath: toPosix(path.relative(REPO_ROOT, path.join(readerSource, updateRelativePath))),
         message: `Preserved customized reader source ${templateFile.target}; the current managed template was written separately for review.`,
       });
+      const textLayoutContractMarker = templateFile.target === "src/main.js"
+        ? STORYVR_TEXT_LAYOUT_CONTRACT_MARKER
+        : templateFile.target === "src/styles.css"
+          ? STORYVR_TEXT_LAYOUT_CSS_CONTRACT_MARKER
+          : null;
+      if (textLayoutContractMarker
+        && !readerSourceHasTextLayoutContract(currentContent.toString("utf8"), textLayoutContractMarker)) {
+        diagnostics.push({
+          severity: "warning",
+          code: "READER_TEXT_LAYOUT_CONTRACT_REQUIRED",
+          component: "compile",
+          path: toPosix(path.relative(REPO_ROOT, targetPath)),
+          updatePath: toPosix(path.relative(REPO_ROOT, path.join(readerSource, updateRelativePath))),
+          message: `Customized reader source ${templateFile.target} must incorporate ${STORYVR_TEXT_LAYOUT_CONTRACT_VERSION} from the pending managed template before a production build can run.`,
+        });
+      }
       nextFiles[templateFile.target] = {
         status: "customized-preserved",
         managedHash: previous?.managedHash || null,
@@ -5249,6 +5371,20 @@ export async function buildReaderDist(paths, options = {}) {
   const distIndexPath = path.join(distFolder, "index.html");
   if (!await exists(readerIndexPath)) {
     throw new Error(`Reader source is missing ${toPosix(path.relative(repoRoot, readerIndexPath))}.`);
+  }
+  const readerMainPath = path.join(readerSource, "src", "main.js");
+  const readerMainSource = await exists(readerMainPath) ? await readFile(readerMainPath, "utf8") : "";
+  if (!readerSourceHasTextLayoutContract(readerMainSource)) {
+    throw new Error(
+      `Reader source ${toPosix(path.relative(repoRoot, readerMainPath))} is missing ${STORYVR_TEXT_LAYOUT_CONTRACT_VERSION}; re-run Build story or merge the pending managed reader template before building.`,
+    );
+  }
+  const readerStylesPath = path.join(readerSource, "src", "styles.css");
+  const readerStylesSource = await exists(readerStylesPath) ? await readFile(readerStylesPath, "utf8") : "";
+  if (!readerSourceHasTextLayoutContract(readerStylesSource, STORYVR_TEXT_LAYOUT_CSS_CONTRACT_MARKER)) {
+    throw new Error(
+      `Reader stylesheet ${toPosix(path.relative(repoRoot, readerStylesPath))} is missing the ${STORYVR_TEXT_LAYOUT_CONTRACT_VERSION} CSS contract; re-run Build story or merge the pending managed reader template before building.`,
+    );
   }
 
   const readerSourcePath = toPosix(path.relative(repoRoot, readerSource));
@@ -15255,7 +15391,9 @@ async function resolveReaderRun(paths) {
   const storyIsOutsideRepo = hostingLayout.hostingRoot !== REPO_ROOT;
   const viteDevRoot = storyIsOutsideRepo ? `${shellQuote(readerSourcePath)} ` : "";
   const devCommand = `cd ${shellQuote(REPO_ROOT)} && ${instanceBuildPrefix}npx vite ${viteDevRoot}--host 127.0.0.1 --port ${devPort} --strictPort`;
-  const buildCommand = `cd ${shellQuote(REPO_ROOT)} && ${instanceBuildPrefix}npx vite build ${shellQuote(readerSourcePath)} --outDir ../dist-webxr-adaptation --base /${distPath}/ --emptyOutDir`;
+  const distFolder = path.join(directReaderStoryFolder, "dist-webxr-adaptation");
+  const buildBase = `/${distPath}/`;
+  const buildCommand = `cd ${shellQuote(REPO_ROOT)} && ${instanceBuildPrefix}node ${shellQuote(READER_DIST_BUILD_SCRIPT)} ${shellQuote(directReaderSource)} ${shellQuote(distFolder)} ${shellQuote(buildBase)} ${shellQuote(REPO_ROOT)}`;
   const hostingRootArgument = hostingLayout.hostingRoot === REPO_ROOT
     ? ""
     : ` --root ${shellQuote(toPosix(path.relative(REPO_ROOT, hostingLayout.hostingRoot)))}`;

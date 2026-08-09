@@ -157,12 +157,14 @@ StoryVR actions.
 
 The editor's **Data collection** switch is off by default. In a current Chrome
 browser, turning it on opens a folder chooser, creates a named
-`storyvr-interaction-log/v1` JSON file, and records clicks and selected 3D
-actions without recording typed values. StoryVR checkpoints new events into
-that same file while collection is on. Turning the switch off stops new capture
-at that moment and finalizes the same file; canceling the initial folder choice
-leaves collection off, and a failed checkpoint or final save keeps the cutoff
-and unwritten events available for retry.
+`storyvr-interaction-log/v1` JSON file, and records clicks, selected 3D actions,
+and completed spatial transform drags without recording typed values. A drag
+record can include its operation, axis, sampled pointer path, affected objects,
+and before/after transforms. StoryVR checkpoints new events into that same file
+while collection is on. Turning the switch off stops new capture at that moment
+and finalizes the same file; canceling the initial folder choice leaves
+collection off, and a failed checkpoint or final save keeps the cutoff and
+unwritten events available for retry.
 
 For a consented study that also needs activity from an original story page,
 build the optional local Chrome extension:
@@ -183,10 +185,11 @@ npm run storyvr:workflow
 ```
 
 Then open <http://127.0.0.1:5197/> and import one or more log files. The viewer
-shows the step timeline, click pace and locations, pauses, 3D actions, and
-evidence-linked moments to review. Imported logs stay local unless **Review
-current session** is selected; that optional action sends only a compact
-summary to Codex.
+shows the step timeline, click markers, spatial-drag spans and paths, pauses,
+3D actions, and evidence-linked moments to review. Imported logs stay local
+unless **Generate insights** is selected; that optional action sends only a
+compact summary to Codex and places the returned evidence-linked annotations
+on the timeline.
 
 ### Optional AI features
 
@@ -216,14 +219,17 @@ story reader directly:
 
 ```sh
 STORY_SLUG=my-story
-npx vite build "../$STORY_SLUG/webxr-adaptation" \
-  --outDir ../dist-webxr-adaptation \
-  --base "/$STORY_SLUG/dist-webxr-adaptation/" \
-  --emptyOutDir
+node tools/storyvr-author/build-reader-dist.mjs \
+  "../$STORY_SLUG/webxr-adaptation" \
+  "../$STORY_SLUG/dist-webxr-adaptation" \
+  "/$STORY_SLUG/dist-webxr-adaptation/" \
+  .
 ```
 
-With Vite's story app as the build root, this writes to the sibling story's
-`dist-webxr-adaptation/` folder.
+The supported build checks that the Reader source has the managed text-layout
+contract before writing to the sibling story's `dist-webxr-adaptation/` folder.
+If a story keeps a customized Reader template, merge the pending managed
+template update reported by **Build story** before building production files.
 
 Serve the result locally over HTTPS:
 

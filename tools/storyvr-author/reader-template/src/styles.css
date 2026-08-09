@@ -1,3 +1,5 @@
+/* STORYVR_TEXT_LAYOUT_CONTRACT_VERSION: storyvr-text-layout/v1 */
+
 :root {
   color: #f6f2e7;
   background: #080a08;
@@ -32,6 +34,8 @@ button {
   cursor: pointer;
   font: inherit;
   font-weight: 800;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 button:hover:not(:disabled) {
@@ -82,6 +86,20 @@ button:disabled {
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 0.25rem;
+}
+
+.reader-panel,
+.runtime-status,
+.part-picker {
+  overflow-wrap: anywhere;
+}
+
+.reader-content > *,
+.reader-actions > *,
+.variant-control-head > *,
+.variant-option-list > *,
+.part-picker summary > * {
+  min-width: 0;
 }
 
 .reader-panel {
@@ -381,6 +399,24 @@ h2 {
   min-width: 118px;
 }
 
+.reader-actions > button,
+.xr-button-slot,
+.xr-button-slot > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.reader-actions > button,
+.xr-button-slot > button {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xr-button-slot > button {
+  width: 100% !important;
+}
+
 .beat-strip {
   position: fixed;
   left: 24px;
@@ -497,6 +533,14 @@ h2 {
   backdrop-filter: blur(14px);
 }
 
+.runtime-status.reader-status-inline {
+  position: static;
+  inset: auto;
+  width: 100%;
+  max-width: none;
+  border-radius: 14px;
+}
+
 .runtime-status.error {
   border-color: #ffb4a2;
   background: rgba(92, 25, 20, 0.94);
@@ -548,5 +592,32 @@ summary:focus-visible {
   .part-picker-list {
     width: 100%;
     max-height: 42vh;
+  }
+}
+
+@media (max-width: 400px) {
+  .reader-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .reader-actions > #prev-beat {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .reader-actions > #next-beat {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .reader-actions > button {
+    padding: 0.62rem 0.55rem;
+    font-size: 0.88rem;
+  }
+
+  .xr-button-slot {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
   }
 }
