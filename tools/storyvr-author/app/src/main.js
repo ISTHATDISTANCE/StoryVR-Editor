@@ -1745,7 +1745,7 @@ function applyStoryvrBrowserNavigation(route, options = {}) {
     state.selectedInterBeatBeatIndex = boundary.beatIndex;
     state.selectedInterBeatTransitionIndex = interBeatMotionTransitionIndex(boundary);
     const playback = interBeatBoundaryPlaybackSummary(proposal, navigation.editorScene);
-    state.interBeatPreviewPlaying = playback.canScrub;
+    state.interBeatPreviewPlaying = playback.canPreview;
     state.interBeatViewerCameraState = null;
     state.interBeatPreviewRestartToken += 1;
     state.output = null;
@@ -7114,10 +7114,10 @@ function renderInterBeatBoundaryConnector(proposal, transition) {
   const context = transition.toContext;
   const playback = interBeatBoundaryPlaybackSummary(proposal, context);
   const thumbnailSpec = transitionModelThumbnailAnimationSpec(playback);
-  const className = thumbnailSpec ? "mapped" : "no-dynamics";
+  const className = thumbnailSpec ? "mapped" : playback.canAutoInterpolate ? "auto-interpolation" : "no-dynamics";
   const fromTitle = interBeatTransitionEndpointTitle(fromBeat, transition.fromContext);
   const toTitle = interBeatTransitionEndpointTitle(toBeat, transition.toContext);
-  const accessibleStatus = thumbnailSpec ? "Saved scene change" : "No saved scene change";
+  const accessibleStatus = thumbnailSpec ? "Saved scene change" : playback.canAutoInterpolate ? "Auto Interpolation" : "No saved scene change";
   return `
     <div
       class="transition-boundary-connector ${className}"
@@ -7125,7 +7125,7 @@ function renderInterBeatBoundaryConnector(proposal, transition) {
       aria-label="${escapeHtml(`Scene change from ${fromTitle} to ${toTitle}: ${accessibleStatus}`)}"
     >
       <span class="transition-boundary-arrow" ${thumbnailSpec ? `aria-hidden="true"` : ""}>
-        ${!thumbnailSpec ? renderInterBeatUnmappedTransitionButton(context, fromTitle, toTitle) : ""}
+        ${!thumbnailSpec ? renderInterBeatUnmappedTransitionButton(context, fromTitle, toTitle, playback.canAutoInterpolate) : ""}
       </span>
       ${thumbnailSpec ? renderInterBeatBoundaryThumbnail(playback, context, fromTitle, toTitle, thumbnailSpec) : ""}
     </div>
@@ -7138,7 +7138,8 @@ function interBeatTransitionEndpointTitle(beat, context) {
   return option?.label || beat?.title || context.variantOptionId;
 }
 
-function renderInterBeatUnmappedTransitionButton(context, fromTitle, toTitle) {
+function renderInterBeatUnmappedTransitionButton(context, fromTitle, toTitle, canAutoInterpolate = false) {
+  const status = canAutoInterpolate ? "Auto Interpolation" : "No saved scene change";
   return `
     <button
       class="transition-boundary-unmapped"
@@ -7148,8 +7149,8 @@ function renderInterBeatUnmappedTransitionButton(context, fromTitle, toTitle) {
       ${context.transitionEdgeId ? `data-inter-beat-edge-id="${escapeHtml(context.transitionEdgeId)}"` : ""}
       ${context.variantGroupId ? `data-inter-beat-variant-group-id="${escapeHtml(context.variantGroupId)}"` : ""}
       ${context.variantOptionId ? `data-inter-beat-variant-option-id="${escapeHtml(context.variantOptionId)}"` : ""}
-      aria-label="${escapeHtml(`Open scene change from ${fromTitle} to ${toTitle}: no saved scene change`)}"
-    ><span class="transition-boundary-status">No saved scene change</span></button>
+      aria-label="${escapeHtml(`Open scene change from ${fromTitle} to ${toTitle}: ${status.toLowerCase()}`)}"
+    ><span class="transition-boundary-status">${status}</span></button>
   `;
 }
 
@@ -7194,7 +7195,7 @@ function renderInterBeatVariantTransitionPreview(proposal, edge) {
   const height = thumbnailSpec ? 84 : 40;
   return `
     <foreignObject
-      class="story-variant-transition-preview ${thumbnailSpec ? "mapped" : "no-dynamics"}"
+      class="story-variant-transition-preview ${thumbnailSpec ? "mapped" : playback.canAutoInterpolate ? "auto-interpolation" : "no-dynamics"}"
       data-story-variant-transition-preview
       data-story-variant-preview-width="${width}"
       data-story-variant-preview-height="${height}"
@@ -7206,7 +7207,7 @@ function renderInterBeatVariantTransitionPreview(proposal, edge) {
       <div xmlns="http://www.w3.org/1999/xhtml" class="story-variant-transition-preview-content">
         ${thumbnailSpec
           ? renderInterBeatBoundaryThumbnail(playback, toContext, fromTitle, toTitle, thumbnailSpec)
-          : renderInterBeatUnmappedTransitionButton(toContext, fromTitle, toTitle)}
+          : renderInterBeatUnmappedTransitionButton(toContext, fromTitle, toTitle, playback.canAutoInterpolate)}
       </div>
     </foreignObject>
   `;
@@ -7369,7 +7370,7 @@ function renderInterBeatPreview(proposal, sceneContext = activeInterBeatSceneCon
     : null;
   const partStates = beat?.sourcePartStates || sourcePartStatesForPreviewBeat(beat?.id);
   const frozenState = partStates.find((item) => item.playbackMode === "frozen");
-  const { canScrub: sourcePlaybackCanScrub } = playback;
+  const { canPreview: previewAvailable } = playback;
   const boundaryStatus = interBeatBoundaryStatus(proposal, sceneContext);
   const beatStateMeta = frozenState
     ? frozenState.stateMode === "pre-animation"
@@ -7395,11 +7396,11 @@ function renderInterBeatPreview(proposal, sceneContext = activeInterBeatSceneCon
         <span>${escapeHtml(beatStateMeta)}</span>
       </div>
       <div class="dynamic-playback-controls storyvr-spatial-toolbar" role="toolbar" aria-label="Scene-change preview controls">
-        <button data-inter-beat-play ${sourcePlaybackCanScrub ? "" : "disabled"}>${sourcePlaybackCanScrub ? (state.interBeatPreviewPlaying ? "Pause" : "Play") : escapeHtml(boundaryStatus.label)}</button>
-        <button data-inter-beat-restart ${sourcePlaybackCanScrub ? "" : "disabled"}>Restart</button>
+        <button data-inter-beat-play ${previewAvailable ? "" : "disabled"}>${previewAvailable ? (state.interBeatPreviewPlaying ? "Pause" : "Play") : escapeHtml(boundaryStatus.label)}</button>
+        <button data-inter-beat-restart ${previewAvailable ? "" : "disabled"}>Restart</button>
         <label>
           Speed
-          <select data-inter-beat-speed ${sourcePlaybackCanScrub ? "" : "disabled"}>
+          <select data-inter-beat-speed ${previewAvailable ? "" : "disabled"}>
             ${[0.5, 1, 1.5, 2].map((speed) => `<option value="${speed}" ${Number(state.interBeatPreviewSpeed) === speed ? "selected" : ""}>${speed}x</option>`).join("")}
           </select>
         </label>
@@ -18288,6 +18289,8 @@ function exactSpatialSceneAssetLinkSet(sceneContext, transitionSceneRole) {
         assetId: entity.assetId,
         entityId: entity.id,
         kind: spatialEntityType(entity),
+        sourceInstanceId: String(entity.sourceInstanceId || "").trim(),
+        transform: normalizeSpatialTransform(entity.transform, entity.inferredTransform),
         role: entity.role || asset?.role || asset?.type || "Scene asset",
         sceneContext,
         transitionSceneRole,
@@ -18306,12 +18309,100 @@ function interBeatExactBoundaryAssetLinks(beatContext, { includeFrom = true } = 
     : { available: false, links: [] };
   return {
     available: target.available || source.available,
+    sourceAvailable: source.available,
+    targetAvailable: target.available,
     links: target.available
       ? [...(source.available ? source.links : []), ...target.links]
       : source.links,
     sourceLinks: source.links,
     targetLinks: target.links,
   };
+}
+
+function interBeatAutoInterpolationGroupKey(link) {
+  const kind = String(link?.kind || "").trim();
+  const assetId = String(link?.assetId || "").trim();
+  return kind && assetId ? JSON.stringify([kind, assetId]) : "";
+}
+
+function interBeatAutoInterpolationTransformChanged(sourceTransform, targetTransform) {
+  const from = normalizeSpatialTransform(sourceTransform);
+  const to = normalizeSpatialTransform(targetTransform);
+  const positionChanged = from.position.some((value, index) => Math.abs(value - to.position[index]) > 0.001);
+  const scaleChanged = from.scale.some((value, index) => Math.abs(value - to.scale[index]) > 0.001);
+  const quaternionDot = Math.min(1, Math.abs(from.quaternion.reduce(
+    (sum, value, index) => sum + (value * to.quaternion[index]),
+    0,
+  )));
+  const rotationChanged = 2 * Math.acos(quaternionDot) > THREE.MathUtils.degToRad(0.1);
+  return positionChanged || rotationChanged || scaleChanged;
+}
+
+function interBeatAutoInterpolationMatches(sourceLinks, targetLinks) {
+  const source = (sourceLinks || []).filter((link) => interBeatAutoInterpolationGroupKey(link));
+  const target = (targetLinks || []).filter((link) => interBeatAutoInterpolationGroupKey(link));
+  const groupBy = (items, keyFor) => {
+    const groups = new Map();
+    for (const item of items) {
+      const key = keyFor(item);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item);
+    }
+    return groups;
+  };
+  const sourceGroups = groupBy(source, interBeatAutoInterpolationGroupKey);
+  const targetGroups = groupBy(target, interBeatAutoInterpolationGroupKey);
+  const consumedSource = new Set();
+  const consumedTarget = new Set();
+  const matches = [];
+  const addMatch = (key, sourceLink, targetLink) => {
+    if (
+      !sourceLink
+      || !targetLink
+      || consumedSource.has(sourceLink)
+      || consumedTarget.has(targetLink)
+    ) return;
+    consumedSource.add(sourceLink);
+    consumedTarget.add(targetLink);
+    matches.push({
+      key,
+      source: sourceLink,
+      target: targetLink,
+      transformChanged: interBeatAutoInterpolationTransformChanged(
+        sourceLink.transform,
+        targetLink.transform,
+      ),
+    });
+  };
+
+  for (const [groupKey, sourceGroup] of sourceGroups) {
+    const targetGroup = targetGroups.get(groupKey) || [];
+    const sourceByIdentity = groupBy(
+      sourceGroup.filter((link) => link.sourceInstanceId),
+      (link) => link.sourceInstanceId,
+    );
+    const targetByIdentity = groupBy(
+      targetGroup.filter((link) => link.sourceInstanceId),
+      (link) => link.sourceInstanceId,
+    );
+    for (const [sourceInstanceId, sourceCandidates] of sourceByIdentity) {
+      const targetCandidates = targetByIdentity.get(sourceInstanceId) || [];
+      if (sourceCandidates.length !== 1 || targetCandidates.length !== 1) continue;
+      addMatch(`${groupKey}:source:${sourceInstanceId}`, sourceCandidates[0], targetCandidates[0]);
+    }
+
+    const remainingSource = sourceGroup.filter((link) => !consumedSource.has(link));
+    const remainingTarget = targetGroup.filter((link) => !consumedTarget.has(link));
+    if (
+      remainingSource.length === 1
+      && remainingTarget.length === 1
+      && !remainingSource[0].sourceInstanceId
+      && !remainingTarget[0].sourceInstanceId
+    ) {
+      addMatch(`${groupKey}:unique`, remainingSource[0], remainingTarget[0]);
+    }
+  }
+  return matches;
 }
 
 function interBeatSpatialSceneContextsByEntityId(assetLinks) {
@@ -18705,7 +18796,14 @@ function initializeInterBeatDynamicsViewer(active) {
   const playback = interBeatBoundaryPlaybackSummary(proposal, sceneContext);
   const beatContext = playback.boundary;
   const { transitions, beat, transition } = beatContext;
-  const { sourcePartPlaybackMode, sourcePlaybackSummary, canScrub: hasScrubWindow } = playback;
+  const {
+    sourcePartPlaybackMode,
+    sourcePlaybackSummary,
+    canScrub: hasScrubWindow,
+    autoInterpolationMatches,
+    canAutoInterpolate,
+    canPreview,
+  } = playback;
   if (thumbnailMode && !hasScrubWindow) return;
   const frozenSourcePartState = beat?.sourcePartStates?.find((item) => item.playbackMode === "frozen") || null;
   const transitionIndex = Math.max(0, beatContext.beatIndex - 1);
@@ -18715,7 +18813,7 @@ function initializeInterBeatDynamicsViewer(active) {
   const selectedBeats = beatContext.from ? [beatContext.from, beatContext.to] : (beatContext.to ? [beatContext.to] : []);
   const exactBoundaryAssets = thumbnailMode
     ? { available: false, links: [], sourceLinks: [], targetLinks: [] }
-    : interBeatExactBoundaryAssetLinks(beatContext, { includeFrom: hasScrubWindow });
+    : interBeatExactBoundaryAssetLinks(beatContext, { includeFrom: canPreview });
   const cumulativeContext = exactBoundaryAssets.available ? null : legacyCumulativeContext;
   const assetLinks = exactBoundaryAssets.available
     ? exactBoundaryAssets.links
@@ -18727,7 +18825,7 @@ function initializeInterBeatDynamicsViewer(active) {
   const previewActiveSwapIndex = sourcePlaybackPreviewAssetIndex >= 0
     ? sourcePlaybackPreviewAssetIndex
     : (cumulativeContext?.activeIndex || 0);
-  if (!hasScrubWindow) state.interBeatPreviewPlaying = false;
+  if (!canPreview) state.interBeatPreviewPlaying = false;
   const fromAssetIds = new Set(exactBoundaryAssets.available
     ? exactBoundaryAssets.sourceLinks.map((link) => link.assetId)
     : cumulativeContext?.active?.assetId ? [cumulativeContext.active.assetId] : (beatContext.from?.linkedAssetIds || []));
@@ -18829,7 +18927,7 @@ function initializeInterBeatDynamicsViewer(active) {
     elapsed: 0,
     playing: thumbnailMode
       ? false
-      : sourcePartPlaybackMode !== "frozen" && hasScrubWindow && Boolean(state.interBeatPreviewPlaying),
+      : sourcePartPlaybackMode !== "frozen" && canPreview && Boolean(state.interBeatPreviewPlaying),
     thumbnailReady: !thumbnailMode,
     thumbnailAutoplayPending: thumbnailMode && Boolean(state.interBeatPreviewPlaying),
     speed: Number(state.interBeatPreviewSpeed) || 1,
@@ -18844,13 +18942,19 @@ function initializeInterBeatDynamicsViewer(active) {
     textKind: layers.textKind,
     sourceDynamicsAssets: proposal?.sourceDynamics?.assets || [],
     sourcePlaybackSummary,
+    autoInterpolation: canAutoInterpolate,
+    autoInterpolationMatches: autoInterpolationMatches.map((match) => ({
+      key: match.key,
+      sourceEntityId: match.source.entityId,
+      targetEntityId: match.target.entityId,
+    })),
     legacySourceMotionTracks: playback.mappedTracks,
     manualVariantSwitch: playback.manualVariantSwitch,
     routeScopedTransition: playback.routeScopedProgression,
     variantTransitionAnimationSpec: playback.variantTransitionAnimationSpec,
     sourceCameraCuePending: false,
     sourceCameraCue: null,
-    sourceMotionTransition: beatContext.fromBeatId ? {
+    sourceMotionTransition: beatContext.fromBeatId && !canAutoInterpolate ? {
       fromBeatId: beatContext.fromBeatId,
       toBeatId: beatContext.toBeatId || "",
       ...(beatContext.edgeId ? { edgeId: beatContext.edgeId } : {}),
@@ -29235,6 +29339,11 @@ function loadDynamicAsset(viewer, assetLink, index, total, active, finishAsset) 
     entityId: spatialEntityId,
     transitionSceneRole: assetLink.transitionSceneRole || null,
     sceneContext: assetLink.sceneContext || null,
+    authoredTransform: {
+      position: authorWrapper.position.clone(),
+      quaternion: authorWrapper.quaternion.clone(),
+      scale: authorWrapper.scale.clone(),
+    },
     index,
     opacityMaterials: [],
   };
@@ -30760,6 +30869,7 @@ function viewerExecutesInterBeatTransition(viewer) {
 
 function attachSourceDynamicsPreviewAnimation(viewer, entry, gltf) {
   if (!viewer || (viewer.componentId !== "dynamic-geometry" && !viewerExecutesInterBeatTransition(viewer))) return;
+  if (viewer.autoInterpolation && viewerExecutesInterBeatTransition(viewer)) return;
   const assetId = entry.assetId || entry.step?.assetId;
   if (
     viewer.componentId === "dynamic-geometry"
@@ -31162,6 +31272,7 @@ function animateDynamicEffectOverlays(effects, kind, time) {
 
 function animateInterBeatDynamics(viewer) {
   const progress = previewCycleProgress(viewer);
+  const smooth = progress * progress * (3 - 2 * progress);
   const completed = viewer.playOnce && progress >= 1;
   applyInterBeatSourcePartMasks(viewer, completed || !viewer.sourceMotionTransition ? "destination" : "transition");
   if (completed && viewer.playing) {
@@ -31181,7 +31292,6 @@ function animateInterBeatDynamics(viewer) {
   const effects = viewer.transitionEffects;
   if (!effects) return;
   const time = viewer.elapsed;
-  const smooth = progress * progress * (3 - 2 * progress);
   const phaseOnB = progress >= 0.5;
   const setOpacity = (object, opacity) => {
     if (object?.material) object.material.opacity = opacity;
@@ -31268,10 +31378,43 @@ function applyInterBeatExactSceneVisibility(viewer, progress) {
   const rawProgress = Math.max(0, Math.min(1, Number(progress) || 0));
   const clamped = !viewer.playing && rawProgress <= 0 ? 1 : rawProgress;
   const smooth = clamped * clamped * (3 - 2 * clamped);
-  const hardSwitch = ["discrete-hard", "discrete-pop"].includes(viewer.kind);
+  const interpolatedSources = new Set();
+  const interpolatedTargets = new Set();
+  if (viewer.autoInterpolation) {
+    for (const match of viewer.autoInterpolationMatches || []) {
+      const source = (viewer.dynamicObjects || []).find((item) => (
+        item.transitionSceneRole === "from"
+        && String(item.entityId || "") === String(match.sourceEntityId || "")
+      ));
+      const target = (viewer.dynamicObjects || []).find((item) => (
+        item.transitionSceneRole === "to"
+        && String(item.entityId || "") === String(match.targetEntityId || "")
+      ));
+      if (!source?.sourceScene || !target?.sourceScene || !source.authoredTransform || !target.authoredTransform) continue;
+      target.authorWrapper.position.lerpVectors(
+        source.authoredTransform.position,
+        target.authoredTransform.position,
+        smooth,
+      );
+      target.authorWrapper.quaternion.copy(source.authoredTransform.quaternion).slerp(
+        target.authoredTransform.quaternion,
+        smooth,
+      );
+      target.authorWrapper.scale.lerpVectors(
+        source.authoredTransform.scale,
+        target.authoredTransform.scale,
+        smooth,
+      );
+      interpolatedSources.add(source);
+      interpolatedTargets.add(target);
+    }
+  }
+  const hardSwitch = !viewer.autoInterpolation && ["discrete-hard", "discrete-pop"].includes(viewer.kind);
   const destinationOpacity = hardSwitch ? (clamped >= 0.5 ? 1 : 0) : smooth;
   for (const item of viewer.dynamicObjects || []) {
-    if (item.transitionSceneRole === "from") setDynamicPreviewObjectOpacity(item, 1 - destinationOpacity);
+    if (interpolatedSources.has(item)) setDynamicPreviewObjectOpacity(item, 0);
+    else if (interpolatedTargets.has(item)) setDynamicPreviewObjectOpacity(item, 1);
+    else if (item.transitionSceneRole === "from") setDynamicPreviewObjectOpacity(item, 1 - destinationOpacity);
     else if (item.transitionSceneRole === "to") setDynamicPreviewObjectOpacity(item, destinationOpacity);
   }
   return true;
@@ -33493,8 +33636,27 @@ function interBeatBoundaryPlaybackSummary(proposal, context) {
         ? Boolean(variantTransitionAnimationSpec)
         : !routeScopedProgression && sourcePlaybackSummary.contractAvailable
         ? sourcePlaybackSummary.windowState.mode === "scrub"
-        : mappedTracks.length > 0
+      : mappedTracks.length > 0
     );
+  const autoInterpolationAssets = !canScrub
+    ? interBeatExactBoundaryAssetLinks(boundary, { includeFrom: true })
+    : null;
+  const autoInterpolationMatches = autoInterpolationAssets
+    ? interBeatAutoInterpolationMatches(
+      autoInterpolationAssets.sourceLinks,
+      autoInterpolationAssets.targetLinks,
+    )
+    : [];
+  const canAutoInterpolate = Boolean(
+    boundary.fromBeatId
+    && boundary.toBeatId
+    && sourcePartPlaybackMode !== "frozen"
+    && !canScrub
+    && !manualVariantSwitch
+    && autoInterpolationAssets?.sourceAvailable
+    && autoInterpolationAssets?.targetAvailable
+    && autoInterpolationMatches.some((match) => match.transformChanged)
+  );
   return {
     boundary,
     manualVariantSwitch,
@@ -33504,6 +33666,14 @@ function interBeatBoundaryPlaybackSummary(proposal, context) {
     mappedTracks,
     variantTransitionAnimationSpec,
     canScrub,
+    autoInterpolationMatches,
+    canAutoInterpolate,
+    canPreview: canScrub || canAutoInterpolate,
+    previewMode: canScrub
+      ? "saved-source"
+      : canAutoInterpolate
+        ? "auto-interpolation"
+        : "none",
   };
 }
 
@@ -33536,23 +33706,23 @@ function interBeatBoundaryStatus(proposal, context) {
     sourcePlaybackSummary,
     mappedTracks,
     canScrub,
+    canAutoInterpolate,
   } = playback;
   if (manualVariantSwitch) {
-    return canScrub
-      ? { className: "mapped", label: "Saved scene change" }
-      : { className: "no-dynamics", label: "No saved scene change" };
+    if (canScrub) return { className: "mapped", label: "Saved scene change" };
+    if (canAutoInterpolate) return { className: "auto-interpolation", label: "Auto Interpolation" };
+    return { className: "no-dynamics", label: "No saved scene change" };
   }
   if (!boundary.fromBeatId) return { className: "static", label: "Story starts here" };
   if (sourcePartPlaybackMode === "frozen") return { className: "static", label: "Previous scene stays visible" };
   if (!routeScopedProgression && sourcePlaybackSummary.contractAvailable) {
     if (sourcePlaybackSummary.windowState.mode === "scrub") return { className: "mapped", label: "Saved scene change" };
     if (sourcePlaybackSummary.windowState.mode === "initialize") return { className: "static", label: "Story starts here" };
-    if (sourcePlaybackSummary.windowState.mode === "hold") return { className: "static", label: "Previous scene stays visible" };
-    return { className: "no-dynamics", label: "No saved scene change" };
+    if (sourcePlaybackSummary.windowState.mode === "hold" && !canAutoInterpolate) return { className: "static", label: "Previous scene stays visible" };
   }
-  return mappedTracks.length
-    ? { className: "mapped", label: "Saved scene change" }
-    : { className: "no-dynamics", label: "No saved scene change" };
+  if (mappedTracks.length) return { className: "mapped", label: "Saved scene change" };
+  if (canAutoInterpolate) return { className: "auto-interpolation", label: "Auto Interpolation" };
+  return { className: "no-dynamics", label: "No saved scene change" };
 }
 
 function interBeatSpatialSceneContextsByAssetId(boundary) {

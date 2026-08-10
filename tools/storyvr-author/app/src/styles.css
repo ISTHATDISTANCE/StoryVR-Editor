@@ -1723,6 +1723,10 @@ h3 {
   --transition-boundary-color: #b85e20;
 }
 
+.story-variant-link-layer.has-transition-previews .story-variant-transition-preview.auto-interpolation {
+  --transition-boundary-color: #6a50a7;
+}
+
 .story-variant-interaction-label {
   --interaction-boundary-color: #28547d;
   overflow: visible;
@@ -2036,7 +2040,8 @@ h3 {
   height: 80px;
 }
 
-.story-variant-transition-preview.no-dynamics .transition-boundary-status {
+.story-variant-transition-preview.no-dynamics .transition-boundary-status,
+.story-variant-transition-preview.auto-interpolation .transition-boundary-status {
   position: static;
   transform: none;
 }
@@ -4983,6 +4988,10 @@ dd {
 
 .transition-boundary-connector.no-dynamics {
   --transition-boundary-color: #b85e20;
+}
+
+.transition-boundary-connector.auto-interpolation {
+  --transition-boundary-color: #6a50a7;
 }
 
 .transition-boundary-arrow {

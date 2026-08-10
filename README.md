@@ -142,6 +142,13 @@ descriptions and provides edge buttons for moving directly to the previous or
 next story part. Codex can use exact-scene PNG, JPEG, and WebP image planes as
 attached visual context for a movement request, but those images remain static
 and cannot become motion actors or have their authored placement changed.
+
+Scene changes offers **Auto Interpolation** when two consecutive saved scenes
+contain safely matched GLBs or image planes whose position, rotation, or scale
+changes. Ambiguous object identities are not guessed, and a saved source scene
+change always takes precedence. The author preview and compiled reader use the
+same transform interpolation and dissolve unmatched endpoint objects in or out.
+
 Review story always uses the authored Reader camera; right-drag looks around
 from that reader pose.
 
@@ -186,10 +193,10 @@ npm run storyvr:workflow
 
 Then open <http://127.0.0.1:5197/> and import one or more log files. The viewer
 shows the step timeline, click markers, spatial-drag spans and paths, pauses,
-3D actions, and evidence-linked moments to review. Imported logs stay local
-unless **Generate insights** is selected; that optional action sends only a
-compact summary to Codex and places the returned evidence-linked annotations
-on the timeline.
+3D actions, spatial-editor intervals, and evidence-linked moments to review.
+Imported logs stay local unless **Generate insights** is selected; that optional
+action sends only a compact summary to Codex and places expandable annotations
+beside their cited timeline events.
 
 ### Optional AI features
 

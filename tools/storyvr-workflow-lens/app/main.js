@@ -14,6 +14,8 @@ const TIMELINE_RIGHT = 12;
 const TIMELINE_PLOT_TOP = 28;
 const TIMELINE_PLOT_BOTTOM = TIMELINE_HEIGHT - 8;
 const PLOT_WIDTH = TIMELINE_WIDTH - TIMELINE_LEFT - TIMELINE_RIGHT;
+const SPATIAL_EDITOR_COLOR = "#8b67b1";
+const SPATIAL_EDITOR_EDGE_COLOR = "#654487";
 const STEP_COLORS = Object.freeze({
   "source-graph": "#d9ede5",
   "spatial-relations": "#dbe9f2",
@@ -67,6 +69,7 @@ const state = {
   codexResults: new WeakMap(),
   codexEvidenceLookups: new WeakMap(),
   codexAnnotationPages: new WeakMap(),
+  codexExpandedMomentKeys: new WeakMap(),
   codexRun: null,
   loadEpoch: 0,
   toastTimer: null,
@@ -171,22 +174,30 @@ function bindControls() {
     if (pageControl) {
       const analysis = activeAnalysis();
       if (!analysis) return;
+      const pageAction = Number(pageControl.dataset.codexPageAction || 0);
       const currentPage = state.codexAnnotationPages.get(analysis) || 0;
-      state.codexAnnotationPages.set(analysis, Math.max(0, currentPage + Number(pageControl.dataset.codexPageAction || 0)));
+      state.codexAnnotationPages.set(analysis, Math.max(0, currentPage + pageAction));
       renderCodexResults(state.codexResults.get(analysis), analysis);
+      requestAnimationFrame(() => focusCodexPaginationAfterRender(pageAction));
       return;
     }
     const annotation = event.target.closest("[data-codex-moment-id]");
     if (!annotation) return;
-    const moment = activeCodexMoments().find((candidate) => candidate.id === annotation.dataset.codexMomentId);
-    if (moment) focusCodexMoment(moment);
+    const result = activeAnalysis() ? state.codexResults.get(activeAnalysis()) : null;
+    const moment = activeCodexMoments(result)
+      .find((candidate) => codexMomentKey(candidate, result) === annotation.dataset.codexMomentKey);
+    if (moment) toggleCodexMomentDescription(moment);
   });
   window.addEventListener("resize", () => {
+    const focusedMomentKey = document.activeElement?.dataset?.codexMomentKey || "";
+    const focusedPageAction = document.activeElement?.dataset?.codexPageAction;
     if (state.resizeFrame) cancelAnimationFrame(state.resizeFrame);
     state.resizeFrame = requestAnimationFrame(() => {
       state.resizeFrame = null;
       const analysis = activeAnalysis();
       if (analysis) renderTimeline(analysis);
+      if (focusedMomentKey) focusCodexMomentAfterRender(focusedMomentKey);
+      else if (focusedPageAction != null) focusCodexPaginationAfterRender(Number(focusedPageAction));
     });
   });
 
@@ -227,6 +238,7 @@ async function loadDemo({ announce = false } = {}) {
     state.activeIndex = 0;
     state.codexResults = new WeakMap();
     state.codexAnnotationPages = new WeakMap();
+    state.codexExpandedMomentKeys = new WeakMap();
     selectSession(0);
     if (announce) showToast("Demonstration session restored.");
   } catch (error) {
@@ -265,6 +277,7 @@ async function importFiles(files) {
     state.activeIndex = 0;
     state.codexResults = new WeakMap();
     state.codexAnnotationPages = new WeakMap();
+    state.codexExpandedMomentKeys = new WeakMap();
     selectSession(0);
   }
   elements.workspace.setAttribute("aria-busy", "false");
@@ -402,6 +415,7 @@ function renderTimeline(analysis) {
   svg.append(defs);
 
   const segmentsGroup = svgElement("g", { "clip-path": "url(#plot-clip)" });
+  const stepLabelsGroup = svgElement("g", { "clip-path": "url(#plot-clip)" });
   for (const segment of segmentsFor(analysis)) {
     const segmentStart = numberOr(segment.startMs, segment.start, 0);
     const segmentEnd = numberOr(segment.endMs, segment.end, duration);
@@ -418,10 +432,42 @@ function renderTimeline(analysis) {
     if (xFor(clippedEnd) - xFor(clippedStart) > 76) {
       const label = svgText(xFor(clippedStart) + 8, 44, stepLabel(stepId), "step-label");
       if (!highlighted) label.setAttribute("opacity", "0.45");
-      segmentsGroup.append(label);
+      stepLabelsGroup.append(label);
     }
   }
   svg.append(segmentsGroup);
+
+  const spatialEditorGroup = svgElement("g", { "clip-path": "url(#plot-clip)" });
+  for (const segment of modeSegmentsFor(analysis)) {
+    if (segment.mode !== "spatial") continue;
+    const segmentStart = numberOr(segment.startMs, segment.start, 0);
+    const segmentEnd = numberOr(segment.endMs, segment.end, duration);
+    if (segmentEnd < start || segmentStart > end) continue;
+    const clippedStart = Math.max(start, segmentStart);
+    const clippedEnd = Math.min(end, segmentEnd);
+    const stepId = segment.stepId || "unknown";
+    const highlighted = !state.highlightedStepId || state.highlightedStepId === stepId;
+    const uncertain = !["recorded", "confirmed"].includes(segment.boundaryConfidence)
+      || segment.startReason === "observed-context";
+    const x = xFor(clippedStart);
+    const width = Math.max(1, xFor(clippedEnd) - x);
+    spatialEditorGroup.append(svgElement("rect", {
+      class: `spatial-editor-segment${uncertain ? " uncertain" : ""}`,
+      x, y: TIMELINE_PLOT_TOP, width, height: TIMELINE_PLOT_BOTTOM - TIMELINE_PLOT_TOP,
+      fill: SPATIAL_EDITOR_COLOR,
+      opacity: highlighted ? uncertain ? 0.2 : 0.28 : 0.08,
+      role: "img",
+      "aria-label": `${formatDuration(segmentStart)} to ${formatDuration(segmentEnd)}, spatial editor${uncertain ? ", approximate timing" : ""}`,
+    }));
+    spatialEditorGroup.append(svgElement("line", {
+      class: `spatial-editor-edge${uncertain ? " uncertain" : ""}`,
+      x1: x, y1: TIMELINE_PLOT_TOP + 1, x2: x + width, y2: TIMELINE_PLOT_TOP + 1,
+      stroke: SPATIAL_EDITOR_EDGE_COLOR,
+      opacity: highlighted ? 0.8 : 0.2,
+    }));
+  }
+  svg.append(spatialEditorGroup);
+  svg.append(stepLabelsGroup);
 
   const tickCount = range < 20_000 ? 5 : 7;
   for (let index = 0; index <= tickCount; index += 1) {
@@ -445,8 +491,7 @@ function renderTimeline(analysis) {
     const x = xFor(clamp(eventEndMs, start, end));
     const semantic = Boolean(event.target?.semantic);
     const lifecycle = !["click", "drag"].includes(event.type);
-    const laneBase = 86;
-    const y = laneBase + ((Number(event.sequence) || 0) % 7 - 3) * 4;
+    const y = timelineEventY(event);
     const selected = Number(event.sequence) === Number(state.selectedSequence);
     const wrapper = svgElement("g", {
       class: "event-marker",
@@ -704,6 +749,7 @@ async function runCodexAnalysis() {
     const codex = result.analysis || result;
     state.codexResults.set(analysis, codex);
     state.codexAnnotationPages.set(analysis, 0);
+    state.codexExpandedMomentKeys.delete(analysis);
     if (activeAnalysis() === analysis) renderTimeline(analysis);
     showToast("Codex insights added to the timeline.");
   } catch (error) {
@@ -753,7 +799,16 @@ function renderCodexResults(result, analysis = activeAnalysis()) {
   const annotationSpan = clamp(240 / Math.max(1, elements.timelineSvg.getBoundingClientRect().width) * 100, 18, 96);
   const placements = placeCodexAnnotations(moments, start, end, annotationSpan);
   const rowCount = Math.max(1, ...placements.map((placement) => placement.row + 1));
+  const expandedMomentKey = state.codexExpandedMomentKeys.get(analysis) || "";
   elements.codexResults.innerHTML = `
+    ${placements.length ? `
+      <div class="codex-annotation-track" style="--annotation-height:${28 + rowCount * CODEX_ANNOTATION_ROW_HEIGHT}px">
+        ${placements.map(({ moment, x, anchorX, row, alignment }) => {
+          const momentKey = codexMomentKey(moment, result);
+          return codexAnnotationHtml(moment, analysis, x, anchorX, row, alignment, momentKey, momentKey === expandedMomentKey);
+        }).join("")}
+      </div>
+    ` : '<p class="codex-empty-view">No generated insights fall inside this view. Choose <strong>Full session</strong> to see every annotation.</p>'}
     <div class="codex-annotation-summary">
       <span><i aria-hidden="true">✦</i><strong>Generated overview</strong></span>
       <p>${escapeHtml(summary)}</p>
@@ -767,15 +822,11 @@ function renderCodexResults(result, analysis = activeAnalysis()) {
         </div>
       ` : ""}
     </div>
-    ${placements.length ? `
-      <div class="codex-annotation-track" style="--annotation-height:${28 + rowCount * CODEX_ANNOTATION_ROW_HEIGHT}px">
-        ${placements.map(({ moment, x, row, alignment }) => codexAnnotationHtml(moment, analysis, x, row, alignment)).join("")}
-      </div>
-    ` : '<p class="codex-empty-view">No generated insights fall inside this view. Choose <strong>Full session</strong> to see every annotation.</p>'}
   `;
   elements.codexResults.hidden = false;
   elements.codexAnnotationLabel.hidden = false;
   elements.codexKey.hidden = false;
+  layoutCodexAnnotationRows();
   updateCodexButtonState();
 }
 
@@ -814,25 +865,59 @@ function activeCodexMoments(result = activeAnalysis() ? state.codexResults.get(a
   return Array.isArray(result?.moments) ? result.moments : [];
 }
 
+function codexMomentKey(moment, result = activeAnalysis() ? state.codexResults.get(activeAnalysis()) : null) {
+  const index = activeCodexMoments(result).indexOf(moment);
+  return `codex-moment-${index >= 0 ? index + 1 : 0}`;
+}
+
+function focusCodexPaginationAfterRender(pageAction) {
+  const sameDirection = elements.codexResults.querySelector(`[data-codex-page-action="${pageAction}"]:not(:disabled)`);
+  const oppositeDirection = elements.codexResults.querySelector(`[data-codex-page-action="${-pageAction}"]:not(:disabled)`);
+  const firstAnnotation = elements.codexResults.querySelector("[data-codex-moment-key]");
+  (sameDirection || oppositeDirection || firstAnnotation)?.focus({ preventScroll: true });
+}
+
+function focusCodexMomentAfterRender(momentKey) {
+  elements.codexResults.querySelector(`[data-codex-moment-key="${momentKey}"]`)?.focus({ preventScroll: true });
+}
+
 function placeCodexAnnotations(moments, start, end, annotationSpan = 23) {
   const range = Math.max(1, end - start);
   const halfSpan = annotationSpan / 2;
   const rowEnds = [];
   return moments.map((moment) => {
-    const x = clamp((momentStart(moment) - start) / range * 100, 0, 100);
+    const normalizedX = clamp((momentStart(moment) - start) / range, 0, 1);
+    const anchorX = TIMELINE_LEFT + normalizedX * PLOT_WIDTH;
+    const x = anchorX / TIMELINE_WIDTH * 100;
     const alignment = x < halfSpan ? "start" : x > 100 - halfSpan ? "end" : "center";
     const left = alignment === "start" ? x : alignment === "end" ? x - annotationSpan : x - halfSpan;
     const right = alignment === "start" ? x + annotationSpan : alignment === "end" ? x : x + halfSpan;
     let row = rowEnds.findIndex((rowEnd) => left - rowEnd >= 1.5);
     if (row < 0) row = rowEnds.length;
     rowEnds[row] = right;
-    return { moment, x, row, alignment };
+    return { moment, x, anchorX, row, alignment };
   });
 }
 
-function codexAnnotationHtml(moment, analysis, x, row, alignment) {
+function timelineEventY(event) {
+  return 86 + ((Number(event?.sequence) || 0) % 7 - 3) * 4;
+}
+
+function primaryMomentEvent(moment, analysis = activeAnalysis()) {
   const sequences = momentSequences(moment, analysis);
-  const firstEvent = sequences.length ? eventsFor(analysis).find((event) => Number(event.sequence) === sequences[0]) : null;
+  return sequences
+    .map((sequence) => eventsFor(analysis).find((event) => Number(event.sequence) === Number(sequence)))
+    .filter(Boolean)
+    .reduce((earliest, event) => !earliest
+      || eventElapsed(event) < eventElapsed(earliest)
+      || (eventElapsed(event) === eventElapsed(earliest) && Number(event.sequence) < Number(earliest.sequence))
+      ? event
+      : earliest, null);
+}
+
+function codexAnnotationHtml(moment, analysis, x, anchorX, row, alignment, momentKey, isExpanded = false) {
+  const sequences = momentSequences(moment, analysis);
+  const firstEvent = primaryMomentEvent(moment, analysis);
   const stepId = moment.stepId || (firstEvent ? stepIdForEvent(firstEvent) : "unknown");
   const evidenceLabel = sequences.length
     ? `${sequences.length === 1 ? "event" : "events"} ${sequences.slice(0, 3).map((sequence) => `#${sequence}`).join(", ")}${sequences.length > 3 ? ` +${sequences.length - 3}` : ""}`
@@ -844,21 +929,78 @@ function codexAnnotationHtml(moment, analysis, x, row, alignment) {
   const description = moment.summary || moment.description || moment.interpretation || "Evidence-linked observation";
   const recommendation = String(moment.recommendation || "").trim();
   const fullCopy = `${description}${recommendation ? ` Suggested follow-up: ${recommendation}` : ""}`;
+  const previewCopy = fullCopy.length > 180 ? `${fullCopy.slice(0, 179).trimEnd()}…` : fullCopy;
   const startTime = momentStart(moment);
   const endTime = Math.max(startTime, numberOr(moment.endMs, moment.atMs, startTime));
   const timeLabel = endTime > startTime ? `${formatDuration(startTime)}–${formatDuration(endTime)}` : formatDuration(startTime);
+  const momentId = String(moment.id || `codex-${row}`);
+  const toggleLabel = isExpanded ? "Hide full description" : "Show full description";
+  const metaId = `${momentKey}-meta`;
+  const descriptionId = `${momentKey}-description`;
+  const accessibleButtonLabel = `${moment.title || capitalize(valence)}, ${timeLabel}. ${toggleLabel}.`;
+  const timelineAnchorY = firstEvent ? timelineEventY(firstEvent) : 86;
   return `
-    <button class="codex-annotation ${valence} align-${alignment}" type="button"
-      data-codex-moment-id="${escapeHtml(moment.id || `codex-${row}`)}"
-      style="--annotation-x:${x.toFixed(3)}%;--annotation-top:${22 + row * CODEX_ANNOTATION_ROW_HEIGHT}px;--annotation-pin-offset:${15 + row * CODEX_ANNOTATION_ROW_HEIGHT}px"
-      title="${escapeHtml(fullCopy)}"
-      aria-label="${escapeHtml(`${moment.title || capitalize(valence)}, ${timeLabel}, ${stepLabel(stepId)}, ${accessibleEvidenceLabel}. ${fullCopy}`)}">
+    <button class="codex-annotation ${valence} align-${alignment}${isExpanded ? " expanded" : ""}" type="button"
+      data-codex-moment-id="${escapeHtml(momentId)}"
+      data-codex-moment-key="${momentKey}"
+      data-annotation-row="${row}"
+      data-timeline-anchor-x="${anchorX}"
+      data-timeline-anchor-y="${timelineAnchorY}"
+      aria-expanded="${isExpanded}"
+      aria-controls="${descriptionId}"
+      aria-label="${escapeHtml(accessibleButtonLabel)}"
+      aria-describedby="${metaId}${isExpanded ? ` ${descriptionId}` : ""}"
+      style="--annotation-x:${x.toFixed(3)}%;--annotation-top:${22 + row * CODEX_ANNOTATION_ROW_HEIGHT}px">
       <span class="codex-annotation-pin" aria-hidden="true">✦</span>
       <span class="codex-annotation-heading"><strong>${escapeHtml(moment.title || capitalize(valence))}</strong><time>${timeLabel}</time></span>
-      <span class="codex-annotation-meta">${escapeHtml(stepLabel(stepId))} · ${escapeHtml(evidenceLabel)}</span>
-      <span class="codex-annotation-copy">${escapeHtml(fullCopy)}</span>
+      <span class="codex-annotation-meta" aria-hidden="true">${escapeHtml(stepLabel(stepId))} · ${escapeHtml(evidenceLabel)}</span>
+      <span id="${metaId}" class="sr-only">${escapeHtml(stepLabel(stepId))} · ${escapeHtml(accessibleEvidenceLabel)}</span>
+      <span class="codex-annotation-copy" aria-hidden="true">${escapeHtml(previewCopy)}</span>
+      <span id="${descriptionId}" class="codex-annotation-full-copy"${isExpanded ? "" : " hidden"}>${escapeHtml(fullCopy)}</span>
+      <span class="codex-annotation-toggle" aria-hidden="true">${toggleLabel}<i>${isExpanded ? "↑" : "↓"}</i></span>
     </button>
   `;
+}
+
+function layoutCodexAnnotationRows() {
+  const track = elements.codexResults.querySelector(".codex-annotation-track");
+  if (!track) return;
+  const rows = new Map();
+  for (const annotation of track.querySelectorAll(".codex-annotation")) {
+    const row = Math.max(0, Number(annotation.dataset.annotationRow) || 0);
+    if (!rows.has(row)) rows.set(row, []);
+    rows.get(row).push(annotation);
+  }
+  let top = 22;
+  for (const row of [...rows.keys()].sort((a, b) => a - b)) {
+    const annotations = rows.get(row);
+    for (const annotation of annotations) {
+      annotation.style.setProperty("--annotation-top", `${top}px`);
+    }
+    const height = Math.max(110, ...annotations.map((annotation) => Math.ceil(annotation.getBoundingClientRect().height)));
+    top += height + 18;
+  }
+  track.style.setProperty("--annotation-height", `${Math.max(140, top)}px`);
+  const timelineRect = elements.timelineSvg.getBoundingClientRect();
+  const trackRect = track.getBoundingClientRect();
+  const screenMatrix = elements.timelineSvg.getScreenCTM();
+  for (const annotation of track.querySelectorAll(".codex-annotation")) {
+    const anchorX = clamp(Number(annotation.dataset.timelineAnchorX) || TIMELINE_LEFT, 0, TIMELINE_WIDTH);
+    const anchorY = clamp(Number(annotation.dataset.timelineAnchorY) || 86, 0, TIMELINE_HEIGHT);
+    let anchorLeft = timelineRect.left + anchorX / TIMELINE_WIDTH * timelineRect.width;
+    let anchorTop = timelineRect.top + anchorY / TIMELINE_HEIGHT * timelineRect.height;
+    if (screenMatrix) {
+      const point = elements.timelineSvg.createSVGPoint();
+      point.x = anchorX;
+      point.y = anchorY;
+      const clientPoint = point.matrixTransform(screenMatrix);
+      anchorLeft = clientPoint.x;
+      anchorTop = clientPoint.y;
+    }
+    annotation.style.setProperty("--annotation-x", `${clamp(anchorLeft - trackRect.left, 0, trackRect.width).toFixed(2)}px`);
+    const connectorHeight = Math.max(0, Math.round(annotation.getBoundingClientRect().top - anchorTop));
+    annotation.style.setProperty("--connector-height", `${connectorHeight}px`);
+  }
 }
 
 function handleTimelineActivation(event) {
@@ -917,14 +1059,18 @@ function focusMoment(moment) {
   elements.timelineSvg.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
-function focusCodexMoment(moment) {
-  const momentId = String(moment?.id || "");
-  focusMoment(moment);
-  requestAnimationFrame(() => {
-    const annotation = [...elements.codexResults.querySelectorAll("[data-codex-moment-id]")]
-      .find((candidate) => candidate.dataset.codexMomentId === momentId);
-    annotation?.focus({ preventScroll: true });
-  });
+function toggleCodexMomentDescription(moment) {
+  const analysis = activeAnalysis();
+  if (!analysis) return;
+  const result = state.codexResults.get(analysis);
+  const momentKey = codexMomentKey(moment, result);
+  const isExpanded = state.codexExpandedMomentKeys.get(analysis) === momentKey;
+  if (isExpanded) state.codexExpandedMomentKeys.delete(analysis);
+  else state.codexExpandedMomentKeys.set(analysis, momentKey);
+  const sequence = primaryMomentEvent(moment, analysis)?.sequence;
+  if (sequence != null) selectEvent(Number(sequence));
+  else renderTimeline(analysis);
+  requestAnimationFrame(() => focusCodexMomentAfterRender(momentKey));
 }
 
 function resetTimelineView({ render = true } = {}) {
@@ -1006,6 +1152,11 @@ function segmentsFor(analysis) {
     }
   }
   return derived;
+}
+
+function modeSegmentsFor(analysis) {
+  const segments = analysis?.timeline?.modeSegments || analysis?.modeSegments || [];
+  return Array.isArray(segments) ? segments : [];
 }
 
 function momentsFor(analysis) {
@@ -1175,7 +1326,7 @@ function lifecycleLabel(type) {
 
 function editorSceneLabel(event) {
   const scene = event.editorScene || event.context?.workspace?.editorScene;
-  if (!scene) return "";
+  if (!scene || typeof scene !== "object" || !Object.values(scene).some((value) => String(value || "").trim())) return "";
   return scene.beatId || scene.sceneKey || scene.targetId || scene.kind || scene.type || "Scene editor";
 }
 

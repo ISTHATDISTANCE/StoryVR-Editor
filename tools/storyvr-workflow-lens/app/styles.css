@@ -689,6 +689,15 @@ select {
   box-shadow: 0 0 0 1px var(--teal);
 }
 
+.timeline-key .key-spatial-editor {
+  width: 17px;
+  height: 9px;
+  border: 1px solid rgba(101, 68, 135, 0.42);
+  border-top: 3px solid #654487;
+  border-radius: 2px;
+  background: rgba(139, 103, 177, 0.28);
+}
+
 .timeline-key .key-line {
   width: 17px;
   height: 6px;
@@ -834,7 +843,7 @@ select {
   gap: 0.65rem;
   align-items: baseline;
   padding: 0.62rem 0.75rem;
-  border-bottom: 1px solid rgba(199, 207, 200, 0.75);
+  border-top: 1px solid rgba(199, 207, 200, 0.75);
   background: #f0f6f2;
 }
 
@@ -912,7 +921,7 @@ select {
 .codex-annotation-track {
   position: relative;
   min-height: var(--annotation-height, 140px);
-  overflow: hidden;
+  overflow: visible;
   background:
     linear-gradient(to bottom, rgba(8, 125, 112, 0.045), transparent 44px),
     #fbfcf9;
@@ -935,8 +944,14 @@ select {
   background: rgba(255, 255, 252, 0.98);
   box-shadow: 0 7px 18px rgba(26, 57, 48, 0.09);
   color: var(--ink);
+  cursor: pointer;
   text-align: left;
   transform: translateX(-50%);
+}
+
+.codex-annotation.expanded {
+  z-index: 3;
+  box-shadow: 0 12px 28px rgba(26, 57, 48, 0.15);
 }
 
 .codex-annotation.align-start { transform: none; }
@@ -956,9 +971,10 @@ select {
   bottom: 100%;
   left: 50%;
   width: 1px;
-  height: var(--annotation-top, 22px);
+  height: var(--connector-height, var(--annotation-top, 22px));
   background: color-mix(in srgb, var(--annotation-color) 60%, transparent);
   content: "";
+  pointer-events: none;
 }
 
 .codex-annotation.align-start::before,
@@ -969,7 +985,7 @@ select {
 
 .codex-annotation-pin {
   position: absolute;
-  bottom: calc(100% + var(--annotation-pin-offset, 15px));
+  bottom: calc(100% + var(--connector-height, 24px) - 9px);
   left: 50%;
   display: grid;
   width: 18px;
@@ -981,6 +997,7 @@ select {
   box-shadow: 0 0 0 2px var(--annotation-color);
   color: #a3ddcd;
   font-size: 0.52rem;
+  pointer-events: none;
   transform: translateX(-50%);
 }
 
@@ -1023,6 +1040,44 @@ select {
   -webkit-line-clamp: 3;
 }
 
+.codex-annotation.expanded .codex-annotation-heading strong {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.codex-annotation.expanded .codex-annotation-copy {
+  display: none;
+}
+
+.codex-annotation-full-copy {
+  display: block;
+  overflow: visible;
+  color: var(--muted);
+  font-size: 0.62rem;
+  line-height: 1.35;
+}
+
+.codex-annotation-full-copy[hidden] {
+  display: none;
+}
+
+.codex-annotation-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.16rem;
+  color: color-mix(in srgb, var(--annotation-color) 85%, var(--ink));
+  font-size: 0.57rem;
+  font-weight: 800;
+}
+
+.codex-annotation-toggle i {
+  font-size: 0.7rem;
+  font-style: normal;
+}
+
 .codex-empty-view {
   margin: 0;
   padding: 0.9rem;
@@ -1046,6 +1101,21 @@ select {
 .timeline-svg .segment.uncertain {
   opacity: 0.68;
   mask: url(#uncertain-mask);
+}
+
+.timeline-svg .spatial-editor-segment,
+.timeline-svg .spatial-editor-edge {
+  pointer-events: none;
+}
+
+.timeline-svg .spatial-editor-segment {
+  stroke: rgba(101, 68, 135, 0.42);
+  stroke-width: 0.8;
+}
+
+.timeline-svg .spatial-editor-segment.uncertain,
+.timeline-svg .spatial-editor-edge.uncertain {
+  stroke-dasharray: 5 4;
 }
 
 .timeline-svg .grid-line {

@@ -9,6 +9,10 @@
   box-sizing: border-box;
 }
 
+html.popup-document {
+  width: 376px;
+}
+
 body {
   width: 376px;
   margin: 0;

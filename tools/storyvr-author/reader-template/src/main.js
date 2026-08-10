@@ -119,6 +119,7 @@ const DIRECT_GHOST_MIN_TRAVEL_SECONDS = 0.75;
 const DIRECT_GHOST_MAX_TRAVEL_SECONDS = 4.5;
 const DIRECT_GHOST_DESTINATION_HOLD_SECONDS = 3;
 const DIRECT_GHOST_INACTIVITY_REPLAY_SECONDS = 5;
+const AUTO_INTERPOLATION_SECONDS = 0.8;
 let sharedDracoLoader = null;
 let sharedKtx2Loader = null;
 let preservedGeometryNeutralEnvironmentMap = null;
@@ -351,6 +352,7 @@ const activeSupplementalModelEntries = [];
 const activeSpatialImageEntries = [];
 const activeProceduralDynamicsEntries = [];
 let activeSceneLoadRevision = 0;
+let activeRuntimeAutoInterpolation = null;
 let habitat = null;
 let spatialTextPanel = null;
 let spatialTextPlacement = null;
@@ -3883,6 +3885,7 @@ function performRuntimeControllerAction(action) {
     return snapTurnReader(normalizedAction);
   }
   if (normalizedAction === "turn-back") return snapTurnReader("turn-right", Math.PI);
+  if (activeRuntimeAutoInterpolation) return false;
   if (controllerAdvancePending) return false;
   let destinationIndex = null;
   if (normalizedAction === "next-beat" && activeIndex < beats.length - 1) destinationIndex = activeIndex + 1;
@@ -3890,7 +3893,7 @@ function performRuntimeControllerAction(action) {
   if (destinationIndex != null) {
     const route = runtimeProgressionRouteForNavigation(activeIndex, destinationIndex);
     controllerAdvancePending = true;
-    Promise.resolve(setBeat(destinationIndex, { route })).finally(() => {
+    Promise.resolve(setBeat(destinationIndex, { route, autoInterpolation: true })).finally(() => {
       controllerAdvancePending = false;
     });
     return true;
@@ -5473,6 +5476,7 @@ function runtimeDirectInteractionComplete(interaction) {
 }
 
 function evaluateRuntimeDirectManipulationCompletion() {
+  if (activeRuntimeAutoInterpolation) return false;
   if (directManipulationAdvancePending) return false;
   const interaction = activeRuntimeDirectInteractions.find((candidate) => runtimeDirectInteractionComplete(candidate));
   if (!interaction) return false;
@@ -5484,7 +5488,7 @@ function evaluateRuntimeDirectManipulationCompletion() {
     });
     return true;
   }
-  Promise.resolve(setBeat(interaction.destinationIndex, { route: interaction.route })).finally(() => {
+  Promise.resolve(setBeat(interaction.destinationIndex, { route: interaction.route, autoInterpolation: true })).finally(() => {
     directManipulationAdvancePending = false;
   });
   return true;
@@ -5654,7 +5658,7 @@ function navigateInteraction(direction) {
   const route = runtimeProgressionRouteForNavigation(activeIndex, destinationIndex);
   const boundary = runtimeInteractionForBoundary(activeIndex, destinationIndex, route);
   if (isPhysicalLocomotionBoundary(boundary)) return;
-  setBeat(destinationIndex, { route });
+  setBeat(destinationIndex, { route, autoInterpolation: direction > 0 });
 }
 
 async function setBeat(index) {
@@ -5673,6 +5677,7 @@ async function setBeat(index) {
     rememberRuntimeProgressionRoute(progressionRoute, previousIndex, destinationIndex);
     applyRuntimeProgressionDestination(progressionRoute, previousIndex, destinationIndex);
   }
+  beginRuntimeAutoInterpolation(previousIndex, destinationIndex, progressionRoute, options, loadRevision);
   activeIndex = destinationIndex;
   const beat = beats[activeIndex];
   const graphBeat = graphBeats.get(beat.id);
@@ -5694,6 +5699,7 @@ async function setBeat(index) {
     initial: !activeModel,
     route: progressionRoute,
   });
+  if (activeRuntimeAutoInterpolation && sharedTimelinePlayback) cancelRuntimeAutoInterpolation();
   const sharedTimelineOwnsModel = sharedTimelineOwnsDestinationModel(sharedTimelinePlayback);
   const sharedTimelineAsset = sharedTimelineOwnsModel
     ? sourceMotionPlaybackModelAsset(sharedTimelinePlayback.contract)
@@ -5731,6 +5737,7 @@ async function setBeat(index) {
     : modelAsset && partState?.playbackMode !== "frozen"
       ? sourceTransitionForBeatChange(previousIndex, activeIndex, modelAsset.id, progressionRoute)
       : null;
+  if (activeRuntimeAutoInterpolation && transitionPlayback) cancelRuntimeAutoInterpolation();
   const text = variantOption?.text || beat.text || graphBeat?.text || "";
   const variantProgress = variantGroup && variantOption
     ? ` · choice ${variantGroup.options.findIndex((option) => option.id === variantOption.id) + 1} of ${variantGroup.options.length}`
@@ -5815,6 +5822,7 @@ async function setBeat(index) {
   applySpatialTraversalForBeat(beat, previousIndex, progressionRoute);
   configureRuntimeDirectManipulation();
   configureTraversalControls();
+  startRuntimeAutoInterpolation(loadRevision);
 }
 
 function normalizeRuntimeVariantGroups(value) {
@@ -6332,6 +6340,7 @@ function teleportReaderTo(destination, station = null) {
 }
 
 function updatePhysicalTraversal() {
+  if (activeRuntimeAutoInterpolation) return;
   const outgoingBoundary = runtimeInteractionForBoundary(activeIndex, activeIndex + 1);
   if (!isPhysicalLocomotionBoundary(outgoingBoundary) && !activePhysicalTraversalZones.length) return;
   const viewer = runtimeReaderCamera().getWorldPosition(new THREE.Vector3());
@@ -6384,7 +6393,7 @@ function updatePhysicalTraversal() {
       physicalTraversalAdvancing = false;
       continue;
     }
-    Promise.resolve(setBeat(nextIndex, { route: zone.route })).finally(() => {
+    Promise.resolve(setBeat(nextIndex, { route: zone.route, autoInterpolation: true })).finally(() => {
       physicalTraversalAdvancing = false;
     });
     return;
@@ -6753,6 +6762,405 @@ function disposePreservedGeometryMaterialCompatibility(root) {
   });
 }
 
+function runtimeAutoInterpolationSceneEntries(index) {
+  const beat = beats[index] || null;
+  if (!beat) return [];
+  const group = runtimeVariantGroupForBeat(beat);
+  return runtimeSpatialAssetEntriesForBeat(beat, index, runtimeVariantOptionForGroup(group));
+}
+
+function runtimeAutoInterpolationEligibility(fromIndex, toIndex, route = null, options = {}) {
+  if (options.autoInterpolation !== true) return { eligible: false, reason: "not-requested" };
+  if (!Number.isInteger(fromIndex) || toIndex !== fromIndex + 1) {
+    return { eligible: false, reason: "not-forward-adjacent" };
+  }
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+    return { eligible: false, reason: "reduced-motion" };
+  }
+  const boundary = runtimeInteractionForBoundary(fromIndex, toIndex, route);
+  if (!boundary || boundary.mappedTransition !== false) {
+    return { eligible: false, reason: "mapped-or-unknown-transition" };
+  }
+  const fromEntries = runtimeAutoInterpolationSceneEntries(fromIndex);
+  const toEntries = runtimeAutoInterpolationSceneEntries(toIndex);
+  if (!fromEntries.length && !toEntries.length) {
+    return { eligible: false, reason: "no-spatial-scene-assets" };
+  }
+  const authoredPairing = pairRuntimeAutoInterpolationEntries(fromEntries, toEntries);
+  const changedPairs = authoredPairing.pairs.filter(runtimeAutoInterpolationPairHasTransformChange);
+  if (!changedPairs.length) {
+    return { eligible: false, reason: "no-changed-matching-object" };
+  }
+  const sharedTimelinePlayback = sourceMotionSharedPlaybackForBeatChange(fromIndex, toIndex, {
+    initial: false,
+    route,
+  });
+  const assetIds = uniqueStrings([...fromEntries, ...toEntries].map((entry) => entry.asset?.id));
+  const sourceTransition = assetIds.find((assetId) => (
+    sourceTransitionForBeatChange(fromIndex, toIndex, assetId, route)
+  ));
+  if (sharedTimelinePlayback || sourceTransition) {
+    return { eligible: false, reason: "saved-source-transition" };
+  }
+  return {
+    eligible: true,
+    boundary,
+    fromEntries,
+    toEntries,
+    matchedPairCount: authoredPairing.pairs.length,
+    changedPairCount: changedPairs.length,
+  };
+}
+
+function activeRuntimeAutoInterpolationEntries() {
+  return [
+    ...(activeModel && activeModelAsset ? [{
+      kind: "model",
+      asset: activeModelAsset,
+      entity: activeModelSpatialEntity,
+      root: modelAuthorTransformRoot,
+    }] : []),
+    ...activeSupplementalModelEntries.map((entry) => ({
+      kind: "model",
+      asset: entry.asset,
+      entity: entry.entity,
+      root: entry.authorTransformRoot,
+    })),
+    ...activeSpatialImageEntries.map((entry) => ({
+      kind: "image",
+      asset: entry.asset,
+      entity: entry.entity,
+      root: entry.authorTransformRoot,
+    })),
+  ].filter((entry) => entry.root?.parent);
+}
+
+function cloneRuntimeAutoInterpolationMaterials(root, { snapshot = false } = {}) {
+  const clonesByOriginal = new Map();
+  const ownedMaterials = new Set();
+  root?.traverse?.((node) => {
+    if (!node.material) return;
+    const originals = Array.isArray(node.material) ? node.material : [node.material];
+    const replacements = originals.map((original) => {
+      if (!original?.clone) return original;
+      if (clonesByOriginal.has(original)) return clonesByOriginal.get(original);
+      const material = original.clone();
+      material.userData = {
+        ...(material.userData || {}),
+        storyVrPreservedGeometryMaterialClone: false,
+        storyvrAutoInterpolationMaterialClone: !snapshot,
+        storyvrAutoInterpolationSnapshotMaterial: snapshot,
+        storyvrTransitionOpacity: 1,
+      };
+      prepareSharedTimelineMaterial(material);
+      clonesByOriginal.set(original, material);
+      ownedMaterials.add(material);
+      return material;
+    });
+    node.material = Array.isArray(node.material) ? replacements : replacements[0];
+  });
+  return ownedMaterials;
+}
+
+function disposeRuntimeAutoInterpolationMaterialClones(root) {
+  const disposed = new Set();
+  root?.traverse?.((node) => {
+    const materials = Array.isArray(node.material) ? node.material : [node.material].filter(Boolean);
+    for (const material of materials) {
+      if (material?.userData?.storyvrAutoInterpolationMaterialClone !== true || disposed.has(material)) continue;
+      disposed.add(material);
+      material.dispose?.();
+    }
+  });
+}
+
+function cloneRuntimeAutoInterpolationEntry(entry) {
+  if (!entry?.root) return null;
+  const snapshotRoot = cloneSkinnedObject(entry.root);
+  const ownedMaterials = cloneRuntimeAutoInterpolationMaterials(snapshotRoot, { snapshot: true });
+  const ownedGeometries = new Set();
+  if (entry.kind === "image") {
+    snapshotRoot.traverse((node) => {
+      if (!node.geometry?.clone) return;
+      node.geometry = node.geometry.clone();
+      ownedGeometries.add(node.geometry);
+    });
+  }
+  return {
+    ...entry,
+    snapshotRoot,
+    ownedMaterials,
+    ownedGeometries,
+  };
+}
+
+function runtimeAutoInterpolationSourceInstanceId(entry) {
+  return String(
+    entry?.entity?.sourceInstanceId
+      || entry?.entity?.source_instance_id
+      || entry?.entity?.source?.instanceId
+      || "",
+  ).trim();
+}
+
+function runtimeAutoInterpolationUniqueEntryMap(entries, keyForEntry) {
+  const grouped = new Map();
+  for (const entry of entries || []) {
+    const key = keyForEntry(entry);
+    if (!key) continue;
+    const group = grouped.get(key) || [];
+    group.push(entry);
+    grouped.set(key, group);
+  }
+  return new Map([...grouped].filter(([, group]) => group.length === 1).map(([key, group]) => [key, group[0]]));
+}
+
+function runtimeAutoInterpolationExactMatchKey(entry) {
+  const sourceInstanceId = runtimeAutoInterpolationSourceInstanceId(entry);
+  const assetId = String(entry?.asset?.id || "").trim();
+  const kind = String(entry?.kind || "").trim();
+  return kind && assetId && sourceInstanceId
+    ? `${kind}:${assetId}:instance:${sourceInstanceId}`
+    : "";
+}
+
+function runtimeAutoInterpolationAssetMatchKey(entry) {
+  if (runtimeAutoInterpolationSourceInstanceId(entry)) return "";
+  const assetId = String(entry?.asset?.id || "").trim();
+  const kind = String(entry?.kind || "").trim();
+  return kind && assetId ? `${kind}:${assetId}` : "";
+}
+
+function runtimeAutoInterpolationPairHasTransformChange(pair) {
+  const from = effectiveSpatialEntityTransform(pair?.outgoing?.entity);
+  const to = effectiveSpatialEntityTransform(pair?.incoming?.entity);
+  const positionChanged = from.position.some((value, index) => Math.abs(value - to.position[index]) > 0.001);
+  const scaleChanged = from.scale.some((value, index) => Math.abs(value - to.scale[index]) > 0.001);
+  const quaternionDot = Math.min(1, Math.abs(from.quaternion.reduce(
+    (sum, value, index) => sum + (value * to.quaternion[index]),
+    0,
+  )));
+  const rotationChanged = 2 * Math.acos(quaternionDot) > THREE.MathUtils.degToRad(0.1);
+  return positionChanged || rotationChanged || scaleChanged;
+}
+
+function pairRuntimeAutoInterpolationEntries(outgoing, incoming) {
+  const pairs = [];
+  const pairedOutgoing = new Set();
+  const pairedIncoming = new Set();
+  const pairUnique = (keyForEntry) => {
+    const outgoingByKey = runtimeAutoInterpolationUniqueEntryMap(
+      outgoing.filter((entry) => !pairedOutgoing.has(entry)),
+      keyForEntry,
+    );
+    const incomingByKey = runtimeAutoInterpolationUniqueEntryMap(
+      incoming.filter((entry) => !pairedIncoming.has(entry)),
+      keyForEntry,
+    );
+    for (const [key, outgoingEntry] of outgoingByKey) {
+      const incomingEntry = incomingByKey.get(key);
+      if (!incomingEntry) continue;
+      pairedOutgoing.add(outgoingEntry);
+      pairedIncoming.add(incomingEntry);
+      pairs.push({ outgoing: outgoingEntry, incoming: incomingEntry });
+    }
+  };
+  pairUnique(runtimeAutoInterpolationExactMatchKey);
+  // Only fall back to an asset-level match when both entries omit
+  // sourceInstanceId and that kind/asset occurs exactly once in each complete
+  // scene. Different nonempty instance ids and repeated anonymous assets remain
+  // unmatched so Auto Interpolation never guesses object identity.
+  const outgoingByAsset = runtimeAutoInterpolationUniqueEntryMap(
+    outgoing,
+    runtimeAutoInterpolationAssetMatchKey,
+  );
+  const incomingByAsset = runtimeAutoInterpolationUniqueEntryMap(
+    incoming,
+    runtimeAutoInterpolationAssetMatchKey,
+  );
+  for (const [key, outgoingEntry] of outgoingByAsset) {
+    const incomingEntry = incomingByAsset.get(key);
+    if (
+      !incomingEntry
+      || pairedOutgoing.has(outgoingEntry)
+      || pairedIncoming.has(incomingEntry)
+    ) continue;
+    pairedOutgoing.add(outgoingEntry);
+    pairedIncoming.add(incomingEntry);
+    pairs.push({ outgoing: outgoingEntry, incoming: incomingEntry });
+  }
+  return {
+    pairs,
+    unmatchedOutgoing: outgoing.filter((entry) => !pairedOutgoing.has(entry)),
+    unmatchedIncoming: incoming.filter((entry) => !pairedIncoming.has(entry)),
+  };
+}
+
+function setRuntimeAutoInterpolationOpacity(root, opacity) {
+  const value = normalizedProgress(opacity, 1);
+  const materials = new Set();
+  root?.traverse?.((node) => {
+    const nodeMaterials = Array.isArray(node.material) ? node.material : [node.material].filter(Boolean);
+    for (const material of nodeMaterials) materials.add(material);
+  });
+  for (const material of materials) {
+    prepareSharedTimelineMaterial(material);
+    material.userData.storyvrTransitionOpacity = value;
+    updateSharedTimelineMaterialOpacity(material);
+  }
+}
+
+function runtimeAutoInterpolationTransformRelativeTo(root, parent) {
+  if (!root || !parent) return null;
+  root.updateWorldMatrix(true, true);
+  parent.updateWorldMatrix(true, false);
+  const matrix = new THREE.Matrix4().copy(parent.matrixWorld).invert().multiply(root.matrixWorld);
+  const position = new THREE.Vector3();
+  const quaternion = new THREE.Quaternion();
+  const scale = new THREE.Vector3();
+  matrix.decompose(position, quaternion, scale);
+  return { position, quaternion: quaternion.normalize(), scale };
+}
+
+function disposeRuntimeAutoInterpolationSnapshot(state) {
+  state?.outgoingRoot?.removeFromParent?.();
+  for (const entry of state?.outgoing || []) {
+    for (const material of entry.ownedMaterials || []) material.dispose?.();
+    for (const geometry of entry.ownedGeometries || []) geometry.dispose?.();
+  }
+}
+
+function finishRuntimeAutoInterpolation(state = activeRuntimeAutoInterpolation) {
+  if (!state || state !== activeRuntimeAutoInterpolation) return false;
+  for (const pair of state.pairs || []) {
+    pair.incoming.root.position.copy(pair.end.position);
+    pair.incoming.root.quaternion.copy(pair.end.quaternion);
+    pair.incoming.root.scale.copy(pair.end.scale);
+  }
+  for (const entry of state.incoming || []) setRuntimeAutoInterpolationOpacity(entry.root, 1);
+  modelRoot.visible = true;
+  disposeRuntimeAutoInterpolationSnapshot(state);
+  activeRuntimeAutoInterpolation = null;
+  scene.userData.storyvrAutoInterpolation = null;
+  return true;
+}
+
+function cancelRuntimeAutoInterpolation() {
+  return finishRuntimeAutoInterpolation(activeRuntimeAutoInterpolation);
+}
+
+function beginRuntimeAutoInterpolation(fromIndex, toIndex, route, options, loadRevision) {
+  cancelRuntimeAutoInterpolation();
+  const eligibility = runtimeAutoInterpolationEligibility(fromIndex, toIndex, route, options);
+  if (!eligibility.eligible) return false;
+  const outgoingRoot = new THREE.Group();
+  outgoingRoot.name = "storyvr-auto-interpolation-outgoing";
+  outgoingRoot.position.copy(modelRoot.position);
+  outgoingRoot.quaternion.copy(modelRoot.quaternion);
+  outgoingRoot.scale.copy(modelRoot.scale);
+  const outgoing = activeRuntimeAutoInterpolationEntries().flatMap((entry) => {
+    const snapshot = cloneRuntimeAutoInterpolationEntry(entry);
+    if (!snapshot) return [];
+    outgoingRoot.add(snapshot.snapshotRoot);
+    return [snapshot];
+  });
+  scene.add(outgoingRoot);
+  modelRoot.visible = false;
+  activeRuntimeAutoInterpolation = {
+    phase: "loading",
+    loadRevision,
+    fromIndex,
+    toIndex,
+    route,
+    outgoingRoot,
+    outgoing,
+    incoming: [],
+    pairs: [],
+    unmatchedOutgoing: [],
+    unmatchedIncoming: [],
+    startedAtMs: null,
+    durationMs: AUTO_INTERPOLATION_SECONDS * 1000,
+  };
+  scene.userData.storyvrAutoInterpolation = {
+    active: true,
+    mode: "loading",
+    fromBeatId: beats[fromIndex]?.id || "",
+    toBeatId: beats[toIndex]?.id || "",
+    progress: 0,
+  };
+  return true;
+}
+
+function runtimeAutoInterpolationOwnsLoadRevision(loadRevision) {
+  return Boolean(
+    activeRuntimeAutoInterpolation?.phase === "loading"
+    && activeRuntimeAutoInterpolation.loadRevision === loadRevision
+  );
+}
+
+function startRuntimeAutoInterpolation(loadRevision) {
+  const state = activeRuntimeAutoInterpolation;
+  if (!state || state.phase !== "loading") return false;
+  if (state.loadRevision !== loadRevision || loadRevision !== activeSceneLoadRevision) {
+    cancelRuntimeAutoInterpolation();
+    return false;
+  }
+  const incoming = activeRuntimeAutoInterpolationEntries();
+  if (!state.outgoing.length && !incoming.length) {
+    cancelRuntimeAutoInterpolation();
+    return false;
+  }
+  const pairing = pairRuntimeAutoInterpolationEntries(state.outgoing, incoming);
+  if (!pairing.pairs.some(runtimeAutoInterpolationPairHasTransformChange)) {
+    cancelRuntimeAutoInterpolation();
+    return false;
+  }
+  state.incoming = incoming;
+  state.pairs = pairing.pairs.flatMap((pair) => {
+    const start = runtimeAutoInterpolationTransformRelativeTo(pair.outgoing.snapshotRoot, modelRoot);
+    if (!start) return [];
+    const end = {
+      position: pair.incoming.root.position.clone(),
+      quaternion: pair.incoming.root.quaternion.clone(),
+      scale: pair.incoming.root.scale.clone(),
+    };
+    pair.incoming.root.position.copy(start.position);
+    pair.incoming.root.quaternion.copy(start.quaternion);
+    pair.incoming.root.scale.copy(start.scale);
+    pair.outgoing.snapshotRoot.visible = false;
+    return [{ ...pair, start, end }];
+  });
+  state.unmatchedOutgoing = pairing.unmatchedOutgoing;
+  state.unmatchedIncoming = pairing.unmatchedIncoming;
+  for (const entry of state.unmatchedOutgoing) setRuntimeAutoInterpolationOpacity(entry.snapshotRoot, 1);
+  for (const entry of state.unmatchedIncoming) setRuntimeAutoInterpolationOpacity(entry.root, 0);
+  modelRoot.visible = true;
+  state.phase = "running";
+  state.startedAtMs = performance.now();
+  scene.userData.storyvrAutoInterpolation.mode = "auto-interpolation";
+  updateRuntimeAutoInterpolation(state.startedAtMs);
+  return true;
+}
+
+function updateRuntimeAutoInterpolation(frameTime = performance.now()) {
+  const state = activeRuntimeAutoInterpolation;
+  if (!state || state.phase !== "running") return false;
+  const progress = normalizedProgress((frameTime - state.startedAtMs) / state.durationMs, 0);
+  const smooth = progress * progress * (3 - (2 * progress));
+  for (const pair of state.pairs) {
+    pair.incoming.root.position.lerpVectors(pair.start.position, pair.end.position, smooth);
+    pair.incoming.root.quaternion.slerpQuaternions(pair.start.quaternion, pair.end.quaternion, smooth);
+    pair.incoming.root.scale.lerpVectors(pair.start.scale, pair.end.scale, smooth);
+  }
+  for (const entry of state.unmatchedOutgoing) setRuntimeAutoInterpolationOpacity(entry.snapshotRoot, 1 - smooth);
+  for (const entry of state.unmatchedIncoming) setRuntimeAutoInterpolationOpacity(entry.root, smooth);
+  if (scene.userData.storyvrAutoInterpolation) {
+    scene.userData.storyvrAutoInterpolation.progress = progress;
+  }
+  if (progress >= 1) finishRuntimeAutoInterpolation(state);
+  return true;
+}
+
 async function showSpatialSceneAssets(entries, beat, previousIndex, options = {}) {
   clearModel();
   const primaryModelEntry = options.primaryModelEntry || null;
@@ -6800,6 +7208,9 @@ async function showModel(asset, beat, transitionPlayback = null, options = {}) {
   activeModelAnimations = Array.isArray(model.animations) ? model.animations : [];
   applySpatialLoaderTransformPolicy(activeModel, options.spatialEntity);
   applyPreservedGeometryMaterialCompatibility(activeModel, options.spatialEntity);
+  if (runtimeAutoInterpolationOwnsLoadRevision(options.loadRevision)) {
+    cloneRuntimeAutoInterpolationMaterials(activeModel);
+  }
   activeModel.traverse((node) => {
     if (node.isMesh) {
       node.castShadow = true;
@@ -6874,6 +7285,9 @@ async function showSupplementalModel(entry, beat, previousIndex, options = {}) {
   const model = loaded.scene.clone(true);
   applySpatialLoaderTransformPolicy(model, entry.entity);
   applyPreservedGeometryMaterialCompatibility(model, entry.entity);
+  if (runtimeAutoInterpolationOwnsLoadRevision(options.loadRevision)) {
+    cloneRuntimeAutoInterpolationMaterials(model);
+  }
   model.traverse((node) => {
     if (node.isMesh) {
       node.castShadow = true;
@@ -7007,6 +7421,7 @@ function clearModel() {
     activeSourceAnimation = null;
   }
   if (activeModel) {
+    disposeRuntimeAutoInterpolationMaterialClones(activeModel);
     disposePreservedGeometryMaterialCompatibility(activeModel);
     modelAuthorTransformRoot.remove(activeModel);
   }
@@ -7016,6 +7431,7 @@ function clearModel() {
       entry.playback.mixer.stopAllAction();
       entry.playback.mixer.uncacheRoot(entry.model);
     }
+    disposeRuntimeAutoInterpolationMaterialClones(entry.model);
     disposePreservedGeometryMaterialCompatibility(entry.model);
     entry.authorTransformRoot.removeFromParent();
   }
@@ -8456,6 +8872,7 @@ function render(frameTime = performance.now(), xrFrame = null) {
   updateSourceAnimation(delta, frameTime);
   updateActivePointCloudEffects();
   updateProceduralDynamics(delta);
+  updateRuntimeAutoInterpolation(frameTime);
   updateRuntimeDirectManipulation();
   updateSpatialTextPanelPose(frameTime);
   updateXrControllerVisuals();
@@ -9769,6 +10186,7 @@ function prepareSharedTimelineMaterial(material) {
     storyvrBaseDepthWrite: userData.storyvrBaseDepthWrite ?? material.depthWrite,
     storyvrPreviewOpacity: Number.isFinite(userData.storyvrPreviewOpacity) ? userData.storyvrPreviewOpacity : 1,
     storyvrSourceBindingOpacity: Number.isFinite(userData.storyvrSourceBindingOpacity) ? userData.storyvrSourceBindingOpacity : 1,
+    storyvrTransitionOpacity: Number.isFinite(userData.storyvrTransitionOpacity) ? userData.storyvrTransitionOpacity : 1,
   };
 }
 
@@ -9780,9 +10198,16 @@ function updateSharedTimelineMaterialOpacity(material) {
   const baseDepthWrite = material.userData.storyvrBaseDepthWrite ?? true;
   const previewOpacity = normalizedProgress(material.userData.storyvrPreviewOpacity, 1);
   const sourceOpacity = normalizedProgress(material.userData.storyvrSourceBindingOpacity, 1);
-  const nextOpacity = baseOpacity * previewOpacity * sourceOpacity;
-  const nextTransparent = baseTransparent || baseOpacity < 0.999 || previewOpacity < 0.999 || sourceOpacity < 0.999;
-  const nextDepthWrite = previewOpacity >= 0.999 && sourceOpacity >= 0.999 ? baseDepthWrite : false;
+  const transitionOpacity = normalizedProgress(material.userData.storyvrTransitionOpacity, 1);
+  const nextOpacity = baseOpacity * previewOpacity * sourceOpacity * transitionOpacity;
+  const nextTransparent = baseTransparent
+    || baseOpacity < 0.999
+    || previewOpacity < 0.999
+    || sourceOpacity < 0.999
+    || transitionOpacity < 0.999;
+  const nextDepthWrite = previewOpacity >= 0.999 && sourceOpacity >= 0.999 && transitionOpacity >= 0.999
+    ? baseDepthWrite
+    : false;
   const transparentChanged = material.transparent !== nextTransparent;
   material.opacity = nextOpacity;
   material.transparent = nextTransparent;

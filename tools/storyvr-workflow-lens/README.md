@@ -22,10 +22,10 @@ The demo uses all eight StoryVR steps. It includes 3D actions, a fast group of c
 
 ## What the tool shows
 
-- A zoomable timeline with a color for each step, click markers, duration spans for spatial drags, other 3D marks, key-moment flags, and optional generated annotations.
+- A zoomable timeline with a color for each step, lavender intervals for spatial-editor time, click markers, duration spans for spatial drags, other 3D marks, key-moment flags, and optional generated annotations.
 - Time by step, step path, interaction pace, an interaction map with click dots and drag paths, repeated targets, and a searchable event list.
 - Drag details include the operation, axis, duration, affected object identifiers, and before/after transforms.
-- Possible good moments, concerns, and items to watch. These are clues, not facts. A long pause may be a break. Fast clicks may be on purpose.
+- Possible good moments, concerns, and items to watch. Generated annotations connect to their earliest cited timeline events and expand in place to show their complete descriptions. These are clues, not facts. A long pause may be a break. Fast clicks may be on purpose.
 - A downloadable review JSON. The download does not change the source log.
 
 ## Codex and privacy

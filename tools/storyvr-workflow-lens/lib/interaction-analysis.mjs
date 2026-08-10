@@ -193,6 +193,8 @@ export function analyzeInteractionLog(input, options = {}) {
 
   const { corrections, unconfirmedIntents } = navigationCorrections(normalized.events);
   const { boundaries, segments, events } = buildStepTimeline(normalized, corrections);
+  const { boundaries: modeBoundaries, segments: rawModeSegments } = buildWorkspaceModeTimeline(normalized);
+  const modeSegments = alignWorkspaceModeSegments(rawModeSegments, segments);
   const transitions = buildTransitions(boundaries);
   const stepDwell = buildStepDwell(segments, events, normalized.durationMs);
   const targetStats = buildTargetStats(events);
@@ -276,6 +278,8 @@ export function analyzeInteractionLog(input, options = {}) {
       durationMs: normalized.durationMs,
       boundaries: Object.freeze(boundaries),
       segments: Object.freeze(segments),
+      modeBoundaries: Object.freeze(modeBoundaries),
+      modeSegments: Object.freeze(modeSegments),
       activityBinMs,
       activityBins: Object.freeze(activityBins),
     }),
@@ -854,6 +858,161 @@ function buildStepTimeline(normalized, corrections) {
     segments,
     events,
   };
+}
+
+/**
+ * Derive canvas/spatial intervals without changing the collection schema.
+ * StoryVR captures clicks before their navigation handlers run, so a known
+ * editor-opening or editor-leaving click becomes the boundary only after the
+ * next StoryVR event confirms the new mode. Mode-less cross-tab events are
+ * ignored rather than guessed.
+ */
+function buildWorkspaceModeTimeline(normalized) {
+  const sessionMode = normalizedWorkspaceMode(normalized.sessionContext?.workspace?.mode);
+  const firstObservedEvent = normalized.events.find((event) => (
+    event.surface === "storyvr" && normalizedWorkspaceMode(event.mode)
+  ));
+  const initialMode = sessionMode || "unknown";
+  const initialStepId = canonicalStepId(normalized.sessionContext?.workspace?.componentId)
+    || firstObservedEvent?.stepId
+    || UNKNOWN_STEP_ID;
+  const boundaries = [{
+    index: 0,
+    elapsedMs: 0,
+    mode: initialMode,
+    stepId: initialStepId,
+    reason: "session-start",
+    boundaryConfidence: sessionMode ? "recorded" : "unknown",
+    sequence: normalized.events[0]?.sequence || null,
+    confirmedBySequence: null,
+  }];
+  let currentMode = initialMode;
+  let previousKnownEvent = null;
+
+  for (const event of normalized.events) {
+    const nextMode = event.surface === "storyvr" ? normalizedWorkspaceMode(event.mode) : "";
+    if (!nextMode) continue;
+    if (nextMode !== currentMode) {
+      const trigger = confirmedWorkspaceModeTrigger(previousKnownEvent, event, nextMode);
+      boundaries.push({
+        index: boundaries.length,
+        elapsedMs: Math.min(normalized.durationMs, Math.max(0, trigger?.elapsedMs ?? event.elapsedMs)),
+        mode: nextMode,
+        stepId: event.stepId || previousKnownEvent?.stepId || UNKNOWN_STEP_ID,
+        reason: trigger ? "confirmed-mode-change" : "observed-context",
+        boundaryConfidence: trigger ? "confirmed" : "uncertain",
+        sequence: trigger?.sequence || event.sequence,
+        confirmedBySequence: trigger ? event.sequence : null,
+      });
+      currentMode = nextMode;
+    }
+    previousKnownEvent = event;
+  }
+
+  const compactBoundaries = [];
+  for (const boundary of boundaries) {
+    const previous = compactBoundaries.at(-1);
+    if (previous && previous.elapsedMs === boundary.elapsedMs) {
+      compactBoundaries[compactBoundaries.length - 1] = {
+        ...boundary,
+        index: compactBoundaries.length - 1,
+        replacedMode: previous.mode,
+      };
+    } else {
+      compactBoundaries.push({ ...boundary, index: compactBoundaries.length });
+    }
+  }
+
+  const segments = compactBoundaries.map((boundary, index) => {
+    const next = compactBoundaries[index + 1];
+    const endMs = next?.elapsedMs ?? normalized.durationMs;
+    return Object.freeze({
+      id: `mode-segment-${index + 1}`,
+      index,
+      mode: boundary.mode,
+      stepId: boundary.stepId,
+      startMs: boundary.elapsedMs,
+      endMs,
+      durationMs: Math.max(0, endMs - boundary.elapsedMs),
+      startReason: boundary.reason,
+      boundaryConfidence: boundary.boundaryConfidence,
+      startSequence: boundary.sequence,
+      confirmedBySequence: boundary.confirmedBySequence,
+      endSequence: next?.sequence || normalized.events.at(-1)?.sequence || null,
+    });
+  });
+
+  return {
+    boundaries: compactBoundaries.map(Object.freeze),
+    segments,
+  };
+}
+
+function alignWorkspaceModeSegments(modeSegments, stepSegments) {
+  const aligned = [];
+  for (const modeSegment of modeSegments) {
+    let overlapCount = 0;
+    for (const stepSegment of stepSegments) {
+      const startMs = Math.max(modeSegment.startMs, stepSegment.startMs);
+      const endMs = Math.min(modeSegment.endMs, stepSegment.endMs);
+      if (endMs <= startMs) continue;
+      overlapCount += 1;
+      aligned.push(Object.freeze({
+        ...modeSegment,
+        id: `mode-segment-${aligned.length + 1}`,
+        index: aligned.length,
+        stepId: stepSegment.stepId,
+        startMs,
+        endMs,
+        durationMs: endMs - startMs,
+      }));
+    }
+    if (!overlapCount) {
+      aligned.push(Object.freeze({
+        ...modeSegment,
+        id: `mode-segment-${aligned.length + 1}`,
+        index: aligned.length,
+      }));
+    }
+  }
+  return aligned;
+}
+
+function normalizedWorkspaceMode(value) {
+  const mode = cleanString(value).toLowerCase();
+  return mode === "canvas" || mode === "spatial" ? mode : "";
+}
+
+function confirmedWorkspaceModeTrigger(previous, confirmingEvent, nextMode) {
+  if (!previous || previous.type !== "click") return null;
+  if (previous.surface !== "storyvr" || confirmingEvent.surface !== "storyvr") return null;
+  if (normalizedWorkspaceMode(previous.mode) === nextMode) return null;
+  const data = serializableObject(previous.target?.data);
+  const dataKeys = Object.keys(data);
+  const selectedStepId = canonicalStepId(data.selectComponent);
+  const confirmsStepSelection = Boolean(
+    selectedStepId
+    && stepForId(selectedStepId)
+    && selectedStepId === confirmingEvent.stepId,
+  );
+  const opensSpatialSurface = nextMode === "spatial" && (
+    dataKeys.some((key) => [
+      "spatialBeatId",
+      "environmentBeatId",
+      "attentionBeatId",
+      "dynamicBeatId",
+      "interBeatBeatId",
+      "interactionBeatId",
+      "finalReviewBeatId",
+      "finalReviewSceneKey",
+    ].includes(key))
+    || /\b(?:open|show)\b.*\b(?:3d|scene|editor|mapping)\b/i.test(previous.label)
+  );
+  const leavesSpatialSurface = nextMode === "canvas" && (
+    Boolean(data.selectComponent)
+    || /\b(?:back|return|close|canvas)\b/i.test(previous.label)
+  );
+  return confirmsStepSelection || opensSpatialSurface || leavesSpatialSurface ? previous : null;
 }
 
 function segmentForEvent(segments, event, correctionSequenceSet) {
