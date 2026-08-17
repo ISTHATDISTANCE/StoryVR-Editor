@@ -31,9 +31,9 @@ const FALLBACK_STEPS = Object.freeze([
   { id: "source-graph", label: "Story order" },
   { id: "spatial-relations", label: "Place objects" },
   { id: "environment-enhancement", label: "Set the scene" },
-  { id: "attention-guidance", label: "Guide attention" },
   { id: "dynamic-geometry", label: "Object movement" },
   { id: "inter-beat-dynamics", label: "Scene changes" },
+  { id: "attention-guidance", label: "Guide attention" },
   { id: "interaction-control", label: "Reader actions" },
   { id: "transition-pacing", label: "Review story" },
 ]);

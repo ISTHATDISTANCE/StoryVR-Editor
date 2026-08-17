@@ -181,14 +181,6 @@ export const COMPONENTS = [
     kind: "environment",
   },
   {
-    id: ATTENTION_GUIDANCE_COMPONENT_ID,
-    label: "Attention Guidance",
-    stage: 1,
-    dimension: 1,
-    kind: "attention",
-    optionLabels: ["Attention points reviewed"],
-  },
-  {
     id: "dynamic-geometry",
     label: "Dynamics",
     stage: 2,
@@ -208,6 +200,14 @@ export const COMPONENTS = [
       "Continuous active: reader travels to next anchor",
       "Continuous passive: next object moves to reader",
     ],
+  },
+  {
+    id: ATTENTION_GUIDANCE_COMPONENT_ID,
+    label: "Attention Guidance",
+    stage: 1,
+    dimension: 1,
+    kind: "attention",
+    optionLabels: ["Attention points reviewed"],
   },
   {
     id: "interaction-control",
@@ -1111,7 +1111,7 @@ export async function generateComponentProposals(options, componentId, request =
     });
   }
   if (isAttentionGuidanceComponent(component)) {
-    throw Object.assign(new Error("The Guide attention step automatically creates conservative visible-object suggestions after the Set the scene step is current. Review and edit those focus markers in the story-part editor instead of generating AI options."), {
+    throw Object.assign(new Error("The Guide attention step automatically creates conservative visible-object suggestions after the Scene changes step is current. Review and edit those focus markers in the story-part editor instead of generating AI options."), {
       statusCode: 409,
     });
   }
@@ -1510,7 +1510,7 @@ function projectDynamicsSceneCandidate(state, intent, options = {}) {
       warnings: [],
       unmetRequirements: [],
       checkpointsMadeDraft: ["dynamic-geometry"],
-      checkpointsMadeStale: ["inter-beat-dynamics", "interaction-control", "transition-pacing"],
+      checkpointsMadeStale: ["inter-beat-dynamics", ATTENTION_GUIDANCE_COMPONENT_ID, "interaction-control", "transition-pacing"],
     },
   };
   return {
@@ -1728,7 +1728,7 @@ export async function saveCheckpointDecision(options, componentId, payload = {})
       proposalGeneratedAt: null,
       sourceDynamicsPreview: true,
       inferredBy: "animation-probe",
-      inferencePrerequisites: [SPATIAL_RELATIONS_COMPONENT_ID, ENVIRONMENT_ENHANCEMENT_COMPONENT_ID, ATTENTION_GUIDANCE_COMPONENT_ID],
+      inferencePrerequisites: [SPATIAL_RELATIONS_COMPONENT_ID, ENVIRONMENT_ENHANCEMENT_COMPONENT_ID],
     };
     if (component.id === "dynamic-geometry") {
       const proceduralStore = await readJsonIfExists(paths.proceduralDynamicsPath);
@@ -1897,7 +1897,7 @@ export async function saveCheckpointDecisionDraft(options, componentId, payload 
       proposalGeneratedAt: null,
       sourceDynamicsPreview: true,
       inferredBy: "animation-probe",
-      inferencePrerequisites: [SPATIAL_RELATIONS_COMPONENT_ID, ENVIRONMENT_ENHANCEMENT_COMPONENT_ID, ATTENTION_GUIDANCE_COMPONENT_ID],
+      inferencePrerequisites: [SPATIAL_RELATIONS_COMPONENT_ID, ENVIRONMENT_ENHANCEMENT_COMPONENT_ID],
     };
     if (component.id === "dynamic-geometry") {
       const proceduralStore = await readJsonIfExists(paths.proceduralDynamicsPath);
@@ -4492,7 +4492,7 @@ async function ensureSourceDynamicsPreviewDecisionsAvailable(paths, graph, optio
       proposalGeneratedAt: null,
       sourceDynamicsPreview: true,
       inferredBy: "animation-probe",
-      inferencePrerequisites: [SPATIAL_RELATIONS_COMPONENT_ID, ENVIRONMENT_ENHANCEMENT_COMPONENT_ID, ATTENTION_GUIDANCE_COMPONENT_ID],
+      inferencePrerequisites: [SPATIAL_RELATIONS_COMPONENT_ID, ENVIRONMENT_ENHANCEMENT_COMPONENT_ID],
     }, "draft", null);
     const optionMatches = JSON.stringify(existing?.option || null) === JSON.stringify(option);
     const reusableStatus = existing?.status === "draft" || isValidCurrentDecision(component, existing);
@@ -6211,7 +6211,7 @@ async function migrateAttentionGuidanceWorkflow(paths, project, options = {}) {
     ...(project.workflowMigrations || {}),
     [migrationId]: {
       migratedAt,
-      insertedAfter: ENVIRONMENT_ENHANCEMENT_COMPONENT_ID,
+      insertedAfter: "inter-beat-dynamics",
       requiresReview: true,
     },
   };
@@ -9462,7 +9462,7 @@ export function validateAttentionGuidanceContract(value, inferred) {
     throw Object.assign(new Error(`Unsupported Attention Guidance schema: ${source.schemaVersion}`), { statusCode: 409 });
   }
   if (source.inputSignature && source.inputSignature !== inferred.inputSignature) {
-    throw Object.assign(new Error("Attention Guidance is stale because its Source Graph, Spatial Relations scene, or Environment Enhancement decision changed."), { statusCode: 409 });
+    throw Object.assign(new Error("Attention Guidance is stale because earlier story data, scene composition, or source movement changed."), { statusCode: 409 });
   }
   assertNoUnknownAttentionScenes(source, inferred);
   const resolvedByBeat = Object.fromEntries(Object.entries(inferred.resolvedByBeat || {}).map(([beatId, base]) => [
@@ -11354,7 +11354,12 @@ function attentionGuidanceProposalBundle(contract) {
     designDimension: COMPONENT_BY_ID.get(ATTENTION_GUIDANCE_COMPONENT_ID).dimension,
     regenerationIndex: 0,
     engine: { provider: "deterministic-visible-renderable-inference" },
-    upstreamCurrentDecisions: [SPATIAL_RELATIONS_COMPONENT_ID, ENVIRONMENT_ENHANCEMENT_COMPONENT_ID],
+    upstreamCurrentDecisions: [
+      SPATIAL_RELATIONS_COMPONENT_ID,
+      ENVIRONMENT_ENHANCEMENT_COMPONENT_ID,
+      "dynamic-geometry",
+      "inter-beat-dynamics",
+    ],
     defaultOptionId: ATTENTION_GUIDANCE_OPTION_ID,
     defaultOptionSource: "attention-guidance-inference",
     attentionGuidance: contract,

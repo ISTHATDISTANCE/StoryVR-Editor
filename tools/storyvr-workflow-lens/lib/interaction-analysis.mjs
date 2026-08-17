@@ -26,9 +26,9 @@ export const STEP_DEFINITIONS = Object.freeze([
   stepDefinition("source-graph", "Story order", "#4f73c9", 0),
   stepDefinition("spatial-relations", "Place objects", "#2f9b8f", 1),
   stepDefinition("environment-enhancement", "Set the scene", "#47a65f", 2),
-  stepDefinition("attention-guidance", "Guide attention", "#b19532", 3),
-  stepDefinition("dynamic-geometry", "Object movement", "#d17a3f", 4),
-  stepDefinition("inter-beat-dynamics", "Scene changes", "#b75b68", 5),
+  stepDefinition("dynamic-geometry", "Object movement", "#d17a3f", 3),
+  stepDefinition("inter-beat-dynamics", "Scene changes", "#b75b68", 4),
+  stepDefinition("attention-guidance", "Guide attention", "#b19532", 5),
   stepDefinition("interaction-control", "Reader actions", "#8b63bf", 6),
   stepDefinition("transition-pacing", "Review story", "#596274", 7),
 ]);

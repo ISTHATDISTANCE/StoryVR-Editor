@@ -6556,7 +6556,7 @@ function proceduralDynamicsCandidateMotionOnlyViolation(candidate, sceneContext)
   }
   const impact = proceduralDynamicsCandidateImpact(candidate);
   if (impact.sourceGraphChanged || impact.spatialRelationsChanged || impact.attentionGuidanceChanged) {
-    return "Movement generation attempted to change an earlier saved step.";
+    return "Movement generation attempted to change another saved step.";
   }
   const plan = proceduralDynamicsCandidateMotionPlan(candidate);
   if (!plan || !Array.isArray(plan.actors) || !plan.actors.length) {
@@ -9711,7 +9711,7 @@ function renderAttentionGuidanceWorkspace(component) {
         </div>
       </div>
       ${renderAttentionGuidanceStatus()}
-      ${ready ? "" : `<p class="blocked-note">Finish Set the scene before adding focus markers.</p>`}
+      ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(participantBlockingDependencyLabel(component.id))} first.</p>`}
       <div class="spatial-relations-workbench attention-guidance-workbench">
         <div class="spatial-workbench-sidebar attention-workbench-sidebar">
           ${renderAttentionMarkerHierarchy(markers, scene)}
@@ -9736,7 +9736,7 @@ function renderAttentionGuidanceCanvasWorkspace(component, decision, ready) {
         </div>
       </div>
       ${renderAttentionGuidanceStatus()}
-      ${ready ? "" : `<p class="blocked-note">Finish Place objects and Set the scene first.</p>`}
+      ${ready ? "" : `<p class="blocked-note">Finish ${escapeHtml(participantBlockingDependencyLabel(component.id))} first.</p>`}
       ${renderAttentionStoryCanvas()}
     </section>
   `;

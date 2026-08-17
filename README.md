@@ -90,9 +90,9 @@ Work through the eight participant-facing steps in order:
 1. Story order
 2. Place objects
 3. Set the scene
-4. Guide attention
-5. Object movement
-6. Scene changes
+4. Object movement
+5. Scene changes
+6. Guide attention
 7. Reader actions
 8. Review story
 
@@ -130,12 +130,7 @@ The canvas supports drag-box selection, Shift additive selection, Command/Ctrl
 toggling, right-drag orbiting, and middle-drag panning.
 
 Set the scene is a Generate-only flow that uses the signed-in Codex CLI to
-create a story-part-scoped panorama and matching near-ground texture. Guide
-attention can target a visible GLB, named part, image plane, or a manually
-placed scene point; the built reader uses a sparkle plus a large high-contrast
-arrow placed well inside the headset's peripheral edge until the reader reaches
-the target. Select a focus marker and press Delete or Backspace to remove it;
-the removal persists across scene reloads, and the target can be added again.
+create a story-part-scoped panorama and matching near-ground texture.
 
 Object movement shows the moving scene objects with expandable motion
 descriptions and provides edge buttons for moving directly to the previous or
@@ -148,6 +143,14 @@ contain safely matched GLBs or image planes whose position, rotation, or scale
 changes. Ambiguous object identities are not guessed, and a saved source scene
 change always takes precedence. The author preview and compiled reader use the
 same transform interpolation and dissolve unmatched endpoint objects in or out.
+
+Guide attention runs after Scene changes so focus markers are inferred from the
+saved scene composition and movement state. It can target a visible GLB, named
+part, image plane, or a manually placed scene point; the built reader uses a
+sparkle plus a large high-contrast arrow placed well inside the headset's
+peripheral edge until the reader reaches the target. Select a focus marker and
+press Delete or Backspace to remove it; the removal persists across scene
+reloads, and the target can be added again.
 
 Review story always uses the authored Reader camera; right-drag looks around
 from that reader pose.
