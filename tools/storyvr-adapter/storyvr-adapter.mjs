@@ -15,8 +15,8 @@ export const STORYVR_HOSTING_CONFIG = {
     assetRootPolicy: "relative-from-story-app",
   },
   httpsServer: {
-    command: "python3 https_server.py",
-    lanCommand: "python3 https_server.py --lan",
+    command: "node tools/run-python.mjs https_server.py",
+    lanCommand: "node tools/run-python.mjs https_server.py --lan",
     assetRootPolicy: "repo-absolute-path",
   },
   build: {

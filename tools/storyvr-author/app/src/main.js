@@ -2466,9 +2466,9 @@ function renderCodexAuth() {
       <details class="facilitator-details">
         <summary>Sign-in details for the facilitator</summary>
         <p>${escapeHtml(status.authText || "Checking local Codex login status.")}</p>
-        <p class="muted">Authentication method: <code>${escapeHtml(status.authMethod || "codex-cli-device-auth")}</code>. The browser does not receive the token. StoryVR uses the signed-in local Codex command-line session.</p>
+        <p class="muted">Authentication method: <code>${escapeHtml(status.authMethod || "codex-cli")}</code>. The browser does not receive the token. StoryVR uses the signed-in local Codex command-line session.</p>
         ${!signedIn && login.startedAt && !login.running && !login.loginUrl && !login.loginCode
-          ? `<p class="blocked-note">Run <code>codex login --device-auth</code> in the terminal if device sign-in did not start.</p>`
+          ? `<p class="blocked-note">Run <code>codex login</code> in the terminal if browser sign-in did not start. Use device-code login only when the normal callback cannot work and the study workspace permits it.</p>`
           : ""}
         ${outputLines.length ? `<pre class="terminal">${escapeHtml(outputLines.map((line) => line.line).join("\n"))}</pre>` : ""}
       </details>
@@ -16603,7 +16603,7 @@ async function refreshCodexStatus() {
       authenticated: false,
       codexAvailable: false,
       authText: error.message,
-      authMethod: "codex-cli-device-auth",
+      authMethod: "codex-cli",
     };
   }
 }

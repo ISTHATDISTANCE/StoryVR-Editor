@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import spawn from "cross-spawn";
 import { mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
@@ -255,7 +255,7 @@ export async function codexStatus(options = {}) {
     codexAvailable,
     authenticated,
     version: codexAvailable ? cleanString(versionResult.stdout, 160) || null : null,
-    authMethod: "codex-cli-device-auth",
+    authMethod: "codex-cli",
     message: !codexAvailable
       ? "Codex CLI is not available on this computer."
       : authenticated

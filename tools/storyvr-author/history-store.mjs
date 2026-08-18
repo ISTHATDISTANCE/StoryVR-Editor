@@ -28,7 +28,12 @@ export function createAuthorArtifactSignatureReader({ paths, environmentAssetRoo
   return async () => checkpointSignature(await collectAuthorArtifacts(paths, assetRoot, digestCache));
 }
 
-export function createStoryBuildInputSignatureReader({ paths, environmentAssetRoot, repositoryRoot } = {}) {
+export function createStoryBuildInputSignatureReader({
+  paths,
+  environmentAssetRoot,
+  repositoryRoot,
+  referenceStoryFolder,
+} = {}) {
   if (!paths?.storyFolder || !paths?.analysisRoot || !paths?.resourceFolder) {
     throw new TypeError("StoryVR build signatures require resolved author paths.");
   }
@@ -39,6 +44,7 @@ export function createStoryBuildInputSignatureReader({ paths, environmentAssetRo
     environmentAssetRoot || path.join(readerSource, "public", "environment-enhancement"),
   );
   const resolvedRepositoryRoot = repositoryRoot ? path.resolve(repositoryRoot) : null;
+  const resolvedReferenceStoryFolder = path.resolve(referenceStoryFolder || storyFolder);
   assertInside(storyFolder, resourceFolder, "resourceFolder");
   assertInside(storyFolder, assetRoot, "environmentAssetRoot");
   const digestCache = new Map();
@@ -49,6 +55,7 @@ export function createStoryBuildInputSignatureReader({ paths, environmentAssetRo
     readerSource,
     assetRoot,
     repositoryRoot: resolvedRepositoryRoot,
+    referenceStoryFolder: resolvedReferenceStoryFolder,
     digestCache,
   }));
 }
@@ -255,6 +262,7 @@ async function collectStoryBuildInputArtifacts({
   readerSource,
   assetRoot,
   repositoryRoot,
+  referenceStoryFolder,
   digestCache,
 }) {
   const entries = [];
@@ -282,6 +290,11 @@ async function collectStoryBuildInputArtifacts({
   if (repositoryRoot) {
     const referencedProbeFiles = await storyGraphAnimationProbeFiles(paths.storyGraphPath, repositoryRoot);
     for (const filePath of referencedProbeFiles) {
+      // Story-local probe artifacts were already collected from
+      // analysis/animation-logic-probe above. Sibling-story layouts encode
+      // those paths relative to the repository root (for example
+      // ../classroom/...), so do not reclassify them as repository externals.
+      if (pathIsInside(referenceStoryFolder, filePath)) continue;
       await addExternalFileIfPresent(
         entries,
         repositoryRoot,
@@ -607,6 +620,12 @@ function assertInside(root, candidate, label) {
   if (resolvedCandidate !== resolvedRoot && !resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`)) {
     throw new Error(`${label} must stay inside the active StoryVR story folder.`);
   }
+}
+
+function pathIsInside(root, candidate) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === ""
+    || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function historyError(statusCode, message) {

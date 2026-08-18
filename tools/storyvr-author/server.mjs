@@ -15,7 +15,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import spawn from "cross-spawn";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -60,6 +60,10 @@ import {
   createHistoryCheckpointStore,
   createStoryBuildInputSignatureReader,
 } from "./history-store.mjs";
+import {
+  directoryLinkType,
+  readerRunCommands,
+} from "./platform-commands.mjs";
 
 const args = parseArgs({
   allowPositionals: false,
@@ -828,6 +832,7 @@ async function createStoryBuildSnapshot() {
       paths: snapshotPaths,
       environmentAssetRoot: snapshot.environmentAssetRoot,
       repositoryRoot: REPO_ROOT,
+      referenceStoryFolder: environmentPaths.storyFolder,
     });
     const [snapshotSignature, finalLiveSignature] = await Promise.all([
       readSnapshotSignature(),
@@ -895,7 +900,7 @@ async function linkSnapshotDependencies(repoRoot, hostingRoot) {
   ]);
   for (const destination of destinations) {
     await mkdir(path.dirname(destination), { recursive: true });
-    if (!await pathExists(destination)) await symlink(source, destination, "dir");
+    if (!await pathExists(destination)) await symlink(source, destination, directoryLinkType());
   }
 }
 
@@ -1210,16 +1215,20 @@ async function storyBuildReaderRun() {
   const distReady = await pathExists(path.join(environmentPaths.storyFolder, "dist-webxr-adaptation", "index.html"));
   const devPort = 5177;
   const instanceBuildScript = path.join(live.readerSource, "tools", "build-story-instance.mjs");
-  const instanceBuildPrefix = await pathExists(instanceBuildScript)
-    ? `node ${shellQuote(toPosix(path.relative(REPO_ROOT, instanceBuildScript)))} && `
-    : "";
-  const devCommand = `cd ${shellQuote(REPO_ROOT)} && ${instanceBuildPrefix}npx vite --host 127.0.0.1 --port ${devPort} --strictPort`;
   const distFolder = path.join(environmentPaths.storyFolder, "dist-webxr-adaptation");
-  const buildCommand = `cd ${shellQuote(REPO_ROOT)} && ${instanceBuildPrefix}node ${shellQuote(READER_DIST_BUILD_SCRIPT)} ${shellQuote(live.readerSource)} ${shellQuote(distFolder)} ${shellQuote(live.buildBase)} ${shellQuote(REPO_ROOT)}`;
-  const hostingRootArgument = layout.hostingRoot === REPO_ROOT
-    ? ""
-    : ` --root ${shellQuote(toPosix(path.relative(REPO_ROOT, layout.hostingRoot)))}`;
-  const httpsCommand = `python3 https_server.py --lan${hostingRootArgument} --story-path ${shellQuote(live.distPath)}`;
+  const storyIsOutsideRepo = layout.hostingRoot !== REPO_ROOT;
+  const commands = readerRunCommands({
+    repositoryRoot: REPO_ROOT,
+    readerDistBuildScript: READER_DIST_BUILD_SCRIPT,
+    readerSource: live.readerSource,
+    distFolder,
+    buildBase: live.buildBase,
+    hostingRoot: layout.hostingRoot,
+    distPath: live.distPath,
+    instanceBuildScript: await pathExists(instanceBuildScript) ? instanceBuildScript : null,
+    viteRoot: storyIsOutsideRepo ? live.readerSource : null,
+    devPort,
+  });
   return {
     status: "ready",
     source: "story-container",
@@ -1229,20 +1238,15 @@ async function storyBuildReaderRun() {
     commandRoot: REPO_ROOT,
     readerSourcePath: live.readerSourcePath,
     distPath: live.distPath,
-    devCommand,
-    buildCommand,
-    serveCommand: `cd ${shellQuote(REPO_ROOT)} && ${httpsCommand}`,
-    headsetCommand: `${buildCommand} && ${httpsCommand}`,
-    devUrl: `http://127.0.0.1:${devPort}/${live.readerSourcePath}/`,
+    ...commands,
+    devUrl: storyIsOutsideRepo
+      ? `http://127.0.0.1:${devPort}/`
+      : `http://127.0.0.1:${devPort}/${live.readerSourcePath}/`,
     staticUrl: `https://<PREFERRED-LAN-IP>:8443/${live.distPath}/`,
     message: distReady
       ? "Reader source and production dist are ready. The HTTPS host advertises the active Wi-Fi address before Ethernet."
       : "Reader source is ready. Build the reader to generate the production files before serving it.",
   };
-}
-
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
 function toPosix(value) {
@@ -1798,7 +1802,7 @@ async function getCodexStatus({ force = false } = {}) {
       version: cachedCodexVersion,
       authenticated: loginResult.ok && /logged in/i.test(loginText),
       authText: loginText || loginResult.error || "Not logged in",
-      authMethod: "codex-cli-device-auth",
+      authMethod: "codex-cli",
     };
     cachedCodexStatus = Object.freeze(status);
     cachedCodexStatusExpiresAt = Date.now() + CODEX_STATUS_TTL_MS;
@@ -1832,7 +1836,7 @@ async function startCodexLogin() {
       authText: status.authText,
       output: [{
         source: "status",
-        line: "Codex is already signed in. No device code is needed.",
+        line: "Codex is already signed in. No new browser login is needed.",
         at: new Date().toISOString(),
       }],
     };
@@ -1848,7 +1852,7 @@ async function startCodexLogin() {
     loginCode: null,
     output: [],
   };
-  loginProcess = spawn(CODEX_BIN, ["login", "--device-auth"], {
+  loginProcess = spawn(CODEX_BIN, ["login"], {
     cwd: process.cwd(),
     env: { ...process.env, NO_COLOR: "1" },
     stdio: ["ignore", "pipe", "pipe"],

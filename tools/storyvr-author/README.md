@@ -177,8 +177,11 @@ sends Codex a bounded summary instead of the source log.
 
 The preferred provider is the local Codex CLI auth boundary.
 
-- The UI starts `codex login --device-auth`.
-- The browser receives only the login URL, device code, and status text.
+- The UI starts the standard `codex login` browser flow.
+- The browser receives bounded login output, the login URL when available, and
+  status updates; it never receives credentials or tokens. Device-code login
+  remains a manual fallback for a headless or callback-blocked computer where
+  the study workspace permits it.
 - Codex stores credentials in the local Codex CLI configuration.
 - Proposal generation runs `codex exec --json` in read-only mode and asks Codex to return a structured proposal bundle for generated-option checkpoints.
 - Source Graph progress generation runs asynchronously in an isolated temporary workspace. Its prompt contains the saved narrative outline and instructs Codex to use only that JSON input; Codex returns section ids, labels, and beat ids, while StoryVR supplies signatures and provenance after deterministic validation.

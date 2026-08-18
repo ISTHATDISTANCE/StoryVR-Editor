@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import spawn from "cross-spawn";
 import { fileURLToPath } from "node:url";
 import { parseCodexJsonObject as parseJsonObject } from "../codex-json.mjs";
 import {

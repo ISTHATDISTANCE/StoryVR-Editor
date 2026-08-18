@@ -12,7 +12,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import spawn from "cross-spawn";
 import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -40,6 +40,9 @@ import {
   storyCanvasSegmentGenerationStructure,
   storyCanvasSegmentGraphSignature,
 } from "./story-canvas-segments.mjs";
+import {
+  readerRunCommands,
+} from "./platform-commands.mjs";
 
 export const AUTHOR_SCHEMA_VERSION = "storyvr-author/v1";
 const DECISION_SCHEMA_VERSION = "storyvr-decision/v2";
@@ -15390,19 +15393,21 @@ async function resolveReaderRun(paths) {
   const distReady = await exists(path.join(directReaderStoryFolder, "dist-webxr-adaptation", "index.html"));
   const devPort = 5177;
   const instanceBuildScript = path.join(directReaderSource, "tools", "build-story-instance.mjs");
-  const instanceBuildPrefix = await exists(instanceBuildScript)
-    ? `node ${shellQuote(toPosix(path.relative(REPO_ROOT, instanceBuildScript)))} && `
-    : "";
   const storyIsOutsideRepo = hostingLayout.hostingRoot !== REPO_ROOT;
-  const viteDevRoot = storyIsOutsideRepo ? `${shellQuote(readerSourcePath)} ` : "";
-  const devCommand = `cd ${shellQuote(REPO_ROOT)} && ${instanceBuildPrefix}npx vite ${viteDevRoot}--host 127.0.0.1 --port ${devPort} --strictPort`;
   const distFolder = path.join(directReaderStoryFolder, "dist-webxr-adaptation");
   const buildBase = `/${distPath}/`;
-  const buildCommand = `cd ${shellQuote(REPO_ROOT)} && ${instanceBuildPrefix}node ${shellQuote(READER_DIST_BUILD_SCRIPT)} ${shellQuote(directReaderSource)} ${shellQuote(distFolder)} ${shellQuote(buildBase)} ${shellQuote(REPO_ROOT)}`;
-  const hostingRootArgument = hostingLayout.hostingRoot === REPO_ROOT
-    ? ""
-    : ` --root ${shellQuote(toPosix(path.relative(REPO_ROOT, hostingLayout.hostingRoot)))}`;
-  const httpsCommand = `python3 https_server.py --lan${hostingRootArgument} --story-path ${shellQuote(distPath)}`;
+  const commands = readerRunCommands({
+    repositoryRoot: REPO_ROOT,
+    readerDistBuildScript: READER_DIST_BUILD_SCRIPT,
+    readerSource: directReaderSource,
+    distFolder,
+    buildBase,
+    hostingRoot: hostingLayout.hostingRoot,
+    distPath,
+    instanceBuildScript: await exists(instanceBuildScript) ? instanceBuildScript : null,
+    viteRoot: storyIsOutsideRepo ? directReaderSource : null,
+    devPort,
+  });
 
   return {
     status: "ready",
@@ -15413,10 +15418,7 @@ async function resolveReaderRun(paths) {
     commandRoot: REPO_ROOT,
     readerSourcePath,
     distPath,
-    devCommand,
-    buildCommand,
-    serveCommand: `cd ${shellQuote(REPO_ROOT)} && ${httpsCommand}`,
-    headsetCommand: `${buildCommand} && ${httpsCommand}`,
+    ...commands,
     devUrl: storyIsOutsideRepo
       ? `http://127.0.0.1:${devPort}/`
       : `http://127.0.0.1:${devPort}/${readerSourcePath}/`,
@@ -15450,10 +15452,6 @@ function resolveReaderHostingLayout(storyFolder, repoRoot = REPO_ROOT) {
     hostingRoot: path.dirname(resolvedStoryFolder),
     readerStoryPath: path.basename(resolvedStoryFolder),
   };
-}
-
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
 function toPosix(value) {

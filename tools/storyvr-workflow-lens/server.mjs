@@ -287,7 +287,7 @@ function normalizeStatus(value) {
     codexAvailable,
     authenticated,
     version: source.version == null ? null : String(source.version).replace(/\s+/g, " ").trim().slice(0, 160) || null,
-    authMethod: String(source.authMethod || "codex-cli-device-auth").slice(0, 120),
+    authMethod: String(source.authMethod || "codex-cli").slice(0, 120),
     message: String(source.message || (
       !codexAvailable
         ? "Codex CLI is not available on this computer."

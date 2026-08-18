@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import spawn from "cross-spawn";
 import {
   copyFile,
   lstat,
@@ -59,7 +59,7 @@ export async function generateEnvironmentImageWithCodex({
   codexVersion = null,
   timeoutMs = DEFAULT_GENERATION_TIMEOUT_MS,
   commandRunner = runSpawnedCommand,
-  imageNormalizer = normalizePngWithSips,
+  imageNormalizer = null,
   temporaryRoot = os.tmpdir(),
   platform = process.platform,
   artifactPollTimeoutMs = DEFAULT_ARTIFACT_POLL_TIMEOUT_MS,
@@ -167,11 +167,17 @@ export async function generateEnvironmentImageWithCodex({
     ) {
       await copyFile(generatedImagePath, normalizedImagePath);
     } else {
-      await imageNormalizer(generatedImagePath, normalizedImagePath, {
-        width: GENERATED_ENVIRONMENT_WIDTH,
-        height: GENERATED_ENVIRONMENT_HEIGHT,
-      });
-      postprocessing = "sips-resample-2:1";
+      const normalizationTool = imageNormalizer
+        ? await imageNormalizer(generatedImagePath, normalizedImagePath, {
+          width: GENERATED_ENVIRONMENT_WIDTH,
+          height: GENERATED_ENVIRONMENT_HEIGHT,
+        })
+        : await normalizePngForPlatform(generatedImagePath, normalizedImagePath, {
+          width: GENERATED_ENVIRONMENT_WIDTH,
+          height: GENERATED_ENVIRONMENT_HEIGHT,
+          platform,
+        });
+      postprocessing = `${normalizationTool || pngNormalizationToolForPlatform(platform)}-resample-2:1`;
     }
 
     const image = await readFile(normalizedImagePath);
@@ -228,7 +234,7 @@ export async function generateMatchingGroundTextureWithCodex({
   codexVersion = null,
   timeoutMs = DEFAULT_GENERATION_TIMEOUT_MS,
   commandRunner = runSpawnedCommand,
-  imageNormalizer = normalizePngWithSips,
+  imageNormalizer = null,
   temporaryRoot = os.tmpdir(),
   platform = process.platform,
   artifactPollTimeoutMs = DEFAULT_ARTIFACT_POLL_TIMEOUT_MS,
@@ -327,11 +333,17 @@ export async function generateMatchingGroundTextureWithCodex({
     ) {
       await copyFile(generatedImagePath, normalizedImagePath);
     } else {
-      await imageNormalizer(generatedImagePath, normalizedImagePath, {
-        width: GENERATED_GROUND_TEXTURE_SIZE,
-        height: GENERATED_GROUND_TEXTURE_SIZE,
-      });
-      postprocessing = "sips-resample-square";
+      const normalizationTool = imageNormalizer
+        ? await imageNormalizer(generatedImagePath, normalizedImagePath, {
+          width: GENERATED_GROUND_TEXTURE_SIZE,
+          height: GENERATED_GROUND_TEXTURE_SIZE,
+        })
+        : await normalizePngForPlatform(generatedImagePath, normalizedImagePath, {
+          width: GENERATED_GROUND_TEXTURE_SIZE,
+          height: GENERATED_GROUND_TEXTURE_SIZE,
+          platform,
+        });
+      postprocessing = `${normalizationTool || pngNormalizationToolForPlatform(platform)}-resample-square`;
     }
 
     const image = await readFile(normalizedImagePath);
@@ -762,6 +774,21 @@ export function pngDimensions(value) {
   return { width, height };
 }
 
+function pngNormalizationToolForPlatform(platform) {
+  return platform === "darwin" ? "sips" : "sharp";
+}
+
+async function normalizePngForPlatform(sourcePath, outputPath, {
+  width,
+  height,
+  platform = process.platform,
+}) {
+  if (platform === "darwin") {
+    return normalizePngWithSips(sourcePath, outputPath, { width, height });
+  }
+  return normalizePngWithSharp(sourcePath, outputPath, { width, height });
+}
+
 async function normalizePngWithSips(sourcePath, outputPath, { width, height }) {
   const result = await runSpawnedCommand(
     "/usr/bin/sips",
@@ -782,8 +809,35 @@ async function normalizePngWithSips(sourcePath, outputPath, { width, height }) {
   );
   if (!result.ok) {
     const detail = firstUsefulCommandError(result);
-    throw new Error(`Could not normalize the generated panorama with sips${detail ? `: ${detail}` : "."}`);
+    throw new Error(`Could not normalize the generated PNG with sips${detail ? `: ${detail}` : "."}`);
   }
+  return "sips";
+}
+
+async function normalizePngWithSharp(sourcePath, outputPath, { width, height }) {
+  let sharp;
+  try {
+    const sharpModule = await import("sharp");
+    sharp = sharpModule.default || sharpModule;
+  } catch (error) {
+    const detail = String(error?.message || "").trim();
+    throw new Error(
+      `Could not load sharp to normalize the generated PNG${detail ? `: ${detail}` : "."}`,
+    );
+  }
+
+  try {
+    await sharp(sourcePath, { failOn: "error" })
+      .resize({ width, height, fit: "fill" })
+      .png()
+      .toFile(outputPath);
+  } catch (error) {
+    const detail = String(error?.message || "").trim();
+    throw new Error(
+      `Could not normalize the generated PNG with sharp${detail ? `: ${detail}` : "."}`,
+    );
+  }
+  return "sharp";
 }
 
 function runSpawnedCommand(command, args, {
