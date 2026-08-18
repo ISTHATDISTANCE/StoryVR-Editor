@@ -141,9 +141,11 @@ sync.
 - Prefer short Windows workspace paths over global long-path, execution-policy,
   or Developer Mode changes.
 
-The participant-facing installation workflow is maintained in
-`PARTICIPANT_INSTALL_PROMPT.md`. Keep its OS-to-branch selection, verification
-commands, and final launch message synchronized with the actual code.
+The participant-facing setup and cleanup workflows are maintained in
+`PARTICIPANT_INSTALL_PROMPT.md` and `PARTICIPANT_UNINSTALL_PROMPT.md`. Keep the
+OS-to-branch selection, immutable revisions, install manifest/marker schemas,
+append-only journal/hash chain, pre-action reservations, verification commands,
+removal safeguards, and final messages synchronized.
 
 ## Tracking policy
 

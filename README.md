@@ -32,8 +32,9 @@ Every platform needs:
 - Python 3; macOS `main` requires `python3`, the portable Linux/WSL launcher
   accepts `python3` or `python`, and native Windows additionally accepts `py -3`
 - A current Chromium-based browser such as Chrome or Edge
-- Optional: the [Codex CLI](https://developers.openai.com/codex/cli/) for
-  AI-backed environment and motion generation
+- The [Codex CLI](https://developers.openai.com/codex/cli/) is optional for
+  core/manual StoryVR, but required for this study's complete AI-backed
+  environment and motion workflow
 - Optional: OpenSSL and a WebXR headset for local HTTPS immersive testing
 
 On Windows, use 64-bit Node.js and Python unless the computer is ARM64. Run the
@@ -79,6 +80,12 @@ be overridden with `STORYVR_PYTHON` when a machine has multiple installations.
 
 Clone the branch for the current operating environment and install exactly the
 versions recorded in `package-lock.json`.
+
+> **Participant study installations:** use `PARTICIPANT_INSTALL_PROMPT.md`
+> instead of the manual developer commands below. The guided workflow creates a
+> new dedicated workspace plus ownership records required by
+> `PARTICIPANT_UNINSTALL_PROMPT.md`. A manual checkout has no such proof, so the
+> uninstall prompt will deliberately refuse to remove it.
 
 macOS:
 
@@ -472,6 +479,7 @@ node tools/animation-logic-probe/analyze-animation-probe.mjs \
 Detailed subsystem documentation is available in:
 
 - `PARTICIPANT_INSTALL_PROMPT.md` for an OS-aware guided installation
+- `PARTICIPANT_UNINSTALL_PROMPT.md` for manifest-verified, recoverable cleanup
 - `tools/storyvr-author/README.md`
 - `tools/storyvr-adapter/README.md`
 - `tools/animation-logic-probe/README.md`
