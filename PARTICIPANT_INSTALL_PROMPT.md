@@ -13,6 +13,9 @@ Approved source and platform channels
 - macOS: branch main
 - Native Linux: branch codex/native-windows
 - WSL2 fallback: branch codex/native-windows inside WSL
+- Approved macOS revision: 820ef7dfecb43a081936027b5655fe4ec6ced59b
+- Approved portable Windows/Linux/WSL revision:
+  ed6e84ab06e992d7c87d71e5eb19a7850b651ae3
 - Never substitute another repository, fork, mirror, branch, or downloaded
   archive unless the study facilitator explicitly supplies it.
 
@@ -65,6 +68,9 @@ Native Windows 11 PowerShell:
   $env:USERPROFILE\StoryVR. Avoid OneDrive, network drives, and deep nesting.
 - Clone branch codex/native-windows with:
     git clone --branch codex/native-windows --single-branch https://github.com/ISTHATDISTANCE/StoryVR-Editor.git
+- Before running any project script, enter StoryVR-Editor and pin the approved
+  portable revision:
+    git checkout --detach ed6e84ab06e992d7c87d71e5eb19a7850b651ae3
 - From StoryVR-Editor, run:
     npm.cmd ci
 - Python may be exposed as py -3, python3, or python. Always verify it through
@@ -78,6 +84,9 @@ macOS:
 - Use a short, user-owned local workspace, preferably $HOME/StoryVR.
 - Clone branch main with:
     git clone --branch main --single-branch https://github.com/ISTHATDISTANCE/StoryVR-Editor.git
+- Before running any project script, enter StoryVR-Editor and pin the approved
+  macOS revision:
+    git checkout --detach 820ef7dfecb43a081936027b5655fe4ec6ced59b
 - From StoryVR-Editor, run:
     npm ci
 - Branch main currently requires the exact python3 command. Verify it with:
@@ -88,6 +97,9 @@ Native Linux or WSL2:
   keep the checkout under the Linux home directory rather than /mnt/c.
 - Clone the portable branch with:
     git clone --branch codex/native-windows --single-branch https://github.com/ISTHATDISTANCE/StoryVR-Editor.git
+- Before running any project script, enter StoryVR-Editor and pin the approved
+  portable revision:
+    git checkout --detach ed6e84ab06e992d7c87d71e5eb19a7850b651ae3
 - From StoryVR-Editor, run:
     npm ci
 - Verify Python through the portable launcher:
@@ -104,8 +116,9 @@ For every platform:
    node_modules from another computer or operating system. The portable branch
    installs its cross-platform image runtime through npm; macOS main uses the
    operating system's built-in sips. Do not install ImageMagick.
-4. Record the absolute repository path, absolute story path, selected branch,
-   and exact commit returned by git rev-parse HEAD.
+4. Before `npm ci`, require `git rev-parse HEAD` to equal the approved revision
+   for the detected OS exactly. Stop on any mismatch. Record the absolute
+   repository path, absolute story path, selected release channel, and commit.
 
 Codex setup
 1. Use only the official Codex CLI guidance at
@@ -156,10 +169,9 @@ required checks exit successfully.
 All platforms:
 - git --version succeeds.
 - git remote get-url origin exactly identifies the approved repository.
-- git branch --show-current equals the selected branch.
-- git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' identifies the
-  matching origin branch.
-- git rev-parse HEAD succeeds; record the commit.
+- git rev-parse HEAD exactly equals the approved immutable revision for the
+  detected OS.
+- git branch -r --contains HEAD includes the expected origin release branch.
 - node --version reports 24.0.0 or newer.
 - On the portable branch, StoryVR's Python launcher reports Python 3. On branch
   main, python3 --version reports Python 3.
