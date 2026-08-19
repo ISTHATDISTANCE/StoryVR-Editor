@@ -145,7 +145,10 @@ The participant-facing setup and cleanup workflows are maintained in
 `PARTICIPANT_INSTALL_PROMPT.md` and `PARTICIPANT_UNINSTALL_PROMPT.md`. Keep the
 OS-to-branch selection, immutable revisions, install manifest/marker schemas,
 append-only journal/hash chain, pre-action reservations, verification commands,
-removal safeguards, and final messages synchronized.
+removal safeguards, study-extension build/manual Chrome handoff, data-log
+finalization, and final messages synchronized. The prompts may build and verify
+the unpacked extension source, but must not automate Chrome Developer mode,
+extension loading/removal, collection consent, or browser-profile deletion.
 
 ## Tracking policy
 

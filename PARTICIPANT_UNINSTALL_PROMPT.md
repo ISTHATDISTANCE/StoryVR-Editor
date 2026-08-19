@@ -2,8 +2,10 @@
 
 Copy the prompt below into Codex on the participant's computer. Supply the
 absolute path to the installer-created `storyvr-study-install.json` manifest
-when available. This cleanup deliberately stops instead of guessing when the
-installer evidence is missing or inconsistent.
+when available, plus the facilitator's recorded extension ID, Chrome Profile
+Path, and prior Developer-mode state when the study logger was manually loaded.
+This cleanup deliberately stops instead of guessing when the installer evidence
+is missing or inconsistent.
 
 ```text
 Act as a cautious local cleanup agent. Remove the StoryVR study installation
@@ -52,9 +54,17 @@ Non-negotiable safety boundary
    A malformed newline-terminated/interior record, unknown type, duplicate
    generation, broken link, or mismatch with the marker genesis hash invalidates recovery.
    Require `genesis` only at generation 0 with null action/previous hash and the
-   exact bootstrap payload fields. Require filesystem prepared/result payloads
-   to use the exact target fields defined by the installer; reject synonyms or
-   incomplete target records.
+   exact bootstrap payload fields. Require ordinary removable filesystem
+   prepared/result payloads to use `targetType: "filesystem-item"` and every
+   marker-backed target field defined by the installer. Separately allow the
+   one `targetType: "contained-output-build"` extension action only when its
+   prepared payload contains kind `storyvr-study-extension`, repository
+   `containerItemId`, canonical build source/output paths, absent before-state,
+   and no reservation/child marker; require its result to repeat those fields
+   plus `separatelyRemovable: false`, `markerPath: null`, and, on success, the
+   exact verified marker/manifest/config/inventory paths and SHA-256 fields from
+   the installer contract. Reject synonyms, incomplete fields, a second
+   contained build, or an output path outside the marked repository.
    When the manifest is valid, require its journal generation/last hash to equal
    the verified head and its status to equal the final `finalized` payload.
    Verify the final `cleanupSnapshotHash` against the exact non-record-derived
@@ -77,6 +87,12 @@ Non-negotiable safety boundary
    record is absent, but only when its reservation/prepared action match and a
    fresh no-follow identity read matches the marker at exactly the recorded
    final entry path. Trash only that matching entry; any other state is KEEP.
+   A fully verified succeeded `contained-output-build` is not a separate local
+   removal target and requires no child marker. Replay its build fields into
+   `browser.extension` evidence in memory, require its container item to be the
+   marked repository, and remove it only as part of that repository after the
+   manual logger flow is resolved. A failed/pending contained build authorizes
+   no child deletion and remains within the kept repository.
 6. Bootstrap-only exception: if sealing never completed, accept the exact
    reported final workspace containing `storyvr-study-bootstrap.json`.
    Require schema `storyvr-study-bootstrap/v1`, exact install ID and final entry
@@ -112,6 +128,11 @@ Non-negotiable safety boundary
 10. Do not make any destructive or account-changing change before presenting an
    exact preview and receiving the matching explicit confirmation described
    below.
+11. Before moving any repository or workspace containing the manifest's
+    recorded study-extension `buildOutputPath`, resolve **Study logger
+    finalization and manual browser removal** even in strict recovery mode. If
+    the participant cannot establish whether the logger was loaded or whether a
+    collection session finalized, stop and keep the source/workspace in place.
 
 Identify the environment
 1. Detect and report the host OS, CPU architecture, active shell, and whether
@@ -119,10 +140,13 @@ Identify the environment
 2. Compare this with the valid manifest or strict journal reconstruction.
    Native Windows and WSL are different installations. Never translate paths
    between them or clean both from one provenance record.
-3. If StoryVR is running, ask the participant to stop the recorded StoryVR
-   terminal with Ctrl+C. Do not kill a process unless its executable, working
-   directory, command line, and recorded installation all match; when in doubt,
-   leave it running and stop cleanup.
+3. If StoryVR is running and the extension may have been loaded or collection
+   status is unknown, keep StoryVR and its terminal open until **Study logger
+   finalization and manual browser removal** is resolved. Only after log
+   finalization/preservation and the manual extension attestation may the
+   participant stop the recorded StoryVR terminal with Ctrl+C before filesystem
+   cleanup. Do not kill a process; when in doubt, leave it running and stop
+   cleanup.
 
 Read-only provenance audit
 1. Parse the marker and, when valid, the manifest without modifying either. Build
@@ -236,6 +260,119 @@ Preserve participant work and the original story
    provenance view and matching item marker prove the study created that exact path
    and the participant separately approves its export or recoverable removal.
 
+Study logger finalization and manual browser removal
+1. Treat the selected interaction-log JSON and the extension's session-only
+   cache as participant data. Never reload, disable, update, or remove the
+   extension, close its study profile, or move/trash its unpacked source,
+   repository, or workspace while collection is on, writing, saving,
+   finalizing, paused, retrying, failed, or of unknown status.
+2. Resolve StoryVR's own Data collection state before considering whether the
+   extension was loaded. StoryVR can create a log without the extension. Ask
+   whether any collection session started. If the participant confirms none
+   started, require this exact attestation:
+
+   STORYVR DATA COLLECTION WAS NOT STARTED <installId>
+
+   If a session started or its status is uncertain, ask for the exact
+   participant-known JSON path; never search for another log. Have the
+   participant manually open StoryVR in the study Chrome profile. If StoryVR
+   is closed, first give the participant the exact OS-native launch command
+   reconstructed from the recorded literal repository, selected npm/Node, and
+   assigned-story paths, then have them open `http://127.0.0.1:5188/` in that
+   same profile. Inspect the Data collection switch itself. Click it exactly
+   once only when it visibly or accessibly reports **On**. If it reports Off or
+   is disabled while Writing, Saving, finishing, paused, or retrying, do not
+   click it; keep StoryVR open and wait for **Saved**. If it reaches an error or
+   does not reach Saved, stop cleanup. Any
+   failure or uncertainty keeps the log, extension, unpacked
+   source, repository, profile, and workspace in place for retry or review.
+   Read only the exact supplied JSON and verify that it parses with
+   `complete: true`, `collectionState: "complete"`, and a nonempty `endedAt`.
+   Do not print events or other contents. Preserve that file, or export and
+   verify it under the participant-work rules above, before continuing.
+3. Separately ask whether the extension was ever loaded. The installer proves
+   only that its unpacked source was built; do not infer loading from that
+   folder or inspect every browser profile. If it was never loaded, require:
+
+   STORYVR EXTENSION WAS NOT LOADED <installId>
+
+   Record that attestation, but only after step 2 is resolved. If it was loaded,
+   use the facilitator-study-note handoff's exact extension ID and Chrome
+   Profile Path. If either is missing, the participant may manually open only
+   the single profile they identify as the dedicated study profile, then copy
+   its Profile Path from `chrome://version` and the exact extension ID from the
+   matching name/version card at `chrome://extensions`. When Chrome displays a
+   loaded-from path, require it to equal the manifest's exact build output.
+   The cleanup agent must not choose or scan profiles. If the participant cannot
+   identify one exact study profile and matching extension, KEEP the source,
+   repository, and workspace and use the stopped-safe final form with that
+   identification failure as the reason; do not emit placeholders pretending
+   the missing ID/path is known. Unknown prior
+   Developer-mode state does not block extension removal; it means leave
+   Developer mode unchanged.
+4. For a loaded extension, have the participant or facilitator perform every
+   browser action below manually in the exact study Chrome profile. Do not
+   click, script, edit, reset, or delete a browser profile on their behalf.
+   a. In the logger popup, require **Collection is off**. When a session ran,
+      also require the note that the data file was finalized. When the
+      participant attested no session started, do not require that note; the
+      normal off-state instead offers to start a new file. If the popup reports
+      another state, stop. Successful finalization normally clears approvals.
+   b. On any original-story tab that the participant knows was approved, open
+      the logger popup. If it still says the original story is approved, select
+      **Stop observing this tab** and verify approval is gone. Do not inspect
+      unrelated tabs.
+   c. Open `chrome://version` and require the displayed Profile Path to match
+      the facilitator's handoff. Then open `chrome://extensions`, locate only
+      the recorded extension ID, and confirm the exact name
+      `StoryVR Study Logger - StoryVR original-story study` and version `0.3.0`.
+      Select **Remove**, confirm, and verify that exact ID is absent. Do not
+      remove another extension or clear browser data.
+   d. Turn Developer mode off only when the handoff says it was disabled before
+      the study and the facilitator enabled it solely for this extension;
+      otherwise leave it unchanged.
+5. Never automatically delete a Chrome profile, including a dedicated
+   study-only profile. Keep it by default. The participant may review and
+   delete it manually later through Chrome only after confirming it contains no
+   personal data, needed study data, bookmarks, passwords, or synced content.
+6. Do not count browser removal as complete until the participant reports:
+
+   STORYVR EXTENSION REMOVED <extensionId> <installId>
+
+   This is a completion attestation, not permission for the cleanup agent to
+   manipulate Chrome. Until the exact attestation matches the handoff and
+   install ID, output the manual checklist above, report browser-extension
+   cleanup pending, and stop before moving/trashing the unpacked source,
+   repository, evidence, or workspace.
+7. When this manual step is pending and the required ID/profile values are
+   known, end the turn with only this handoff using real values. If either value
+   cannot be recovered through the bounded participant-identified profile flow,
+   use the stopped-safe final form instead:
+
+   StoryVR cleanup is waiting for manual study-logger cleanup.
+   Nothing has been removed.
+
+   First resolve Data collection. If no collection session ever started, reply:
+   STORYVR DATA COLLECTION WAS NOT STARTED <installId>
+
+   If a session ran or its status is uncertain and StoryVR is closed, run this exact recorded launch command, then open http://127.0.0.1:5188/ in the study profile:
+   <exact-OS-native-recorded-StoryVR-launch-command>
+
+   For every started or uncertain session, turn Data collection off, wait for
+   Saved, and preserve the exact completed JSON log before continuing.
+
+   Then, if the extension was never loaded, reply:
+   STORYVR EXTENSION WAS NOT LOADED <installId>
+
+   If it was loaded:
+   1. At chrome://version, confirm Profile Path: <recorded-or-facilitator-supplied-profile-path>
+   2. At chrome://extensions, remove only "StoryVR Study Logger - StoryVR original-story study" with ID <recorded-or-facilitator-supplied-extensionId>.
+   3. Leave the Chrome profile in place. Restore Developer mode only if it was disabled before this study.
+   4. Reply:
+   STORYVR EXTENSION REMOVED <extensionId> <installId>
+
+   StoryVR files and the unpacked extension source will remain in place until this manual step is confirmed.
+
 Shared dependencies and system changes
 1. KEEP Git, Node.js, npm, Python, Chrome/Edge/Chromium, OpenSSL, Codex, package
    managers, WSL, and all other shared tools by default.
@@ -276,11 +413,9 @@ Shared dependencies and system changes
    replacement, adoption, or uncertainty means KEEP. Preview each change
    separately and require explicit approval. Never reset an entire PATH,
    certificate store, firewall profile, browser policy, or security setting.
-7. Remove an unpacked study browser extension only from the exact recorded
-   browser profile and extension ID, through that browser's extension UI, and
-   only when the manifest proves it was absent before the study. Never edit,
-   reset, or delete a browser profile, history, cookies, saved passwords, or
-   site data.
+7. Follow **Study logger finalization and manual browser removal** above. The
+   cleanup agent never performs browser-extension removal, and a browser
+   profile is never an automated cleanup target.
 
 Codex sign-out and removal
 1. Codex authentication belongs to the OS user, not just the StoryVR folder.
@@ -341,28 +476,38 @@ Recoverable removal only
    command.
 
 Preview and confirmations
-1. Before changing anything, show a compact preview table with: action, exact
+1. Resolve the study-logger handoff first. If the extension may have been
+   loaded and either data finalization/preservation or manual removal is not
+   confirmed, output the exact manual checklist from **Study logger
+   finalization and manual browser removal**, report cleanup pending, and end
+   the turn without asking for the main cleanup confirmation. Resume only after
+   receiving the matching not-loaded or removed attestation and verifying any
+   session log. These attestations report participant actions; they do not
+   authorize the agent to operate Chrome.
+2. Before changing anything, show a compact preview table with: action, exact
    literal entry path or package identifier, provenance, participant-work/export
    destination, and whether separate approval is required. Include all KEEP
    items that a participant might reasonably expect the uninstall to remove.
-2. State the install ID, the Trash/Recycle Bin method, that Trash will not be
+   Include data-collection finalization/preservation and browser extension
+   status, while noting that the Chrome profile is kept.
+3. State the install ID, the Trash/Recycle Bin method, that Trash will not be
    emptied, and which original story source and export will be preserved.
-3. Ask the participant to type exactly:
+4. Ask the participant to type exactly:
 
    CONFIRM STORYVR CLEANUP <installId>
 
    This confirmation covers only the previewed EXPORT THEN TRASH and TRASH
    local artifacts. Any preview change invalidates the confirmation and
    requires a new preview.
-4. Require a separate exact line for every optional shared action:
+5. Require a separate exact line for every optional shared action:
 
    ALSO REMOVE <exact-tool-or-change-id> <installId>
 
-5. Require this separate exact line for Codex sign-out:
+6. Require this separate exact line for Codex sign-out:
 
    ALSO LOG OUT CODEX <installId>
 
-6. Do nothing if the main cleanup response is ambiguous or the install ID is
+7. Do nothing if the main cleanup response is ambiguous or the install ID is
    absent or does not match. Missing optional confirmation lines mean KEEP
    those optional items while continuing the exactly confirmed local cleanup.
    If the participant wants only a subset of the main local target set, issue a
@@ -371,41 +516,52 @@ Preview and confirmations
    cleanup confirmation.
 
 Execution and verification
-1. After valid confirmation, export and verify participant work first.
-2. Before moving any evidence, revalidate the complete provenance view/journal/root
-   marker/sidecar set and every target. Apply separately approved reversible
-   external settings and browser-extension changes first, but KEEP every tool
-   still needed for identity checks, Trash operations, receipt writing, or the
-   active cleanup agent.
-3. Move confirmed marked children only when the workspace root must remain.
+1. Before accepting or acting on the main cleanup confirmation, require the
+   study log to be finalized/preserved or confirmed never started, and require
+   the exact not-loaded or extension-removed attestation. Revalidate this state
+   immediately before moving the repository. If it is pending, stop without
+   moving any unpacked source, repository, evidence, or workspace.
+2. After valid main confirmation, export and verify remaining participant work
+   first.
+3. Before moving any evidence, revalidate the complete provenance view/journal/root
+   marker/sidecar set and every target. Apply only separately approved
+   reversible non-browser external settings, but KEEP every tool still needed
+   for identity checks, Trash operations, receipt writing, or the active
+   cleanup agent. Never automate a Chrome extension or profile change.
+4. Move confirmed marked children only when the workspace root must remain.
    Never move the manifest, journal, root marker, reservations, or sidecar
    early. If the entire exclusive workspace is eligible, move it once as the
    final local filesystem action. Otherwise move the fixed evidence bundle
    (manifest, journal, bootstrap evidence, root marker, reservations, and item
    markers) last without requiring recursive markers for those evidence files,
    and keep the workspace directory itself when it contains any KEEP item.
-4. Verify that preserved originals and exports still exist and that each moved
+5. Verify that preserved originals and exports still exist and that each moved
    source path is absent from its former location. Do not empty Trash or verify
    by permanently deleting anything.
-5. Write or prepare the uninstall receipt before any separately approved tool
+6. Write or prepare the uninstall receipt before any separately approved tool
    removal. Uninstall only a verified tool that is no longer needed by cleanup,
    in dependency-safe order. Never uninstall the Node runtime or Codex CLI that
    is executing this agent. Hand those final actions to the participant or a
    non-target host, and mark them pending until independently confirmed.
-6. If a step fails, stop safely, list what completed and what remains, and do
+7. If a step fails, stop safely, list what completed and what remains, and do
    not claim full cleanup.
-7. With the participant's consent, write a secret-free uninstall receipt at a
+8. With the participant's consent, write a secret-free uninstall receipt at a
    new path outside every cleanup target. Use schema
    `storyvr-study-uninstall/v1` and record the install ID, timestamp, exact
    actions/results, export verification, Trash/Recycle Bin method, retained
-   shared components, authentication result, failures, and recovery location.
+   shared components, authentication result, data-log finalization/preservation,
+   manual extension attestation, kept Chrome profile, Developer-mode result,
+   failures, and recovery location.
    Never overwrite an existing receipt and never include credentials or file
    contents. If the participant declines a receipt file, provide the same
    information only in the final response.
 
 Concise final receipt
 
-After successful verification, output only this short receipt with real values:
+Use the completed form only after required manual extension removal is attested
+or the participant attests it was never loaded. Otherwise use the stopped form
+and name browser-extension cleanup as pending. After successful verification,
+output only this short receipt with real values:
 
 StoryVR study cleanup completed.
 Install ID: <installId>
@@ -413,6 +569,10 @@ Preserved: <original story path>; <participant-work export path or working copy 
 Moved to <Trash or Recycle Bin>: <count and concise item names>
 Shared tools: <kept by default; list only any separately approved removals>
 Codex: <sign-in unchanged or signed out>
+Data collection: <never started, or finalized and preserved exact log path>
+Study extension: <never loaded, or participant-confirmed removed exact extension ID>
+Chrome profile: kept
+Developer mode: <participant-confirmed restored or left unchanged>
 Not removed: <pre-existing, shared, unknown, or already absent items, or none>
 
 If cleanup is partial or blocked, output only:

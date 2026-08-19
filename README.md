@@ -299,6 +299,13 @@ An original page is observed only after its exact tab, origin, and path are
 explicitly approved and StoryVR's **Data collection** switch is on. See
 `tools/storyvr-study-extension/README.md` for the privacy boundary and setup.
 
+For participant-study setup, `PARTICIPANT_INSTALL_PROMPT.md` builds and
+statically verifies this unpacked directory, then hands Chrome loading to the
+facilitator as an explicit manual checklist. `PARTICIPANT_UNINSTALL_PROMPT.md`
+requires collection finalization and log preservation first, then pauses for
+manual removal from the exact study Chrome profile. Neither prompt automates
+Developer mode, extension loading/removal, or browser-profile deletion.
+
 Open exported logs in the local session viewer:
 
 ```sh

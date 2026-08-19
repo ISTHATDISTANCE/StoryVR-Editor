@@ -16,6 +16,11 @@ Opening the popup does not approve or observe a page. Approval requires the visi
 5. If StoryVR was already open, reload its tab once so its controller bridge is attached.
 6. Use a separate Chrome profile for the study and keep StoryVR and the original story in that profile.
 
+The participant installation prompt builds to a unique
+`tools/storyvr-study-extension/builds/participant-<installId>/` directory
+instead of the shared default `unpacked/` directory. When using that workflow,
+load the exact absolute directory printed in its final facilitator checklist.
+
 The extension does not need a build-time URL entry for each original story. Any top-level HTTP or HTTPS story page can be approved explicitly when it is in the active tab.
 
 ## Approve an original story
@@ -57,6 +62,33 @@ Unwritten session data and temporary page approvals remain in session-only exten
 ## Revoke an approved page
 
 Open the extension popup on the approved original page and select **Stop observing this tab**. The observer is disabled and the service worker rejects further events from that grant. Revoking one page does not stop StoryVR's overall Data collection session; use the StoryVR switch to finalize the complete session in its selected folder.
+
+## Before removing the extension
+
+Removal is a manual facilitator/participant action in the exact study Chrome
+profile. Do not reload, disable, remove, or move the unpacked source while a
+collection session is active, writing, finalizing, retrying, failed, or of
+unknown status; unwritten data may still exist in session-only extension
+storage.
+
+1. In StoryVR, turn **Data collection** off and keep the page open until its
+   status is **Saved**. The extension popup must say **Collection is off** and
+   that the data file was finalized. If no collection session ever started,
+   record that fact instead.
+2. For a started session, preserve the exact selected JSON file and verify it
+   parses with `complete: true`, `collectionState: "complete"`, and a nonempty
+   `endedAt`. Do not search for or substitute a similarly named log.
+3. If an original-story tab still appears approved, use **Stop observing this
+   tab** and verify approval is gone.
+4. In the recorded study profile, confirm its Profile Path at
+   `chrome://version`. Open `chrome://extensions`, match the recorded extension
+   ID and the exact StoryVR Study Logger name, then select **Remove** and confirm
+   that ID is absent.
+5. Do not clear browser data or automatically delete/reset the Chrome profile.
+   Turn Developer mode off only if it was disabled before the study and enabled
+   solely to load this extension.
+6. Keep the unpacked source and StoryVR workspace until finalization and manual
+   browser removal are confirmed.
 
 ## Configuration
 

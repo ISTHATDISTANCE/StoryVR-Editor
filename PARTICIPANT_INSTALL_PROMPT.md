@@ -1,7 +1,9 @@
 # StoryVR participant installation prompt
 
 Copy the prompt below into Codex on the participant's computer. The assigned
-study-story folder or ZIP can be supplied before or during the setup.
+study-story folder or ZIP can be supplied before or during the setup. Codex
+installs the StoryVR core and builds the study logger; the final response gives
+the facilitator the Chrome steps that must be completed manually.
 
 ```text
 Act as a cautious local setup agent. Install and validate StoryVR on this
@@ -12,9 +14,8 @@ Approved source and platform channels
 - Native Windows 11 PowerShell: branch codex/native-windows
 - macOS: branch main
 - Native Linux: branch codex/native-windows
-- WSL2 fallback: branch codex/native-windows inside WSL
 - Approved macOS revision: 820ef7dfecb43a081936027b5655fe4ec6ced59b
-- Approved portable Windows/Linux/WSL revision:
+- Approved portable Windows/Linux revision:
   ed6e84ab06e992d7c87d71e5eb19a7850b651ae3
 - Never substitute another repository, fork, mirror, branch, or downloaded
   archive unless the study facilitator explicitly supplies it.
@@ -23,11 +24,11 @@ Operating-system decision
 1. Detect and report the host OS, CPU architecture, active shell, and whether
    the current environment is native Windows, WSL, macOS, or native Linux.
 2. On Windows 11, install natively in PowerShell first. WSL is not required.
-3. Use WSL2 only if it already exists, native setup is blocked by a
-   managed-computer restriction, and the participant or facilitator explicitly
-   approves the fallback. Do not install/enable WSL or silently install both
-   versions. A WSL installation must use Linux tools, Linux paths, branch
-   codex/native-windows, and its own node_modules.
+3. This participant workflow requires the manually loaded Chrome study logger.
+   On a Windows host, use native Windows rather than WSL because loading an
+   unpacked extension from a WSL/UNC path is not a validated study workflow. If
+   native setup is blocked, stop and report the restriction; do not install or
+   enable WSL, silently install both versions, or claim full study readiness.
 4. If the OS cannot be identified confidently, stop and ask one concise
    question rather than choosing a branch.
 
@@ -35,7 +36,9 @@ Required core software
 - Git
 - Node.js 24 or newer, with npm
 - Python 3
-- A current Chrome, Edge, or Chromium browser
+- Google Chrome 114 or newer for the study data-collection extension. Edge or
+  another Chromium browser may run core StoryVR, but it does not satisfy this
+  study's validated manual extension checklist.
 - OpenAI Codex CLI and a study-approved sign-in for StoryVR's AI features
 - OpenSSL only when the facilitator requires HTTPS or headset testing
 
@@ -78,6 +81,13 @@ Installation safety
    package-lock.json to work around installation errors.
 6. Keep downloads and installations on the participant's computer. Do not
    upload the assigned story or participant files.
+7. Automated setup may build and inspect the unpacked study-extension files,
+   but it must not open `chrome://extensions`, create/delete a Chrome profile,
+   change Developer mode, load/reload/remove an extension, approve an original
+   story page, turn on **Data collection**, select a log folder, or start,
+   checkpoint, or finalize a collection session. Those are explicit manual
+   participant/facilitator actions. Page approval and collection must wait
+   until the study's informed-consent procedure is complete.
 
 Study installation record and ownership marker (mandatory)
 1. Use a dedicated, newly created study workspace. The workspace path must not
@@ -176,13 +186,28 @@ Study installation record and ownership marker (mandatory)
    verified record as the head, but installation must not append past or rewrite
    that fragment. Allow `genesis` only at generation 0. Every `prepared` payload
    must contain `targetType`, exact target identifier, `beforeState`, approval,
-   and intended action. For filesystem actions it must additionally contain
-   `kind`, `itemId`, `reservationPath`, `entryPath`, `stagingEntryPath: null`, `parentCanonicalPath`,
-   `existedBefore`, and secret-free `preState`. Every succeeded/failed payload
+   and intended action. For an ordinary removable filesystem target it must
+   additionally use `targetType: "filesystem-item"` and contain `kind`,
+   `itemId`, `reservationPath`, `entryPath`, `stagingEntryPath: null`,
+   `parentCanonicalPath`, `existedBefore`, and secret-free `preState`. For the
+   study extension's one contained build it must instead use
+   `targetType: "contained-output-build"` and contain `kind:
+   "storyvr-study-extension"`, the repository's `containerItemId`, canonical
+   `buildSourcePath`, canonical unique `buildOutputPath`,
+   `existedBefore: false`, and a `beforeState` proving that exact output was
+   absent; it has no reservation, child item ID, or child marker. Every
+   succeeded/failed payload
    must contain `result`, complete normalized `beforeState` and `afterState`,
    the full secret-free `ownershipDelta`, nullable package receipt/error code,
-   and, for filesystem targets, `itemId`, `createdByStudy`, nullable
-   `filesystemIdentity`, and nullable `markerPath`. A `finalized` payload must
+   and, for ordinary filesystem targets, `itemId`, `createdByStudy`, nullable
+   `filesystemIdentity`, and nullable `markerPath`. A contained-output result
+   must repeat `targetType`, `kind`, `containerItemId`, `buildSourcePath`, and
+   `buildOutputPath`, set `separatelyRemovable: false` and `markerPath: null`,
+   and on success contain `buildStatus: "verified"`, `buildMarkerPath`,
+   `buildMarkerSha256`, `generatedManifestPath`, `generatedManifestSha256`,
+   `generatedStudyConfigPath`, `generatedStudyConfigSha256`, and
+   `outputInventorySha256`; on failure those result-only fields may be null and
+   the error code must be present. A `finalized` payload must
    contain `status`, a complete secret-free `cleanupSnapshot` containing
    exactly `platform`, `release`, `workspace`, `repository`, `story`,
    `prerequisites`, `codex`, `browser`, `https`, `interactionLogs`,
@@ -248,7 +273,7 @@ Study installation record and ownership marker (mandatory)
    - `codex`: `existedBefore`, `installedByStudy`, `selectedCommandPath`,
      `loginBefore`, `loginAfter`, and `loginChangedByStudy`;
    - `browser`: `product`, `selectedCommandPath`, `existedBefore`,
-     `installedByStudy`, `extension`, and `profile`;
+     `installedByStudy`, `extension`, `profile`, and `developerMode`;
    - `https`: `requested`, `artifacts`, `trustChanges`, and `firewallChanges`;
    - `interactionLogs`: an array of filesystem-item records;
    - `systemChanges`: `pathEntries`, `windowsFeatures`, `trustEntries`,
@@ -307,14 +332,33 @@ Study installation record and ownership marker (mandatory)
      state, ownership, and approval. Keep service, login-item, scheduled-task,
      shell-profile, and autostart change lists empty because they are
      prohibited;
-   - if the facilitator explicitly requires a study browser extension, its
-     exact browser product, extension ID, profile identifier and canonical
-     profile path, install method/source path, before/after enabled state,
-     `existedBefore`, and `installedByStudy`. Record separately whether the
-     browser profile pre-existed or was a dedicated profile created by the
-     study, with an item marker for the latter. A pre-existing profile is never
-     a cleanup target. Do not record browser history, cookies, account details,
-     or other profile contents;
+   - this study's checked-in data-collection extension under
+     `browser.extension`, using exactly: `requiredForStudy: true`,
+     `installMethod: "manual-load-unpacked"`, `expectedName`,
+     `expectedVersion`, `studyConfigId`, canonical `buildSourcePath`,
+     `buildOutputPath`, `buildMarkerPath`, `buildMarkerSha256`,
+     `generatedManifestPath`, `generatedManifestSha256`,
+     `generatedStudyConfigPath`, `generatedStudyConfigSha256`,
+     `outputInventorySha256`,
+     `buildStatus`, `manualInstallState`, nullable `extensionId`, nullable
+     `profileIdentifier`, nullable `profilePath`, nullable `existedBefore`,
+     nullable `installedByStudy`, and
+     `cleanupMethod: "manual-browser-ui"`. A successful build proves only the
+     source artifact: finish automated setup with `buildStatus: "verified"`,
+     `manualInstallState: "pending"`, and the runtime identity/ownership fields
+     null. Do not add it to `systemChanges.browserExtensions` or claim it was
+     loaded. The build output is inside the already marked repository and is
+     removed only with that repository; it is not a separate deletion target;
+   - under `browser.profile`, record only the selected browser product and the
+     automated pre-state. Set `manualCreationState: "pending"`,
+     `automaticDeletionAllowed: false`, and `cleanupDefault: "keep"`; do not
+     create an item marker or claim a dedicated profile exists during automated
+     setup. Under `browser.developerMode`, record automated pre-state as
+     `unknown`, `changedByStudy: false`, and `cleanupDefault: "keep"`. The
+     facilitator records the manually selected profile path, extension ID, and
+     prior Developer-mode state with the cleanup record after loading. Never
+     record browser history, cookies, account details, or other profile
+     contents;
    - each participant-approved interaction-log destination as an exact
      literal entry path plus canonicalized parent, ownership facts, and
      item-marker identity when the study
@@ -330,12 +374,15 @@ Study installation record and ownership marker (mandatory)
    Never use an in-place upgrade of pre-existing software as a study install.
 8. Update the journal and manifest around every state-changing action,
    including package installation, PATH or Windows-feature changes, cloning,
-   `npm ci`, story copying/extraction, Codex sign-in, certificate creation or
-   trust, and firewall changes. Before the action, create any required immutable
+   `npm ci`, study-extension building, story copying/extraction, Codex sign-in,
+   certificate creation or trust, and firewall changes. Before the action, create any required immutable
    reservation, append and fsync/hash-verify a `prepared` journal record with a
    unique action ID, exact intended target/command, captured pre-state, approval
    if required, and start time, and only then atomically project that record into
-   manifest `pendingAction`. For a filesystem action, perform the exclusive
+   manifest `pendingAction`. The study-extension build is the explicit
+   `contained-output-build` exception defined in its section: use its verified
+   absent-before/hashes-after journal contract and no child marker. For every
+   other filesystem action, perform the exclusive
    entry create, immutable marker write, in-place population, and identity
    recheck described in step 5; only after that sequence inspect the result.
    Then append and fsync/hash-verify a succeeded/failed journal entry containing
@@ -412,10 +459,9 @@ macOS:
 - Branch main currently requires the exact python3 command. Verify it with:
     python3 --version
 
-Native Linux or WSL2:
+Native Linux:
 - Before bootstrap, select a short, user-owned Linux workspace path, preferably
-  $HOME/StoryVR-Study-<short-installId>. In WSL, keep the checkout under
-  the Linux home directory rather than /mnt/c.
+  $HOME/StoryVR-Study-<short-installId>.
 - Clone the portable branch with:
     git clone --branch codex/native-windows --single-branch https://github.com/ISTHATDISTANCE/StoryVR-Editor.git '<POSIX-literal-absolute-marked-empty-StoryVR-Editor-entryPath>'
 - Before running any project script, enter StoryVR-Editor and pin the approved
@@ -478,6 +524,56 @@ Assigned story handling
    initialize or migrate study state. The participant will launch it with the
    final command when instructed.
 
+Study data-collection extension
+1. Build the checked-in extension after `npm ci` but before final readiness.
+   Derive one unique output path from this installation ID:
+   `tools/storyvr-study-extension/builds/participant-<installId>/`. Require that
+   exact path not to exist. If it exists, do not replace, merge, reload, or
+   adopt it; stop and report the unexpected path. Do not use the shared default
+   `unpacked/` output and do not edit `study-config.json` during participant
+   setup.
+2. With the selected Node directory prepended only to this process's PATH, run
+   the exact selected npm executable:
+
+   Native Windows PowerShell:
+       & '<PowerShell-literal-absolute-path-to-selected-npm.cmd>' run storyvr:study-extension -- --out '<PowerShell-literal-absolute-unique-extension-buildOutputPath>'
+
+   macOS or native Linux:
+       '<POSIX-literal-absolute-path-to-selected-npm>' run storyvr:study-extension -- --out '<POSIX-literal-absolute-unique-extension-buildOutputPath>'
+
+   Require exit code 0. Require the build report to identify the expected
+   OS-native relative output path, two approved controller pages, and explicit
+   current-tab authorization for original-story access.
+3. Verify the generated output statically without opening Chrome. Require a
+   real, no-symlink directory at the exact expected path; a regular
+   `.storyvr-study-extension-output` containing
+   `Generated by tools/storyvr-study-extension/build.mjs.`; and a valid
+   Manifest V3 `manifest.json` whose name is
+   `StoryVR Study Logger - StoryVR original-story study`, version is `0.3.0`,
+   minimum Chrome version is `114`, and permissions are exactly `storage`,
+   `activeTab`, and `scripting`. Require controller matches for
+   `http://127.0.0.1:5188/*` and `http://localhost:5188/*`.
+4. Require generated `study-config.json` to use
+   `storyvr-study-extension-config/v2`, study config ID
+   `storyvr-consented-original-pages-v1`, and only the two checked-in loopback
+   controller origins. Verify every copied source file is byte-identical to its
+   counterpart under `tools/storyvr-study-extension/src/`, no output entry is
+   a symlink/reparse point, and no unexpected entry exists. Record SHA-256
+   hashes for the output marker, generated manifest, generated configuration,
+   and a sorted relative-path/type/file-hash inventory.
+5. Mark only the build as verified. Chrome generates the unpacked extension ID
+   when the facilitator loads it, so leave extension ID, profile identity,
+   prior browser state, and installation ownership null and manual setup
+   pending. Do not start a collection session as an installation smoke test.
+6. Journal this as a typed `contained-output-build` action rather than a
+   separately removable filesystem target. Its prepared payload must prove the
+   exact unique output path was absent; its succeeded payload must contain the
+   canonical output path and all verified hashes/inventory above. Do not create
+   a child item marker: the output is contained by the already identity-marked
+   repository and is removed only with that repository. If the build fails,
+   record the failure and keep the repository/output for diagnosis; never
+   rerun into or delete an unexplained existing output.
+
 HTTPS and headset boundary
 - Core authoring uses http://127.0.0.1:5188/ and does not require OpenSSL, a
   trusted certificate, LAN access, or a firewall change.
@@ -510,9 +606,15 @@ All platforms:
 - The appropriate npm run check command succeeds.
 - git diff --exit-code -- package.json package-lock.json succeeds.
 - git status --short has no unexpected tracked or untracked files.
-- The selected current Chromium browser can be found.
+- Google Chrome reports version 114 or newer. Do not substitute Edge or another
+  Chromium browser for this study's extension-required setup.
 - The Codex version and login-status checks succeed.
 - The participant story copy contains captures/active and is writable.
+- `npm run storyvr:study-extension` (or `npm.cmd` on Windows) succeeded and the
+  complete static extension-artifact verification above passed.
+- The manifest truthfully records the extension build as verified and the
+  Chrome load as manual/pending; it does not contain an invented extension ID,
+  profile path, prior browser state, or installation-ownership claim.
 - If HTTPS/headset support is required, openssl version also succeeds.
 
 After those operational checks succeed, perform the finalized-ready journal/
@@ -541,6 +643,10 @@ manifest sequence in step 10. Then run these final record-integrity checks:
   canonicalized parent, entry type, and link target match the manifest and
   actual target without following the final component, and whose normalized
   filesystem identity matches a fresh no-follow identity read.
+- The verified final cleanup snapshot contains the extension build hashes and
+  `manualInstallState: "pending"`, while `systemChanges.browserExtensions`
+  remains empty. Core status may be `ready`; study data collection is not ready
+  until the facilitator completes the manual Chrome checklist below.
 
 Use these native Windows forms where applicable:
     node.exe --version
@@ -553,7 +659,7 @@ Use these native Windows forms where applicable:
     & $CodexCommand.Source --version
     & $CodexCommand.Source login status
 
-Use these native Linux/WSL portable-branch forms where applicable:
+Use these native Linux portable-branch forms where applicable:
     node --version
     npm --version
     node tools/run-python.mjs --version
@@ -585,8 +691,9 @@ Windows failure by silently switching to WSL.
 
 Successful final response
 
-After all required checks pass, output only the matching short message below,
-substituting the real absolute paths. Render every path as a shell-native
+After all required checks pass, output only the matching message below,
+substituting the real absolute paths and real install ID. Only the three fields
+explicitly labeled for the facilitator to fill may remain incomplete. Render every path as a shell-native
 literal: for PowerShell use single quotes and double any embedded single quote;
 for POSIX shells use single quotes and encode an embedded single quote with the
 standard `'"'"'` sequence. Never place a participant path in a double-quoted
@@ -597,26 +704,62 @@ Do not include the setup transcript.
 
 Native Windows PowerShell:
 
-StoryVR is installed and ready.
+StoryVR core is installed and ready. The study logger build is verified; one manual Chrome step remains before study data collection.
 
 Run in PowerShell:
 Set-Location -LiteralPath '<PowerShell-literal-absolute-path-to-StoryVR-Editor>'
 $env:PATH = '<PowerShell-literal-absolute-selected-Node-directory>;' + $env:PATH
 & '<PowerShell-literal-absolute-path-to-selected-npm.cmd>' run storyvr:author -- --story-folder '<PowerShell-literal-absolute-path-to-assigned-story>'
 
-Open http://127.0.0.1:5188/
-Keep this terminal open. Stop StoryVR with Ctrl+C.
+Keep this terminal open. Open http://127.0.0.1:5188/ only in the dedicated study Chrome profile during step 6 below. After any collection session, never stop the terminal or close StoryVR/Chrome until Data collection is Off, StoryVR says Saved, the logger popup confirms the file was finalized, and the exact complete JSON is preserved. At other times, stop StoryVR with Ctrl+C.
 Cleanup record: "<absolute-path-to-storyvr-study-install.json>"
 
-macOS, native Linux, or WSL:
+Study logger — facilitator completes this manually:
+1. Create and open a new dedicated local Google Chrome study profile. Do not sign in or enable browser sync. If a same-purpose profile or the StoryVR logger already exists, stop and ask the facilitator; do not reuse or replace it.
+2. Open chrome://extensions. Record whether Developer mode was already on, then enable it.
+3. Select Load unpacked and choose:
+   "<absolute-unique-extension-buildOutputPath>"
+4. Confirm the displayed name is "StoryVR Study Logger - StoryVR original-story study" and the version is 0.3.0.
+5. Record the displayed 32-character extension ID and the Profile Path from chrome://version. Do not edit the cleanup JSON by hand.
+6. In this same study profile, open http://127.0.0.1:5188/. If a StoryVR tab was already open in this profile, reload it once.
+7. On that StoryVR tab, open the logger popup. Require CURRENT TAB to say "StoryVR controller" and DATA COLLECTION to say "Collection is off". Do not approve any story page and do not turn collection on.
+8. Copy the handoff block below into the participant's facilitator study notes and fill its three manual fields.
 
-StoryVR is installed and ready.
+Leave Data collection OFF. Do not approve an original-story page or choose a log folder until consent is complete and the facilitator begins the session.
+When steps 1–8 pass, the manual logger setup is complete; Data collection remains not started.
+Manual cleanup handoff — copy to facilitator study notes:
+Install ID: <installId>
+Extension ID: <facilitator fills after loading>
+Chrome Profile Path: <facilitator fills from chrome://version>
+Developer mode before setup: <facilitator records enabled or disabled>
+
+macOS or native Linux:
+
+StoryVR core is installed and ready. The study logger build is verified; one manual Chrome step remains before study data collection.
 
 Run:
 cd -- '<POSIX-literal-absolute-path-to-StoryVR-Editor>'
 PATH='<POSIX-literal-absolute-selected-Node-directory>':"$PATH" '<POSIX-literal-absolute-path-to-selected-npm>' run storyvr:author -- --story-folder '<POSIX-literal-absolute-path-to-assigned-story>'
 
-Open http://127.0.0.1:5188/
-Keep this terminal open. Stop StoryVR with Ctrl+C.
+Keep this terminal open. Open http://127.0.0.1:5188/ only in the dedicated study Chrome profile during step 6 below. After any collection session, never stop the terminal or close StoryVR/Chrome until Data collection is Off, StoryVR says Saved, the logger popup confirms the file was finalized, and the exact complete JSON is preserved. At other times, stop StoryVR with Ctrl+C.
 Cleanup record: "<absolute-path-to-storyvr-study-install.json>"
+
+Study logger — facilitator completes this manually:
+1. Create and open a new dedicated local Google Chrome study profile. Do not sign in or enable browser sync. If a same-purpose profile or the StoryVR logger already exists, stop and ask the facilitator; do not reuse or replace it.
+2. Open chrome://extensions. Record whether Developer mode was already on, then enable it.
+3. Select Load unpacked and choose:
+   "<absolute-unique-extension-buildOutputPath>"
+4. Confirm the displayed name is "StoryVR Study Logger - StoryVR original-story study" and the version is 0.3.0.
+5. Record the displayed 32-character extension ID and the Profile Path from chrome://version. Do not edit the cleanup JSON by hand.
+6. In this same study profile, open http://127.0.0.1:5188/. If a StoryVR tab was already open in this profile, reload it once.
+7. On that StoryVR tab, open the logger popup. Require CURRENT TAB to say "StoryVR controller" and DATA COLLECTION to say "Collection is off". Do not approve any story page and do not turn collection on.
+8. Copy the handoff block below into the participant's facilitator study notes and fill its three manual fields.
+
+Leave Data collection OFF. Do not approve an original-story page or choose a log folder until consent is complete and the facilitator begins the session.
+When steps 1–8 pass, the manual logger setup is complete; Data collection remains not started.
+Manual cleanup handoff — copy to facilitator study notes:
+Install ID: <installId>
+Extension ID: <facilitator fills after loading>
+Chrome Profile Path: <facilitator fills from chrome://version>
+Developer mode before setup: <facilitator records enabled or disabled>
 ```
