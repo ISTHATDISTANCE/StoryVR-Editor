@@ -1,0 +1,510 @@
+export const PROCEDURAL_TRANSITIONS_SCHEMA_VERSION = "storyvr-procedural-transitions/v1";
+export const PROCEDURAL_TRANSITION_PLAN_SCHEMA_VERSION = "storyvr-procedural-transition-plan/v1";
+export const PROCEDURAL_TRANSITION_MIDDLE_SCHEMA_VERSION = "storyvr-procedural-transition-middle/v1";
+
+export const PROCEDURAL_TRANSITION_ENDPOINT_POLICY = Object.freeze({
+  from: "exact-saved-scene",
+  to: "exact-saved-scene",
+  middle: "transient-only",
+  completion: "restore-exact-destination-scene",
+});
+
+const TRANSITION_STYLES = new Set(["interpolate", "crossfade", "cut"]);
+const TRANSITION_EASINGS = new Set(["linear", "ease-in", "ease-out", "ease-in-out"]);
+const UNSAFE_TEXT_PATTERN = /(?:\b(?:https?|file|data|javascript):|```|<\/?[a-z][^>]*>|\beval\s*\(|\bfunction\s*\(|=>)/i;
+const EXECUTABLE_DECLARATIVE_KEYS = new Set([
+  "code",
+  "script",
+  "javascript",
+  "shader",
+  "shaderSource",
+  "vertexShader",
+  "fragmentShader",
+  "executable",
+  "callback",
+]);
+
+export function emptyProceduralTransitionsStore() {
+  return {
+    schemaVersion: PROCEDURAL_TRANSITIONS_SCHEMA_VERSION,
+    revision: 0,
+    updatedAt: null,
+    plansByBoundary: {},
+  };
+}
+
+export function proceduralTransitionBoundaryKey(boundaryContext) {
+  const boundary = normalizeBoundaryContext(boundaryContext);
+  if (!boundary) return "";
+  return [
+    `edge:${encodeURIComponent(boundary.edgeId)}`,
+    `from:${transitionSceneContextToken(boundary.fromContext)}`,
+    `to:${transitionSceneContextToken(boundary.toContext)}`,
+  ].join("|");
+}
+
+export function normalizeProceduralTransitionPlan(value, boundaryContext = null) {
+  const source = objectValue(value);
+  if (!source) throw transitionContractError("A procedural transition plan must be an object.");
+  if (source.schemaVersion !== undefined
+    && source.schemaVersion !== PROCEDURAL_TRANSITION_PLAN_SCHEMA_VERSION) {
+    throw transitionContractError("The procedural transition plan uses an unsupported schema version.");
+  }
+
+  const expectedBoundary = boundaryContext ? requireBoundaryContext(boundaryContext) : null;
+  const planBoundary = requireBoundaryContext({
+    edgeId: source.edgeId || expectedBoundary?.edgeId,
+    fromContext: source.fromContext || source.fromSceneContext || expectedBoundary?.fromContext,
+    toContext: source.toContext || source.toSceneContext || expectedBoundary?.toContext,
+  });
+  const boundaryKey = proceduralTransitionBoundaryKey(planBoundary);
+  if (expectedBoundary && boundaryKey !== proceduralTransitionBoundaryKey(expectedBoundary)) {
+    throw transitionContractError("The procedural transition plan belongs to a different directed boundary.");
+  }
+  const suppliedBoundaryKey = cleanText(source.boundaryKey, 1600);
+  if (suppliedBoundaryKey && suppliedBoundaryKey !== boundaryKey) {
+    throw transitionContractError("The procedural transition boundary key does not match its edge and endpoint contexts.");
+  }
+
+  const style = normalizePlanEnum(source.style, TRANSITION_STYLES, "interpolate", "style");
+  const defaultDuration = style === "cut" ? 0.4 : style === "crossfade" ? 1.2 : 1.6;
+  const durationSeconds = positiveFiniteNumber(source.durationSeconds, defaultDuration);
+  const easing = normalizePlanEnum(
+    source.easing,
+    TRANSITION_EASINGS,
+    style === "cut" ? "linear" : "ease-in-out",
+    "easing",
+  );
+  const arcHeightMeters = style === "interpolate"
+    ? nonNegativeFiniteNumber(source.arcHeightMeters, 0)
+    : 0;
+  const prompt = requiredSafeText(source.prompt, 2000, "The procedural transition plan requires its author prompt.");
+  const summary = safeGeneratedText(
+    source.summary,
+    defaultTransitionSummary(style, durationSeconds),
+    600,
+  );
+  const endpointPolicy = normalizeTransitionEndpointPolicy(source.endpointPolicy);
+  const middle = normalizeProceduralTransitionMiddle(
+    source.middle || source.middleSequence || source.transientMiddle,
+  );
+
+  return {
+    schemaVersion: PROCEDURAL_TRANSITION_PLAN_SCHEMA_VERSION,
+    boundaryKey,
+    edgeId: planBoundary.edgeId,
+    fromContext: planBoundary.fromContext,
+    toContext: planBoundary.toContext,
+    prompt,
+    summary,
+    style,
+    durationSeconds,
+    easing,
+    arcHeightMeters,
+    endpointPolicy,
+    middle,
+  };
+}
+
+export function normalizeProceduralTransitionMiddle(value) {
+  if (value === null || value === undefined) return emptyProceduralTransitionMiddle();
+  const source = objectValue(value);
+  if (!source) throw transitionContractError("A procedural transition middle must be an object.");
+  if (source.schemaVersion !== undefined
+    && source.schemaVersion !== PROCEDURAL_TRANSITION_MIDDLE_SCHEMA_VERSION) {
+    throw transitionContractError("The procedural transition middle uses an unsupported schema version.");
+  }
+  assertCompatibleEndpointPolicy(source.endpointPolicy);
+  const rawActions = Array.isArray(source.actions)
+    ? source.actions
+    : Array.isArray(source.effects)
+      ? source.effects
+      : [];
+  const actions = rawActions.map((action, index) => normalizeTransientMiddleAction(action, index));
+  return {
+    schemaVersion: PROCEDURAL_TRANSITION_MIDDLE_SCHEMA_VERSION,
+    description: safeGeneratedText(source.description || source.summary, "", 2000),
+    endpointPolicy: { ...PROCEDURAL_TRANSITION_ENDPOINT_POLICY },
+    actions,
+  };
+}
+
+export function proceduralTransitionMiddleSample(planOrMiddle, progress) {
+  const rawProgress = Number(progress);
+  const normalizedProgress = clampUnitInterval(rawProgress);
+  const middle = isTransitionMiddle(planOrMiddle)
+    ? normalizeProceduralTransitionMiddle(planOrMiddle)
+    : normalizeProceduralTransitionMiddle(objectValue(planOrMiddle)?.middle);
+  if (!Number.isFinite(rawProgress) || normalizedProgress <= 0) {
+    return {
+      progress: 0,
+      endpoint: "from",
+      endpointPolicy: { ...PROCEDURAL_TRANSITION_ENDPOINT_POLICY },
+      actions: [],
+    };
+  }
+  if (normalizedProgress >= 1) {
+    return {
+      progress: 1,
+      endpoint: "to",
+      endpointPolicy: { ...PROCEDURAL_TRANSITION_ENDPOINT_POLICY },
+      actions: [],
+    };
+  }
+  const actions = middle.actions.flatMap((action) => {
+    if (normalizedProgress < action.startProgress || normalizedProgress > action.endProgress) return [];
+    const span = action.endProgress - action.startProgress;
+    const localProgress = span > 0
+      ? clampUnitInterval((normalizedProgress - action.startProgress) / span)
+      : 1;
+    return [{ ...action, localProgress }];
+  });
+  return {
+    progress: normalizedProgress,
+    endpoint: null,
+    endpointPolicy: { ...PROCEDURAL_TRANSITION_ENDPOINT_POLICY },
+    actions,
+  };
+}
+
+export function normalizeProceduralTransitionsStore(value) {
+  const source = objectValue(value);
+  if (!source || source.schemaVersion !== PROCEDURAL_TRANSITIONS_SCHEMA_VERSION) {
+    return emptyProceduralTransitionsStore();
+  }
+  const plansByBoundary = {};
+  const rawPlans = objectValue(source.plansByBoundary) || {};
+  for (const [storedBoundaryKey, rawPlan] of Object.entries(rawPlans)) {
+    try {
+      const plan = normalizeProceduralTransitionPlan(rawPlan);
+      if (storedBoundaryKey !== plan.boundaryKey) continue;
+      plansByBoundary[plan.boundaryKey] = plan;
+    } catch {
+      // Malformed or stale plans remain inert instead of reaching a Reader.
+    }
+  }
+  return {
+    schemaVersion: PROCEDURAL_TRANSITIONS_SCHEMA_VERSION,
+    revision: nonNegativeInteger(source.revision, 0),
+    updatedAt: validTimestamp(source.updatedAt),
+    plansByBoundary,
+  };
+}
+
+export function proceduralTransitionPlanForBoundary(store, boundaryContext) {
+  const boundaryKey = proceduralTransitionBoundaryKey(boundaryContext);
+  if (!boundaryKey) return null;
+  const normalizedStore = normalizeProceduralTransitionsStore(store);
+  const rawPlan = normalizedStore.plansByBoundary[boundaryKey];
+  if (!rawPlan) return null;
+  try {
+    return normalizeProceduralTransitionPlan(rawPlan, boundaryContext);
+  } catch {
+    return null;
+  }
+}
+
+export function proceduralTransitionEasedProgress(planOrEasing, progressOrEasing) {
+  const progressFirst = typeof planOrEasing === "number";
+  const progress = clampUnitInterval(progressFirst ? planOrEasing : progressOrEasing);
+  const easingSource = progressFirst ? progressOrEasing : planOrEasing;
+  const easing = typeof easingSource === "string"
+    ? easingSource
+    : String(easingSource?.easing || "linear");
+  if (easing === "ease-in") return progress * progress;
+  if (easing === "ease-out") return 1 - ((1 - progress) * (1 - progress));
+  if (easing === "ease-in-out") {
+    return progress < 0.5
+      ? 2 * progress * progress
+      : 1 - (((-2 * progress) + 2) ** 2) / 2;
+  }
+  return progress;
+}
+
+function normalizeBoundaryContext(value) {
+  const wrapper = objectValue(value);
+  const source = objectValue(wrapper?.boundaryContext)
+    || objectValue(wrapper?.boundary)
+    || wrapper;
+  if (!source) return null;
+  const authored = objectValue(source.authoredTransition);
+  const edgeId = normalizedIdentity(
+    source.edgeId
+    || source.transitionEdgeId
+    || source.routeId
+    || authored?.edgeId
+    || authored?.id,
+  );
+  const fromContext = normalizeTransitionSceneContext(
+    source.fromContext
+    || source.fromSceneContext
+    || authored?.fromContext
+    || source.from,
+  );
+  const toContext = normalizeTransitionSceneContext(
+    source.toContext
+    || source.toSceneContext
+    || authored?.toContext
+    || source.to,
+  );
+  if (!edgeId || !fromContext || !toContext) return null;
+  return { edgeId, fromContext, toContext };
+}
+
+function requireBoundaryContext(value) {
+  const boundary = normalizeBoundaryContext(value);
+  if (!boundary) {
+    throw transitionContractError("boundaryContext must include edgeId and full fromContext/toContext endpoints.");
+  }
+  return boundary;
+}
+
+function normalizeTransitionSceneContext(value) {
+  const source = objectValue(value);
+  if (!source) return null;
+  const beatId = normalizedIdentity(source.beatId || source.id);
+  if (!beatId) return null;
+  return {
+    beatId,
+    variantGroupId: normalizedOptionalIdentity(source.variantGroupId || source.groupId),
+    variantOptionId: normalizedOptionalIdentity(source.variantOptionId || source.optionId),
+  };
+}
+
+function transitionSceneContextToken(context) {
+  return [
+    context.beatId,
+    context.variantGroupId || "",
+    context.variantOptionId || "",
+  ].map((value) => encodeURIComponent(value)).join("~");
+}
+
+function normalizePlanEnum(value, allowed, fallback, label) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (!allowed.has(normalized)) {
+    throw transitionContractError(`The procedural transition ${label} is not supported.`);
+  }
+  return normalized;
+}
+
+function emptyProceduralTransitionMiddle() {
+  return {
+    schemaVersion: PROCEDURAL_TRANSITION_MIDDLE_SCHEMA_VERSION,
+    description: "",
+    endpointPolicy: { ...PROCEDURAL_TRANSITION_ENDPOINT_POLICY },
+    actions: [],
+  };
+}
+
+function isTransitionMiddle(value) {
+  const source = objectValue(value);
+  return Boolean(source && (
+    source.schemaVersion === PROCEDURAL_TRANSITION_MIDDLE_SCHEMA_VERSION
+    || Array.isArray(source.actions)
+    || Array.isArray(source.effects)
+  ));
+}
+
+function normalizeTransitionEndpointPolicy(value) {
+  assertCompatibleEndpointPolicy(value);
+  return { ...PROCEDURAL_TRANSITION_ENDPOINT_POLICY };
+}
+
+function assertCompatibleEndpointPolicy(value) {
+  if (value === null || value === undefined) return;
+  const source = objectValue(value);
+  if (!source) throw transitionContractError("The procedural transition endpoint policy must be an object.");
+  for (const [key, expected] of Object.entries(PROCEDURAL_TRANSITION_ENDPOINT_POLICY)) {
+    if (source[key] !== undefined && source[key] !== expected) {
+      throw transitionContractError("Procedural transitions cannot override their exact saved scene endpoints.");
+    }
+  }
+  const unknownKeys = Object.keys(source).filter((key) => !Object.hasOwn(PROCEDURAL_TRANSITION_ENDPOINT_POLICY, key));
+  if (unknownKeys.length) {
+    throw transitionContractError("Procedural transitions cannot add endpoint-state overrides.");
+  }
+}
+
+function normalizeTransientMiddleAction(value, index) {
+  const source = objectValue(value);
+  if (!source) throw transitionContractError(`Procedural transition middle action ${index + 1} must be an object.`);
+  const kind = requiredSafeText(
+    source.kind || source.type || source.action,
+    240,
+    `Procedural transition middle action ${index + 1} requires a kind.`,
+  );
+  const startProgress = clampUnitInterval(
+    finiteNumber(source.startProgress ?? source.start ?? source.fromProgress, 0),
+  );
+  const endProgress = clampUnitInterval(
+    finiteNumber(source.endProgress ?? source.end ?? source.toProgress, 1),
+  );
+  const firstProgress = Math.min(startProgress, endProgress);
+  const lastProgress = Math.max(startProgress, endProgress);
+  const id = safeGeneratedText(source.id, `middle-action-${index + 1}`, 240);
+  const target = source.target === undefined
+    ? null
+    : safeDeclarativeTransitionValue(source.target, `middle action ${index + 1} target`);
+  const parametersSource = source.parameters ?? source.params ?? source.payload ?? transientActionParameters(source);
+  const parameters = safeDeclarativeTransitionValue(
+    parametersSource,
+    `middle action ${index + 1} parameters`,
+  );
+  return {
+    id,
+    kind,
+    startProgress: firstProgress,
+    endProgress: lastProgress,
+    easing: safeGeneratedText(source.easing, "linear", 240),
+    target,
+    parameters,
+    cleanup: "restore-endpoint",
+  };
+}
+
+function transientActionParameters(source) {
+  return Object.fromEntries(Object.entries(source).filter(([key]) => ![
+    "id",
+    "kind",
+    "type",
+    "action",
+    "startProgress",
+    "start",
+    "fromProgress",
+    "endProgress",
+    "end",
+    "toProgress",
+    "easing",
+    "target",
+    "parameters",
+    "params",
+    "payload",
+    "cleanup",
+  ].includes(key)));
+}
+
+function safeDeclarativeTransitionValue(value, label, seen = new Set(), depth = 0) {
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw transitionContractError(`The procedural transition ${label} must use finite numbers.`);
+    return value;
+  }
+  if (typeof value === "string") {
+    const text = cleanText(value, 8000);
+    if (UNSAFE_TEXT_PATTERN.test(text)) {
+      throw transitionContractError(`The procedural transition ${label} cannot contain code, URLs, or executable content.`);
+    }
+    return text;
+  }
+  if (typeof value !== "object") {
+    throw transitionContractError(`The procedural transition ${label} must be declarative JSON data.`);
+  }
+  if (depth > 32) throw transitionContractError(`The procedural transition ${label} is nested too deeply.`);
+  if (seen.has(value)) throw transitionContractError(`The procedural transition ${label} cannot contain circular data.`);
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const result = value.map((item) => safeDeclarativeTransitionValue(item, label, seen, depth + 1));
+    seen.delete(value);
+    return result;
+  }
+  const result = {};
+  for (const [rawKey, nested] of Object.entries(value)) {
+    const key = requiredSafeText(rawKey, 240, `The procedural transition ${label} contains an invalid key.`);
+    if (["__proto__", "prototype", "constructor"].includes(key)) {
+      throw transitionContractError(`The procedural transition ${label} contains an unsafe key.`);
+    }
+    if (EXECUTABLE_DECLARATIVE_KEYS.has(key)) {
+      throw transitionContractError(`The procedural transition ${label} cannot contain executable instructions.`);
+    }
+    result[key] = safeDeclarativeTransitionValue(nested, `${label}.${key}`, seen, depth + 1);
+  }
+  seen.delete(value);
+  return result;
+}
+
+function finiteNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function positiveFiniteNumber(value, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return fallback;
+  return Number(number.toFixed(4));
+}
+
+function nonNegativeFiniteNumber(value, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return fallback;
+  return Number(number.toFixed(4));
+}
+
+function defaultTransitionSummary(style, durationSeconds) {
+  const label = style === "crossfade"
+    ? "Crossfades between the saved scenes"
+    : style === "cut"
+      ? "Cuts directly to the next saved scene"
+      : "Interpolates between the saved scenes";
+  return `${label} over ${formatNumber(durationSeconds)} seconds.`;
+}
+
+function formatNumber(value) {
+  return Number(value).toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+}
+
+function objectValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function normalizedIdentity(value) {
+  const identity = cleanText(value, 240);
+  return identity || "";
+}
+
+function normalizedOptionalIdentity(value) {
+  if (value === null || value === undefined || value === "") return null;
+  return normalizedIdentity(value) || null;
+}
+
+function requiredSafeText(value, maximumLength, errorMessage) {
+  const text = cleanText(value, maximumLength);
+  if (!text) throw transitionContractError(errorMessage);
+  if (UNSAFE_TEXT_PATTERN.test(text)) {
+    throw transitionContractError("Procedural transition text cannot contain code, URLs, or executable content.");
+  }
+  return text;
+}
+
+function safeGeneratedText(value, fallback, maximumLength) {
+  const text = cleanText(value, maximumLength);
+  return text && !UNSAFE_TEXT_PATTERN.test(text) ? text : fallback;
+}
+
+function cleanText(value, maximumLength) {
+  return String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maximumLength);
+}
+
+function clampUnitInterval(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(1, number));
+}
+
+function nonNegativeInteger(value, fallback) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : fallback;
+}
+
+function validTimestamp(value) {
+  const timestamp = String(value || "").trim();
+  return timestamp && Number.isFinite(Date.parse(timestamp)) ? timestamp : null;
+}
+
+function transitionContractError(message) {
+  return Object.assign(new TypeError(message), { statusCode: 400 });
+}

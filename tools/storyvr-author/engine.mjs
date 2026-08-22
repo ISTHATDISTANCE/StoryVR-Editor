@@ -23,8 +23,10 @@ import { normalizeEnvironmentMovementCue } from "./environment/store.mjs";
 import {
   applyMotionPlanToStore,
   createFallbackMotionPlan,
+  DYNAMICS_SCENE_PATCH_SCHEMA_VERSION,
   DYNAMICS_MOTION_ONLY_SCENE_PATCH_SCHEMA_VERSION,
   DYNAMICS_SCENE_CANDIDATE_SCHEMA_VERSION,
+  LEGACY_DYNAMICS_SCENE_CANDIDATE_SCHEMA_VERSION,
   emptyProceduralDynamicsStore,
   generateDynamicsSceneIntent,
   normalizeDynamicsSceneIntent,
@@ -33,6 +35,22 @@ import {
   removeMotionPlanFromStore,
   requireSceneContext,
 } from "./procedural-dynamics.mjs";
+import {
+  PROCEDURAL_TRANSITION_CANDIDATE_SCHEMA_VERSION,
+  applyProceduralTransitionPlanToStore,
+  createFallbackTransitionPlan,
+  generateProceduralTransitionIntent,
+  normalizeProceduralTransitionCandidate,
+  removeProceduralTransitionPlanFromStore,
+} from "./procedural-transitions.mjs";
+import {
+  PROCEDURAL_TRANSITIONS_SCHEMA_VERSION,
+  PROCEDURAL_TRANSITION_MIDDLE_SCHEMA_VERSION,
+  emptyProceduralTransitionsStore,
+  normalizeProceduralTransitionPlan,
+  normalizeProceduralTransitionsStore,
+  proceduralTransitionBoundaryKey,
+} from "./procedural-transitions-runtime.js";
 import {
   normalizeStoryCanvasSegments,
   STORY_CANVAS_SEGMENTS_SCHEMA_VERSION,
@@ -79,6 +97,10 @@ const DYNAMICS_CODEX_IMAGE_CANDIDATE_SCAN_LIMIT = 96;
 const DYNAMICS_CODEX_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 const DYNAMICS_CODEX_IMAGE_TOTAL_BYTES = 20 * 1024 * 1024;
 const DYNAMICS_CODEX_IMAGE_EXTENSIONS = new Set([".jpeg", ".jpg", ".png", ".webp"]);
+const DYNAMICS_SEMANTIC_ALIAS_LIMIT = 24;
+const DYNAMICS_SEMANTIC_REASON_LIMIT = 8;
+const DYNAMICS_SEMANTIC_SELECTOR_LIMIT = 24;
+const DYNAMICS_SEMANTIC_TEXT_LIMIT = 640;
 const PNG_FILE_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const SPATIAL_TRAVERSAL_SCHEMA_VERSION = "storyvr-spatial-traversal/v1";
 const TEXT_PANEL_ATTACHMENT_POLICY = "reader-hand";
@@ -267,6 +289,7 @@ const READER_TEMPLATE_FILES = [
   { source: "reader-template/index.html", target: "index.html", applyRuntimeValues: true },
   { source: "reader-template/src/main.js", target: "src/main.js" },
   { source: "procedural-dynamics-runtime.js", target: "src/procedural-dynamics-runtime.js" },
+  { source: "procedural-transitions-runtime.js", target: "src/procedural-transitions-runtime.js" },
   { source: "ground-movement-cue.js", target: "src/ground-movement-cue.js" },
   { source: "point-cloud-runtime.js", target: "src/point-cloud-runtime.js" },
   { source: "reader-template/src/styles.css", target: "src/styles.css" },
@@ -300,6 +323,9 @@ const READER_DIST_BUILD_SCHEMA_VERSION = "storyvr-reader-dist-build/v1";
 const STORYVR_TEXT_LAYOUT_CONTRACT_VERSION = "storyvr-text-layout/v1";
 const STORYVR_TEXT_LAYOUT_CONTRACT_MARKER = `const STORYVR_TEXT_LAYOUT_CONTRACT_VERSION = "${STORYVR_TEXT_LAYOUT_CONTRACT_VERSION}";`;
 const STORYVR_TEXT_LAYOUT_CSS_CONTRACT_MARKER = `/* STORYVR_TEXT_LAYOUT_CONTRACT_VERSION: ${STORYVR_TEXT_LAYOUT_CONTRACT_VERSION} */`;
+const STORYVR_PROCEDURAL_TRANSITIONS_READER_CONTRACT_MARKER = `const STORYVR_PROCEDURAL_TRANSITION_MIDDLE_CONTRACT_VERSION = "${PROCEDURAL_TRANSITION_MIDDLE_SCHEMA_VERSION}";`;
+const STORYVR_PROCEDURAL_DYNAMICS_FEATURE_CONTRACT_VERSION = "storyvr-procedural-dynamics-declarative/v2";
+const STORYVR_PROCEDURAL_DYNAMICS_READER_CONTRACT_MARKER = `const STORYVR_PROCEDURAL_DYNAMICS_FEATURE_CONTRACT_VERSION = "${STORYVR_PROCEDURAL_DYNAMICS_FEATURE_CONTRACT_VERSION}";`;
 const READER_DIST_BUILD_SCRIPT = fileURLToPath(new URL("./build-reader-dist.mjs", import.meta.url));
 const PERFORMANCE_OPTIMIZATION_SCHEMA_VERSION = "storyvr-performance-optimization/v1";
 const PERFORMANCE_OPTIMIZATION_PROFILES = new Set(["quality", "balanced", "performance"]);
@@ -413,11 +439,18 @@ export async function loadAuthorProject(options) {
   )
     || decisions[ATTENTION_GUIDANCE_COMPONENT_ID]?.attentionGuidance
     || null;
+  const proceduralTransitions = await readProceduralTransitionsStore(
+    paths,
+    graph,
+    runtime,
+    spatialRelations,
+  );
   const interactionControlDraft = previousComponentsCurrent("interaction-control", decisions) && spatialRelations
     ? interactionControlDraftFor(
       graph,
       runtime,
       analyzeSpatialTraversal(graph, runtime, spatialRelations, decisions),
+      proceduralTransitions,
     )
     : null;
   const proceduralDynamics = await readProceduralDynamicsStore(
@@ -457,6 +490,7 @@ export async function loadAuthorProject(options) {
     spatialRelations,
     attentionGuidance,
     interactionControlDraft,
+    proceduralTransitions,
     proceduralDynamics,
     storyCanvasSegments,
     storyCanvasGrouping,
@@ -1236,7 +1270,10 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
   let projection = projectDynamicsSceneCandidate(state, intent, {
     requireSceneMatch: false,
   });
-  const comparisonCandidate = previousCandidate?.schemaVersion === DYNAMICS_SCENE_CANDIDATE_SCHEMA_VERSION
+  const comparisonCandidate = [
+    DYNAMICS_SCENE_CANDIDATE_SCHEMA_VERSION,
+    LEGACY_DYNAMICS_SCENE_CANDIDATE_SCHEMA_VERSION,
+  ].includes(previousCandidate?.schemaVersion)
     ? previousCandidate
     : currentDynamicsSceneCandidate(state);
   if (comparisonCandidate
@@ -1275,11 +1312,43 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
   };
 }
 
+export async function prepareProceduralDynamicsEditCandidate(options, request = {}) {
+  const state = await proceduralDynamicsRequestState(options, request.sceneContext);
+  const plan = state.proceduralDynamics.plansByScene[state.context.scene.sceneKey] || null;
+  if (!plan) {
+    throw Object.assign(new Error("Generate and save animation or effects for this scene before editing them directly."), {
+      statusCode: 409,
+    });
+  }
+
+  const projection = projectDynamicsSceneCandidate(state, {
+    prompt: plan.prompt,
+    motionPlan: plan,
+  }, {
+    requireSceneMatch: true,
+  });
+  const editBaselineVisibleSignature = dynamicsSceneCandidateVisibleSignature(
+    currentDynamicsSceneCandidate(state),
+  );
+  projection.candidate.impact.materiallyChanged = false;
+  projection.candidate.impact.editBaselineVisibleSignature = editBaselineVisibleSignature;
+
+  return {
+    candidate: projection.candidate,
+    expectedRevision: state.proceduralDynamics.revision,
+    proceduralDynamics: state.proceduralDynamics,
+    engine: {
+      provider: "stored-plan-edit-candidate",
+    },
+  };
+}
+
 export async function applyProceduralDynamicsPlan(options, request = {}) {
   const state = await proceduralDynamicsRequestState(options, request.sceneContext);
   const submitted = request.candidate ?? request.plan;
-  if (submitted?.schemaVersion !== DYNAMICS_SCENE_CANDIDATE_SCHEMA_VERSION) {
-    throw Object.assign(new Error("Apply requires an unmodified movement-only preview. Generate a new preview first."), {
+  if (![DYNAMICS_SCENE_CANDIDATE_SCHEMA_VERSION, LEGACY_DYNAMICS_SCENE_CANDIDATE_SCHEMA_VERSION]
+    .includes(submitted?.schemaVersion)) {
+    throw Object.assign(new Error("Saving requires an unmodified generated Dynamics result. Generate it again."), {
       statusCode: 400,
     });
   }
@@ -1293,8 +1362,11 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
     "impact",
   ].includes(key));
   if (extraCandidateKeys.length
-    || submitted.scenePatch?.schemaVersion !== DYNAMICS_MOTION_ONLY_SCENE_PATCH_SCHEMA_VERSION) {
-    throw Object.assign(new Error("Apply requires an unmodified movement-only preview. Generate a new preview first."), {
+    || ![
+      DYNAMICS_SCENE_PATCH_SCHEMA_VERSION,
+      DYNAMICS_MOTION_ONLY_SCENE_PATCH_SCHEMA_VERSION,
+    ].includes(submitted.scenePatch?.schemaVersion)) {
+    throw Object.assign(new Error("Saving requires an unmodified generated Dynamics result. Generate it again."), {
       statusCode: 400,
     });
   }
@@ -1306,7 +1378,7 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
     });
   }
   if (submitted.sceneKey !== state.context.scene.sceneKey) {
-    throw Object.assign(new Error("The generated movement preview belongs to a different story part or choice."), {
+    throw Object.assign(new Error("The generated movement result belongs to a different story part or choice."), {
       statusCode: 409,
     });
   }
@@ -1314,12 +1386,12 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
   try {
     submittedScope = requireSceneContext(submitted.scope);
   } catch {
-    throw Object.assign(new Error("The generated movement preview has an invalid or mismatched story-part scope."), {
+    throw Object.assign(new Error("The generated movement result has an invalid or mismatched story-part scope."), {
       statusCode: 409,
     });
   }
   if (submittedScope.sceneKey !== state.context.scene.sceneKey) {
-    throw Object.assign(new Error("The generated movement preview has an invalid or mismatched story-part scope."), {
+    throw Object.assign(new Error("The generated movement result has an invalid or mismatched story-part scope."), {
       statusCode: 409,
     });
   }
@@ -1335,14 +1407,32 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
   const projection = projectDynamicsSceneCandidate(state, normalizedIntent, {
     requireSceneMatch: true,
   });
-  if (submitted.impact?.materiallyChanged === false) {
-    throw Object.assign(new Error("This generated preview has no material visible change. Revise the description and regenerate."), {
+  const submittedVisibleSignature = dynamicsSceneCandidateVisibleSignature(submitted);
+  const editBaselineVisibleSignature = String(
+    submitted.impact?.editBaselineVisibleSignature || "",
+  ).trim();
+  if (editBaselineVisibleSignature) {
+    const currentVisibleSignature = dynamicsSceneCandidateVisibleSignature(
+      currentDynamicsSceneCandidate(state),
+    );
+    if (editBaselineVisibleSignature !== currentVisibleSignature) {
+      throw Object.assign(new Error("Object movement changed after direct editing began. Reopen the scene editor and try again."), {
+        statusCode: 409,
+      });
+    }
+    if (submittedVisibleSignature === editBaselineVisibleSignature) {
+      throw Object.assign(new Error("The direct edit has no material visible change."), {
+        statusCode: 409,
+      });
+    }
+  } else if (submitted.impact?.materiallyChanged === false) {
+    throw Object.assign(new Error("This generated result has no material visible change. Revise the description and generate it again."), {
       statusCode: 409,
     });
   }
-  if (dynamicsSceneCandidateVisibleSignature(submitted)
+  if (submittedVisibleSignature
     !== dynamicsSceneCandidateVisibleSignature(projection.candidate)) {
-    throw Object.assign(new Error("The generated movement preview is invalid or was modified after generation."), {
+    throw Object.assign(new Error("The generated movement result is invalid or was modified after generation."), {
       statusCode: 409,
     });
   }
@@ -1407,7 +1497,7 @@ function dynamicsLibraryContext(state) {
   const spatialScene = dynamicsSpatialSceneForContext(spatialRelations, state.context.scene);
   const spatialEntities = spatialScene?.entities || [];
   const libraryById = new Map(state.libraryAssets.map((asset) => [asset.assetId, asset]));
-  const assets = spatialEntities
+  const rawAssets = spatialEntities
     .filter((entity) => entity?.kind === "glb" && entity.id && entity.assetId)
     .map((entity) => {
       const libraryAsset = libraryById.get(entity.assetId);
@@ -1415,12 +1505,13 @@ function dynamicsLibraryContext(state) {
       return {
         ...libraryAsset,
         entityId: entity.id,
+        ...dynamicsSpatialEntityMotionContext(entity),
       };
     })
     .filter(Boolean);
   const runtimeById = new Map((state.runtime?.assets || []).map((asset) => [asset?.id, asset]));
   const attachmentIndexByPath = new Map();
-  const sceneImages = spatialEntities
+  const rawSceneImages = spatialEntities
     .filter((entity) => entity?.kind === "image-plane" && entity.id && entity.assetId)
     .map((entity) => {
       const runtimeAsset = runtimeById.get(entity.assetId) || null;
@@ -1435,7 +1526,7 @@ function dynamicsLibraryContext(state) {
         entityId: entity.id,
         assetId: entity.assetId,
         label: proceduralDynamicsAssetLabel(runtimeAsset, entity.assetId),
-        transform: cloneJson(entity.transform || null),
+        ...dynamicsSpatialEntityMotionContext(entity),
         image: cloneJson(entity.image || null),
         ...(attachment?.contentHash ? { attachmentContentHash: attachment.contentHash } : {}),
         ...(attachmentIndex ? {
@@ -1444,6 +1535,13 @@ function dynamicsLibraryContext(state) {
         } : {}),
       };
     });
+  const contextualTargets = dynamicsTargetsWithSemanticContext(
+    state.graph,
+    state.context.scene,
+    [...rawAssets, ...rawSceneImages],
+  );
+  const assets = contextualTargets.slice(0, rawAssets.length);
+  const sceneImages = contextualTargets.slice(rawAssets.length);
   return {
     scene: state.context.scene,
     assets,
@@ -1478,11 +1576,6 @@ function normalizePreviousDynamicsPlan(value, context) {
 
 function projectDynamicsSceneCandidate(state, intent, options = {}) {
   const motionContext = dynamicsLibraryContext(state);
-  if (!motionContext.assets.length) {
-    throw Object.assign(new Error("This story part has no placed 3D model to move. Finish Place objects first."), {
-      statusCode: 409,
-    });
-  }
   const motionPlan = normalizeMotionPlan(intent.motionPlan, motionContext, {
     prompt: intent.prompt,
     requireSceneMatch: options.requireSceneMatch !== false,
@@ -1501,7 +1594,7 @@ function projectDynamicsSceneCandidate(state, intent, options = {}) {
     prompt: motionPlan.prompt,
     baseline: dynamicsSceneBaseline(state),
     scenePatch: {
-      schemaVersion: DYNAMICS_MOTION_ONLY_SCENE_PATCH_SCHEMA_VERSION,
+      schemaVersion: DYNAMICS_SCENE_PATCH_SCHEMA_VERSION,
       motionPlan,
     },
     impact: {
@@ -1509,7 +1602,7 @@ function projectDynamicsSceneCandidate(state, intent, options = {}) {
       spatialRelationsChanged: false,
       attentionGuidanceChanged: false,
       materiallyChanged: true,
-      spatialSummary: `Linked assets and saved object placement remain locked for ${(currentSpatialScene?.entities || []).filter((entity) => entity?.kind === "glb").length} 3D model instance${(currentSpatialScene?.entities || []).filter((entity) => entity?.kind === "glb").length === 1 ? "" : "s"}.`,
+      spatialSummary: `Saved scene content remains unchanged while ${(motionPlan.actors || []).length} existing object${(motionPlan.actors || []).length === 1 ? "" : "s"} and ${(motionPlan.generatedObjects || []).length} generated runtime object${(motionPlan.generatedObjects || []).length === 1 ? "" : "s"} participate in Dynamics.`,
       warnings: [],
       unmetRequirements: [],
       checkpointsMadeDraft: ["dynamic-geometry"],
@@ -1522,7 +1615,7 @@ function projectDynamicsSceneCandidate(state, intent, options = {}) {
     spatialRelations: currentSpatial,
     attentionGuidance,
     motionContext,
-    selectedModelAssetIds: uniqueStrings(motionPlan.actors.map((actor) => actor.assetId)),
+    selectedModelAssetIds: uniqueStrings((motionPlan.actors || []).map((actor) => actor.assetId)),
   };
 }
 
@@ -1556,11 +1649,11 @@ function dynamicsSceneBaseline(state) {
 
 function assertDynamicsSceneBaseline(submitted, current, expectedRevision) {
   if (!submitted || typeof submitted !== "object") {
-    throw Object.assign(new Error("The generated movement preview is missing its starting state."), { statusCode: 409 });
+    throw Object.assign(new Error("The generated movement result is missing its starting state."), { statusCode: 409 });
   }
   if (submitted.proceduralDynamicsRevision !== expectedRevision
     || current.proceduralDynamicsRevision !== expectedRevision) {
-    throw Object.assign(new Error("Object movement changed after this preview was generated. Generate a new preview before applying."), {
+    throw Object.assign(new Error("Object movement changed after this result was generated. Generate it again."), {
       statusCode: 409,
     });
   }
@@ -1579,7 +1672,7 @@ function assertDynamicsSceneBaseline(submitted, current, expectedRevision) {
         motionContextSignature: "the movement context",
         assetInventorySignature: "the 3D model library",
       })[key] || "an earlier step";
-      throw Object.assign(new Error(`The movement preview is out of date because ${changedArea} changed. Generate a new preview before applying.`), {
+      throw Object.assign(new Error(`The generated movement is out of date because ${changedArea} changed. Generate it again.`), {
         statusCode: 409,
       });
     }
@@ -1632,8 +1725,19 @@ export function dynamicsSceneCandidateVisibleSignature(candidate) {
         assetId: actor.assetId,
         clip: actor.clip || null,
         trajectory: actor.trajectory || null,
+        timeline: actor.timeline || null,
         orientation: actor.orientation || null,
         animation: actor.animation || null,
+      })),
+      generatedObjects: (motionPlan.generatedObjects || []).map((object) => ({
+        id: object.id,
+        kind: object.kind,
+        object: object.object || null,
+        transform: object.transform || null,
+        authorOffset: object.authorOffset || null,
+        attachment: object.attachment || null,
+        appearance: object.appearance || null,
+        timeline: object.timeline || null,
       })),
       comfort: motionPlan.comfort || null,
       lifecycle: motionPlan.lifecycle || null,
@@ -1653,17 +1757,36 @@ function currentDynamicsSceneCandidate(state) {
 function createDeterministicDynamicsVariation(plan, context) {
   const raw = cloneJson(plan);
   const actor = raw.actors?.[0];
-  if (!actor) return plan;
-  if (actor.trajectory?.type === "waypoint-loop" || actor.trajectory?.kind === "waypoint-loop") {
+  if (actor?.timeline?.tracks?.[0]?.keyframes?.length) {
+    const keyframe = actor.timeline.tracks[0].keyframes.at(-1);
+    const value = keyframe?.value;
+    if (Array.isArray(value) && value.length) value[0] = Number((Number(value[0] || 0) + 0.5).toFixed(3));
+    else if (Number.isFinite(Number(value))) keyframe.value = Number((Number(value) + 0.5).toFixed(3));
+  } else if (actor && (actor.trajectory?.type === "waypoint-loop" || actor.trajectory?.kind === "waypoint-loop")) {
     const duration = Number(actor.trajectory.durationSeconds) || 24;
     actor.trajectory.durationSeconds = duration <= 117
       ? Number((duration + 3).toFixed(2))
       : Number((duration - 3).toFixed(2));
-  } else {
+  } else if (actor) {
     const radius = Number(actor.trajectory.radiusMeters) || 4.5;
     actor.trajectory.radiusMeters = radius <= 7.4
       ? Number((radius + 0.6).toFixed(2))
       : Number((radius - 0.6).toFixed(2));
+  } else {
+    const generated = raw.generatedObjects?.[0];
+    if (!generated) return plan;
+    if (generated.kind === "light") {
+      generated.object = { ...(generated.object || {}) };
+      const intensity = Number(generated.object.intensity) || 2;
+      generated.object.intensity = Number((intensity + Math.max(0.25, intensity * 0.2)).toFixed(3));
+    } else {
+      generated.transform = { ...(generated.transform || {}) };
+      const position = Array.isArray(generated.transform.position)
+        ? [...generated.transform.position]
+        : [0, 0, 0];
+      position[0] = Number((Number(position[0] || 0) + 0.5).toFixed(3));
+      generated.transform.position = position;
+    }
   }
   return normalizeMotionPlan(raw, context, {
     prompt: raw.prompt,
@@ -1699,6 +1822,359 @@ export async function removeProceduralDynamicsPlan(options, request = {}) {
     removedSceneKey: result.removedSceneKey,
     proceduralDynamics: result.store,
   };
+}
+
+export async function generateProceduralTransitionPlan(options, request = {}) {
+  const state = await proceduralTransitionRequestState(options, request.boundaryContext || request.boundary);
+  assertProceduralTransitionRequestEligible(state);
+  const previousCandidate = request.previousCandidate && typeof request.previousCandidate === "object"
+    ? request.previousCandidate
+    : null;
+  const previousPlan = previousCandidate?.transitionPlan
+    || request.previousPlan
+    || state.proceduralTransitions.plansByBoundary[state.boundary.boundaryKey]
+    || null;
+  let engine = { provider: "codex-cli" };
+  let candidate;
+  try {
+    candidate = await generateProceduralTransitionIntent({
+      boundaryContext: state.boundary,
+      prompt: request.prompt,
+      previousPlan,
+      previousCandidate,
+      transitionContext: proceduralTransitionGenerationContext(state),
+      generateJson: async (prompt) => {
+        if (options.proceduralTransitionGenerateJson) {
+          return options.proceduralTransitionGenerateJson(prompt);
+        }
+        if (options.aiProvider === "openai") throw new Error("Codex provider is not available for this request.");
+        const codexBin = options.codexBin || process.env.CODEX_BIN || "codex";
+        const result = await runCodexExec(codexBin, prompt, {
+          cwd: options.codexWorkspace || REPO_ROOT,
+          timeoutMs: options.codexTimeoutMs || 180_000,
+          requestLabel: "Codex scene transition request",
+        });
+        engine = { provider: "codex-cli", codexBin };
+        return parseJsonObject(extractCodexFinalText(result.stdout) || result.stdout);
+      },
+    });
+  } catch (error) {
+    const transitionPlan = createFallbackTransitionPlan(state.boundary, request.prompt, previousPlan);
+    candidate = normalizeProceduralTransitionCandidate({ transitionPlan }, state.boundary, {
+      prompt: transitionPlan.prompt,
+      previousPlan,
+    });
+    engine = {
+      provider: "deterministic-fallback",
+      reason: String(error?.message || "Codex scene transition generation failed."),
+    };
+  }
+  return {
+    candidate: {
+      ...candidate,
+      baseline: proceduralTransitionBaseline(state),
+    },
+    expectedRevision: state.proceduralTransitions.revision,
+    proceduralTransitions: state.proceduralTransitions,
+    engine,
+  };
+}
+
+export async function applyProceduralTransitionPlan(options, request = {}) {
+  const state = await proceduralTransitionRequestState(options, request.boundaryContext || request.boundary);
+  assertProceduralTransitionRequestEligible(state);
+  const submitted = request.candidate || (request.transitionPlan || request.plan ? {
+    schemaVersion: PROCEDURAL_TRANSITION_CANDIDATE_SCHEMA_VERSION,
+    prompt: request.prompt || request.transitionPlan?.prompt || request.plan?.prompt,
+    transitionPlan: request.transitionPlan || request.plan,
+  } : null);
+  if (submitted?.schemaVersion !== PROCEDURAL_TRANSITION_CANDIDATE_SCHEMA_VERSION) {
+    throw Object.assign(new Error("Apply requires an unmodified generated transition preview. Generate a new preview first."), {
+      statusCode: 400,
+    });
+  }
+  if ([
+    "assetsChanged",
+    "sourceGraphChanged",
+    "spatialRelationsChanged",
+    "sourceMotionChanged",
+  ].some((key) => submitted.impact?.[key] === true)) {
+    throw Object.assign(new Error("Generated transitions cannot modify story structure, saved scenes, assets, or source movement."), {
+      statusCode: 400,
+    });
+  }
+  const expectedRevision = Number(request.expectedRevision);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    throw Object.assign(new Error("expectedRevision must be a non-negative integer."), { statusCode: 400 });
+  }
+  assertProceduralTransitionBaseline(
+    submitted.baseline,
+    proceduralTransitionBaseline(state),
+    expectedRevision,
+  );
+  const previousPlan = state.proceduralTransitions.plansByBoundary[state.boundary.boundaryKey] || null;
+  const candidate = normalizeProceduralTransitionCandidate(submitted, state.boundary, {
+    prompt: submitted.prompt,
+    previousPlan,
+  });
+  if (submitted.impact?.materiallyChanged === false || candidate.impact.materiallyChanged === false) {
+    throw Object.assign(new Error("This transition preview has no material visible change. Revise the description and regenerate."), {
+      statusCode: 409,
+    });
+  }
+  const result = applyProceduralTransitionPlanToStore(state.proceduralTransitions, {
+    boundaryContext: state.boundary,
+    expectedRevision,
+    candidate,
+  });
+  await writeProceduralTransitionMutation(state, result.store, {
+    boundaryKey: result.boundaryKey,
+    candidate,
+  });
+  return {
+    plan: result.plan,
+    transitionPlan: result.transitionPlan,
+    boundaryKey: result.boundaryKey,
+    candidate,
+    proceduralTransitions: result.store,
+  };
+}
+
+export async function removeProceduralTransitionPlan(options, request = {}) {
+  const state = await proceduralTransitionRequestState(options, request.boundaryContext || request.boundary);
+  const result = removeProceduralTransitionPlanFromStore(state.proceduralTransitions, {
+    boundaryContext: state.boundary,
+    expectedRevision: request.expectedRevision,
+  });
+  if (result.removed) {
+    await writeProceduralTransitionMutation(state, result.store, {
+      boundaryKey: result.boundaryKey,
+      removed: true,
+    });
+  }
+  return {
+    removed: result.removed,
+    removedBoundaryKey: result.boundaryKey,
+    boundaryKey: result.boundaryKey,
+    proceduralTransitions: result.store,
+  };
+}
+
+async function proceduralTransitionRequestState(options, rawBoundaryContext) {
+  const paths = resolveAuthorPaths(options);
+  const runtime = await importFetchedStoryResources(paths.resourceFolder, "dev", {
+    repoRoot: REPO_ROOT,
+    storyFolder: paths.storyFolder,
+  });
+  assertSupportedStory(paths, runtime);
+  const rawGraph = await readRequiredJson(
+    paths.storyGraphPath,
+    "Generate the source graph before generating scene transitions.",
+  );
+  const graph = await enrichSourceGraphWithAnimationProbe(paths, rawGraph, runtime);
+  const decisions = await readDecisionIndex(paths);
+  assertPreviousCurrent("inter-beat-dynamics", decisions);
+  const requestedBoundaryKey = proceduralTransitionBoundaryKey(rawBoundaryContext);
+  if (!requestedBoundaryKey) {
+    throw Object.assign(new Error("boundaryContext must identify one exact directed Story order edge."), {
+      statusCode: 400,
+    });
+  }
+  const boundariesByKey = proceduralTransitionBoundaryIndex(graph, runtime);
+  const boundary = boundariesByKey.get(requestedBoundaryKey) || null;
+  if (!boundary) {
+    throw Object.assign(new Error("The requested Scene changes edge is not present in the current Story order."), {
+      statusCode: 409,
+    });
+  }
+  const spatialRelations = decisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations || null;
+  const eligibility = proceduralTransitionBoundaryEligibility(
+    graph,
+    runtime,
+    spatialRelations,
+    boundary,
+  );
+  return {
+    paths,
+    runtime,
+    graph,
+    decisions,
+    boundary,
+    spatialRelations,
+    ...eligibility,
+    proceduralTransitions: await readProceduralTransitionsStore(paths, graph, runtime, spatialRelations),
+  };
+}
+
+function proceduralTransitionBoundaryEligibility(graph, runtime, spatialRelations, boundary) {
+  const fromSpatialScene = dynamicsSpatialSceneForContext(spatialRelations, boundary.fromContext);
+  const toSpatialScene = dynamicsSpatialSceneForContext(spatialRelations, boundary.toContext);
+  const endpointVisualCount = [fromSpatialScene, toSpatialScene]
+    .flatMap((scene) => Array.isArray(scene?.entities) ? scene.entities : [])
+    .filter((entity) => ["glb", "image-plane"].includes(String(entity?.kind || "")))
+    .length;
+  const destinationFrozen = sourcePartStatesForBeat(graph, boundary.toBeatId)
+    .some((state) => state?.playbackMode === "frozen");
+  const sourceMappedTransition = interactionBoundaryHasMappedTransition(
+    graph,
+    boundary,
+    boundary.fromBeat || { id: boundary.fromBeatId },
+    boundary.toBeat || { id: boundary.toBeatId },
+    boundary.fromBeat || { id: boundary.fromBeatId },
+    boundary.toBeat || { id: boundary.toBeatId },
+    null,
+  );
+  return {
+    fromSpatialScene,
+    toSpatialScene,
+    endpointVisualCount,
+    destinationFrozen,
+    sourceMappedTransition,
+  };
+}
+
+function proceduralTransitionGenerationContext(state) {
+  const summarizeEntity = (entity) => ({
+    entityId: String(entity?.id || entity?.entityId || "").trim() || null,
+    assetId: String(entity?.assetId || "").trim() || null,
+    kind: String(entity?.kind || "").trim() || null,
+    role: String(entity?.role || "").trim() || null,
+    sourceInstanceId: String(entity?.sourceInstanceId || "").trim() || null,
+    transform: entity?.transform ? cloneJson(entity.transform) : null,
+  });
+  const summarizeEndpoint = (context, beat, scene) => ({
+    context: cloneJson(context),
+    storyPart: beat ? {
+      id: beat.id || context?.beatId || null,
+      title: String(beat.title || beat.sectionHeading || "").trim() || null,
+      text: String(beat.text || "").trim().slice(0, 4000),
+    } : null,
+    entities: (Array.isArray(scene?.entities) ? scene.entities : [])
+      .filter((entity) => entity?.id && entity?.kind)
+      .map(summarizeEntity),
+  });
+  const endpointAssetIds = new Set([
+    ...(state.fromSpatialScene?.entities || []),
+    ...(state.toSpatialScene?.entities || []),
+  ].map((entity) => String(entity?.assetId || "").trim()).filter(Boolean));
+  const availableAssets = (state.runtime?.assets || [])
+    .filter((asset) => endpointAssetIds.has(String(asset?.id || "")))
+    .map((asset) => ({
+      assetId: asset.id,
+      kind: spatialVisualAssetKind(asset),
+      label: proceduralDynamicsAssetLabel(asset, asset.id),
+      role: asset.role || asset.type || null,
+      hasEmbeddedAnimation: Boolean(
+        asset.hasEmbeddedAnimation
+        || asset.animationCount
+        || asset.animations?.length
+        || asset.clips?.length
+      ),
+    }));
+  return {
+    boundary: {
+      boundaryKey: state.boundary.boundaryKey,
+      edgeId: state.boundary.edgeId,
+      fromContext: cloneJson(state.boundary.fromContext),
+      toContext: cloneJson(state.boundary.toContext),
+    },
+    endpointScenes: {
+      from: summarizeEndpoint(state.boundary.fromContext, state.boundary.fromBeat, state.fromSpatialScene),
+      to: summarizeEndpoint(state.boundary.toContext, state.boundary.toBeat, state.toSpatialScene),
+    },
+    availableAssets,
+  };
+}
+
+function assertProceduralTransitionRequestEligible(state) {
+  if (!state?.boundary?.edgeId || !state?.boundary?.fromContext || !state?.boundary?.toContext) {
+    throw Object.assign(new Error("Generated transitions require one exact directed Story order boundary."), {
+      statusCode: 409,
+    });
+  }
+}
+
+function proceduralTransitionBaseline(state) {
+  return {
+    proceduralTransitionsRevision: state.proceduralTransitions.revision,
+    boundarySignature: dynamicsJsonSignature({
+      edgeId: state.boundary.edgeId,
+      fromContext: state.boundary.fromContext,
+      toContext: state.boundary.toContext,
+    }),
+    sourceGraphSignature: dynamicsJsonSignature(sourceGraphTransitionDependencyState(state.graph)),
+    spatialRelationsSignature: dynamicsSpatialRelationsSignature(state.spatialRelations),
+    endpointScenesSignature: dynamicsJsonSignature({
+      from: state.fromSpatialScene,
+      to: state.toSpatialScene,
+    }),
+    sourceMotionSignature: dynamicsJsonSignature({
+      linking: sourceMotionEffectiveSignature(state.graph.sourceMotionLinking, state.graph.sourceMotionPlayback),
+    }),
+    assetInventorySignature: dynamicsJsonSignature(state.graph.assetInventory || state.runtime.assets || []),
+  };
+}
+
+function assertProceduralTransitionBaseline(submitted, current, expectedRevision) {
+  if (!submitted || typeof submitted !== "object") {
+    throw Object.assign(new Error("The generated transition preview is missing its starting state."), { statusCode: 409 });
+  }
+  if (submitted.proceduralTransitionsRevision !== expectedRevision
+    || current.proceduralTransitionsRevision !== expectedRevision) {
+    throw Object.assign(new Error("Scene changes changed after this preview was generated. Generate a new preview before applying."), {
+      statusCode: 409,
+    });
+  }
+  for (const key of [
+    "boundarySignature",
+    "sourceGraphSignature",
+    "spatialRelationsSignature",
+    "endpointScenesSignature",
+    "sourceMotionSignature",
+    "assetInventorySignature",
+  ]) {
+    if (!submitted[key] || submitted[key] !== current[key]) {
+      throw Object.assign(new Error("The transition preview is out of date because its route or saved scene inputs changed. Generate a new preview before applying."), {
+        statusCode: 409,
+      });
+    }
+  }
+}
+
+async function writeProceduralTransitionMutation(state, store, details = {}) {
+  const now = new Date().toISOString();
+  const current = state.decisions["inter-beat-dynamics"] || {};
+  const transitionDecision = decisionWithStatus({
+    ...current,
+    component: "inter-beat-dynamics",
+    label: "Transition",
+    designDimension: COMPONENT_BY_ID.get("inter-beat-dynamics").dimension,
+    option: current.option || sourceDynamicsPreviewForComponent("inter-beat-dynamics", state.graph),
+    proceduralTransitionsRevision: store.revision,
+    proceduralTransitionBoundaryKeys: Object.keys(store.plansByBoundary || {}).sort(),
+    lastProceduralTransitionBoundaryKey: details.boundaryKey || null,
+    requiresReview: true,
+  }, "draft", null);
+  const transactionEntries = [
+    [state.paths.proceduralTransitionsPath, store],
+    [path.join(state.paths.decisionsRoot, "inter-beat-dynamics.json"), transitionDecision],
+  ];
+  for (const component of DECISION_COMPONENTS.slice(
+    DECISION_COMPONENTS.findIndex((item) => item.id === "inter-beat-dynamics") + 1,
+  )) {
+    const existing = state.decisions[component.id];
+    if (!existing) continue;
+    transactionEntries.push([
+      path.join(state.paths.decisionsRoot, `${component.id}.json`),
+      decisionWithStatus({
+        ...existing,
+        invalidatedBy: "inter-beat-dynamics",
+        requiresReview: true,
+        staleAt: now,
+      }, "stale", existing.savedAt ?? null),
+    ]);
+  }
+  await writeAuthorJsonTransaction(state.paths, transactionEntries);
 }
 
 export async function saveCheckpointDecision(options, componentId, payload = {}) {
@@ -1740,6 +2216,14 @@ export async function saveCheckpointDecision(options, componentId, payload = {})
           ? Number(proceduralStore.revision)
           : 0;
         decision.proceduralDynamicsSceneKeys = Object.keys(proceduralStore.plansByScene || {}).sort();
+      }
+    } else if (component.id === "inter-beat-dynamics") {
+      const proceduralStore = await readJsonIfExists(paths.proceduralTransitionsPath);
+      if (proceduralStore?.schemaVersion === PROCEDURAL_TRANSITIONS_SCHEMA_VERSION) {
+        decision.proceduralTransitionsRevision = Number.isSafeInteger(Number(proceduralStore.revision))
+          ? Number(proceduralStore.revision)
+          : 0;
+        decision.proceduralTransitionBoundaryKeys = Object.keys(proceduralStore.plansByBoundary || {}).sort();
       }
     }
     delete decision.autoSavedBy;
@@ -1910,6 +2394,14 @@ export async function saveCheckpointDecisionDraft(options, componentId, payload 
           : 0;
         decision.proceduralDynamicsSceneKeys = Object.keys(proceduralStore.plansByScene || {}).sort();
       }
+    } else if (component.id === "inter-beat-dynamics") {
+      const proceduralStore = await readJsonIfExists(paths.proceduralTransitionsPath);
+      if (proceduralStore?.schemaVersion === PROCEDURAL_TRANSITIONS_SCHEMA_VERSION) {
+        decision.proceduralTransitionsRevision = Number.isSafeInteger(Number(proceduralStore.revision))
+          ? Number(proceduralStore.revision)
+          : 0;
+        decision.proceduralTransitionBoundaryKeys = Object.keys(proceduralStore.plansByBoundary || {}).sort();
+      }
     }
     delete decision.autoSavedBy;
     delete decision.autoSavePrerequisites;
@@ -2078,15 +2570,26 @@ async function currentInteractionControlState(paths, decisionsInput = null) {
     throw Object.assign(new Error("Finish Place objects before editing Reader actions."), { statusCode: 409 });
   }
   const spatialTraversal = analyzeSpatialTraversal(graph, runtime, spatialRelations, decisions);
+  const proceduralTransitions = await readProceduralTransitionsStore(
+    paths,
+    graph,
+    runtime,
+    spatialRelations,
+  );
   return {
     graph,
     runtime,
-    ...interactionControlDraftFor(graph, runtime, spatialTraversal),
+    ...interactionControlDraftFor(graph, runtime, spatialTraversal, proceduralTransitions),
   };
 }
 
-function interactionControlDraftFor(graph, runtime, spatialTraversal) {
-  const interactionControlByBoundary = inferInteractionControlByBoundary(graph, runtime, spatialTraversal);
+function interactionControlDraftFor(graph, runtime, spatialTraversal, proceduralTransitions = null) {
+  const interactionControlByBoundary = inferInteractionControlByBoundary(
+    graph,
+    runtime,
+    spatialTraversal,
+    proceduralTransitions,
+  );
   const variantInteractionControlByBeat = inferVariantInteractionControlByBeat(graph, runtime);
   const variantInteractionControlByEdge = inferVariantInteractionControlByEdge(graph, runtime);
   return {
@@ -3098,7 +3601,7 @@ function cloneInteractionControlConfiguration(value) {
   return value === null || value === undefined ? null : cloneJson(value);
 }
 
-export function inferInteractionControlByBoundary(graph, runtime, spatialTraversal) {
+export function inferInteractionControlByBoundary(graph, runtime, spatialTraversal, proceduralTransitions = null) {
   const contentUnits = authoredContentUnitsFromGraph(graph || {}, runtime || {});
   const contentUnitsById = new Map(contentUnits.filter((unit) => unit?.id).map((unit) => [String(unit.id), unit]));
   const graphBeatsById = new Map((graph?.beats || []).filter((beat) => beat?.id).map((beat) => [beat.id, beat]));
@@ -3127,6 +3630,7 @@ export function inferInteractionControlByBoundary(graph, runtime, spatialTravers
       toUnit,
       fromBeat,
       toBeat,
+      proceduralTransitions,
     );
     const defaultPolicy = mappedTransition ? null : CONTROLLER_BUTTON_PRESS_LABEL;
     const reason = mappedTransition
@@ -3544,7 +4048,21 @@ function interactionRouteVariantOption(graph, context) {
   return group?.options?.find((option) => option.id === context.variantOptionId) || null;
 }
 
-function interactionBoundaryHasMappedTransition(graph, route, fromUnit, toUnit, fromBeat, toBeat) {
+function interactionBoundaryHasMappedTransition(
+  graph,
+  route,
+  fromUnit,
+  toUnit,
+  fromBeat,
+  toBeat,
+  proceduralTransitions = null,
+) {
+  const proceduralBoundaryKey = proceduralTransitionBoundaryKey(route);
+  if (proceduralBoundaryKey
+    && Object.prototype.hasOwnProperty.call(
+      proceduralTransitions?.plansByBoundary || {},
+      proceduralBoundaryKey,
+    )) return true;
   const fromOption = interactionRouteVariantOption(graph, route?.fromContext);
   const toOption = interactionRouteVariantOption(graph, route?.toContext);
   const linkedAssetIds = new Set(uniqueStrings([
@@ -4671,6 +5189,30 @@ export async function compileAuthorRuntime(options) {
     spatialRelationsDecision.spatialRelations,
     inferSpatialRelationsContract(graph, runtime, decisions),
   );
+  const proceduralTransitions = await readProceduralTransitionsStore(
+    paths,
+    graph,
+    runtime,
+    spatialRelations,
+  );
+  assertStoredProceduralTransitionsEligible(
+    graph,
+    runtime,
+    spatialRelations,
+    proceduralTransitions,
+  );
+  if (proceduralTransitions.revision > 0
+    && Number(decisions["inter-beat-dynamics"]?.proceduralTransitionsRevision) !== proceduralTransitions.revision) {
+    throw Object.assign(new Error("Cannot build the reader; finish Scene changes after applying or removing a generated transition."), {
+      statusCode: 409,
+      diagnostics: [{
+        severity: "error",
+        code: "PROCEDURAL_TRANSITIONS_CHECKPOINT_STALE",
+        component: "inter-beat-dynamics",
+        message: "Scene changes must be finished after its generated transition plan changes.",
+      }],
+    });
+  }
   const attentionGuidanceDecision = decisions[ATTENTION_GUIDANCE_COMPONENT_ID];
   const attentionInferenceDecisions = {
     ...decisions,
@@ -4688,7 +5230,12 @@ export async function compileAuthorRuntime(options) {
     ? decisions["asset-topology"]
     : derivedAssetTopologyDecision(spatialRelations, spatialRelationsDecision);
   const spatialTraversal = analyzeSpatialTraversal(graph, runtime, spatialRelations, decisions);
-  const inferredInteractionControlByBoundary = inferInteractionControlByBoundary(graph, runtime, spatialTraversal);
+  const inferredInteractionControlByBoundary = inferInteractionControlByBoundary(
+    graph,
+    runtime,
+    spatialTraversal,
+    proceduralTransitions,
+  );
   const variantInteractionControlByBeat = inferVariantInteractionControlByBeat(graph, runtime);
   const inferredVariantInteractionControlByEdge = inferVariantInteractionControlByEdge(graph, runtime);
   const interactionControlSourceSignature = interactionControlBoundarySourceSignature(
@@ -4797,6 +5344,7 @@ export async function compileAuthorRuntime(options) {
     finalTuning,
     sourceDynamics,
     proceduralDynamics,
+    proceduralTransitions,
     sourceMotionLinking,
     ...(pointCloudEffects.length ? { pointCloudEffects } : {}),
     sourceMotionPlayback: graph.sourceMotionPlayback || emptySourceMotionPlayback(),
@@ -4875,6 +5423,7 @@ export async function compileAuthorRuntime(options) {
       authoredBeatSignature,
       finalTuningPrompt: finalTuning.prompt,
       proceduralDynamicsRevision: proceduralDynamics.revision,
+      proceduralTransitionsRevision: proceduralTransitions.revision,
       spatialRelations: {
         schemaVersion: spatialRelations.schemaVersion,
         inferenceVersion: spatialRelations.inferenceVersion,
@@ -4899,6 +5448,8 @@ export async function compileAuthorRuntime(options) {
   };
 
   const readerTemplateSync = await ensureReaderApp(paths, compiled);
+  await assertReaderProceduralTransitionsContract(paths, compiled);
+  await assertReaderProceduralDynamicsContract(paths, compiled);
   compiled.provenance.readerTemplate = readerTemplateSync.provenance;
   compiled.diagnostics.push(...readerTemplateSync.diagnostics);
   if (options.performanceOptimizationEnabled === true) {
@@ -5172,9 +5723,7 @@ function performanceOptimizationEvidence(runtime) {
       assetTypes,
       largestAssets,
       spatialSceneCount,
-      proceduralDynamicsPlanCount: Array.isArray(runtime?.proceduralDynamics?.plans)
-        ? runtime.proceduralDynamics.plans.length
-        : 0,
+      proceduralDynamicsPlanCount: Object.keys(runtime?.proceduralDynamics?.plansByScene || {}).length,
       pointCloudEffectCount: Array.isArray(runtime?.pointCloudEffects) ? runtime.pointCloudEffects.length : 0,
       sourceMotionTrackCount: Array.isArray(runtime?.sourceMotionLinking?.tracks)
         ? runtime.sourceMotionLinking.tracks.length
@@ -5247,6 +5796,62 @@ function readerSourceHasTextLayoutContract(source, marker = STORYVR_TEXT_LAYOUT_
   return String(source || "").split(/\r?\n/).some((line) => (
     line.trim() === marker
   ));
+}
+
+function proceduralTransitionPlanCount(runtime) {
+  return Object.keys(runtime?.proceduralTransitions?.plansByBoundary || {}).length;
+}
+
+function readerSourceHasProceduralTransitionsContract(source) {
+  return String(source || "").includes(STORYVR_PROCEDURAL_TRANSITIONS_READER_CONTRACT_MARKER);
+}
+
+async function assertReaderProceduralTransitionsContract(paths, runtime) {
+  if (!proceduralTransitionPlanCount(runtime)) return;
+  const readerMainPath = path.join(paths.storyFolder, "webxr-adaptation", "src", "main.js");
+  const readerMainSource = await exists(readerMainPath) ? await readFile(readerMainPath, "utf8") : "";
+  if (readerSourceHasProceduralTransitionsContract(readerMainSource)) return;
+  throw Object.assign(new Error(
+    `Reader source ${toPosix(path.relative(REPO_ROOT, readerMainPath))} does not support ${PROCEDURAL_TRANSITIONS_SCHEMA_VERSION}; merge the pending managed Reader template before building generated transitions.`,
+  ), {
+    statusCode: 409,
+    diagnostics: [{
+      severity: "error",
+      code: "READER_PROCEDURAL_TRANSITIONS_CONTRACT_MISSING",
+      component: "inter-beat-dynamics",
+      path: toPosix(path.relative(REPO_ROOT, readerMainPath)),
+      message: `Generated transitions require the ${PROCEDURAL_TRANSITIONS_SCHEMA_VERSION} Reader playback contract.`,
+    }],
+  });
+}
+
+function runtimeUsesExpandedProceduralDynamics(runtime) {
+  return Object.values(runtime?.proceduralDynamics?.plansByScene || {}).some((plan) => (
+    (Array.isArray(plan?.generatedObjects) && plan.generatedObjects.length > 0)
+    || (Array.isArray(plan?.actors) && plan.actors.some((actor) => (
+      actor?.timeline?.tracks?.length
+      || actor?.targetKind === "image-plane"
+    )))
+  ));
+}
+
+async function assertReaderProceduralDynamicsContract(paths, runtime) {
+  if (!runtimeUsesExpandedProceduralDynamics(runtime)) return;
+  const readerMainPath = path.join(paths.storyFolder, "webxr-adaptation", "src", "main.js");
+  const readerMainSource = await exists(readerMainPath) ? await readFile(readerMainPath, "utf8") : "";
+  if (readerMainSource.includes(STORYVR_PROCEDURAL_DYNAMICS_READER_CONTRACT_MARKER)) return;
+  throw Object.assign(new Error(
+    `Reader source ${toPosix(path.relative(REPO_ROOT, readerMainPath))} does not support declarative Dynamics for generated objects, image planes, and timelines; merge the pending managed Reader template before building.`,
+  ), {
+    statusCode: 409,
+    diagnostics: [{
+      severity: "error",
+      code: "READER_PROCEDURAL_DYNAMICS_CONTRACT_MISSING",
+      component: "dynamic-geometry",
+      path: toPosix(path.relative(REPO_ROOT, readerMainPath)),
+      message: `Expanded Dynamics requires the ${STORYVR_PROCEDURAL_DYNAMICS_FEATURE_CONTRACT_VERSION} Reader playback contract.`,
+    }],
+  });
 }
 
 export async function ensureReaderApp(paths, runtime) {
@@ -5380,6 +5985,19 @@ export async function buildReaderDist(paths, options = {}) {
   if (!readerSourceHasTextLayoutContract(readerMainSource)) {
     throw new Error(
       `Reader source ${toPosix(path.relative(repoRoot, readerMainPath))} is missing ${STORYVR_TEXT_LAYOUT_CONTRACT_VERSION}; re-run Build story or merge the pending managed reader template before building.`,
+    );
+  }
+  const compiledRuntime = await readJsonIfExists(paths.compiledRuntimePath);
+  if (proceduralTransitionPlanCount(compiledRuntime)
+    && !readerSourceHasProceduralTransitionsContract(readerMainSource)) {
+    throw new Error(
+      `Reader source ${toPosix(path.relative(repoRoot, readerMainPath))} is missing the ${PROCEDURAL_TRANSITIONS_SCHEMA_VERSION} generated-transition playback contract.`,
+    );
+  }
+  if (runtimeUsesExpandedProceduralDynamics(compiledRuntime)
+    && !readerMainSource.includes(STORYVR_PROCEDURAL_DYNAMICS_READER_CONTRACT_MARKER)) {
+    throw new Error(
+      `Reader source ${toPosix(path.relative(repoRoot, readerMainPath))} is missing the ${STORYVR_PROCEDURAL_DYNAMICS_FEATURE_CONTRACT_VERSION} Dynamics playback contract.`,
     );
   }
   const readerStylesPath = path.join(readerSource, "src", "styles.css");
@@ -5533,12 +6151,18 @@ function isKnownLegacyManagedReaderTemplate(target, currentContent, desiredConte
     'import { XRControllerModelFactory } from "three/addons/webxr/XRControllerModelFactory.js";',
     'import { createGroundMovementCue, normalizeGroundMovementCue } from "./ground-movement-cue.js";',
     'import { clampProceduralDynamicsPlan, expandProceduralDynamicsInstances, proceduralDynamicsPlansForScene, sampleProceduralDynamicsTransform } from "./procedural-dynamics-runtime.js";',
+    'import { proceduralTransitionEasedProgress, proceduralTransitionPlanForBoundary } from "./procedural-transitions-runtime.js";',
     "import {",
     "clampProceduralDynamicsPlan,",
+    "expandProceduralDynamicsGeneratedObjects,",
     "expandProceduralDynamicsInstances,",
     "proceduralDynamicsPlansForScene,",
     "sampleProceduralDynamicsTransform,",
     '} from "./procedural-dynamics-runtime.js";',
+    "proceduralTransitionEasedProgress,",
+    "proceduralTransitionMiddleSample,",
+    "proceduralTransitionPlanForBoundary,",
+    '} from "./procedural-transitions-runtime.js";',
   ]);
   if (importLines.some((line) => !knownImports.has(line.trim()))) return false;
   return readerTemplateLineOverlap(source, desiredContent.toString("utf8")) >= 0.9;
@@ -5738,9 +6362,212 @@ function dynamicsCodexImageMediaType(image) {
   return null;
 }
 
+function dynamicsSemanticText(value, limit = DYNAMICS_SEMANTIC_TEXT_LIMIT) {
+  const text = String(value || "")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "";
+  return text.length <= limit ? text : text.slice(0, limit).trimEnd();
+}
+
+function dynamicsSemanticStrings(values, limit, textLimit = 240) {
+  return uniqueStrings((values || []).map((value) => dynamicsSemanticText(value, textLimit)))
+    .slice(0, limit);
+}
+
+function dynamicsSourceSelectionRole(sourceInstanceId) {
+  const source = String(sourceInstanceId || "").toLowerCase();
+  if (/(?:^|[^a-z])highlight(?:[^a-z]|$)/.test(source)) return "highlight";
+  if (/(?:^|[^a-z])reference(?:[^a-z]|$)/.test(source)) return "reference";
+  return null;
+}
+
+function dynamicsSpatialEntityMotionContext(entity) {
+  const sourceInstanceId = dynamicsSemanticText(entity?.sourceInstanceId, 240);
+  const sourceRole = dynamicsSemanticText(entity?.sourceRole, 120);
+  const selectionRole = dynamicsSourceSelectionRole(sourceInstanceId);
+  return {
+    ...(sourceInstanceId ? { sourceInstanceId } : {}),
+    ...(sourceRole ? { sourceRole } : {}),
+    ...(selectionRole ? { selectionRole } : {}),
+    transform: cloneJson(entity?.transform || entity?.inferredTransform || null),
+  };
+}
+
+function dynamicsReadableSemanticAlias(value) {
+  let source = dynamicsSemanticText(value, 240);
+  if (!source) return "";
+  source = path.basename(source).replace(/\.(?:glb|gltf|png|jpe?g|webp|gif|avif|svg)$/i, "");
+  source = source
+    .replace(/[-_][a-f0-9]{8,}$/i, "")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/^(inactive|unselected|deselected|disabled|active|selected|current|highlight|reference)(?=[a-z])/i, "$1 ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return dynamicsSemanticText(source, 120);
+}
+
+function dynamicsSemanticWords(value) {
+  const source = dynamicsReadableSemanticAlias(value);
+  if (!source) return [];
+  const expanded = [];
+  const prefixes = ["inactive", "unselected", "deselected", "disabled", "active", "selected", "current", "highlight", "reference"];
+  for (const token of source.split(/[^a-z0-9]+/).filter(Boolean)) {
+    const prefix = prefixes.find((candidate) => token.startsWith(candidate) && token.length >= candidate.length + 2);
+    if (prefix) expanded.push(prefix, token.slice(prefix.length));
+    else expanded.push(token);
+  }
+  return expanded;
+}
+
+function dynamicsSingularSemanticNoun(value) {
+  const word = String(value || "").toLowerCase();
+  if (word.length > 4 && word.endsWith("ies")) return `${word.slice(0, -3)}y`;
+  if (word.length > 3 && word.endsWith("s") && !/(?:ss|us|is)$/.test(word)) return word.slice(0, -1);
+  return word;
+}
+
+function dynamicsInactiveCompanionNouns(target) {
+  const roleWords = new Set(["inactive", "unselected", "deselected", "disabled", "reference"]);
+  const ignoredWords = new Set([
+    "asset", "config", "context", "core", "file", "glb", "gltf", "group", "model", "object", "scene", "source", "story",
+  ]);
+  const nouns = [];
+  for (const value of [target?.assetId, target?.label, target?.sourceRole, target?.sourceInstanceId]) {
+    const words = dynamicsSemanticWords(value);
+    const roleIndex = words.findIndex((word) => roleWords.has(word));
+    if (roleIndex < 0) continue;
+    const candidates = words.slice(roleIndex + 1).filter((word) => (
+      !roleWords.has(word)
+      && !ignoredWords.has(word)
+      && !/^\d+$/.test(word)
+      && !/^[a-f0-9]{8,}$/.test(word)
+    ));
+    const noun = dynamicsSingularSemanticNoun(candidates.at(-1));
+    if (noun && noun.length >= 2) nouns.push(noun);
+  }
+  return dynamicsSemanticStrings(nouns, 4, 48);
+}
+
+function dynamicsTargetSemanticEvidence(graph, scene, target) {
+  const beat = (graph?.beats || []).find((candidate) => candidate?.id === scene?.beatId) || null;
+  const probeLinks = (Array.isArray(beat?.animationProbeLinks) ? beat.animationProbeLinks : [])
+    .filter((link) => String(link?.assetId || "") === String(target?.assetId || ""))
+    .slice(0, 4);
+  const partStates = sourcePartStatesForBeat(graph, scene?.beatId)
+    .filter((state) => String(state?.assetId || "") === String(target?.assetId || ""))
+    .slice(0, 4);
+  const beatText = dynamicsSemanticStrings([
+    beat?.text,
+    scene?.text,
+    ...probeLinks.map((link) => link?.beatText),
+  ], 1, DYNAMICS_SEMANTIC_TEXT_LIMIT)[0] || "";
+  const reasoning = dynamicsSemanticStrings([
+    ...probeLinks.flatMap((link) => [link?.reasoning, link?.dynamicsReasoning]),
+    ...partStates.map((state) => state?.reasoning),
+  ], DYNAMICS_SEMANTIC_REASON_LIMIT, DYNAMICS_SEMANTIC_TEXT_LIMIT);
+  const partSelectors = dynamicsSemanticStrings(
+    partStates.flatMap((state) => state?.partSelectors || []),
+    DYNAMICS_SEMANTIC_SELECTOR_LIMIT,
+    160,
+  );
+  const animationTargetSelectors = dynamicsSemanticStrings(
+    partStates.flatMap((state) => state?.animationTargetSelectors || []),
+    DYNAMICS_SEMANTIC_SELECTOR_LIMIT,
+    160,
+  );
+  const confidenceValues = [
+    ...probeLinks.map((link) => Number(link?.confidence)),
+    ...partStates.map((state) => Number(state?.confidence)),
+  ].filter(Number.isFinite);
+  const sourceState = partStates.length ? {
+    runtimeVisible: partStates.some((state) => state?.runtimeVisible === true),
+    renderActive: partStates.some((state) => state?.renderActive === true),
+    stateModes: dynamicsSemanticStrings(partStates.map((state) => state?.stateMode), 4, 48),
+    playbackModes: dynamicsSemanticStrings(partStates.map((state) => state?.playbackMode), 4, 48),
+    ...(confidenceValues.length ? { confidence: Number(Math.max(...confidenceValues).toFixed(2)) } : {}),
+  } : null;
+  const animationProbe = probeLinks.map((link) => ({
+    assetFile: dynamicsSemanticText(link?.assetFile, 160),
+    associationSource: dynamicsSemanticText(link?.associationSource, 80),
+    classification: dynamicsSemanticText(link?.classification, 80),
+    playbackMode: dynamicsSemanticText(link?.playbackMode, 80),
+    hasEmbeddedAnimation: link?.hasEmbeddedAnimation === true,
+    ...(Number.isFinite(Number(link?.confidence)) ? { confidence: Number(Number(link.confidence).toFixed(2)) } : {}),
+  }));
+  return {
+    ...(beatText ? { beatText } : {}),
+    ...(reasoning.length ? {
+      reasoning: dynamicsSemanticText(reasoning.join(" "), DYNAMICS_SEMANTIC_TEXT_LIMIT),
+    } : {}),
+    ...(partSelectors.length ? { partSelectors } : {}),
+    ...(animationTargetSelectors.length ? { animationTargetSelectors } : {}),
+    ...(animationProbe.length ? { animationProbe } : {}),
+    ...(sourceState ? { sourceState } : {}),
+  };
+}
+
+function dynamicsTargetsWithSemanticContext(graph, scene, targets) {
+  const prepared = (targets || []).map((target) => ({
+    ...target,
+    ...(target?.selectionRole ? {} : {
+      ...(dynamicsSourceSelectionRole(target?.sourceInstanceId)
+        ? { selectionRole: dynamicsSourceSelectionRole(target.sourceInstanceId) }
+        : {}),
+    }),
+  }));
+  const highlights = prepared.filter((target) => target.selectionRole === "highlight");
+  const companionNounsByEntityId = new Map();
+  const markerNouns = [];
+  for (const target of prepared.filter((candidate) => candidate.selectionRole === "reference")) {
+    const nouns = dynamicsInactiveCompanionNouns(target);
+    companionNounsByEntityId.set(target.entityId, nouns);
+    markerNouns.push(...nouns);
+  }
+  const uniqueMarkerNouns = dynamicsSemanticStrings(markerNouns, 4, 48);
+  return prepared.map((target) => {
+    const baseAlias = dynamicsReadableSemanticAlias(target.label || target.assetId);
+    const aliases = [baseAlias];
+    let semanticState = "";
+    if (target.selectionRole === "highlight") {
+      semanticState = "active";
+      if (baseAlias) aliases.push(`highlight ${baseAlias}`);
+      if (highlights.length === 1) {
+        for (const prefix of ["active", "selected", "current"]) {
+          if (baseAlias) aliases.push(`${prefix} ${baseAlias}`);
+          for (const noun of uniqueMarkerNouns) aliases.push(`${prefix} ${noun}`);
+        }
+      }
+    } else if (target.selectionRole === "reference") {
+      const companionNouns = companionNounsByEntityId.get(target.entityId) || [];
+      if (companionNouns.length) semanticState = "inactive";
+      for (const noun of companionNouns) {
+        aliases.push(`inactive ${noun}`, `unselected ${noun}`, `reference ${noun}`);
+      }
+    }
+    return {
+      ...target,
+      ...((target.selectionRole || target.sourceRole) ? {
+        semanticRole: target.selectionRole || target.sourceRole,
+      } : {}),
+      ...(semanticState ? { semanticState } : {}),
+      semantic: {
+        aliases: dynamicsSemanticStrings(aliases, DYNAMICS_SEMANTIC_ALIAS_LIMIT, 120),
+        ...(uniqueMarkerNouns.length ? { markerNouns: uniqueMarkerNouns } : {}),
+        ...(semanticState ? { state: semanticState } : {}),
+        ...dynamicsTargetSemanticEvidence(graph, scene, target),
+      },
+    };
+  });
+}
+
 function proceduralDynamicsContexts(graph, runtime, spatialRelations = null) {
   const libraryAssets = proceduralDynamicsLibraryAssets(graph, runtime);
   const libraryById = new Map(libraryAssets.map((asset) => [asset.assetId, asset]));
+  const runtimeById = new Map((runtime?.assets || []).map((asset) => [asset?.id, asset]));
   const definitions = spatialSceneDefinitions(graph, runtime);
   const contexts = {};
   for (const definition of definitions) {
@@ -5751,21 +6578,58 @@ function proceduralDynamicsContexts(graph, runtime, spatialRelations = null) {
       text: definition.text,
     });
     const savedScene = dynamicsSpatialSceneForContext(spatialRelations, scene);
-    const assets = savedScene
+    const rawAssets = savedScene
       ? (savedScene.entities || [])
         .filter((entity) => entity?.kind === "glb" && entity.id && entity.assetId)
         .map((entity) => {
           const libraryAsset = libraryById.get(entity.assetId);
-          return libraryAsset ? { ...libraryAsset, entityId: entity.id } : null;
+          return libraryAsset ? {
+            ...libraryAsset,
+            entityId: entity.id,
+            ...dynamicsSpatialEntityMotionContext(entity),
+          } : null;
         })
         .filter(Boolean)
       : definition.linkedAssetIds
         .map((assetId) => libraryById.get(assetId))
         .filter(Boolean);
+    const rawSceneImages = savedScene
+      ? (savedScene.entities || [])
+        .filter((entity) => entity?.kind === "image-plane" && entity.id && entity.assetId)
+        .map((entity) => ({
+          kind: "image-plane",
+          entityId: entity.id,
+          assetId: entity.assetId,
+          label: proceduralDynamicsAssetLabel(runtimeById.get(entity.assetId), entity.assetId),
+          ...dynamicsSpatialEntityMotionContext(entity),
+          image: cloneJson(entity.image || null),
+        }))
+      : definition.linkedAssetIds
+        .map((assetId) => runtimeById.get(assetId))
+        .filter((asset) => spatialVisualAssetKind(asset) === "image-plane")
+        .map((asset) => ({
+          kind: "image-plane",
+          entityId: `image:${asset.id}:beat:${scene.beatId}${scene.variantOptionId ? `:variant:${scene.variantOptionId}` : ""}`,
+          assetId: asset.id,
+          label: proceduralDynamicsAssetLabel(asset, asset.id),
+          transform: null,
+          image: null,
+        }));
+    const contextualTargets = dynamicsTargetsWithSemanticContext(
+      graph,
+      scene,
+      [...rawAssets, ...rawSceneImages],
+    );
+    const assets = contextualTargets.slice(0, rawAssets.length);
+    const sceneImages = contextualTargets.slice(rawAssets.length);
     contexts[scene.sceneKey] = {
       scene,
       assets,
-      linkedAssetIds: uniqueStrings(assets.map((asset) => asset.assetId)),
+      sceneImages,
+      linkedAssetIds: uniqueStrings([
+        ...assets.map((asset) => asset.assetId),
+        ...sceneImages.map((image) => image.assetId),
+      ]),
       sceneAssetIds: savedScene
         ? uniqueStrings((savedScene.entities || []).map((entity) => entity?.assetId))
         : [...definition.linkedAssetIds],
@@ -5824,6 +6688,73 @@ async function readProceduralDynamicsStore(paths, graph, runtime, contextsInput 
   return normalizeProceduralDynamicsStore(raw || emptyProceduralDynamicsStore(), contexts);
 }
 
+function proceduralTransitionBoundaries(graph, runtime) {
+  const beatsById = new Map((graph?.beats || []).filter((beat) => beat?.id).map((beat) => [beat.id, beat]));
+  return sourceGraphNarrativeProgressionEdges(graph || {}, runtime || {}).flatMap((edge) => {
+    const edgeId = String(edge?.id || "").trim();
+    const fromContext = sourceGraphTransitionRouteContext(edge?.from);
+    const toContext = sourceGraphTransitionRouteContext(edge?.to);
+    const boundaryKey = proceduralTransitionBoundaryKey({ edgeId, fromContext, toContext });
+    if (!boundaryKey) return [];
+    return [{
+      boundaryKey,
+      edgeId,
+      routeId: edgeId,
+      fromBeatId: fromContext.beatId,
+      toBeatId: toContext.beatId,
+      fromContext,
+      toContext,
+      fromBeat: beatsById.get(fromContext.beatId) || null,
+      toBeat: beatsById.get(toContext.beatId) || null,
+    }];
+  });
+}
+
+function proceduralTransitionBoundaryIndex(graph, runtime) {
+  return new Map(proceduralTransitionBoundaries(graph, runtime).map((boundary) => [boundary.boundaryKey, boundary]));
+}
+
+function normalizeProceduralTransitionsForBoundaries(value, boundariesByKey) {
+  const normalized = normalizeProceduralTransitionsStore(value || emptyProceduralTransitionsStore());
+  const plansByBoundary = {};
+  for (const [boundaryKey, rawPlan] of Object.entries(normalized.plansByBoundary || {})) {
+    const boundary = boundariesByKey.get(boundaryKey);
+    if (!boundary) continue;
+    try {
+      plansByBoundary[boundaryKey] = normalizeProceduralTransitionPlan(rawPlan, boundary);
+    } catch {
+      // A plan with stale route identity remains inert until the author reviews Scene changes.
+    }
+  }
+  return {
+    ...normalized,
+    plansByBoundary,
+  };
+}
+
+async function readProceduralTransitionsStore(paths, graph, runtime) {
+  const raw = await readJsonIfExists(paths.proceduralTransitionsPath);
+  return normalizeProceduralTransitionsForBoundaries(
+    raw || emptyProceduralTransitionsStore(),
+    proceduralTransitionBoundaryIndex(graph, runtime),
+  );
+}
+
+function assertStoredProceduralTransitionsEligible(
+  graph,
+  runtime,
+  spatialRelations,
+  proceduralTransitions,
+) {
+  // Generated transition middles are transient overlays. They may coexist with
+  // saved source movement, frozen visual states, or text-only endpoints because
+  // the exact saved source/destination scenes are restored at progress 0 and 1.
+  void graph;
+  void runtime;
+  void spatialRelations;
+  void proceduralTransitions;
+}
+
 async function markProceduralDynamicsDecisionDraft(paths, store) {
   const componentId = "dynamic-geometry";
   const decisionPath = path.join(paths.decisionsRoot, `${componentId}.json`);
@@ -5858,6 +6789,7 @@ export function resolveAuthorPaths(options) {
     storyCanvasSegmentsPath: path.join(analysisRoot, "story-canvas-segments.json"),
     performanceOptimizationPath: path.join(analysisRoot, "performance-optimization.json"),
     proceduralDynamicsPath: path.join(analysisRoot, "procedural-dynamics.json"),
+    proceduralTransitionsPath: path.join(analysisRoot, "procedural-transitions.json"),
     sourceMotionOverridesPath: path.join(analysisRoot, "source-motion-overrides.json"),
     sourceMotionPlaybackPath: path.join(analysisRoot, "source-motion-playback.json"),
     compiledRuntimePath: path.join(storyFolder, "discovery", "storyvr-runtime.json"),
@@ -6018,6 +6950,8 @@ function decisionMaterialSignature(decision) {
     finalTuningPrompt: decision.finalTuningPrompt || "",
     proceduralDynamicsRevision: decision.proceduralDynamicsRevision ?? null,
     proceduralDynamicsSceneKeys: decision.proceduralDynamicsSceneKeys || null,
+    proceduralTransitionsRevision: decision.proceduralTransitionsRevision ?? null,
+    proceduralTransitionBoundaryKeys: decision.proceduralTransitionBoundaryKeys || null,
     spatialRelations: decision.spatialRelations || null,
     attentionGuidance: decision.attentionGuidance || null,
     inBeatInteractionsSchemaVersion: decision.inBeatInteractionsSchemaVersion || null,
@@ -11512,6 +12446,13 @@ async function revalidatePreviouslyCompletedWorkflow({
             runtime,
             nextDecisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations || null,
           );
+        } else if (component.id === "inter-beat-dynamics") {
+          await reconcileProceduralTransitionsForAutomaticValidation(
+            paths,
+            graph,
+            runtime,
+            nextDecisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations || null,
+          );
         }
         saved = await saveCheckpointDecision(options, component.id, {
           authorEdits: decision?.authorEdits || "",
@@ -11670,6 +12611,38 @@ async function reconcileProceduralDynamicsForAutomaticValidation(
   const deletedSceneKeys = rawSceneKeys.filter((sceneKey) => !contexts[sceneKey]);
   if (!deletedSceneKeys.length) return;
   await writeJson(paths.proceduralDynamicsPath, {
+    ...normalized,
+    revision: Math.max(0, Number(raw.revision) || 0) + 1,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+async function reconcileProceduralTransitionsForAutomaticValidation(
+  paths,
+  graph,
+  runtime,
+) {
+  const raw = await readJsonIfExists(paths.proceduralTransitionsPath);
+  if (!raw || raw.schemaVersion !== PROCEDURAL_TRANSITIONS_SCHEMA_VERSION) return;
+  const boundariesByKey = proceduralTransitionBoundaryIndex(graph, runtime);
+  const normalized = normalizeProceduralTransitionsForBoundaries(raw, boundariesByKey);
+  const rawBoundaryKeys = Object.keys(raw.plansByBoundary || {});
+  const normalizedBoundaryKeys = new Set(Object.keys(normalized.plansByBoundary || {}));
+  const invalidSurvivingBoundaryKeys = rawBoundaryKeys.filter((boundaryKey) => (
+    boundariesByKey.has(boundaryKey) && !normalizedBoundaryKeys.has(boundaryKey)
+  ));
+  if (invalidSurvivingBoundaryKeys.length) {
+    const boundary = boundariesByKey.get(invalidSurvivingBoundaryKeys[0]);
+    throw automaticRevalidationError(
+      "inter-beat-dynamics",
+      "PROCEDURAL_TRANSITION_SURVIVING_PLAN_INVALID",
+      "A saved generated transition no longer matches its surviving Story order edge. Review that scene change before continuing.",
+      { edgeId: boundary?.edgeId || null },
+    );
+  }
+  const deletedBoundaryKeys = rawBoundaryKeys.filter((boundaryKey) => !boundariesByKey.has(boundaryKey));
+  if (!deletedBoundaryKeys.length) return;
+  await writeJson(paths.proceduralTransitionsPath, {
     ...normalized,
     revision: Math.max(0, Number(raw.revision) || 0) + 1,
     updatedAt: new Date().toISOString(),
@@ -14419,12 +15392,12 @@ function environmentEnhancementDecisionOption(component, environmentEnhancement)
       firstEnvironment.asset?.sourceUpload?.filename,
       "Setting asset",
     )
-    : `${environments.length} story-part settings`;
+    : `${environments.length} story-scene settings`;
   const assetLinks = [...new Map(environments.map((environment) => [
     environment.asset.publicPath,
     {
       assetId: environment.asset.publicPath,
-      role: "story-part setting",
+      role: "story-scene setting",
     },
   ])).values()];
   const warnings = uniqueStrings(environments.flatMap((environment) => (
@@ -14438,14 +15411,14 @@ function environmentEnhancementDecisionOption(component, environmentEnhancement)
     label: title,
     designDimension: component.dimension,
     description: environments.length === 1
-      ? `Use ${title} for its assigned StoryVR story parts.`
-      : `Use ${environments.length} authored settings across their assigned StoryVR story parts.`,
+      ? `Use ${title} for its assigned StoryVR story scenes.`
+      : `Use ${environments.length} authored settings across their assigned StoryVR story scenes.`,
     sourceEvidence: [],
     assetLinks,
-    readerImpact: "Each assigned setting surrounds only its corresponding story parts while source assets, movement, reader actions, and the WebXR camera remain authoritative.",
+    readerImpact: "Each assigned setting surrounds only its corresponding story scenes while source assets, movement, reader actions, and the WebXR camera remain authoritative.",
     risks: warnings,
     implementationHints: [
-      "Resolve the setting for the active story part and retain the neutral setting when no assignment applies.",
+      "Resolve the setting for the active story scene and retain the neutral setting when no assignment applies.",
       "Do not replace Story order assets, source movement playback, or headset tracking with setting-asset cameras.",
     ],
     confidence: 1,
@@ -14461,6 +15434,7 @@ function uniqueEnvironmentEnhancementAssignments(value) {
   const candidates = [
     source.defaultEnvironment,
     ...Object.values(source.assignmentsByBeat || {}),
+    ...Object.values(source.assignmentsByScene || {}),
   ].filter((environment) => environment && typeof environment === "object");
   const unique = new Map();
   for (const environment of candidates) {
@@ -14479,6 +15453,7 @@ function isEnvironmentEnhancementAssignmentsSource(value) {
     value.schemaVersion === ENVIRONMENT_ENHANCEMENT_ASSIGNMENTS_SCHEMA_VERSION
     || Object.hasOwn(value, "defaultAssignment")
     || Object.hasOwn(value, "assignmentsByBeat")
+    || Object.hasOwn(value, "assignmentsByScene")
   ));
 }
 
@@ -14522,6 +15497,7 @@ async function validatedEnvironmentEnhancementAssignments(paths, value, graph) {
       schemaVersion: ENVIRONMENT_ENHANCEMENT_ASSIGNMENTS_SCHEMA_VERSION,
       defaultEnvironment: await validatedEnvironmentEnhancementContract(paths, source, validationContext),
       assignmentsByBeat: {},
+      assignmentsByScene: {},
     };
   }
 
@@ -14551,11 +15527,32 @@ async function validatedEnvironmentEnhancementAssignments(paths, value, graph) {
       ? null
       : await validatedEnvironmentEnhancementContract(paths, assignmentValue, validationContext);
   }
+  const validVariantSceneKeys = new Set(spatialSceneDefinitions(graph, {})
+    .filter((definition) => definition.variantOptionId)
+    .map((definition) => definition.sceneKey));
+  const rawSceneAssignments = source.assignmentsByScene
+    && typeof source.assignmentsByScene === "object"
+    && !Array.isArray(source.assignmentsByScene)
+    ? source.assignmentsByScene
+    : {};
+  const assignmentsByScene = {};
+  for (const [rawSceneKey, assignment] of Object.entries(rawSceneAssignments)) {
+    const sceneKey = String(rawSceneKey || "").trim();
+    // Variant options are independently authored scenes. As with deleted beat
+    // assignments above, discard entries whose option no longer exists so a
+    // removed or regrouped choice cannot leave the checkpoint unsaveable.
+    if (!sceneKey || !validVariantSceneKeys.has(sceneKey)) continue;
+    const assignmentValue = environmentEnhancementAssignmentValue(assignment);
+    assignmentsByScene[sceneKey] = assignmentValue === null
+      ? null
+      : await validatedEnvironmentEnhancementContract(paths, assignmentValue, validationContext);
+  }
 
   return {
     schemaVersion: ENVIRONMENT_ENHANCEMENT_ASSIGNMENTS_SCHEMA_VERSION,
     defaultEnvironment,
     assignmentsByBeat,
+    assignmentsByScene,
   };
 }
 
@@ -15127,9 +16124,12 @@ function isValidEnvironmentEnhancementOption(option) {
   if (contract?.schemaVersion === ENVIRONMENT_ENHANCEMENT_ASSIGNMENTS_SCHEMA_VERSION) {
     const assignments = contract.assignmentsByBeat;
     if (!assignments || typeof assignments !== "object" || Array.isArray(assignments)) return false;
+    const sceneAssignments = contract.assignmentsByScene ?? {};
+    if (!sceneAssignments || typeof sceneAssignments !== "object" || Array.isArray(sceneAssignments)) return false;
     const environments = [
       contract.defaultEnvironment,
       ...Object.values(assignments),
+      ...Object.values(sceneAssignments),
     ].filter((environment) => environment !== null && environment !== undefined);
     return isEnvironmentEnhancementAssetOptionId(option?.optionId)
       && environments.length > 0

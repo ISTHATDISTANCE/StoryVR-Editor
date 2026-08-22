@@ -16,6 +16,12 @@ import path from "node:path";
 export const ENVIRONMENT_STORE_SCHEMA_VERSION = "storyvr-environment-enhancement/v1";
 export const MAX_ENVIRONMENT_GENERATED_ASSET_BYTES = 120 * 1024 * 1024;
 
+export function environmentSceneAssignmentKey(beatId, variantOptionId) {
+  const normalizedBeatId = requireBeatId(beatId, "beatId");
+  const normalizedVariantOptionId = requireBeatId(variantOptionId, "variantOptionId");
+  return `beat:${normalizedBeatId}:variant:${normalizedVariantOptionId}`;
+}
+
 const GENERATED_ASSET_EXTENSION = ".png";
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -115,7 +121,11 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
     return serializeMutation(async () => {
       const previous = await readState(manifestPath);
       const beatId = optionalBeatId(generation?.beatId);
-      const previousAssignment = editableAssignmentForBeat(previous, beatId);
+      const variantOptionId = optionalVariantOptionId(generation?.variantOptionId);
+      if (variantOptionId && !beatId) {
+        throw new TypeError("variantOptionId requires beatId.");
+      }
+      const previousAssignment = editableAssignmentForScene(previous, beatId, variantOptionId);
       const normalized = normalizeGeneratedAsset(generation);
       return installGeneratedPair(previous, normalized, (sourcePath) => writeAssetToFile(
         normalized.body,
@@ -124,6 +134,7 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
         MAX_ENVIRONMENT_GENERATED_ASSET_BYTES,
       ), {
         beatId,
+        variantOptionId,
         previousAssignment,
         groundInput: generation?.ground,
       });
@@ -132,7 +143,8 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
 
   async function installGeneratedPair(previous, normalized, receiveSource, {
     beatId = null,
-    previousAssignment = editableAssignmentForBeat(previous, beatId),
+    variantOptionId = null,
+    previousAssignment = editableAssignmentForScene(previous, beatId, variantOptionId),
     groundInput = null,
   } = {}) {
     await mkdir(assetRoot, { recursive: true });
@@ -278,7 +290,7 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
         }),
         skipped: false,
       });
-      const next = assignEnvironment(previous, beatId, assignment, now);
+      const next = assignEnvironment(previous, beatId, variantOptionId, assignment, now);
 
       await installStagingDirectory(stagingRoot, destination, () => writeStateAtomic(manifestPath, next));
       // Asset bundles are intentionally retained. More than one beat may point
@@ -292,6 +304,7 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
 
   function updateDraft({
     beatId = null,
+    variantOptionId = null,
     skipped,
     transform,
     rendering,
@@ -300,7 +313,15 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
     return serializeMutation(async () => {
       const previous = await readState(manifestPath);
       const normalizedBeatId = optionalBeatId(beatId);
-      const previousAssignment = editableAssignmentForBeat(previous, normalizedBeatId);
+      const normalizedVariantOptionId = optionalVariantOptionId(variantOptionId);
+      if (normalizedVariantOptionId && !normalizedBeatId) {
+        throw new TypeError("variantOptionId requires beatId.");
+      }
+      const previousAssignment = editableAssignmentForScene(
+        previous,
+        normalizedBeatId,
+        normalizedVariantOptionId,
+      );
       if (!previousAssignment.asset && skipped !== true) {
         throw new Error("Generate an environment asset before editing its draft.");
       }
@@ -329,7 +350,12 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
             texture: previousAssignment.movementCue?.texture,
           }, previousAssignment.movementCue),
       });
-      const next = assignEnvironment(previous, normalizedBeatId, assignment);
+      const next = assignEnvironment(
+        previous,
+        normalizedBeatId,
+        normalizedVariantOptionId,
+        assignment,
+      );
       await writeStateAtomic(manifestPath, next);
       return jsonClone(next);
     });
@@ -337,7 +363,9 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
 
   function applyAssignment({
     sourceBeatId,
+    sourceVariantOptionId = null,
     targetBeatIds,
+    targetSceneContexts,
     expectedRevision,
   } = {}) {
     return serializeMutation(async () => {
@@ -352,42 +380,70 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
         throw error;
       }
       const sourceId = requireBeatId(sourceBeatId, "sourceBeatId");
-      const targets = uniqueBeatIds(targetBeatIds, "targetBeatIds");
-      if (!targets.length) throw new TypeError("targetBeatIds must include at least one beat.");
-      if (targets.includes(sourceId)) {
-        throw new TypeError("targetBeatIds must not include sourceBeatId.");
-      }
-      const sourceAssignment = effectiveEnvironmentAssignment(previous, sourceId);
-      if (!sourceAssignment?.asset || sourceAssignment.skipped === true) {
-        throw new Error("The source beat does not have an environment asset to apply.");
-      }
-      const assignmentsByBeat = {
-        ...previous.assignmentsByBeat,
-        ...Object.fromEntries(targets.map((beatId) => [
+      const sourceOptionId = optionalVariantOptionId(sourceVariantOptionId);
+      const targets = targetSceneContexts === undefined
+        ? uniqueBeatIds(targetBeatIds, "targetBeatIds").map((beatId) => ({
           beatId,
-          jsonClone(sourceAssignment),
-        ])),
-      };
+          variantOptionId: null,
+        }))
+        : normalizeEnvironmentSceneContexts(targetSceneContexts, "targetSceneContexts");
+      if (!targets.length) throw new TypeError("Target scenes must include at least one story scene.");
+      const sourceKey = sourceOptionId
+        ? environmentSceneAssignmentKey(sourceId, sourceOptionId)
+        : `beat:${sourceId}`;
+      if (targets.some((target) => environmentContextAssignmentKey(target) === sourceKey)) {
+        throw new TypeError("The source scene must not also be a target scene.");
+      }
+      const sourceAssignment = effectiveEnvironmentAssignment(previous, sourceId, sourceOptionId);
+      if (!sourceAssignment?.asset || sourceAssignment.skipped === true) {
+        throw new Error("The source scene does not have a setting asset to apply.");
+      }
+      const assignmentsByBeat = { ...previous.assignmentsByBeat };
+      const assignmentsByScene = { ...previous.assignmentsByScene };
+      for (const target of targets) {
+        if (target.variantOptionId) {
+          assignmentsByScene[environmentSceneAssignmentKey(target.beatId, target.variantOptionId)] = jsonClone(sourceAssignment);
+        } else {
+          assignmentsByBeat[target.beatId] = jsonClone(sourceAssignment);
+        }
+      }
       const next = touch(withTopLevelAssignment(previous, sourceAssignment), {
         assignmentsByBeat,
+        assignmentsByScene,
       });
       await writeStateAtomic(manifestPath, next);
       return jsonClone(next);
     });
   }
 
-  function reconcileBeatAssignments(currentBeatIds) {
+  function reconcileBeatAssignments(currentBeatIds, currentVariantScenes = undefined) {
     return serializeMutation(async () => {
       const retainedBeatIds = new Set(uniqueBeatIds(currentBeatIds, "currentBeatIds"));
+      const retainedSceneKeys = currentVariantScenes === undefined
+        ? null
+        : new Set(normalizeEnvironmentSceneContexts(currentVariantScenes, "currentVariantScenes")
+          .filter((context) => context.variantOptionId)
+          .map(environmentContextAssignmentKey));
       const previous = await readState(manifestPath);
       const assignmentEntries = Object.entries(previous.assignmentsByBeat);
       const removedBeatIds = assignmentEntries
         .filter(([beatId]) => !retainedBeatIds.has(beatId))
         .map(([beatId]) => beatId);
 
-      if (!removedBeatIds.length) {
+      const sceneAssignmentEntries = Object.entries(previous.assignmentsByScene);
+      const removedSceneKeys = sceneAssignmentEntries
+        .filter(([sceneKey]) => {
+          const context = environmentContextFromAssignmentKey(sceneKey);
+          return !context
+            || !retainedBeatIds.has(context.beatId)
+            || (retainedSceneKeys && !retainedSceneKeys.has(sceneKey));
+        })
+        .map(([sceneKey]) => sceneKey);
+
+      if (!removedBeatIds.length && !removedSceneKeys.length) {
         return {
           removedBeatIds: [],
+          removedSceneKeys: [],
           state: jsonClone(previous),
         };
       }
@@ -395,10 +451,14 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
       const assignmentsByBeat = Object.fromEntries(
         assignmentEntries.filter(([beatId]) => retainedBeatIds.has(beatId)),
       );
-      const next = touch(previous, { assignmentsByBeat });
+      const assignmentsByScene = Object.fromEntries(
+        sceneAssignmentEntries.filter(([sceneKey]) => !removedSceneKeys.includes(sceneKey)),
+      );
+      const next = touch(previous, { assignmentsByBeat, assignmentsByScene });
       await writeStateAtomic(manifestPath, next);
       return {
         removedBeatIds,
+        removedSceneKeys,
         state: jsonClone(next),
       };
     });
@@ -446,9 +506,20 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
   };
 }
 
-export function effectiveEnvironmentAssignment(state, beatId) {
+export function effectiveEnvironmentAssignment(state, beatId, variantOptionId = null) {
   const source = isPlainObject(state) ? state : emptyState();
   const normalizedBeatId = optionalBeatId(beatId);
+  const normalizedVariantOptionId = optionalVariantOptionId(variantOptionId);
+  if (normalizedVariantOptionId && !normalizedBeatId) {
+    throw new TypeError("variantOptionId requires beatId.");
+  }
+  if (normalizedBeatId && normalizedVariantOptionId && isPlainObject(source.assignmentsByScene)) {
+    const sceneKey = environmentSceneAssignmentKey(normalizedBeatId, normalizedVariantOptionId);
+    if (Object.hasOwn(source.assignmentsByScene, sceneKey)) {
+      const direct = source.assignmentsByScene[sceneKey];
+      return isPlainObject(direct) ? normalizeEnvironmentAssignment(direct) : null;
+    }
+  }
   if (
     normalizedBeatId
     && isPlainObject(source.assignmentsByBeat)
@@ -463,8 +534,8 @@ export function effectiveEnvironmentAssignment(state, beatId) {
   return null;
 }
 
-function editableAssignmentForBeat(state, beatId) {
-  return effectiveEnvironmentAssignment(state, beatId) || emptyAssignment();
+function editableAssignmentForScene(state, beatId, variantOptionId = null) {
+  return effectiveEnvironmentAssignment(state, beatId, variantOptionId) || emptyAssignment();
 }
 
 function emptyAssignment() {
@@ -512,6 +583,7 @@ function emptyState() {
     skipped: false,
     defaultAssignment: null,
     assignmentsByBeat: {},
+    assignmentsByScene: {},
   };
 }
 
@@ -538,7 +610,8 @@ async function readState(manifestPath) {
     ...editableValue
   } = value;
   const hasScopedAssignments = Object.hasOwn(value, "defaultAssignment")
-    || Object.hasOwn(value, "assignmentsByBeat");
+    || Object.hasOwn(value, "assignmentsByBeat")
+    || Object.hasOwn(value, "assignmentsByScene");
   const defaultAssignment = hasScopedAssignments
     ? (isPlainObject(value.defaultAssignment)
       ? normalizeEnvironmentAssignment(value.defaultAssignment)
@@ -547,6 +620,7 @@ async function readState(manifestPath) {
       ? assignmentFromTopLevel(value)
       : null;
   const assignmentsByBeat = normalizeAssignmentsByBeat(value.assignmentsByBeat);
+  const assignmentsByScene = normalizeAssignmentsByScene(value.assignmentsByScene);
   return {
     ...emptyState(),
     ...editableValue,
@@ -555,6 +629,7 @@ async function readState(manifestPath) {
     skipped: editableValue.skipped === true,
     defaultAssignment,
     assignmentsByBeat,
+    assignmentsByScene,
   };
 }
 
@@ -588,6 +663,20 @@ function normalizeAssignmentsByBeat(value) {
   return result;
 }
 
+function normalizeAssignmentsByScene(value) {
+  if (!isPlainObject(value)) return {};
+  const result = {};
+  for (const [rawSceneKey, assignment] of Object.entries(value)) {
+    const context = environmentContextFromAssignmentKey(rawSceneKey);
+    if (!context) continue;
+    const sceneKey = environmentContextAssignmentKey(context);
+    result[sceneKey] = isPlainObject(assignment)
+      ? normalizeEnvironmentAssignment(assignment)
+      : null;
+  }
+  return result;
+}
+
 function assignmentFromTopLevel(value) {
   const result = {};
   for (const key of ENVIRONMENT_ASSIGNMENT_KEYS) {
@@ -607,9 +696,17 @@ function withTopLevelAssignment(state, assignment) {
   };
 }
 
-function assignEnvironment(previous, beatId, assignment, now = new Date().toISOString()) {
+function assignEnvironment(previous, beatId, variantOptionId, assignment, now = new Date().toISOString()) {
   const normalized = normalizeEnvironmentAssignment(assignment);
   const projection = withTopLevelAssignment(previous, normalized);
+  if (beatId && variantOptionId) {
+    return touch(projection, {
+      assignmentsByScene: {
+        ...previous.assignmentsByScene,
+        [environmentSceneAssignmentKey(beatId, variantOptionId)]: normalized,
+      },
+    }, now);
+  }
   if (beatId) {
     return touch(projection, {
       assignmentsByBeat: {
@@ -626,6 +723,45 @@ function assignEnvironment(previous, beatId, assignment, now = new Date().toISOS
 function optionalBeatId(value) {
   if (value === undefined || value === null || value === "") return null;
   return requireBeatId(value, "beatId");
+}
+
+function optionalVariantOptionId(value) {
+  if (value === undefined || value === null || value === "") return null;
+  return requireBeatId(value, "variantOptionId");
+}
+
+function normalizeEnvironmentSceneContexts(value, label) {
+  if (!Array.isArray(value)) throw new TypeError(`${label} must be an array.`);
+  const unique = new Map();
+  for (const candidate of value) {
+    if (!isPlainObject(candidate)) throw new TypeError(`${label} must contain scene objects.`);
+    const beatId = requireBeatId(candidate.beatId, `${label}.beatId`);
+    const variantOptionId = optionalVariantOptionId(candidate.variantOptionId);
+    const context = { beatId, variantOptionId };
+    unique.set(environmentContextAssignmentKey(context), context);
+  }
+  return [...unique.values()];
+}
+
+function environmentContextAssignmentKey(context) {
+  return context.variantOptionId
+    ? environmentSceneAssignmentKey(context.beatId, context.variantOptionId)
+    : `beat:${context.beatId}`;
+}
+
+function environmentContextFromAssignmentKey(value) {
+  const sceneKey = String(value || "").trim();
+  const match = /^beat:(.+):variant:(.+)$/.exec(sceneKey);
+  if (!match) return null;
+  try {
+    const beatId = requireBeatId(match[1], "scene beatId");
+    const variantOptionId = requireBeatId(match[2], "scene variantOptionId");
+    return environmentSceneAssignmentKey(beatId, variantOptionId) === sceneKey
+      ? { beatId, variantOptionId }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function requireBeatId(value, label) {

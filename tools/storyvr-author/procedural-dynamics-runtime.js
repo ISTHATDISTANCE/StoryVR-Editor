@@ -1,6 +1,27 @@
 const DEFAULT_MINIMUM_VIEWER_DISTANCE_METERS = 1.5;
 const DEFAULT_MAXIMUM_SPEED_METERS_PER_SECOND = 1.2;
+const AUTHOR_OFFSET_POSITION_LIMIT_METERS = 1000;
+const ATTACHMENT_OFFSET_POSITION_LIMIT_METERS = 100;
+const AUTHOR_OFFSET_SCALE_MINIMUM = 0.001;
+const AUTHOR_OFFSET_SCALE_MAXIMUM = 1000;
 const TAU = Math.PI * 2;
+const GENERATED_OBJECT_KINDS = new Set(["primitive", "light", "particle-emitter"]);
+const TRACK_PROPERTIES = new Set([
+  "transform.position",
+  "transform.rotationEulerDegrees",
+  "transform.quaternion",
+  "transform.scale",
+  "appearance.opacity",
+  "appearance.visible",
+  "appearance.color",
+  "appearance.emissiveColor",
+  "appearance.emissiveIntensity",
+  "light.intensity",
+  "light.distance",
+  "light.angle",
+  "particle.rate",
+  "particle.size",
+]);
 
 export function proceduralDynamicsSceneKey(scopeOrBeatId, variantOptionId = null) {
   const scope = scopeOrBeatId && typeof scopeOrBeatId === "object"
@@ -10,6 +31,54 @@ export function proceduralDynamicsSceneKey(scopeOrBeatId, variantOptionId = null
   const variantId = normalizedString(scope?.variantOptionId || scope?.optionId);
   if (!beatId) return "";
   return variantId ? `variant:${beatId}:${variantId}` : `beat:${beatId}`;
+}
+
+export function normalizeProceduralDynamicsAuthorOffset(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const position = finiteVector3(source.position || source.translation, [0, 0, 0])
+    .map((component) => clampedNumber(
+      component,
+      0,
+      -AUTHOR_OFFSET_POSITION_LIMIT_METERS,
+      AUTHOR_OFFSET_POSITION_LIMIT_METERS,
+    ));
+  const quaternion = finiteQuaternion(source.quaternion)
+    || quaternionFromEulerDegrees(
+      source.rotationEulerDegrees || source.rotationDegrees || source.rotation,
+    )
+    || [0, 0, 0, 1];
+  const scale = finiteScale3(source.scale, [1, 1, 1])
+    .map((component) => clampedNumber(
+      component,
+      1,
+      AUTHOR_OFFSET_SCALE_MINIMUM,
+      AUTHOR_OFFSET_SCALE_MAXIMUM,
+    ));
+  return { position, quaternion, scale };
+}
+
+export function normalizeProceduralDynamicsGeneratedAttachment(value) {
+  if (value === undefined || value === null) return null;
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const requestedType = normalizedString(source.type).toLowerCase().replace(/[\s_]+/g, "-");
+  const requestedPoint = normalizedString(source.point).toLowerCase().replace(/[\s_]+/g, "-");
+  const entityId = normalizedString(source.entityId);
+  const valid = requestedType === "entity"
+    && Boolean(entityId)
+    && requestedPoint === "bounds-center";
+  return {
+    type: valid ? "entity" : "invalid",
+    entityId,
+    point: requestedPoint || "invalid",
+    follow: valid && source.follow !== false,
+    offsetMeters: finiteVector3(source.offsetMeters, [0, 0, 0])
+      .map((component) => clampedNumber(
+        component,
+        0,
+        -ATTACHMENT_OFFSET_POSITION_LIMIT_METERS,
+        ATTACHMENT_OFFSET_POSITION_LIMIT_METERS,
+      )),
+  };
 }
 
 export function proceduralDynamicsPlansForScene(store, scope = {}) {
@@ -28,7 +97,7 @@ export function proceduralDynamicsPlansForScene(store, scope = {}) {
   if (keyedPlans.length) {
     return keyedPlans
       .map((plan, index) => normalizeProceduralDynamicsPlan(plan, { sceneKey: requestedKey || beatKey, index }))
-      .filter((plan) => plan.enabled && plan.actors.length);
+      .filter((plan) => plan.enabled && (plan.actors.length || plan.generatedObjects.length));
   }
 
   const declaredPlans = [
@@ -38,7 +107,7 @@ export function proceduralDynamicsPlansForScene(store, scope = {}) {
   return declaredPlans
     .filter((plan) => proceduralDynamicsPlanMatchesScope(plan, scope))
     .map((plan, index) => normalizeProceduralDynamicsPlan(plan, { sceneKey: requestedKey || beatKey, index }))
-    .filter((plan) => plan.enabled && plan.actors.length);
+    .filter((plan) => plan.enabled && (plan.actors.length || plan.generatedObjects.length));
 }
 
 export function normalizeProceduralDynamicsPlan(plan, options = {}) {
@@ -52,8 +121,14 @@ export function normalizeProceduralDynamicsPlan(plan, options = {}) {
   const actors = uniqueMotionTargetActors(
     actorSources.map((actor, index) => normalizeProceduralDynamicsActor(actor, source, index)),
   );
+  const generatedObjects = uniqueGeneratedObjects(
+    normalizeGeneratedObjectSources(source)
+      .map((object, index) => normalizeProceduralDynamicsGeneratedObject(object, index)),
+  );
   const metadata = withoutKeys(source, [
     "actors",
+    "generatedObjects",
+    "effects",
     "sceneComposition",
     "assetVisibility",
     "suppressedAuthoredAssetIds",
@@ -88,6 +163,7 @@ export function normalizeProceduralDynamicsPlan(plan, options = {}) {
       follow: false,
     },
     actors,
+    generatedObjects,
     comfort: {
       ...comfortSource,
       minimumViewerDistanceMeters: clampedNumber(
@@ -111,7 +187,11 @@ export function normalizeProceduralDynamicsPlan(plan, options = {}) {
     },
     performance: {
       totalMotionAssignments: actors.length,
-      maxActiveAnimationMixers: actors.length,
+      maxActiveAnimationMixers: actors.filter((actor) => (
+        actor.targetKind === "glb" && actor.animation.enabled
+      )).length,
+      generatedObjectCount: generatedObjects.length,
+      totalAnimatedElementCount: actors.length + generatedObjects.length,
       castShadow: false,
     },
   };
@@ -127,6 +207,8 @@ export function clampProceduralDynamicsPlan(plan, _options = {}) {
   return {
     ...normalized,
     motionTargetCount: normalized.actors.length,
+    generatedObjectCount: normalized.generatedObjects.length,
+    totalAnimatedElementCount: normalized.actors.length + normalized.generatedObjects.length,
   };
 }
 
@@ -144,6 +226,7 @@ export function expandProceduralDynamicsInstances(plan, options = {}) {
       normalizedPlan.comfort,
     );
     const animation = expandAnimation(actor.animation, assignmentCount, actorIndex, random);
+    const timeline = expandTimeline(actor.timeline, assignmentCount, actorIndex, random);
     return {
       instanceId: actor.entityId || `${actor.actorId}:1`,
       instanceIndex: 0,
@@ -153,11 +236,13 @@ export function expandProceduralDynamicsInstances(plan, options = {}) {
       actorIndex,
       entityId: actor.entityId,
       assetId: actor.assetId,
+      targetKind: actor.targetKind,
       clip: actor.clip,
       clipIndex: actor.clip.index,
       clipIndexes: actor.clip.indexes,
       clipName: actor.clip.name,
       trajectory,
+      ...(timeline ? { timeline } : {}),
       orientation: actor.orientation,
       animation,
       animationMode: animation.mode,
@@ -184,20 +269,116 @@ export function expandProceduralDynamicsInstances(plan, options = {}) {
   });
 }
 
+export function expandProceduralDynamicsGeneratedObjects(plan, options = {}) {
+  const normalizedPlan = clampProceduralDynamicsPlan(plan, options);
+  const objectCount = normalizedPlan.generatedObjects.length;
+  return normalizedPlan.generatedObjects.map((object, objectIndex) => {
+    const random = seededRandom(`${normalizedPlan.seed}|${normalizedPlan.id}|generated:${object.id}`);
+    const timeline = expandTimeline(object.timeline, objectCount, objectIndex, random);
+    return {
+      instanceId: object.id,
+      objectId: object.id,
+      planId: normalizedPlan.id,
+      sceneKey: normalizedPlan.sceneKey,
+      elementKind: "generated-object",
+      kind: object.kind,
+      object: object.object,
+      transform: object.transform,
+      authorOffset: object.authorOffset,
+      ...(object.attachment ? { attachment: object.attachment } : {}),
+      appearance: object.appearance,
+      ...(timeline ? { timeline } : {}),
+      entryFadeSeconds: normalizedPlan.lifecycle.fadeInSeconds,
+      exitBlendSeconds: normalizedPlan.lifecycle.fadeOutSeconds,
+      anchor: normalizedPlan.anchor,
+    };
+  });
+}
+
+export function expandProceduralDynamicsElements(plan, options = {}) {
+  return [
+    ...expandProceduralDynamicsInstances(plan, options).map((instance) => ({
+      ...instance,
+      elementKind: "existing-actor",
+    })),
+    ...expandProceduralDynamicsGeneratedObjects(plan, options),
+  ];
+}
+
 export function sampleProceduralDynamicsTransform(instance, elapsedSeconds) {
   const elapsed = Math.max(0, finiteNumber(elapsedSeconds, 0));
   const trajectory = instance?.trajectory || {};
   const sampled = trajectory.kind === "waypoint-loop"
     ? sampleWaypointLoop(trajectory, elapsed)
-    : sampleSchoolOrbit(trajectory, elapsed);
+    : trajectory.kind === "keyframe-path"
+      ? sampleKeyframePath(trajectory, elapsed)
+      : trajectory.kind === "stationary" || !instance?.trajectory
+        ? { position: [...(instance?.transform?.position || [0, 0, 0])], tangent: [0, 0, 1], progress: 0 }
+        : sampleSchoolOrbit(trajectory, elapsed);
+  const timelineSample = sampleTimeline(instance?.timeline, elapsed);
+  const timelinePosition = finiteVector3(timelineSample.properties["transform.position"], null);
+  const position = timelinePosition || sampled.position;
+  const tangent = timelinePosition
+    ? timelinePositionTangent(instance?.timeline, elapsed)
+    : sampled.tangent;
   const fadeSeconds = Math.max(0, finiteNumber(instance?.entryFadeSeconds, 0));
-  const opacity = fadeSeconds > 0 ? clamp01(elapsed / fadeSeconds) : 1;
-  return {
-    position: sampled.position,
-    tangent: normalizedVector3(sampled.tangent, [0, 0, 1]),
+  const fadeOpacity = fadeSeconds > 0 ? clamp01(elapsed / fadeSeconds) : 1;
+  const trackedOpacity = timelineSample.properties["appearance.opacity"];
+  const opacity = fadeOpacity * (Number.isFinite(Number(trackedOpacity)) ? clamp01(trackedOpacity) : 1);
+  const sample = {
+    position,
+    tangent: normalizedVector3(tangent, [0, 0, 1]),
     opacity,
-    progress: sampled.progress,
+    progress: timelineSample.active ? timelineSample.progress : sampled.progress,
+    quaternion: finiteQuaternion(timelineSample.properties["transform.quaternion"]),
+    rotationEulerDegrees: finiteVector3(timelineSample.properties["transform.rotationEulerDegrees"], null) || undefined,
+    scale: finiteVector3(timelineSample.properties["transform.scale"], null) || undefined,
+    visible: timelineSample.properties["appearance.visible"],
+    color: timelineSample.properties["appearance.color"],
+    emissiveColor: timelineSample.properties["appearance.emissiveColor"],
+    emissiveIntensity: finiteOrUndefined(timelineSample.properties["appearance.emissiveIntensity"]),
+    lightIntensity: finiteOrUndefined(timelineSample.properties["light.intensity"]),
+    lightDistance: finiteOrUndefined(timelineSample.properties["light.distance"]),
+    lightAngle: finiteOrUndefined(timelineSample.properties["light.angle"]),
+    particleRate: finiteOrUndefined(timelineSample.properties["particle.rate"]),
+    particleSize: finiteOrUndefined(timelineSample.properties["particle.size"]),
+    properties: timelineSample.properties,
   };
+  return applyProceduralDynamicsAuthorOffset(sample, instance?.authorOffset, instance?.transform);
+}
+
+export function applyProceduralDynamicsAuthorOffset(sample, authorOffset, baseTransform = null) {
+  const source = sample && typeof sample === "object" ? sample : {};
+  const offset = normalizeProceduralDynamicsAuthorOffset(authorOffset);
+  const hasPositionOffset = offset.position.some((component) => Math.abs(component) > 1e-12);
+  const hasRotationOffset = Math.abs(offset.quaternion[0]) > 1e-12
+    || Math.abs(offset.quaternion[1]) > 1e-12
+    || Math.abs(offset.quaternion[2]) > 1e-12
+    || Math.abs(offset.quaternion[3] - 1) > 1e-12;
+  const hasScaleOffset = offset.scale.some((component) => Math.abs(component - 1) > 1e-12);
+  if (!hasPositionOffset && !hasRotationOffset && !hasScaleOffset) return source;
+
+  const composed = { ...source };
+  if (hasPositionOffset) {
+    const sampledPosition = finiteVector3(source.position, finiteVector3(baseTransform?.position, [0, 0, 0]));
+    composed.position = sampledPosition.map((component, index) => component + offset.position[index]);
+  }
+  if (hasRotationOffset) {
+    const sampledQuaternion = finiteQuaternion(source.quaternion)
+      || quaternionFromEulerDegrees(source.rotationEulerDegrees)
+      || finiteQuaternion(baseTransform?.quaternion)
+      || quaternionFromEulerDegrees(
+        baseTransform?.rotationEulerDegrees || baseTransform?.rotationDegrees || baseTransform?.rotation,
+      )
+      || [0, 0, 0, 1];
+    composed.quaternion = multiplyQuaternions(sampledQuaternion, offset.quaternion);
+    composed.rotationEulerDegrees = undefined;
+  }
+  if (hasScaleOffset) {
+    const sampledScale = finiteScale3(source.scale, finiteScale3(baseTransform?.scale, [1, 1, 1]));
+    composed.scale = sampledScale.map((component, index) => component * offset.scale[index]);
+  }
+  return composed;
 }
 
 function normalizePlanActors(plan) {
@@ -210,8 +391,15 @@ function normalizeProceduralDynamicsActor(actor, plan, index) {
   const orientationSource = source.orientation || plan.orientation || {};
   const animationSource = source.animation || plan.animation || {};
   const actorId = normalizedString(source.actorId || source.id) || `actor-${index + 1}`;
-  const orientationKind = normalizedString(orientationSource.kind || orientationSource.mode) || "path-tangent";
-  const animationMode = animationSource.enabled === false
+  const targetKind = normalizedExistingTargetKind(
+    source.targetKind || source.entityKind || source.actorKind || source.kind,
+    source.entityId || source.targetEntityId || source.spatialEntityId,
+  );
+  const orientationKind = normalizedOrientationKind(
+    orientationSource.kind || orientationSource.mode,
+    targetKind === "image-plane" ? "fixed" : "path-tangent",
+  );
+  const animationMode = targetKind === "image-plane" || animationSource.enabled === false
     ? "none"
     : normalizedString(animationSource.mode) || "loop";
   return {
@@ -219,8 +407,10 @@ function normalizeProceduralDynamicsActor(actor, plan, index) {
     actorId,
     entityId: normalizedString(source.entityId || source.targetEntityId || source.spatialEntityId),
     assetId: normalizedString(source.assetId || source.sourceAssetId),
+    targetKind,
     clip: normalizeActorClip(source.clip || source.animationClip || source.clipIndexes),
     trajectory: normalizeTrajectory(trajectorySource),
+    timeline: normalizeTimeline(source.timeline || source.motionTimeline),
     orientation: {
       kind: orientationKind,
       mode: orientationKind,
@@ -248,6 +438,124 @@ function normalizeProceduralDynamicsActor(actor, plan, index) {
   };
 }
 
+function normalizedExistingTargetKind(value, entityId = "") {
+  const requested = normalizedString(value).toLowerCase().replace(/[\s_]+/g, "-");
+  if (["image", "image-plane", "picture", "photo"].includes(requested)) return "image-plane";
+  if (["glb", "gltf", "model", "3d-model"].includes(requested)) return "glb";
+  return /^image:/i.test(normalizedString(entityId)) ? "image-plane" : "glb";
+}
+
+function normalizedOrientationKind(value, fallback = "path-tangent") {
+  const requested = normalizedString(value).toLowerCase().replace(/[\s_]+/g, "-");
+  if (["fixed", "authored", "none"].includes(requested)) return "fixed";
+  if (["path-tangent", "tangent", "face-path", "follow-path"].includes(requested)) return "path-tangent";
+  return fallback;
+}
+
+function normalizeGeneratedObjectSources(plan) {
+  return Array.isArray(plan.generatedObjects)
+    ? plan.generatedObjects
+    : Array.isArray(plan.effects)
+      ? plan.effects
+      : [];
+}
+
+function normalizeProceduralDynamicsGeneratedObject(value, index) {
+  const source = value && typeof value === "object" ? value : {};
+  const objectSource = source.object && typeof source.object === "object" ? source.object : source;
+  const requestedKind = normalizedString(source.kind || objectSource.kind || source.type)
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-");
+  const kind = requestedKind === "particles" || requestedKind === "particle-system"
+    ? "particle-emitter"
+    : GENERATED_OBJECT_KINDS.has(requestedKind)
+      ? requestedKind
+      : "primitive";
+  const id = normalizedString(source.id || source.objectId) || `generated-object-${index + 1}`;
+  const transformSource = source.transform && typeof source.transform === "object" ? source.transform : {};
+  const appearanceSource = source.appearance && typeof source.appearance === "object" ? source.appearance : {};
+  const attachment = normalizeProceduralDynamicsGeneratedAttachment(source.attachment);
+  return {
+    id,
+    objectId: id,
+    kind,
+    object: normalizeGeneratedObjectDefinition(objectSource, kind, appearanceSource),
+    transform: {
+      position: finiteVector3(transformSource.position, [0, 0, 0]),
+      ...(finiteQuaternion(transformSource.quaternion)
+        ? { quaternion: finiteQuaternion(transformSource.quaternion) }
+        : finiteVector3(transformSource.rotationEulerDegrees || transformSource.rotationDegrees, null)
+          ? { rotationEulerDegrees: finiteVector3(transformSource.rotationEulerDegrees || transformSource.rotationDegrees, null) }
+          : {}),
+      scale: finiteScale3(transformSource.scale, [1, 1, 1]),
+    },
+    authorOffset: normalizeProceduralDynamicsAuthorOffset(source.authorOffset),
+    ...(attachment ? { attachment } : {}),
+    appearance: {
+      visible: appearanceSource.visible !== false,
+      color: normalizedColor(appearanceSource.color, "#ffffff"),
+      opacity: clampedNumber(appearanceSource.opacity, 1, 0, 1),
+      emissiveColor: normalizedColor(appearanceSource.emissiveColor, normalizedColor(appearanceSource.color, "#ffffff")),
+      emissiveIntensity: nonNegativeNumber(appearanceSource.emissiveIntensity, 0),
+      transparent: appearanceSource.transparent === true || Number(appearanceSource.opacity) < 1,
+    },
+    timeline: normalizeTimeline(source.timeline || source.animationTimeline || source.animation?.timeline),
+  };
+}
+
+function normalizeGeneratedObjectDefinition(value, kind, appearance) {
+  const source = value && typeof value === "object" ? value : {};
+  if (kind === "light") {
+    const type = normalizedString(source.type || source.lightType).toLowerCase();
+    return {
+      kind,
+      type: new Set(["point", "spot", "directional", "ambient", "hemisphere"]).has(type) ? type : "point",
+      color: normalizedColor(source.color, normalizedColor(appearance.color, "#ffffff")),
+      groundColor: normalizedColor(source.groundColor, "#202040"),
+      intensity: nonNegativeNumber(source.intensity, 1),
+      distance: nonNegativeNumber(source.distance, 0),
+      decay: nonNegativeNumber(source.decay, 2),
+      angle: clampedNumber(source.angle, Math.PI / 3, 0, Math.PI / 2),
+      penumbra: clampedNumber(source.penumbra, 0, 0, 1),
+      visualSource: source.visualSource !== false,
+      visualRadiusMeters: positiveNumber(source.visualRadiusMeters, 0.06),
+    };
+  }
+  if (kind === "particle-emitter") {
+    return {
+      kind,
+      shape: new Set(["point", "sphere", "box", "cone", "ring"]).has(source.shape) ? source.shape : "point",
+      rate: nonNegativeNumber(source.rate ?? source.particlesPerSecond, 12),
+      lifetimeSeconds: positiveNumber(source.lifetimeSeconds, 2),
+      sizeMeters: positiveNumber(source.sizeMeters || source.particleSizeMeters, 0.03),
+      initialVelocityMetersPerSecond: finiteVector3(source.initialVelocityMetersPerSecond || source.velocity, [0, 0.25, 0]),
+      spreadMetersPerSecond: finiteScale3(source.spreadMetersPerSecond || source.spread, [0.15, 0.15, 0.15]),
+      gravityMetersPerSecondSquared: finiteVector3(source.gravityMetersPerSecondSquared, [0, 0, 0]),
+      color: normalizedColor(source.color, normalizedColor(appearance.color, "#ffffff")),
+      endColor: normalizedColor(source.endColor, normalizedColor(source.color, "#ffffff")),
+      opacity: clampedNumber(source.opacity ?? appearance.opacity, 1, 0, 1),
+    };
+  }
+  const shape = normalizedString(source.shape || source.primitive).toLowerCase();
+  return {
+    kind: "primitive",
+    shape: new Set(["sphere", "box", "plane", "circle", "ring", "cone", "cylinder", "torus"]).has(shape) ? shape : "sphere",
+    dimensionsMeters: finiteScale3(source.dimensionsMeters || source.dimensions || source.sizeMeters || source.size, [0.2, 0.2, 0.2]),
+    innerRadiusRatio: clampedNumber(source.innerRadiusRatio, 0.65, 0, 1),
+    segments: positiveIntegerOrNull(source.segments),
+    material: source.material && typeof source.material === "object" ? { ...source.material } : {},
+  };
+}
+
+function uniqueGeneratedObjects(objects) {
+  const seen = new Set();
+  return objects.filter((object) => {
+    if (!object.id || seen.has(object.id)) return false;
+    seen.add(object.id);
+    return true;
+  });
+}
+
 function uniqueMotionTargetActors(actors) {
   const targets = new Set();
   return actors.filter((actor) => {
@@ -265,47 +573,155 @@ function uniqueMotionTargetActors(actors) {
 function normalizeTrajectory(value) {
   const source = value && typeof value === "object" ? value : {};
   const kind = normalizedTrajectoryKind(source.kind || source.type);
+  if (kind === "stationary") return { ...source, kind };
+  if (kind === "keyframe-path") {
+    const keyframes = normalizePathKeyframes(source.keyframes || source.points);
+    return {
+      ...source,
+      kind,
+      keyframes,
+      durationSeconds: positiveNumber(source.durationSeconds, keyframes.at(-1)?.timeSeconds || 8),
+      loopMode: normalizedLoopMode(source.loopMode || source.loop, "repeat"),
+      interpolation: normalizedInterpolation(source.interpolation, "catmull-rom"),
+      phase: source.phase ?? 0,
+    };
+  }
   if (kind === "waypoint-loop") {
     return {
       ...source,
       kind,
       waypoints: normalizeWaypoints(source.waypoints || source.points),
-      durationSeconds: finiteRange(source.durationSeconds, [8, 12], 0.25, 300),
+      durationSeconds: finiteRange(source.durationSeconds, [8, 12], 0.001, 1e9),
       direction: normalizedDirection(source.direction),
       phase: source.phase ?? "staggered",
+      closed: source.closed !== false,
+      loopMode: normalizedLoopMode(source.loopMode || source.loop, source.closed === false ? "once" : "repeat"),
+      interpolation: normalizedInterpolation(source.interpolation, "linear"),
     };
   }
-  const radius = finiteRange(source.radiusMeters ?? source.radius, [2.4, 3.8], 0.1, 20);
+  const radius = finiteRange(source.radiusMeters ?? source.radius, [2.4, 3.8], 0, 1e6);
   return {
     ...source,
     kind: "school-orbit",
     radiusMeters: radius,
-    radiusXMeters: finiteRange(source.radiusXMeters, radius, 0.1, 20),
-    radiusZMeters: finiteRange(source.radiusZMeters, radius, 0.1, 20),
+    radiusXMeters: finiteRange(source.radiusXMeters, radius, 0, 1e6),
+    radiusZMeters: finiteRange(source.radiusZMeters, radius, 0, 1e6),
     heightMeters: finiteRange(
       source.heightMeters ?? source.verticalOffsetMeters,
       [-0.55, 0.55],
-      -10,
-      10,
+      -1e6,
+      1e6,
     ),
     angularSpeedRadiansPerSecond: finiteRange(
       source.angularSpeedRadiansPerSecond ?? source.angularSpeed,
       [0.12, 0.26],
       0.001,
-      4,
+      1e6,
     ),
     direction: normalizedDirection(source.direction),
     phase: source.phase ?? "staggered",
-    verticalSwayMeters: finiteRange(source.verticalSwayMeters, [0.08, 0.28], 0, 3),
-    verticalSwayFrequencyHz: finiteRange(source.verticalSwayFrequencyHz, [0.08, 0.18], 0, 4),
+    verticalSwayMeters: finiteRange(source.verticalSwayMeters, [0.08, 0.28], 0, 1e6),
+    verticalSwayFrequencyHz: finiteRange(source.verticalSwayFrequencyHz, [0.08, 0.18], 0, 1e6),
   };
 }
 
+function normalizeTimeline(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const tracks = (Array.isArray(value.tracks) ? value.tracks : [])
+    .map(normalizeTimelineTrack)
+    .filter(Boolean);
+  if (!tracks.length) return null;
+  const inferredDuration = tracks.reduce((maximum, track) => Math.max(
+    maximum,
+    track.keyframes.at(-1)?.timeSeconds || 0,
+  ), 0);
+  return {
+    durationSeconds: positiveNumber(value.durationSeconds, inferredDuration || 1),
+    delaySeconds: nonNegativeNumber(value.delaySeconds, 0),
+    playbackRate: positiveNumber(value.playbackRate || value.timeScale, 1),
+    loopMode: normalizedLoopMode(value.loopMode || value.loop, "repeat"),
+    phase: clamp01(value.phase),
+    tracks,
+  };
+}
+
+function normalizeTimelineTrack(value) {
+  if (!value || typeof value !== "object") return null;
+  const property = normalizedTrackProperty(value.property || value.path);
+  if (!TRACK_PROPERTIES.has(property)) return null;
+  const keyframes = (Array.isArray(value.keyframes) ? value.keyframes : [])
+    .map((keyframe, index) => normalizeTimelineKeyframe(keyframe, property, index))
+    .filter(Boolean)
+    .sort((left, right) => left.timeSeconds - right.timeSeconds);
+  const deduplicated = [];
+  for (const keyframe of keyframes) {
+    if (deduplicated.at(-1)?.timeSeconds === keyframe.timeSeconds) deduplicated[deduplicated.length - 1] = keyframe;
+    else deduplicated.push(keyframe);
+  }
+  if (!deduplicated.length) return null;
+  return {
+    property,
+    interpolation: normalizedInterpolation(value.interpolation, property === "appearance.visible" ? "step" : "linear"),
+    keyframes: deduplicated,
+  };
+}
+
+function normalizeTimelineKeyframe(value, property, index) {
+  const source = value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : { value, timeSeconds: index };
+  const normalizedValue = normalizedTrackValue(property, source.value ?? source.to);
+  if (normalizedValue === null) return null;
+  return {
+    timeSeconds: nonNegativeNumber(source.timeSeconds ?? source.time, index),
+    value: normalizedValue,
+    easing: normalizedEasing(source.easing || source.ease),
+  };
+}
+
+function normalizedTrackValue(property, value) {
+  if (property === "transform.position" || property === "transform.rotationEulerDegrees") {
+    return finiteVector3(value, null);
+  }
+  if (property === "transform.quaternion") return finiteQuaternion(value);
+  if (property === "transform.scale") return finiteScale3(value, null);
+  if (property === "appearance.color" || property === "appearance.emissiveColor") {
+    return normalizedColor(value, null);
+  }
+  if (property === "appearance.visible") return Boolean(value);
+  if (property === "appearance.opacity") return clampedNumber(value, 1, 0, 1);
+  return Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : null;
+}
+
+function normalizePathKeyframes(value) {
+  return planList(value).map((item, index) => {
+    const source = item && typeof item === "object" && !Array.isArray(item) ? item : { position: item };
+    const position = finiteVector3(source.position || source.value || item, null);
+    if (!position) return null;
+    return {
+      timeSeconds: nonNegativeNumber(source.timeSeconds ?? source.time, index),
+      position,
+      easing: normalizedEasing(source.easing),
+    };
+  }).filter(Boolean).sort((left, right) => left.timeSeconds - right.timeSeconds);
+}
+
 function expandTrajectory(trajectory, count, index, random, comfort) {
+  if (trajectory.kind === "stationary") return { ...trajectory };
+  if (trajectory.kind === "keyframe-path") {
+    const phase = expandedUnitPhase(trajectory.phase, count, index, random);
+    const pathLength = keyframePathLength(trajectory.keyframes, trajectory.loopMode !== "once");
+    const minimumDuration = pathLength / Math.max(comfort.maximumSpeedMetersPerSecond, 0.001);
+    return {
+      ...trajectory,
+      durationSeconds: Math.max(positiveNumber(trajectory.durationSeconds, 8), minimumDuration),
+      phase,
+    };
+  }
   const direction = expandedDirection(trajectory.direction, index, random);
   if (trajectory.kind === "waypoint-loop") {
     const phase = expandedUnitPhase(trajectory.phase, count, index, random);
-    const minimumDuration = waypointLoopLength(trajectory.waypoints)
+    const minimumDuration = waypointPathLength(trajectory.waypoints, trajectory.closed !== false)
       / Math.max(comfort.maximumSpeedMetersPerSecond, 0.001);
     return {
       ...trajectory,
@@ -344,6 +760,16 @@ function expandAnimation(animation, count, index, random) {
   };
 }
 
+function expandTimeline(timeline, count, index, random) {
+  if (!timeline) return null;
+  return {
+    ...timeline,
+    phase: Number.isFinite(Number(timeline.phase))
+      ? positiveModulo(Number(timeline.phase), 1)
+      : expandedUnitPhase(timeline.phase, count, index, random),
+  };
+}
+
 function sampleSchoolOrbit(trajectory, elapsed) {
   const radiusX = Math.max(0.001, finiteNumber(trajectory.radiusX, 2.8));
   const radiusZ = Math.max(0.001, finiteNumber(trajectory.radiusZ, radiusX));
@@ -378,9 +804,13 @@ function sampleWaypointLoop(trajectory, elapsed) {
   if (waypoints.length < 2) {
     return { position: [0, 0, 0], tangent: [0, 0, 1], progress: 0 };
   }
-  const segments = waypoints.map((point, index) => {
+  const closed = trajectory.closed !== false;
+  const segmentCount = closed ? waypoints.length : waypoints.length - 1;
+  const segments = Array.from({ length: segmentCount }, (_, index) => {
+    const point = waypoints[index];
     const next = waypoints[(index + 1) % waypoints.length];
     return {
+      index,
       from: point,
       to: next,
       length: vectorDistance(point, next),
@@ -393,18 +823,34 @@ function sampleWaypointLoop(trajectory, elapsed) {
   const durationSeconds = Math.max(0.001, finiteNumber(trajectory.durationSeconds, 10));
   const direction = finiteNumber(trajectory.direction, 1) < 0 ? -1 : 1;
   const phase = clamp01(finiteNumber(trajectory.phase, 0));
-  const progress = positiveModulo(phase + direction * (elapsed / durationSeconds), 1);
+  const progress = playbackProgress(
+    elapsed,
+    durationSeconds,
+    trajectory.loopMode || (closed ? "repeat" : "once"),
+    phase,
+    direction,
+  );
   const targetDistance = progress * totalLength;
   let traversed = 0;
   for (const segment of segments) {
     const end = traversed + segment.length;
     if (targetDistance <= end) {
-      const localProgress = clamp01((targetDistance - traversed) / segment.length);
+      const rawLocalProgress = clamp01((targetDistance - traversed) / segment.length);
+      const localProgress = applyInterpolationProgress(rawLocalProgress, trajectory.interpolation);
+      const position = trajectory.interpolation === "catmull-rom"
+        ? catmullRomVector(
+          waypointAt(waypoints, segment.index - 1, closed),
+          segment.from,
+          segment.to,
+          waypointAt(waypoints, segment.index + 2, closed),
+          localProgress,
+        )
+        : vectorLerp(segment.from, segment.to, localProgress);
       return {
-        position: vectorLerp(segment.from, segment.to, localProgress),
+        position,
         tangent: direction > 0
-          ? vectorSubtract(segment.to, segment.from)
-          : vectorSubtract(segment.from, segment.to),
+          ? sampledPathTangent(waypoints, segment.index, localProgress, closed, trajectory.interpolation)
+          : vectorScale(sampledPathTangent(waypoints, segment.index, localProgress, closed, trajectory.interpolation), -1),
         progress,
       };
     }
@@ -416,6 +862,85 @@ function sampleWaypointLoop(trajectory, elapsed) {
     tangent: vectorSubtract(final.to, final.from),
     progress,
   };
+}
+
+function sampleKeyframePath(trajectory, elapsed) {
+  const keyframes = normalizePathKeyframes(trajectory.keyframes);
+  if (!keyframes.length) return { position: [0, 0, 0], tangent: [0, 0, 1], progress: 0 };
+  if (keyframes.length === 1) return { position: [...keyframes[0].position], tangent: [0, 0, 1], progress: 0 };
+  const durationSeconds = positiveNumber(trajectory.durationSeconds, keyframes.at(-1).timeSeconds || 1);
+  const progress = playbackProgress(elapsed, durationSeconds, trajectory.loopMode, trajectory.phase, 1);
+  const localTime = progress * durationSeconds;
+  const track = {
+    property: "transform.position",
+    interpolation: trajectory.interpolation,
+    keyframes: keyframes.map((keyframe) => ({
+      timeSeconds: keyframe.timeSeconds,
+      value: keyframe.position,
+      easing: keyframe.easing,
+    })),
+  };
+  const position = sampleTimelineTrack(track, localTime);
+  const epsilon = Math.max(0.001, durationSeconds / 10000);
+  const previous = sampleTimelineTrack(track, Math.max(0, localTime - epsilon));
+  const next = sampleTimelineTrack(track, Math.min(durationSeconds, localTime + epsilon));
+  return {
+    position: finiteVector3(position, keyframes[0].position),
+    tangent: vectorSubtract(finiteVector3(next, position), finiteVector3(previous, position)),
+    progress,
+  };
+}
+
+function sampleTimeline(timeline, elapsed) {
+  if (!timeline?.tracks?.length) return { active: false, progress: 0, properties: {} };
+  const durationSeconds = positiveNumber(timeline.durationSeconds, 1);
+  const delaySeconds = nonNegativeNumber(timeline.delaySeconds, 0);
+  const playbackRate = positiveNumber(timeline.playbackRate, 1);
+  const adjustedElapsed = Math.max(0, elapsed - delaySeconds) * playbackRate;
+  const progress = playbackProgress(adjustedElapsed, durationSeconds, timeline.loopMode, timeline.phase, 1);
+  const localTime = progress * durationSeconds;
+  const properties = {};
+  for (const track of timeline.tracks) {
+    properties[track.property] = sampleTimelineTrack(track, localTime);
+  }
+  return { active: elapsed >= delaySeconds, progress, localTime, properties };
+}
+
+function sampleTimelineTrack(track, localTime) {
+  const keyframes = track?.keyframes || [];
+  if (!keyframes.length) return undefined;
+  if (keyframes.length === 1 || localTime <= keyframes[0].timeSeconds) return cloneTrackValue(keyframes[0].value);
+  if (localTime >= keyframes.at(-1).timeSeconds) return cloneTrackValue(keyframes.at(-1).value);
+  let upperIndex = keyframes.findIndex((keyframe) => keyframe.timeSeconds >= localTime);
+  if (upperIndex <= 0) upperIndex = 1;
+  const left = keyframes[upperIndex - 1];
+  const right = keyframes[upperIndex];
+  const span = Math.max(1e-9, right.timeSeconds - left.timeSeconds);
+  const rawProgress = clamp01((localTime - left.timeSeconds) / span);
+  const eased = applyEasing(rawProgress, right.easing || left.easing);
+  const interpolation = track.interpolation || "linear";
+  if (interpolation === "step" || typeof left.value === "boolean" || typeof left.value === "string") {
+    if (typeof left.value === "string" && isHexColor(left.value) && isHexColor(right.value) && interpolation !== "step") {
+      return interpolateColor(left.value, right.value, eased);
+    }
+    return cloneTrackValue(eased < 1 ? left.value : right.value);
+  }
+  const progress = applyInterpolationProgress(eased, interpolation);
+  if (interpolation === "catmull-rom" && Array.isArray(left.value) && left.value.length === 3) {
+    const previous = keyframes[Math.max(0, upperIndex - 2)].value;
+    const next = keyframes[Math.min(keyframes.length - 1, upperIndex + 1)].value;
+    return catmullRomVector(previous, left.value, right.value, next, progress);
+  }
+  return interpolateTrackValue(left.value, right.value, progress, track.property);
+}
+
+function timelinePositionTangent(timeline, elapsed) {
+  if (!timeline) return [0, 0, 1];
+  const duration = positiveNumber(timeline.durationSeconds, 1);
+  const epsilon = Math.max(0.001, duration / 10000);
+  const before = sampleTimeline(timeline, Math.max(0, elapsed - epsilon)).properties["transform.position"];
+  const after = sampleTimeline(timeline, elapsed + epsilon).properties["transform.position"];
+  return before && after ? vectorSubtract(after, before) : [0, 0, 1];
 }
 
 function normalizeActorClip(value) {
@@ -489,6 +1014,52 @@ function finiteVector3(value, fallback) {
   return array.slice(0, 3).map(Number);
 }
 
+function finiteQuaternion(value) {
+  const quaternion = finiteVectorN(value, 4);
+  if (!quaternion) return undefined;
+  const length = Math.hypot(...quaternion);
+  return length > 1e-9 ? quaternion.map((component) => component / length) : undefined;
+}
+
+function quaternionFromEulerDegrees(value) {
+  const euler = finiteVector3(value, null);
+  if (!euler) return undefined;
+  const [x, y, z] = euler.map((degrees) => degrees * Math.PI / 360);
+  const [sx, sy, sz] = [Math.sin(x), Math.sin(y), Math.sin(z)];
+  const [cx, cy, cz] = [Math.cos(x), Math.cos(y), Math.cos(z)];
+  return finiteQuaternion([
+    sx * cy * cz + cx * sy * sz,
+    cx * sy * cz - sx * cy * sz,
+    cx * cy * sz + sx * sy * cz,
+    cx * cy * cz - sx * sy * sz,
+  ]);
+}
+
+function multiplyQuaternions(left, right) {
+  const [lx, ly, lz, lw] = finiteQuaternion(left) || [0, 0, 0, 1];
+  const [rx, ry, rz, rw] = finiteQuaternion(right) || [0, 0, 0, 1];
+  return finiteQuaternion([
+    lw * rx + lx * rw + ly * rz - lz * ry,
+    lw * ry - lx * rz + ly * rw + lz * rx,
+    lw * rz + lx * ry - ly * rx + lz * rw,
+    lw * rw - lx * rx - ly * ry - lz * rz,
+  ]) || [0, 0, 0, 1];
+}
+
+function finiteScale3(value, fallback) {
+  if (Number.isFinite(Number(value)) && value !== "") {
+    const scalar = Number(value);
+    return [scalar, scalar, scalar];
+  }
+  return finiteVector3(value, fallback);
+}
+
+function finiteVectorN(value, length) {
+  if (!Array.isArray(value) || value.length < length) return null;
+  const vector = value.slice(0, length).map(Number);
+  return vector.every(Number.isFinite) ? vector : null;
+}
+
 function normalizedVector3(value, fallback) {
   const vector = finiteVector3(value, fallback);
   const length = Math.hypot(...vector);
@@ -549,7 +1120,66 @@ function normalizedDirection(value) {
 
 function normalizedTrajectoryKind(value) {
   const text = normalizedString(value).toLowerCase().replace(/[\s_]+/g, "-");
+  if (text === "stationary" || text === "none" || text === "static") return "stationary";
+  if (text.includes("keyframe") || text === "timeline" || text === "custom-path") return "keyframe-path";
   return text.includes("waypoint") ? "waypoint-loop" : "school-orbit";
+}
+
+function normalizedLoopMode(value, fallback = "repeat") {
+  const text = normalizedString(value).toLowerCase().replace(/[\s_]+/g, "-");
+  if (value === false || text === "none" || text === "hold") return "once";
+  if (text === "pingpong") return "ping-pong";
+  return new Set(["once", "repeat", "ping-pong"]).has(text) ? text : fallback;
+}
+
+function normalizedInterpolation(value, fallback = "linear") {
+  const text = normalizedString(value).toLowerCase().replace(/[\s_]+/g, "-");
+  if (text === "spline" || text === "curve" || text === "catmullrom") return "catmull-rom";
+  return new Set(["step", "linear", "smooth", "catmull-rom"]).has(text) ? text : fallback;
+}
+
+function normalizedEasing(value) {
+  const text = normalizedString(value || "linear").toLowerCase().replace(/[\s_]+/g, "-");
+  return new Set(["linear", "ease-in", "ease-out", "ease-in-out", "smoothstep", "smootherstep"]).has(text)
+    ? text
+    : "linear";
+}
+
+function normalizedTrackProperty(value) {
+  const text = normalizedString(value).toLowerCase();
+  return ({
+    position: "transform.position",
+    "transform.position": "transform.position",
+    rotation: "transform.rotationEulerDegrees",
+    rotationeulerdegrees: "transform.rotationEulerDegrees",
+    "transform.rotation": "transform.rotationEulerDegrees",
+    "transform.rotationeulerdegrees": "transform.rotationEulerDegrees",
+    quaternion: "transform.quaternion",
+    "transform.quaternion": "transform.quaternion",
+    scale: "transform.scale",
+    "transform.scale": "transform.scale",
+    opacity: "appearance.opacity",
+    "material.opacity": "appearance.opacity",
+    "appearance.opacity": "appearance.opacity",
+    color: "appearance.color",
+    "material.color": "appearance.color",
+    "appearance.color": "appearance.color",
+    emissivecolor: "appearance.emissiveColor",
+    "material.emissivecolor": "appearance.emissiveColor",
+    "appearance.emissivecolor": "appearance.emissiveColor",
+    emissiveintensity: "appearance.emissiveIntensity",
+    "material.emissiveintensity": "appearance.emissiveIntensity",
+    "appearance.emissiveintensity": "appearance.emissiveIntensity",
+    visible: "appearance.visible",
+    visibility: "appearance.visible",
+    "appearance.visible": "appearance.visible",
+    intensity: "light.intensity",
+    "light.intensity": "light.intensity",
+    "light.distance": "light.distance",
+    "light.angle": "light.angle",
+    "particle.rate": "particle.rate",
+    "particle.size": "particle.size",
+  })[text] || "";
 }
 
 function normalizedAnchorSpace(value) {
@@ -592,6 +1222,42 @@ function finiteNumber(value, fallback) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function positiveNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
+function nonNegativeNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : fallback;
+}
+
+function positiveIntegerOrNull(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function finiteOrUndefined(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function normalizedColor(value, fallback) {
+  if (Array.isArray(value) && value.length >= 3) {
+    const components = value.slice(0, 3).map(Number);
+    if (components.every(Number.isFinite)) {
+      const divisor = components.some((component) => component > 1) ? 255 : 1;
+      return `#${components.map((component) => (
+        Math.round(Math.max(0, Math.min(1, component / divisor)) * 255).toString(16).padStart(2, "0")
+      )).join("")}`;
+    }
+  }
+  const text = normalizedString(value).toLowerCase();
+  if (/^#[0-9a-f]{3}$/.test(text)) return `#${[...text.slice(1)].map((item) => item.repeat(2)).join("")}`;
+  if (/^#[0-9a-f]{6}$/.test(text)) return text;
+  return fallback;
+}
+
 function normalizedString(value) {
   return String(value ?? "").trim();
 }
@@ -608,16 +1274,25 @@ function vectorDistance(left, right) {
   return Math.hypot(left[0] - right[0], left[1] - right[1], left[2] - right[2]);
 }
 
-function waypointLoopLength(waypoints) {
+function waypointPathLength(waypoints, closed = true) {
   const points = normalizeWaypoints(waypoints);
   if (points.length < 2) return 0;
-  return points.reduce((sum, point, index) => (
-    sum + vectorDistance(point, points[(index + 1) % points.length])
-  ), 0);
+  const segmentCount = closed ? points.length : points.length - 1;
+  return Array.from({ length: segmentCount }, (_, index) => (
+    vectorDistance(points[index], points[(index + 1) % points.length])
+  )).reduce((sum, length) => sum + length, 0);
+}
+
+function keyframePathLength(keyframes, closed = false) {
+  return waypointPathLength((keyframes || []).map((keyframe) => keyframe.position), closed);
 }
 
 function vectorSubtract(left, right) {
   return [left[0] - right[0], left[1] - right[1], left[2] - right[2]];
+}
+
+function vectorScale(value, scalar) {
+  return value.map((item) => item * scalar);
 }
 
 function vectorLerp(left, right, progress) {
@@ -626,6 +1301,108 @@ function vectorLerp(left, right, progress) {
     left[1] + (right[1] - left[1]) * progress,
     left[2] + (right[2] - left[2]) * progress,
   ];
+}
+
+function playbackProgress(elapsed, duration, loopMode = "repeat", phase = 0, direction = 1) {
+  const raw = finiteNumber(phase, 0) + (direction < 0 ? -1 : 1) * (finiteNumber(elapsed, 0) / Math.max(0.001, duration));
+  if (normalizedLoopMode(loopMode) === "once") return clamp01(raw);
+  if (normalizedLoopMode(loopMode) === "ping-pong") {
+    const cycle = positiveModulo(raw, 2);
+    return cycle <= 1 ? cycle : 2 - cycle;
+  }
+  return positiveModulo(raw, 1);
+}
+
+function applyInterpolationProgress(progress, interpolation) {
+  const value = clamp01(progress);
+  if (interpolation === "step") return value < 1 ? 0 : 1;
+  if (interpolation === "smooth" || interpolation === "catmull-rom") return value * value * (3 - 2 * value);
+  return value;
+}
+
+function applyEasing(progress, easing) {
+  const value = clamp01(progress);
+  if (easing === "ease-in") return value * value;
+  if (easing === "ease-out") return 1 - (1 - value) * (1 - value);
+  if (easing === "ease-in-out") return value < 0.5 ? 2 * value * value : 1 - ((-2 * value + 2) ** 2) / 2;
+  if (easing === "smoothstep") return value * value * (3 - 2 * value);
+  if (easing === "smootherstep") return value ** 3 * (value * (value * 6 - 15) + 10);
+  return value;
+}
+
+function waypointAt(points, index, closed) {
+  if (closed) return points[positiveModulo(index, points.length)];
+  return points[Math.max(0, Math.min(points.length - 1, index))];
+}
+
+function sampledPathTangent(points, segmentIndex, progress, closed, interpolation) {
+  if (interpolation !== "catmull-rom") {
+    return vectorSubtract(
+      waypointAt(points, segmentIndex + 1, closed),
+      waypointAt(points, segmentIndex, closed),
+    );
+  }
+  const epsilon = 0.001;
+  const before = catmullRomVector(
+    waypointAt(points, segmentIndex - 1, closed),
+    waypointAt(points, segmentIndex, closed),
+    waypointAt(points, segmentIndex + 1, closed),
+    waypointAt(points, segmentIndex + 2, closed),
+    Math.max(0, progress - epsilon),
+  );
+  const after = catmullRomVector(
+    waypointAt(points, segmentIndex - 1, closed),
+    waypointAt(points, segmentIndex, closed),
+    waypointAt(points, segmentIndex + 1, closed),
+    waypointAt(points, segmentIndex + 2, closed),
+    Math.min(1, progress + epsilon),
+  );
+  return vectorSubtract(after, before);
+}
+
+function catmullRomVector(p0, p1, p2, p3, progress) {
+  const t = clamp01(progress);
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return p1.map((_, index) => 0.5 * (
+    (2 * p1[index])
+    + (-p0[index] + p2[index]) * t
+    + (2 * p0[index] - 5 * p1[index] + 4 * p2[index] - p3[index]) * t2
+    + (-p0[index] + 3 * p1[index] - 3 * p2[index] + p3[index]) * t3
+  ));
+}
+
+function interpolateTrackValue(left, right, progress, property) {
+  if (Number.isFinite(Number(left)) && Number.isFinite(Number(right))) {
+    return Number(left) + (Number(right) - Number(left)) * progress;
+  }
+  if (Array.isArray(left) && Array.isArray(right) && left.length === right.length) {
+    const value = left.map((item, index) => Number(item) + (Number(right[index]) - Number(item)) * progress);
+    if (property === "transform.quaternion") {
+      const length = Math.hypot(...value);
+      return length > 1e-9 ? value.map((component) => component / length) : [0, 0, 0, 1];
+    }
+    return value;
+  }
+  if (isHexColor(left) && isHexColor(right)) return interpolateColor(left, right, progress);
+  return cloneTrackValue(progress < 1 ? left : right);
+}
+
+function isHexColor(value) {
+  return /^#[0-9a-f]{6}$/i.test(String(value || ""));
+}
+
+function interpolateColor(left, right, progress) {
+  const channels = (color) => [1, 3, 5].map((offset) => Number.parseInt(color.slice(offset, offset + 2), 16));
+  const from = channels(left);
+  const to = channels(right);
+  return `#${from.map((channel, index) => (
+    Math.round(channel + (to[index] - channel) * progress).toString(16).padStart(2, "0")
+  )).join("")}`;
+}
+
+function cloneTrackValue(value) {
+  return Array.isArray(value) ? [...value] : value;
 }
 
 function seededRandom(seed) {

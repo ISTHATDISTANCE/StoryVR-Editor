@@ -242,6 +242,7 @@ async function collectAuthorArtifacts(paths, assetRoot, digestCache = new Map())
     paths.sourceMotionOverridesPath,
     paths.sourceMotionPlaybackPath,
     paths.proceduralDynamicsPath,
+    paths.proceduralTransitionsPath,
     path.join(paths.analysisRoot, "environment-enhancement.json"),
   ].filter(Boolean);
   for (const filePath of staticFiles) {
@@ -272,6 +273,7 @@ async function collectStoryBuildInputArtifacts({
     paths.sourceMotionOverridesPath,
     paths.sourceMotionPlaybackPath,
     paths.proceduralDynamicsPath,
+    paths.proceduralTransitionsPath,
     path.join(paths.analysisRoot, "environment-enhancement.json"),
   ].filter(Boolean);
   for (const filePath of staticFiles) {

@@ -13,15 +13,24 @@ import { XRControllerModelFactory } from "three/addons/webxr/XRControllerModelFa
 import { createGroundMovementCue, normalizeGroundMovementCue } from "./ground-movement-cue.js";
 import {
   clampProceduralDynamicsPlan,
+  expandProceduralDynamicsGeneratedObjects,
   expandProceduralDynamicsInstances,
   proceduralDynamicsPlansForScene,
   sampleProceduralDynamicsTransform,
 } from "./procedural-dynamics-runtime.js";
 import {
+  proceduralTransitionEasedProgress,
+  proceduralTransitionMiddleSample,
+  proceduralTransitionPlanForBoundary,
+} from "./procedural-transitions-runtime.js";
+import {
   augmentGltfLoaderWithStoryVrPointClouds,
   updateStoryVrPointCloudEffects,
 } from "./point-cloud-runtime.js";
 
+const STORYVR_PROCEDURAL_TRANSITIONS_CONTRACT_VERSION = "storyvr-procedural-transitions/v1";
+const STORYVR_PROCEDURAL_TRANSITION_MIDDLE_CONTRACT_VERSION = "storyvr-procedural-transition-middle/v1";
+const STORYVR_PROCEDURAL_DYNAMICS_FEATURE_CONTRACT_VERSION = "storyvr-procedural-dynamics-declarative/v2";
 const runtimeUrl = "../discovery/storyvr-runtime.json";
 const captureRoot = "../captures/active";
 const readerPublicBaseUrl = import.meta.env?.DEV
@@ -259,6 +268,7 @@ const runtimeTopologyKind = topologyKindFromLabel(assetTopologyOption.label);
 const runtimeDynamicGeometryKind = dynamicGeometryKindFromLabel(dynamicGeometryOption.label);
 const dynamicGeometryEnabled = runtimeDynamicGeometryKind !== "none";
 const runtimeProceduralDynamics = runtime.proceduralDynamics || null;
+const runtimeProceduralTransitions = runtime.proceduralTransitions || null;
 const hasSourceMotionLinking = Boolean(runtime.sourceMotionLinking && typeof runtime.sourceMotionLinking === "object");
 const sourceMotionTracks = normalizeSourceMotionTracks(runtime.sourceMotionLinking);
 const sourceMotionPlaybackAssets = normalizeSourceMotionPlayback(
@@ -336,6 +346,7 @@ const runtimeAttentionArrowCameraPosition = new THREE.Vector3();
 const runtimeAttentionArrowCameraQuaternion = new THREE.Quaternion();
 const runtimeAttentionMeshBounds = new THREE.Box3();
 const proceduralDynamicsUpAxis = new THREE.Vector3(0, 1, 0);
+const proceduralDynamicsAttachmentNodeBounds = new THREE.Box3();
 let spatialTextCollisionProxyCache = { root: null, checkedAt: -Infinity, entries: [] };
 let lastFrameTime = performance.now();
 let elapsedSeconds = 0;
@@ -363,15 +374,15 @@ let groundMovementCue = null;
 let activeRuntimeEnvironment = null;
 let activeRuntimeEnvironmentSignature = "";
 let physicalTraversalEnteredAt = null;
-let physicalTraversalAdvancing = false;
 let freeTeleportRequiresPhysicalZoneClearance = false;
 let teleportInputOwnedFrame = false;
-let controllerAdvancePending = false;
-let directManipulationAdvancePending = false;
+let runtimeNavigationPending = false;
 let xrDirectManipulationGrab = null;
 let xrDirectManipulationScale = null;
 const activePhysicalTraversalZones = [];
+const activeVirtualTraversalZones = [];
 const physicalTraversalEnteredByZone = new Map();
+const virtualTraversalInsideByZone = new Map();
 const activeRuntimeInBeatTargets = [];
 const runtimeInteractionEntryByRoot = new WeakMap();
 const activeRuntimeDirectInteractions = [];
@@ -640,6 +651,7 @@ configureXrInteractionControllers();
 
 prevButton.addEventListener("click", () => navigateInteraction(-1));
 nextButton.addEventListener("click", () => {
+  if (runtimeNavigationPending || activeRuntimeAutoInterpolation) return;
   if (activeIndex === beats.length - 1) completeStory();
   else navigateInteraction(1);
 });
@@ -780,6 +792,7 @@ function normalizeRuntimeEnvironmentAssignments(value, decision) {
       schemaVersion: "storyvr-environment-enhancement-assignments/v2",
       defaultEnvironment: null,
       assignmentsByBeat: {},
+      assignmentsByScene: {},
     };
   }
   if (source.schemaVersion !== "storyvr-environment-enhancement-assignments/v2") {
@@ -787,6 +800,7 @@ function normalizeRuntimeEnvironmentAssignments(value, decision) {
       schemaVersion: "storyvr-environment-enhancement-assignments/v2",
       defaultEnvironment: normalizeRuntimeEnvironmentEnhancement(source, decision),
       assignmentsByBeat: {},
+      assignmentsByScene: {},
     };
   }
   const assignmentsByBeat = {};
@@ -800,12 +814,24 @@ function normalizeRuntimeEnvironmentAssignments(value, decision) {
       ? null
       : normalizeRuntimeEnvironmentEnhancement(environment, decision);
   }
+  const assignmentsByScene = {};
+  const rawSceneAssignments = source.assignmentsByScene && typeof source.assignmentsByScene === "object"
+    ? source.assignmentsByScene
+    : {};
+  for (const [sceneKey, environment] of Object.entries(rawSceneAssignments)) {
+    const normalizedSceneKey = String(sceneKey || "").trim();
+    if (!/^beat:.+:variant:.+$/.test(normalizedSceneKey)) continue;
+    assignmentsByScene[normalizedSceneKey] = environment === null
+      ? null
+      : normalizeRuntimeEnvironmentEnhancement(environment, decision);
+  }
   return {
     schemaVersion: "storyvr-environment-enhancement-assignments/v2",
     defaultEnvironment: source.defaultEnvironment === null
       ? null
       : normalizeRuntimeEnvironmentEnhancement(source.defaultEnvironment, decision),
     assignmentsByBeat,
+    assignmentsByScene,
   };
 }
 
@@ -856,7 +882,17 @@ function normalizeRuntimeEnvironmentEnhancement(value, decision = null) {
   };
 }
 
-function runtimeEnvironmentEnhancementForBeat(beat) {
+function runtimeEnvironmentSceneKey(beat, variantOption) {
+  const beatId = String(beat?.id || beat?.unitId || "").trim();
+  const variantOptionId = String(variantOption?.id || variantOption?.optionId || "").trim();
+  return beatId && variantOptionId ? `beat:${beatId}:variant:${variantOptionId}` : "";
+}
+
+function runtimeEnvironmentEnhancementForBeat(beat, variantOption = null) {
+  const sceneKey = runtimeEnvironmentSceneKey(beat, variantOption);
+  if (sceneKey && Object.hasOwn(runtimeEnvironmentAssignments.assignmentsByScene, sceneKey)) {
+    return runtimeEnvironmentAssignments.assignmentsByScene[sceneKey];
+  }
   const beatId = String(beat?.id || beat?.unitId || "").trim();
   if (beatId && Object.hasOwn(runtimeEnvironmentAssignments.assignmentsByBeat, beatId)) {
     return runtimeEnvironmentAssignments.assignmentsByBeat[beatId];
@@ -868,8 +904,8 @@ function runtimeEnvironmentEnhancementSignature(environment) {
   return environment ? JSON.stringify(environment) : "";
 }
 
-async function switchRuntimeEnvironmentEnhancement(beat, loadRevision) {
-  const nextEnvironment = runtimeEnvironmentEnhancementForBeat(beat);
+async function switchRuntimeEnvironmentEnhancement(beat, variantOption, loadRevision) {
+  const nextEnvironment = runtimeEnvironmentEnhancementForBeat(beat, variantOption);
   const nextSignature = runtimeEnvironmentEnhancementSignature(nextEnvironment);
   if (
     nextSignature === activeRuntimeEnvironmentSignature
@@ -3686,11 +3722,22 @@ function runtimeTeleportArcLanding(originValue, directionValue, options = {}) {
     landing.x - groundCenter.x,
     landing.z - groundCenter.z,
   );
+  const insideAllowedGroundZone = (Array.isArray(options.allowedGroundZones)
+    ? options.allowedGroundZones
+    : []).some((zone) => {
+    const center = zone?.center;
+    const radius = Math.max(0, Number(zone?.radius) || 0);
+    return Boolean(
+      center?.isVector3
+      && [center.x, center.z, radius].every(Number.isFinite)
+      && Math.hypot(landing.x - center.x, landing.z - center.z) <= radius
+    );
+  });
   return {
     valid: flightSeconds <= maximumSeconds
       && distanceMeters >= minimumDistance
       && distanceMeters <= maximumDistance
-      && groundCenterDistanceMeters <= groundRadius,
+      && (groundCenterDistanceMeters <= groundRadius || insideAllowedGroundZone),
     landing,
     flightSeconds,
     distanceMeters,
@@ -3715,6 +3762,19 @@ function currentRuntimeTeleportGroundCenter() {
     runtimeTeleportGroundCenterKey = key;
   }
   return runtimeTeleportGroundCenterCache;
+}
+
+function currentRuntimeTeleportAllowedGroundZones() {
+  const zones = [];
+  for (const zone of activeVirtualTraversalZones) {
+    const destination = worldReaderPositionForStation(zone.station);
+    if (!destination) continue;
+    zones.push({
+      center: new THREE.Vector3(destination.x, XR_TELEPORT_GROUND_Y, destination.z),
+      radius: Math.max(0, Number(zone.tolerance?.distanceMeters) || 0),
+    });
+  }
+  return zones;
 }
 
 function createXrTeleportAimVisual(index = 0) {
@@ -3821,12 +3881,90 @@ function updateRuntimeTeleportAim(entry) {
   const direction = new THREE.Vector3(0, 0, -1)
     .transformDirection(entry.controller.matrixWorld)
     .normalize();
+  const groundCenter = currentRuntimeTeleportGroundCenter();
   const result = runtimeTeleportArcLanding(origin, direction, {
-    groundCenter: currentRuntimeTeleportGroundCenter(),
+    groundCenter,
+    allowedGroundZones: currentRuntimeTeleportAllowedGroundZones(),
   });
   entry.teleportAimLanding = result.valid ? result.landing.clone() : null;
   setRuntimeTeleportAimVisual(entry, result, origin, direction);
   return result.valid;
+}
+
+function runtimeTraversalZoneContainsPosition(zone, position) {
+  if (!zone || !position?.isVector3) return false;
+  const destination = worldReaderPositionForStation(zone.station);
+  const distanceMeters = Number(zone.tolerance?.distanceMeters);
+  return Boolean(
+    destination
+    && Number.isFinite(distanceMeters)
+    && distanceMeters > 0
+    && Math.hypot(position.x - destination.x, position.z - destination.z) <= distanceMeters
+  );
+}
+
+function runtimeVirtualTraversalZoneForPosition(position) {
+  if (activePhysicalTraversalZones.some((zone) => runtimeTraversalZoneContainsPosition(zone, position))) {
+    return null;
+  }
+  let nearest = null;
+  let nearestDistance = Infinity;
+  let nearestId = "";
+  for (const zone of activeVirtualTraversalZones) {
+    if (!runtimeTraversalZoneContainsPosition(zone, position)) continue;
+    const destination = worldReaderPositionForStation(zone.station);
+    if (!destination) continue;
+    const distance = Math.hypot(position.x - destination.x, position.z - destination.z);
+    const zoneId = String(zone.zoneId || zone.record?.edgeId || zone.record?.boundaryId || "");
+    if (
+      distance < nearestDistance - 1e-9
+      || (Math.abs(distance - nearestDistance) <= 1e-9 && zoneId.localeCompare(nearestId) < 0)
+    ) {
+      nearest = zone;
+      nearestDistance = distance;
+      nearestId = zoneId;
+    }
+  }
+  return nearest;
+}
+
+function captureRuntimeVirtualTraversalOccupancy(position) {
+  virtualTraversalInsideByZone.clear();
+  for (const zone of activeVirtualTraversalZones) {
+    virtualTraversalInsideByZone.set(
+      zone.zoneId,
+      runtimeTraversalZoneContainsPosition(zone, position),
+    );
+  }
+}
+
+function runtimeVirtualTraversalEntryZoneForPosition(position) {
+  const candidate = runtimeVirtualTraversalZoneForPosition(position);
+  let enteredZone = null;
+  for (const zone of activeVirtualTraversalZones) {
+    const inside = runtimeTraversalZoneContainsPosition(zone, position);
+    const hadOccupancy = virtualTraversalInsideByZone.has(zone.zoneId);
+    const wasInside = hadOccupancy ? virtualTraversalInsideByZone.get(zone.zoneId) : inside;
+    virtualTraversalInsideByZone.set(zone.zoneId, inside);
+    if (!enteredZone && zone === candidate && hadOccupancy && wasInside === false && inside) {
+      enteredZone = zone;
+    }
+  }
+  return enteredZone;
+}
+
+function advanceRuntimeLocomotionZone(zone) {
+  if (!zone || runtimeNavigationPending || activeRuntimeAutoInterpolation) return false;
+  if (zone.kind === "variant") {
+    if (!zone.variantGroup?.id || !zone.toVariantOptionId) return false;
+    activeVariantOptionByGroupId.set(zone.variantGroup.id, zone.toVariantOptionId);
+    setBeat(activeIndex);
+    return true;
+  }
+  const nextIndex = zone.destinationIndex;
+  if (!Number.isInteger(nextIndex) || nextIndex < 0 || nextIndex >= beats.length) return false;
+  setBeat(nextIndex, { route: zone.route, autoInterpolation: true });
+  return true;
 }
 
 function commitRuntimeTeleportAim(entry) {
@@ -3834,11 +3972,13 @@ function commitRuntimeTeleportAim(entry) {
   const blocked = runtimeTeleportAimIsSuppressed() || entry?.teleportAimBlocked;
   cancelRuntimeTeleportAim(entry);
   if (!renderer.xr.isPresenting || !landing || blocked) return false;
+  const virtualTraversalZone = runtimeVirtualTraversalZoneForPosition(landing);
   const viewerCamera = runtimeReaderCamera();
   const destination = viewerCamera.getWorldPosition(new THREE.Vector3());
   destination.x = landing.x;
   destination.z = landing.z;
   teleportReaderTo(destination);
+  if (virtualTraversalZone && advanceRuntimeLocomotionZone(virtualTraversalZone)) return true;
   freeTeleportRequiresPhysicalZoneClearance = true;
   physicalTraversalEnteredAt = null;
   physicalTraversalEnteredByZone.clear();
@@ -3886,16 +4026,13 @@ function performRuntimeControllerAction(action) {
   }
   if (normalizedAction === "turn-back") return snapTurnReader("turn-right", Math.PI);
   if (activeRuntimeAutoInterpolation) return false;
-  if (controllerAdvancePending) return false;
+  if (runtimeNavigationPending) return false;
   let destinationIndex = null;
   if (normalizedAction === "next-beat" && activeIndex < beats.length - 1) destinationIndex = activeIndex + 1;
   if (normalizedAction === "previous-beat" && activeIndex > 0) destinationIndex = activeIndex - 1;
   if (destinationIndex != null) {
     const route = runtimeProgressionRouteForNavigation(activeIndex, destinationIndex);
-    controllerAdvancePending = true;
-    Promise.resolve(setBeat(destinationIndex, { route, autoInterpolation: true })).finally(() => {
-      controllerAdvancePending = false;
-    });
+    setBeat(destinationIndex, { route, autoInterpolation: true });
     return true;
   }
   const group = runtimeVariantGroupForBeat(beats[activeIndex]);
@@ -4557,6 +4694,14 @@ function activeRuntimeDirectTargetRoots() {
       entityId: String(entry.entity?.id || entry.entity?.entityId || ""),
       root: entry.authorTransformRoot,
       sceneRoot: entry.model,
+    });
+  }
+  for (const entry of activeSpatialImageEntries) {
+    roots.push({
+      assetId: String(entry.asset?.id || ""),
+      entityId: String(entry.entity?.id || entry.entity?.entityId || ""),
+      root: entry.authorTransformRoot,
+      sceneRoot: entry.plane,
     });
   }
   return roots;
@@ -5423,7 +5568,7 @@ function endXrDirectManipulationScale(entry) {
   const grab = xrDirectManipulationGrab;
   if (!scale || !grab || (scale.primaryEntry !== entry && scale.secondaryEntry !== entry)) return false;
   updateRuntimeDirectManipulation();
-  if (directManipulationAdvancePending || !xrDirectManipulationGrab) return true;
+  if (runtimeNavigationPending || !xrDirectManipulationGrab) return true;
   const remainingEntry = scale.primaryEntry === entry ? scale.secondaryEntry : scale.primaryEntry;
   xrDirectManipulationScale = null;
   grab.entry = remainingEntry;
@@ -5477,20 +5622,15 @@ function runtimeDirectInteractionComplete(interaction) {
 
 function evaluateRuntimeDirectManipulationCompletion() {
   if (activeRuntimeAutoInterpolation) return false;
-  if (directManipulationAdvancePending) return false;
+  if (runtimeNavigationPending) return false;
   const interaction = activeRuntimeDirectInteractions.find((candidate) => runtimeDirectInteractionComplete(candidate));
   if (!interaction) return false;
-  directManipulationAdvancePending = true;
   if (interaction.kind === "variant") {
     activeVariantOptionByGroupId.set(interaction.variantGroup.id, interaction.toVariantOptionId);
-    Promise.resolve(setBeat(activeIndex)).finally(() => {
-      directManipulationAdvancePending = false;
-    });
+    setBeat(activeIndex);
     return true;
   }
-  Promise.resolve(setBeat(interaction.destinationIndex, { route: interaction.route, autoInterpolation: true })).finally(() => {
-    directManipulationAdvancePending = false;
-  });
+  setBeat(interaction.destinationIndex, { route: interaction.route, autoInterpolation: true });
   return true;
 }
 
@@ -5588,10 +5728,11 @@ function configureTraversalControls() {
   const incoming = runtimeInteractionForBoundary(activeIndex - 1, activeIndex);
   const outgoing = runtimeInteractionForBoundary(activeIndex, activeIndex + 1);
   const atEnd = activeIndex === beats.length - 1;
+  const interpolationActive = Boolean(activeRuntimeAutoInterpolation);
   prevButton.hidden = false;
   nextButton.hidden = false;
-  prevButton.disabled = activeIndex === 0 || isPhysicalLocomotionBoundary(incoming);
-  nextButton.disabled = !atEnd && isPhysicalLocomotionBoundary(outgoing);
+  prevButton.disabled = interpolationActive || activeIndex === 0 || isPhysicalLocomotionBoundary(incoming);
+  nextButton.disabled = interpolationActive || (!atEnd && isPhysicalLocomotionBoundary(outgoing));
   prevButton.textContent = isReaderLocomotionInteraction(incoming) ? "Previous place" : "Previous";
   nextButton.textContent = atEnd
     ? "Finish"
@@ -5605,7 +5746,7 @@ function configureTraversalControls() {
   beatStrip.setAttribute("aria-label", "Select a story part");
   for (const button of beatStrip.querySelectorAll("button")) {
     const destinationIndex = Number(button.dataset.beatIndex);
-    button.disabled = requiresPhysicalLocomotionBetween(activeIndex, destinationIndex);
+    button.disabled = interpolationActive || requiresPhysicalLocomotionBetween(activeIndex, destinationIndex);
   }
   updateReaderGuidance();
 }
@@ -5634,6 +5775,13 @@ function updateReaderGuidance() {
     readerGuidanceText.textContent = `${activeReaderStoryGuidance.context} Walk to the glowing place and pause there briefly to continue.`;
     return;
   }
+  if (
+    isReaderLocomotionInteraction(outgoing)
+    && runtimeBoundaryLocomotionMode(outgoing) === "virtual-teleport"
+  ) {
+    readerGuidanceText.textContent = `${activeReaderStoryGuidance.context} Step or move into the glowing place to continue. In a headset, you can also hold the right stick Up to aim at the glowing place, then release it to teleport. On desktop, focus the scene and use WASD.`;
+    return;
+  }
   const variantGroup = runtimeVariantGroupForBeat(beats[activeIndex]);
   readerGuidanceText.textContent = variantGroup
     ? activeReaderStoryGuidance.variant
@@ -5641,7 +5789,12 @@ function updateReaderGuidance() {
 }
 
 function completeStory() {
-  if (!beats.length || activeIndex !== beats.length - 1) return;
+  if (
+    !beats.length
+    || activeIndex !== beats.length - 1
+    || runtimeNavigationPending
+    || activeRuntimeAutoInterpolation
+  ) return false;
   if (storyComplete) storyComplete.hidden = false;
   nextButton.disabled = true;
   beatProgress.textContent = `${beats.length} of ${beats.length} · Story complete`;
@@ -5650,19 +5803,24 @@ function completeStory() {
   updatePartPickerSummary(true);
   storyComplete?.scrollIntoView({ block: "nearest" });
   restartStoryButton?.focus();
+  return true;
 }
 
 function navigateInteraction(direction) {
+  if (runtimeNavigationPending || activeRuntimeAutoInterpolation) return false;
   const destinationIndex = activeIndex + direction;
-  if (destinationIndex < 0 || destinationIndex >= beats.length) return;
+  if (destinationIndex < 0 || destinationIndex >= beats.length) return false;
   const route = runtimeProgressionRouteForNavigation(activeIndex, destinationIndex);
   const boundary = runtimeInteractionForBoundary(activeIndex, destinationIndex, route);
-  if (isPhysicalLocomotionBoundary(boundary)) return;
+  if (isPhysicalLocomotionBoundary(boundary)) return false;
   setBeat(destinationIndex, { route, autoInterpolation: direction > 0 });
+  return true;
 }
 
 async function setBeat(index) {
-  if (!beats.length) return;
+  if (!beats.length || runtimeNavigationPending || activeRuntimeAutoInterpolation) return false;
+  runtimeNavigationPending = true;
+  try {
   cancelAllRuntimeTeleportAims();
   freeTeleportRequiresPhysicalZoneClearance = false;
   if (storyComplete) storyComplete.hidden = true;
@@ -5689,7 +5847,7 @@ async function setBeat(index) {
     variantGroup,
     variantOption?.id,
   );
-  const environmentResult = await switchRuntimeEnvironmentEnhancement(beat, loadRevision);
+  const environmentResult = await switchRuntimeEnvironmentEnhancement(beat, variantOption, loadRevision);
   if (environmentResult.reason === "stale" || loadRevision !== activeSceneLoadRevision) return;
   activeAttentionGuidance = exposeRuntimeAttentionGuidance(
     scene,
@@ -5699,7 +5857,9 @@ async function setBeat(index) {
     initial: !activeModel,
     route: progressionRoute,
   });
-  if (activeRuntimeAutoInterpolation && sharedTimelinePlayback) cancelRuntimeAutoInterpolation();
+  if (activeRuntimeAutoInterpolation && sharedTimelinePlayback && !activeRuntimeAutoInterpolation.generatedTransitionPlan) {
+    cancelRuntimeAutoInterpolation();
+  }
   const sharedTimelineOwnsModel = sharedTimelineOwnsDestinationModel(sharedTimelinePlayback);
   const sharedTimelineAsset = sharedTimelineOwnsModel
     ? sourceMotionPlaybackModelAsset(sharedTimelinePlayback.contract)
@@ -5737,7 +5897,9 @@ async function setBeat(index) {
     : modelAsset && partState?.playbackMode !== "frozen"
       ? sourceTransitionForBeatChange(previousIndex, activeIndex, modelAsset.id, progressionRoute)
       : null;
-  if (activeRuntimeAutoInterpolation && transitionPlayback) cancelRuntimeAutoInterpolation();
+  if (activeRuntimeAutoInterpolation && transitionPlayback && !activeRuntimeAutoInterpolation.generatedTransitionPlan) {
+    cancelRuntimeAutoInterpolation();
+  }
   const text = variantOption?.text || beat.text || graphBeat?.text || "";
   const variantProgress = variantGroup && variantOption
     ? ` · choice ${variantGroup.options.findIndex((option) => option.id === variantOption.id) + 1} of ${variantGroup.options.length}`
@@ -5823,6 +5985,10 @@ async function setBeat(index) {
   configureRuntimeDirectManipulation();
   configureTraversalControls();
   startRuntimeAutoInterpolation(loadRevision);
+  return true;
+  } finally {
+    runtimeNavigationPending = false;
+  }
 }
 
 function normalizeRuntimeVariantGroups(value) {
@@ -6114,11 +6280,13 @@ function renderRuntimeVariantControls(group, selectedOption, interactionControl)
 }
 
 function selectRuntimeVariantOption(group, optionId) {
+  if (runtimeNavigationPending || activeRuntimeAutoInterpolation) return false;
   if (!group?.options.some((option) => option.id === optionId)) return;
   const current = runtimeVariantOptionForGroup(group);
   if (current?.id !== optionId && !runtimeVariantUiButtonAllowed(group, current?.id, optionId)) return;
   activeVariantOptionByGroupId.set(group.id, optionId);
   setBeat(activeIndex);
+  return true;
 }
 
 function runtimeVariantSteppedOption(group, current, direction) {
@@ -6212,12 +6380,113 @@ function worldReaderQuaternionForStation(station) {
   return quaternion;
 }
 
-function applySpatialTraversalForBeat(beat, previousIndex = activeIndex, progressionRoute = null) {
+function createRuntimeLocomotionDestinationMarker(locomotionMode, tolerance, options = {}) {
+  const radius = Math.max(0.12, Number(tolerance?.distanceMeters) * 0.85 || 0);
+  const color = locomotionMode === "virtual-teleport" ? 0x7db7ff : 0x6ed8c2;
+  const root = new THREE.Group();
+  root.name = options.variant
+    ? `storyvr-${locomotionMode}-variant-destination`
+    : `storyvr-${locomotionMode}-destination`;
+
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(radius * 0.78, 64),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.22,
+      side: THREE.DoubleSide,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  disc.name = "storyvr-locomotion-destination-disc";
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.y = 0.012;
+  disc.renderOrder = 20;
+  root.add(disc);
+
+  const outerRing = new THREE.Mesh(
+    new THREE.TorusGeometry(radius, 0.025, 8, 64),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.94,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  outerRing.name = "storyvr-locomotion-destination-ring";
+  outerRing.rotation.x = -Math.PI / 2;
+  outerRing.position.y = 0.026;
+  outerRing.renderOrder = 22;
+  root.add(outerRing);
+
+  const pulse = new THREE.Mesh(
+    new THREE.RingGeometry(radius * 1.04, radius * 1.15, 64),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.36,
+      side: THREE.DoubleSide,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  pulse.name = "storyvr-locomotion-destination-pulse";
+  pulse.rotation.x = -Math.PI / 2;
+  pulse.position.y = 0.018;
+  pulse.renderOrder = 21;
+  root.add(pulse);
+
+  root.userData.storyvrLocomotionDestinationCue = {
+    outerRing,
+    pulse,
+    phaseOffset: options.variant ? Math.PI : 0,
+  };
+  return root;
+}
+
+function updateRuntimeLocomotionDestinationCues() {
+  traversalDestinationRoot.traverse((object) => {
+    const cue = object.userData?.storyvrLocomotionDestinationCue;
+    if (!cue) return;
+    const phase = (Math.sin((elapsedSeconds * Math.PI * 1.2) + cue.phaseOffset) + 1) / 2;
+    cue.pulse.scale.setScalar(1 + (phase * 0.12));
+    cue.pulse.material.opacity = 0.18 + ((1 - phase) * 0.28);
+    cue.outerRing.material.opacity = 0.84 + (phase * 0.12);
+  });
+}
+
+function disposeRuntimeLocomotionDestinationCues() {
+  const geometries = new Set();
+  const materials = new Set();
+  traversalDestinationRoot.traverse((object) => {
+    if (object === traversalDestinationRoot) return;
+    if (object.geometry?.dispose) geometries.add(object.geometry);
+    const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
+    for (const material of objectMaterials) {
+      if (material?.dispose) materials.add(material);
+    }
+  });
+  for (const geometry of geometries) geometry.dispose();
+  for (const material of materials) material.dispose();
   traversalDestinationRoot.clear();
+  delete traversalDestinationRoot.userData.readerStation;
+  delete traversalDestinationRoot.userData.locomotionMode;
+  return { geometries: geometries.size, materials: materials.size };
+}
+
+function applySpatialTraversalForBeat(beat, previousIndex = activeIndex, progressionRoute = null) {
+  disposeRuntimeLocomotionDestinationCues();
   traversalDestinationRoot.position.set(0, 0, 0);
   physicalTraversalEnteredAt = null;
   activePhysicalTraversalZones.length = 0;
+  activeVirtualTraversalZones.length = 0;
   physicalTraversalEnteredByZone.clear();
+  virtualTraversalInsideByZone.clear();
   const crossedBoundary = runtimeInteractionForBoundary(previousIndex, activeIndex, progressionRoute);
   const destinationStation = previousIndex < activeIndex
     ? runtimeLocomotionStationForBoundary(crossedBoundary, previousIndex, activeIndex)
@@ -6242,32 +6511,37 @@ function applySpatialTraversalForBeat(beat, previousIndex = activeIndex, progres
 
   const outgoingRoute = runtimeProgressionRouteForNavigation(activeIndex, activeIndex + 1);
   const outgoingBoundary = runtimeInteractionForBoundary(activeIndex, activeIndex + 1, outgoingRoute);
-  if (isPhysicalLocomotionBoundary(outgoingBoundary)) {
+  if (isReaderLocomotionInteraction(outgoingBoundary)) {
     const station = runtimeLocomotionStationForBoundary(outgoingBoundary, activeIndex, activeIndex + 1);
     const destination = worldReaderPositionForStation(station);
     if (station && destination) {
+      const locomotionMode = runtimeBoundaryLocomotionMode(outgoingBoundary);
       const tolerance = runtimeLocomotionTolerance(outgoingBoundary);
-      const marker = new THREE.Mesh(
-        new THREE.TorusGeometry(Math.max(0.12, tolerance.distanceMeters * 0.85), 0.025, 8, 64),
-        new THREE.MeshBasicMaterial({ color: 0x6ed8c2, transparent: true, opacity: 0.76 }),
-      );
-      marker.rotation.x = -Math.PI / 2;
+      const marker = createRuntimeLocomotionDestinationMarker(locomotionMode, tolerance);
       traversalDestinationRoot.position.set(destination.x, 0, destination.z);
       traversalDestinationRoot.userData.readerStation = { ...station, worldPosition: destination.toArray() };
+      traversalDestinationRoot.userData.locomotionMode = locomotionMode;
       traversalDestinationRoot.add(marker);
-      activePhysicalTraversalZones.push({
+      const zone = {
         zoneId: String(outgoingBoundary.boundaryId || `${activeIndex}->${activeIndex + 1}`),
         kind: "beat",
         record: outgoingBoundary,
+        locomotionMode,
         station,
         markerRoot: traversalDestinationRoot,
         tolerance,
         destinationIndex: activeIndex + 1,
         route: outgoingRoute,
-      });
+      };
+      (locomotionMode === "virtual-teleport"
+        ? activeVirtualTraversalZones
+        : activePhysicalTraversalZones).push(zone);
     }
   }
   addRuntimeVariantLocomotionZones(beat);
+  captureRuntimeVirtualTraversalOccupancy(
+    runtimeReaderCamera().getWorldPosition(new THREE.Vector3()),
+  );
 }
 
 function addRuntimeVariantLocomotionZones(beat) {
@@ -6280,6 +6554,7 @@ function addRuntimeVariantLocomotionZones(beat) {
     const station = runtimeConfiguredLocomotionStation(record, activeIndex, activeIndex);
     const destination = worldReaderPositionForStation(station);
     if (!station || !destination) continue;
+    const locomotionMode = runtimeBoundaryLocomotionMode(record);
     const tolerance = runtimeLocomotionTolerance(record);
     const markerRoot = new THREE.Group();
     markerRoot.name = `storyvr-variant-locomotion-destination:${record.edgeId}`;
@@ -6288,23 +6563,23 @@ function addRuntimeVariantLocomotionZones(beat) {
       0,
       destination.z - traversalDestinationRoot.position.z,
     );
-    const marker = new THREE.Mesh(
-      new THREE.TorusGeometry(Math.max(0.12, tolerance.distanceMeters * 0.85), 0.022, 8, 64),
-      new THREE.MeshBasicMaterial({ color: 0xe5aa63, transparent: true, opacity: 0.8 }),
-    );
-    marker.rotation.x = -Math.PI / 2;
+    const marker = createRuntimeLocomotionDestinationMarker(locomotionMode, tolerance, { variant: true });
     markerRoot.add(marker);
     traversalDestinationRoot.add(markerRoot);
-    activePhysicalTraversalZones.push({
+    const zone = {
       zoneId: String(record.edgeId),
       kind: "variant",
       record,
+      locomotionMode,
       station,
       markerRoot,
       tolerance,
       variantGroup: group,
       toVariantOptionId: record.toVariantOptionId,
-    });
+    };
+    (locomotionMode === "virtual-teleport"
+      ? activeVirtualTraversalZones
+      : activePhysicalTraversalZones).push(zone);
   }
 }
 
@@ -6339,38 +6614,47 @@ function teleportReaderTo(destination, station = null) {
   resetDesktopReaderLookAnchor();
 }
 
-function updatePhysicalTraversal() {
+function syncRuntimeTraversalZoneDestination(zone) {
+  const destination = worldReaderPositionForStation(zone?.station);
+  if (!destination) return null;
+  if (zone.markerRoot === traversalDestinationRoot) {
+    traversalDestinationRoot.position.set(destination.x, 0, destination.z);
+    traversalDestinationRoot.userData.readerStation = { ...zone.station, worldPosition: destination.toArray() };
+  } else if (zone.markerRoot) {
+    zone.markerRoot.position.set(
+      destination.x - traversalDestinationRoot.position.x,
+      0,
+      destination.z - traversalDestinationRoot.position.z,
+    );
+  }
+  return destination;
+}
+
+function updateRuntimeTraversalArrivals() {
   if (activeRuntimeAutoInterpolation) return;
   const outgoingBoundary = runtimeInteractionForBoundary(activeIndex, activeIndex + 1);
-  if (!isPhysicalLocomotionBoundary(outgoingBoundary) && !activePhysicalTraversalZones.length) return;
+  if (
+    !isPhysicalLocomotionBoundary(outgoingBoundary)
+    && !activePhysicalTraversalZones.length
+    && !activeVirtualTraversalZones.length
+  ) return;
   const viewer = runtimeReaderCamera().getWorldPosition(new THREE.Vector3());
   if (freeTeleportRequiresPhysicalZoneClearance) {
-    const insideAnyZone = activePhysicalTraversalZones.some((zone) => {
-      const destination = worldReaderPositionForStation(zone.station);
-      return Boolean(
-        destination
-        && Math.hypot(viewer.x - destination.x, viewer.z - destination.z) <= zone.tolerance.distanceMeters
-      );
-    });
+    const insideAnyZone = activePhysicalTraversalZones.some((zone) => (
+      runtimeTraversalZoneContainsPosition(zone, viewer)
+    ));
     physicalTraversalEnteredAt = null;
     physicalTraversalEnteredByZone.clear();
-    if (insideAnyZone) return;
+    if (insideAnyZone) {
+      runtimeVirtualTraversalEntryZoneForPosition(viewer);
+      return;
+    }
     freeTeleportRequiresPhysicalZoneClearance = false;
   }
   for (const zone of activePhysicalTraversalZones) {
-    const destination = worldReaderPositionForStation(zone.station);
+    const destination = syncRuntimeTraversalZoneDestination(zone);
     if (!destination) continue;
-    if (zone.markerRoot === traversalDestinationRoot) {
-      traversalDestinationRoot.position.set(destination.x, 0, destination.z);
-      traversalDestinationRoot.userData.readerStation = { ...zone.station, worldPosition: destination.toArray() };
-    } else {
-      zone.markerRoot.position.set(
-        destination.x - traversalDestinationRoot.position.x,
-        0,
-        destination.z - traversalDestinationRoot.position.z,
-      );
-    }
-    const entered = Math.hypot(viewer.x - destination.x, viewer.z - destination.z) <= zone.tolerance.distanceMeters;
+    const entered = runtimeTraversalZoneContainsPosition(zone, viewer);
     if (!entered) {
       physicalTraversalEnteredByZone.delete(zone.zoneId);
       if (zone.kind === "beat") physicalTraversalEnteredAt = null;
@@ -6379,25 +6663,12 @@ function updatePhysicalTraversal() {
     const enteredAt = physicalTraversalEnteredByZone.get(zone.zoneId) ?? elapsedSeconds;
     physicalTraversalEnteredByZone.set(zone.zoneId, enteredAt);
     if (zone.kind === "beat") physicalTraversalEnteredAt = enteredAt;
-    if (physicalTraversalAdvancing || elapsedSeconds - enteredAt < zone.tolerance.dwellSeconds) continue;
-    physicalTraversalAdvancing = true;
-    if (zone.kind === "variant") {
-      activeVariantOptionByGroupId.set(zone.variantGroup.id, zone.toVariantOptionId);
-      Promise.resolve(setBeat(activeIndex)).finally(() => {
-        physicalTraversalAdvancing = false;
-      });
-      return;
-    }
-    const nextIndex = zone.destinationIndex;
-    if (nextIndex < 0 || nextIndex >= beats.length) {
-      physicalTraversalAdvancing = false;
-      continue;
-    }
-    Promise.resolve(setBeat(nextIndex, { route: zone.route, autoInterpolation: true })).finally(() => {
-      physicalTraversalAdvancing = false;
-    });
-    return;
+    if (runtimeNavigationPending || elapsedSeconds - enteredAt < zone.tolerance.dwellSeconds) continue;
+    if (advanceRuntimeLocomotionZone(zone)) return;
   }
+  for (const zone of activeVirtualTraversalZones) syncRuntimeTraversalZoneDestination(zone);
+  const enteredVirtualZone = runtimeVirtualTraversalEntryZoneForPosition(viewer);
+  if (enteredVirtualZone) advanceRuntimeLocomotionZone(enteredVirtualZone);
 }
 
 function proceduralDynamicsRuntimePlansForBeat(beat, variantOption = null) {
@@ -6464,6 +6735,12 @@ async function showProceduralDynamicsForBeat(beat, variantOption, loadRevision, 
       entityId: instance.entityId || actorById.get(instance.actorId)?.entityId || null,
     }));
   });
+  const plannedGeneratedObjects = rawPlans.flatMap((rawPlan) => (
+    expandProceduralDynamicsGeneratedObjects(
+      clampProceduralDynamicsPlan(rawPlan, { xrPresenting: true }),
+      { xrPresenting: true },
+    )
+  ));
   if (loadRevision !== activeSceneLoadRevision) return { loaded: 0, failed: 0 };
 
   const targets = activeProceduralDynamicsModelTargets();
@@ -6482,6 +6759,18 @@ async function showProceduralDynamicsForBeat(beat, variantOption, loadRevision, 
       continue;
     }
     assignedTargetRoots.add(target.authorTransformRoot);
+    activeProceduralDynamicsEntries.push(entry);
+    loadedCount += 1;
+  }
+  for (const instance of plannedGeneratedObjects) {
+    const attachmentTarget = instance.attachment
+      ? proceduralDynamicsAttachmentTargetForInstance(targets, instance)
+      : null;
+    const entry = bindProceduralDynamicsGeneratedObject(instance, anchorPosition, attachmentTarget);
+    if (!entry) {
+      failedCount += 1;
+      continue;
+    }
     activeProceduralDynamicsEntries.push(entry);
     loadedCount += 1;
   }
@@ -6516,6 +6805,14 @@ function activeProceduralDynamicsModelTargets() {
       animations: entry.animations || [],
       playback: entry.playback,
     })),
+    ...activeSpatialImageEntries.map((entry) => ({
+      asset: entry.asset,
+      entity: entry.entity,
+      model: entry.plane,
+      authorTransformRoot: entry.authorTransformRoot,
+      animations: [],
+      playback: null,
+    })),
   ].filter((target) => target.model && target.authorTransformRoot?.parent);
 }
 
@@ -6532,6 +6829,20 @@ function proceduralDynamicsTargetForInstance(targets, instance, assignedTargetRo
   // Legacy plans did not carry entity IDs. They remain safe only when the
   // linked asset resolves to exactly one already-loaded authored instance.
   return available.length === 1 ? available[0] : null;
+}
+
+function proceduralDynamicsAttachmentTargetForInstance(targets, instance) {
+  const attachment = instance?.attachment;
+  if (
+    !attachment
+    || attachment.type !== "entity"
+    || attachment.point !== "bounds-center"
+  ) return null;
+  const entityId = String(attachment.entityId || "").trim();
+  if (!entityId) return null;
+  return (Array.isArray(targets) ? targets : []).find((target) => (
+    proceduralDynamicsTargetEntityId(target) === entityId
+  )) || null;
 }
 
 function insertObjectAtChildIndex(parent, child, requestedIndex) {
@@ -6592,6 +6903,11 @@ function bindProceduralDynamicsToAuthoredTarget(target, instance, anchorPosition
     action.time = (Number(clip.duration) || 0) * instance.animationPhase01;
     mixer.update(0);
   }
+  const materials = [];
+  target.model.traverse((node) => {
+    const nodeMaterials = Array.isArray(node.material) ? node.material : node.material ? [node.material] : [];
+    for (const material of nodeMaterials) if (!materials.includes(material)) materials.push(material);
+  });
   return {
     instance,
     model: target.model,
@@ -6613,19 +6929,289 @@ function bindProceduralDynamicsToAuthoredTarget(target, instance, anchorPosition
     motionWorldPosition: new THREE.Vector3(),
     motionLocalPosition: new THREE.Vector3(),
     authoredModelBinding: true,
+    baseMotionScale: new THREE.Vector3(1, 1, 1),
+    originalVisible: authorTransformRoot.visible,
+    materials,
+    originalMaterialState: materials.map((material) => ({
+      opacity: Number.isFinite(Number(material.opacity)) ? Number(material.opacity) : 1,
+      transparent: material.transparent === true,
+      color: material.color?.clone?.() || null,
+      emissive: material.emissive?.clone?.() || null,
+      emissiveIntensity: Number.isFinite(Number(material.emissiveIntensity)) ? Number(material.emissiveIntensity) : null,
+    })),
   };
+}
+
+function runtimeProceduralGeneratedGeometry(definition = {}) {
+  const dimensions = Array.isArray(definition.dimensionsMeters)
+    ? definition.dimensionsMeters.map((value) => Math.max(0.001, Math.abs(Number(value) || 0.2)))
+    : [0.2, 0.2, 0.2];
+  const [x, y, z] = dimensions;
+  const segments = Math.max(3, Math.min(128, Number(definition.segments) || 32));
+  if (definition.shape === "box") return new THREE.BoxGeometry(x, y, z);
+  if (definition.shape === "plane") return new THREE.PlaneGeometry(x, y);
+  if (definition.shape === "circle") return new THREE.CircleGeometry(x * 0.5, segments);
+  if (definition.shape === "ring") {
+    const outer = x * 0.5;
+    return new THREE.RingGeometry(outer * Math.max(0, Math.min(0.99, Number(definition.innerRadiusRatio) || 0.65)), outer, segments);
+  }
+  if (definition.shape === "cone") return new THREE.ConeGeometry(x * 0.5, y, segments);
+  if (definition.shape === "cylinder") return new THREE.CylinderGeometry(x * 0.5, z * 0.5, y, segments);
+  if (definition.shape === "torus") return new THREE.TorusGeometry(x * 0.5, Math.max(0.001, y * 0.25), Math.min(segments, 32), segments);
+  return new THREE.SphereGeometry(x * 0.5, segments, Math.max(8, Math.floor(segments / 2)));
+}
+
+function runtimeProceduralGeneratedParticles(instance) {
+  const definition = instance.object || {};
+  const lifetime = Math.max(0.05, Number(definition.lifetimeSeconds) || 2);
+  const rate = Math.max(0, Number(definition.rate) || 12);
+  const maxCount = Math.max(1, Math.min(4096, Math.ceil(rate * lifetime * 2)));
+  const positions = new Float32Array(maxCount * 3);
+  const seeds = new Float32Array(maxCount * 3);
+  for (let index = 0; index < maxCount; index += 1) {
+    const angle = (index * 2.399963229728653) % (Math.PI * 2);
+    const radius = (index * 0.61803398875) % 1;
+    seeds[index * 3] = Math.cos(angle) * radius;
+    seeds[index * 3 + 1] = ((index * 0.754877666) % 1) - 0.5;
+    seeds[index * 3 + 2] = Math.sin(angle) * radius;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  const material = new THREE.PointsMaterial({
+    color: definition.color || instance.appearance?.color || "#ffffff",
+    size: Math.max(0.001, Number(definition.sizeMeters) || 0.03),
+    transparent: true,
+    opacity: Math.max(0, Math.min(1, Number(definition.opacity ?? instance.appearance?.opacity ?? 1))),
+    depthWrite: false,
+    sizeAttenuation: true,
+  });
+  return {
+    object: new THREE.Points(geometry, material),
+    materials: [material],
+    particleState: {
+      geometry,
+      positions,
+      seeds,
+      lifetime,
+      rate,
+      maxCount,
+      velocity: new THREE.Vector3().fromArray(definition.initialVelocityMetersPerSecond || [0, 0.25, 0]),
+      spread: new THREE.Vector3().fromArray(definition.spreadMetersPerSecond || [0.15, 0.15, 0.15]),
+      gravity: new THREE.Vector3().fromArray(definition.gravityMetersPerSecondSquared || [0, 0, 0]),
+      material,
+    },
+  };
+}
+
+function runtimeProceduralGeneratedContent(instance) {
+  const definition = instance.object || {};
+  const appearance = instance.appearance || {};
+  if (instance.kind === "particle-emitter") return runtimeProceduralGeneratedParticles(instance);
+  if (instance.kind === "light") {
+    let light;
+    if (definition.type === "spot") light = new THREE.SpotLight(definition.color, definition.intensity, definition.distance, definition.angle, definition.penumbra, definition.decay);
+    else if (definition.type === "directional") light = new THREE.DirectionalLight(definition.color, definition.intensity);
+    else if (definition.type === "ambient") light = new THREE.AmbientLight(definition.color, definition.intensity);
+    else if (definition.type === "hemisphere") light = new THREE.HemisphereLight(definition.color, definition.groundColor, definition.intensity);
+    else light = new THREE.PointLight(definition.color, definition.intensity, definition.distance, definition.decay);
+    const group = new THREE.Group();
+    group.add(light);
+    const materials = [];
+    if (definition.visualSource !== false && !light.isAmbientLight && !light.isHemisphereLight) {
+      const material = new THREE.MeshBasicMaterial({
+        color: definition.color || appearance.color || "#ffffff",
+        transparent: true,
+        opacity: Math.max(0.08, Number(appearance.opacity ?? 0.9)),
+        toneMapped: false,
+      });
+      const bulb = new THREE.Mesh(
+        new THREE.SphereGeometry(Math.max(0.005, Number(definition.visualRadiusMeters) || 0.06), 20, 12),
+        material,
+      );
+      group.add(bulb);
+      materials.push(material);
+    }
+    return { object: group, light, materials };
+  }
+  const material = new THREE.MeshStandardMaterial({
+    color: appearance.color || "#ffffff",
+    emissive: appearance.emissiveColor || appearance.color || "#000000",
+    emissiveIntensity: Math.max(0, Number(appearance.emissiveIntensity) || 0),
+    transparent: appearance.transparent === true || Number(appearance.opacity) < 1,
+    opacity: Math.max(0, Math.min(1, Number(appearance.opacity ?? 1))),
+    side: ["plane", "circle", "ring"].includes(definition.shape) ? THREE.DoubleSide : THREE.FrontSide,
+    roughness: 0.45,
+    metalness: 0.08,
+  });
+  return { object: new THREE.Mesh(runtimeProceduralGeneratedGeometry(definition), material), materials: [material] };
+}
+
+function proceduralDynamicsVisibleRenderedBounds(root, targetBounds = new THREE.Box3()) {
+  targetBounds.makeEmpty();
+  if (!root?.parent || root.visible === false) return null;
+  root.updateWorldMatrix(true, true);
+  root.traverseVisible((node) => {
+    if (!node.geometry || !(node.isMesh || node.isLine || node.isPoints)) return;
+    const materials = Array.isArray(node.material)
+      ? node.material
+      : node.material ? [node.material] : [];
+    if (materials.length && !materials.some((material) => (
+      material?.visible !== false
+      && !(material?.transparent === true && Number(material.opacity) <= 0.001)
+    ))) return;
+    let sourceBounds = null;
+    if ((node.isSkinnedMesh || node.isInstancedMesh) && typeof node.computeBoundingBox === "function") {
+      node.computeBoundingBox();
+      sourceBounds = node.boundingBox;
+    } else {
+      if (!node.geometry.boundingBox) node.geometry.computeBoundingBox();
+      sourceBounds = node.geometry.boundingBox;
+    }
+    if (!sourceBounds || sourceBounds.isEmpty()) return;
+    proceduralDynamicsAttachmentNodeBounds.copy(sourceBounds).applyMatrix4(node.matrixWorld);
+    targetBounds.union(proceduralDynamicsAttachmentNodeBounds);
+  });
+  return targetBounds.isEmpty() ? null : targetBounds;
+}
+
+function updateProceduralDynamicsAttachmentAnchor(entry) {
+  const attachment = entry?.attachment;
+  if (
+    !attachment
+    || attachment.type !== "entity"
+    || attachment.point !== "bounds-center"
+    || !entry.attachmentTarget?.model
+  ) return false;
+  const bounds = proceduralDynamicsVisibleRenderedBounds(
+    entry.attachmentTarget.model,
+    entry.attachmentBounds,
+  );
+  if (!bounds) return false;
+  bounds.getCenter(entry.attachmentWorldCenter);
+  scene.updateWorldMatrix(true, false);
+  entry.anchorPosition.copy(entry.attachmentWorldCenter);
+  scene.worldToLocal(entry.anchorPosition);
+  entry.anchorPosition.add(entry.attachmentOffset);
+  return [entry.anchorPosition.x, entry.anchorPosition.y, entry.anchorPosition.z]
+    .every(Number.isFinite);
+}
+
+function bindProceduralDynamicsGeneratedObject(instance, anchorPosition, attachmentTarget = null) {
+  if (!instance?.objectId) return null;
+  const attachment = instance.attachment || null;
+  if (attachment && !attachmentTarget) return null;
+  const resolvedAnchorPosition = attachment
+    ? new THREE.Vector3()
+    : anchorPosition.clone().add(new THREE.Vector3().fromArray(instance.anchor?.offsetMeters || [0, 0, 0]));
+  const attachmentEntry = attachment ? {
+    attachment,
+    attachmentTarget,
+    attachmentBounds: new THREE.Box3(),
+    attachmentWorldCenter: new THREE.Vector3(),
+    attachmentOffset: new THREE.Vector3().fromArray(attachment.offsetMeters || [0, 0, 0]),
+    anchorPosition: resolvedAnchorPosition,
+  } : null;
+  if (attachmentEntry && !updateProceduralDynamicsAttachmentAnchor(attachmentEntry)) return null;
+  const content = runtimeProceduralGeneratedContent(instance);
+  const wrapper = new THREE.Group();
+  wrapper.name = `storyvr-procedural-generated:${instance.planId}:${instance.objectId}`;
+  wrapper.userData.storyvrProceduralDynamics = true;
+  wrapper.userData.storyvrGeneratedObjectId = instance.objectId;
+  wrapper.add(content.object);
+  scene.add(wrapper);
+  const baseQuaternion = new THREE.Quaternion();
+  if (Array.isArray(instance.transform?.quaternion)) baseQuaternion.fromArray(instance.transform.quaternion).normalize();
+  else if (Array.isArray(instance.transform?.rotationEulerDegrees)) {
+    baseQuaternion.setFromEuler(new THREE.Euler(...instance.transform.rotationEulerDegrees.map(THREE.MathUtils.degToRad), "XYZ"));
+  }
+  return {
+    instance,
+    wrapper,
+    generatedObjectBinding: true,
+    content: content.object,
+    light: content.light || null,
+    materials: content.materials || [],
+    particleState: content.particleState || null,
+    anchorPosition: resolvedAnchorPosition,
+    ...(attachmentEntry || {}),
+    baseScale: new THREE.Vector3().fromArray(instance.transform?.scale || [1, 1, 1]),
+    baseQuaternion,
+    startedAtSeconds: elapsedSeconds,
+  };
+}
+
+function updateRuntimeProceduralGeneratedParticles(entry, localTime, sample) {
+  const state = entry.particleState;
+  if (!state) return;
+  const rate = Math.max(0, Number(sample.particleRate ?? state.rate));
+  const count = Math.max(0, Math.min(state.maxCount, Math.ceil(rate * state.lifetime * 2)));
+  const attribute = state.geometry.getAttribute("position");
+  for (let index = 0; index < state.maxCount; index += 1) {
+    const age = (localTime + (index / state.maxCount) * state.lifetime) % state.lifetime;
+    const offset = index * 3;
+    state.positions[offset] = state.seeds[offset] * state.spread.x * age + state.velocity.x * age + 0.5 * state.gravity.x * age * age;
+    state.positions[offset + 1] = state.seeds[offset + 1] * state.spread.y * age + state.velocity.y * age + 0.5 * state.gravity.y * age * age;
+    state.positions[offset + 2] = state.seeds[offset + 2] * state.spread.z * age + state.velocity.z * age + 0.5 * state.gravity.z * age * age;
+  }
+  attribute.needsUpdate = true;
+  state.geometry.setDrawRange(0, count);
+  state.material.size = Math.max(0.001, Number(sample.particleSize ?? state.material.size));
+}
+
+function updateProceduralDynamicsGeneratedEntry(entry, localTime) {
+  if (entry.attachment?.follow && !updateProceduralDynamicsAttachmentAnchor(entry)) {
+    entry.wrapper.visible = false;
+    return false;
+  }
+  const sample = sampleProceduralDynamicsTransform(entry.instance, localTime);
+  entry.wrapper.position.fromArray(sample.position || [0, 0, 0]).add(entry.anchorPosition);
+  entry.wrapper.quaternion.copy(entry.baseQuaternion);
+  if (Array.isArray(sample.quaternion)) entry.wrapper.quaternion.fromArray(sample.quaternion).normalize();
+  else if (Array.isArray(sample.rotationEulerDegrees)) {
+    entry.wrapper.quaternion.setFromEuler(new THREE.Euler(...sample.rotationEulerDegrees.map(THREE.MathUtils.degToRad), "XYZ"));
+  }
+  entry.wrapper.scale.copy(entry.baseScale);
+  if (Array.isArray(sample.scale)) entry.wrapper.scale.fromArray(sample.scale);
+  entry.wrapper.visible = entry.instance.appearance?.visible !== false && sample.visible !== false && Number(sample.opacity) > 0.001;
+  const opacity = Math.max(0, Math.min(1, Number(entry.instance.appearance?.opacity ?? 1) * Number(sample.opacity ?? 1)));
+  for (const material of entry.materials) {
+    material.opacity = opacity;
+    material.transparent = material.transparent || opacity < 1;
+    if (sample.color && material.color) material.color.set(sample.color);
+    if (sample.emissiveColor && material.emissive) material.emissive.set(sample.emissiveColor);
+    if (Number.isFinite(sample.emissiveIntensity) && "emissiveIntensity" in material) material.emissiveIntensity = sample.emissiveIntensity;
+  }
+  if (entry.light) {
+    if (sample.color) entry.light.color.set(sample.color);
+    if (Number.isFinite(sample.lightIntensity)) entry.light.intensity = Math.max(0, sample.lightIntensity);
+    if (Number.isFinite(sample.lightDistance) && "distance" in entry.light) entry.light.distance = Math.max(0, sample.lightDistance);
+    if (Number.isFinite(sample.lightAngle) && "angle" in entry.light) entry.light.angle = Math.max(0, Math.min(Math.PI / 2, sample.lightAngle));
+  }
+  updateRuntimeProceduralGeneratedParticles(entry, localTime, sample);
+  return true;
 }
 
 function updateProceduralDynamics(delta) {
   for (const entry of activeProceduralDynamicsEntries) {
     const localTime = Math.max(0, elapsedSeconds - entry.startedAtSeconds);
+    if (entry.generatedObjectBinding) {
+      updateProceduralDynamicsGeneratedEntry(entry, localTime);
+      continue;
+    }
     const sample = sampleProceduralDynamicsTransform(entry.instance, localTime);
     entry.motionWorldPosition.fromArray(sample.position).add(entry.anchorPosition);
     entry.originalParent.updateWorldMatrix(true, false);
     entry.motionLocalPosition.copy(entry.motionWorldPosition);
     entry.originalParent.worldToLocal(entry.motionLocalPosition);
     entry.wrapper.position.copy(entry.motionLocalPosition);
-    if (entry.instance.orientationKind === "path-tangent") {
+    entry.wrapper.scale.copy(entry.baseMotionScale);
+    if (Array.isArray(sample.scale)) entry.wrapper.scale.fromArray(sample.scale);
+    const hasExplicitOrientation = Array.isArray(sample.quaternion) || Array.isArray(sample.rotationEulerDegrees);
+    if (Array.isArray(sample.quaternion)) entry.wrapper.quaternion.fromArray(sample.quaternion).normalize();
+    else if (Array.isArray(sample.rotationEulerDegrees)) {
+      entry.wrapper.quaternion.setFromEuler(new THREE.Euler(...sample.rotationEulerDegrees.map(THREE.MathUtils.degToRad), "XYZ"));
+    }
+    if (!hasExplicitOrientation && entry.instance.orientationKind === "path-tangent") {
       const [x, , z] = sample.tangent;
       let yaw = Math.atan2(x, z) + Number(entry.instance.yawOffsetRadians || 0);
       if (entry.instance.modelForwardAxis === "-Z") yaw += Math.PI;
@@ -6641,6 +7227,16 @@ function updateProceduralDynamics(delta) {
       const blend = smoothing > 0 && delta > 0 ? 1 - Math.exp(-delta / smoothing) : 1;
       entry.wrapper.quaternion.slerp(entry.localTargetQuaternion, blend);
     }
+    entry.authorTransformRoot.visible = entry.originalVisible !== false && sample.visible !== false && Number(sample.opacity) > 0.001;
+    for (const [materialIndex, material] of (entry.materials || []).entries()) {
+      const baseOpacity = Number(entry.originalMaterialState?.[materialIndex]?.opacity ?? 1);
+      const opacity = Math.max(0, Math.min(1, baseOpacity * Number(sample.opacity ?? 1)));
+      material.opacity = opacity;
+      material.transparent = material.transparent || opacity < 1;
+      if (sample.color && material.color) material.color.set(sample.color);
+      if (sample.emissiveColor && material.emissive) material.emissive.set(sample.emissiveColor);
+      if (Number.isFinite(sample.emissiveIntensity) && "emissiveIntensity" in material) material.emissiveIntensity = sample.emissiveIntensity;
+    }
     entry.mixer?.update(delta);
   }
 }
@@ -6650,6 +7246,11 @@ function clearProceduralDynamics() {
 }
 
 function disposeProceduralDynamicsEntry(entry) {
+  if (entry.generatedObjectBinding) {
+    entry.wrapper?.removeFromParent?.();
+    disposeRuntimeEnvironmentObject(entry.wrapper);
+    return;
+  }
   if (entry.mixer) {
     entry.mixer.stopAllAction();
     entry.mixer.uncacheRoot(entry.model);
@@ -6660,6 +7261,18 @@ function disposeProceduralDynamicsEntry(entry) {
   if (authorTransformRoot?.parent === entry.wrapper) entry.wrapper.remove(authorTransformRoot);
   if (entry.originalParent && authorTransformRoot) {
     insertObjectAtChildIndex(entry.originalParent, authorTransformRoot, entry.originalChildIndex);
+  }
+  if (authorTransformRoot) authorTransformRoot.visible = entry.originalVisible !== false;
+  for (const [index, material] of (entry.materials || []).entries()) {
+    const original = entry.originalMaterialState?.[index];
+    if (!original) continue;
+    material.opacity = original.opacity;
+    material.transparent = original.transparent;
+    if (original.color && material.color) material.color.copy(original.color);
+    if (original.emissive && material.emissive) material.emissive.copy(original.emissive);
+    if (original.emissiveIntensity !== null && original.emissiveIntensity !== undefined && "emissiveIntensity" in material) {
+      material.emissiveIntensity = original.emissiveIntensity;
+    }
   }
   entry.wrapper.removeFromParent();
 }
@@ -6767,6 +7380,38 @@ function runtimeAutoInterpolationSceneEntries(index) {
   if (!beat) return [];
   const group = runtimeVariantGroupForBeat(beat);
   return runtimeSpatialAssetEntriesForBeat(beat, index, runtimeVariantOptionForGroup(group));
+}
+
+function runtimeProceduralTransitionPlanForBeatChange(fromIndex, toIndex, route = null) {
+  if (!runtimeProceduralTransitions || !Number.isInteger(fromIndex) || !Number.isInteger(toIndex)) return null;
+  const progressionRoute = normalizeRuntimeProgressionRoute(
+    route || runtimeProgressionRouteForNavigation(fromIndex, toIndex),
+  );
+  if (!progressionRoute) return null;
+  return proceduralTransitionPlanForBoundary(runtimeProceduralTransitions, progressionRoute) || null;
+}
+
+function runtimeGeneratedTransitionEligibility(fromIndex, toIndex, route = null) {
+  const transitionPlan = runtimeProceduralTransitionPlanForBeatChange(fromIndex, toIndex, route);
+  if (!transitionPlan) return { eligible: false, reason: "no-generated-transition" };
+  if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex) || fromIndex === toIndex) {
+    return { eligible: false, reason: "invalid-directed-boundary" };
+  }
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+  const fromEntries = runtimeAutoInterpolationSceneEntries(fromIndex);
+  const toEntries = runtimeAutoInterpolationSceneEntries(toIndex);
+  return {
+    eligible: true,
+    transitionPlan: reducedMotion ? {
+      ...transitionPlan,
+      style: "cut",
+      durationSeconds: 0.001,
+      middle: { ...(transitionPlan.middle || {}), actions: [] },
+    } : transitionPlan,
+    reducedMotion,
+    fromEntries,
+    toEntries,
+  };
 }
 
 function runtimeAutoInterpolationEligibility(fromIndex, toIndex, route = null, options = {}) {
@@ -7023,6 +7668,7 @@ function runtimeAutoInterpolationTransformRelativeTo(root, parent) {
 }
 
 function disposeRuntimeAutoInterpolationSnapshot(state) {
+  disposeRuntimeTransitionMiddle(state);
   state?.outgoingRoot?.removeFromParent?.();
   for (const entry of state?.outgoing || []) {
     for (const material of entry.ownedMaterials || []) material.dispose?.();
@@ -7042,6 +7688,7 @@ function finishRuntimeAutoInterpolation(state = activeRuntimeAutoInterpolation) 
   disposeRuntimeAutoInterpolationSnapshot(state);
   activeRuntimeAutoInterpolation = null;
   scene.userData.storyvrAutoInterpolation = null;
+  configureTraversalControls();
   return true;
 }
 
@@ -7052,7 +7699,11 @@ function cancelRuntimeAutoInterpolation() {
 function beginRuntimeAutoInterpolation(fromIndex, toIndex, route, options, loadRevision) {
   cancelRuntimeAutoInterpolation();
   const eligibility = runtimeAutoInterpolationEligibility(fromIndex, toIndex, route, options);
-  if (!eligibility.eligible) return false;
+  const generatedEligibility = runtimeGeneratedTransitionEligibility(fromIndex, toIndex, route);
+  const selectedEligibility = generatedEligibility.eligible
+    ? generatedEligibility
+    : eligibility;
+  if (!selectedEligibility.eligible) return false;
   const outgoingRoot = new THREE.Group();
   outgoingRoot.name = "storyvr-auto-interpolation-outgoing";
   outgoingRoot.position.copy(modelRoot.position);
@@ -7078,8 +7729,10 @@ function beginRuntimeAutoInterpolation(fromIndex, toIndex, route, options, loadR
     pairs: [],
     unmatchedOutgoing: [],
     unmatchedIncoming: [],
+    generatedTransitionPlan: selectedEligibility.transitionPlan || null,
+    transitionMiddleEntries: new Map(),
     startedAtMs: null,
-    durationMs: AUTO_INTERPOLATION_SECONDS * 1000,
+    durationMs: (Number(selectedEligibility.transitionPlan?.durationSeconds) || AUTO_INTERPOLATION_SECONDS) * 1000,
   };
   scene.userData.storyvrAutoInterpolation = {
     active: true,
@@ -7088,6 +7741,9 @@ function beginRuntimeAutoInterpolation(fromIndex, toIndex, route, options, loadR
     toBeatId: beats[toIndex]?.id || "",
     progress: 0,
   };
+  if (selectedEligibility.transitionPlan) {
+    scene.userData.storyvrAutoInterpolation.mode = "generated-transition-loading";
+  }
   return true;
 }
 
@@ -7106,17 +7762,20 @@ function startRuntimeAutoInterpolation(loadRevision) {
     return false;
   }
   const incoming = activeRuntimeAutoInterpolationEntries();
-  if (!state.outgoing.length && !incoming.length) {
+  const hasMiddleActions = Boolean(state.generatedTransitionPlan?.middle?.actions?.length);
+  if (!state.outgoing.length && !incoming.length && !hasMiddleActions) {
     cancelRuntimeAutoInterpolation();
     return false;
   }
   const pairing = pairRuntimeAutoInterpolationEntries(state.outgoing, incoming);
-  if (!pairing.pairs.some(runtimeAutoInterpolationPairHasTransformChange)) {
+  if (!state.generatedTransitionPlan && !pairing.pairs.some(runtimeAutoInterpolationPairHasTransformChange)) {
     cancelRuntimeAutoInterpolation();
     return false;
   }
   state.incoming = incoming;
-  state.pairs = pairing.pairs.flatMap((pair) => {
+  const interpolateObjects = !state.generatedTransitionPlan
+    || state.generatedTransitionPlan.style === "interpolate";
+  state.pairs = (interpolateObjects ? pairing.pairs : []).flatMap((pair) => {
     const start = runtimeAutoInterpolationTransformRelativeTo(pair.outgoing.snapshotRoot, modelRoot);
     if (!start) return [];
     const end = {
@@ -7130,16 +7789,301 @@ function startRuntimeAutoInterpolation(loadRevision) {
     pair.outgoing.snapshotRoot.visible = false;
     return [{ ...pair, start, end }];
   });
-  state.unmatchedOutgoing = pairing.unmatchedOutgoing;
-  state.unmatchedIncoming = pairing.unmatchedIncoming;
+  state.unmatchedOutgoing = interpolateObjects ? pairing.unmatchedOutgoing : state.outgoing;
+  state.unmatchedIncoming = interpolateObjects ? pairing.unmatchedIncoming : incoming;
+  state.transitionMiddleTargets = [
+    ...state.pairs.map((pair) => ({
+      role: "to",
+      paired: true,
+      entry: pair.incoming,
+      root: pair.incoming.root,
+      basePosition: pair.end.position.clone(),
+      baseQuaternion: pair.end.quaternion.clone(),
+      baseScale: pair.end.scale.clone(),
+    })),
+    ...state.unmatchedOutgoing.map((entry) => ({
+      role: "from",
+      paired: false,
+      entry,
+      root: entry.snapshotRoot,
+      basePosition: entry.snapshotRoot.position.clone(),
+      baseQuaternion: entry.snapshotRoot.quaternion.clone(),
+      baseScale: entry.snapshotRoot.scale.clone(),
+    })),
+    ...state.unmatchedIncoming.map((entry) => ({
+      role: "to",
+      paired: false,
+      entry,
+      root: entry.root,
+      basePosition: entry.root.position.clone(),
+      baseQuaternion: entry.root.quaternion.clone(),
+      baseScale: entry.root.scale.clone(),
+    })),
+  ];
+  for (const target of state.transitionMiddleTargets) {
+    const materials = [];
+    target.root?.traverse?.((node) => {
+      const nodeMaterials = Array.isArray(node.material) ? node.material : node.material ? [node.material] : [];
+      for (const material of nodeMaterials) if (!materials.includes(material)) materials.push(material);
+    });
+    target.materials = materials;
+    target.materialState = materials.map((material) => ({
+      color: material.color?.clone?.() || null,
+      emissive: material.emissive?.clone?.() || null,
+      emissiveIntensity: Number.isFinite(Number(material.emissiveIntensity)) ? Number(material.emissiveIntensity) : null,
+    }));
+  }
   for (const entry of state.unmatchedOutgoing) setRuntimeAutoInterpolationOpacity(entry.snapshotRoot, 1);
   for (const entry of state.unmatchedIncoming) setRuntimeAutoInterpolationOpacity(entry.root, 0);
   modelRoot.visible = true;
   state.phase = "running";
   state.startedAtMs = performance.now();
   scene.userData.storyvrAutoInterpolation.mode = "auto-interpolation";
+  if (state.generatedTransitionPlan) {
+    scene.userData.storyvrAutoInterpolation.mode = `generated-${state.generatedTransitionPlan.style}`;
+  }
   updateRuntimeAutoInterpolation(state.startedAtMs);
   return true;
+}
+
+function runtimeTransitionMiddleVisualInstance(action) {
+  const parameters = action?.parameters && typeof action.parameters === "object" ? action.parameters : {};
+  const kind = String(action?.kind || "").toLowerCase();
+  const color = parameters.color || parameters.appearance?.color || parameters.light?.color || "#78e6d0";
+  const suppliedObject = parameters.temporaryObject || parameters.generatedObject || parameters.object;
+  if (suppliedObject && typeof suppliedObject === "object") {
+    const requestedKind = String(suppliedObject.kind || suppliedObject.type || "primitive").toLowerCase();
+    const generatedKind = requestedKind.includes("light")
+      ? "light"
+      : requestedKind.includes("particle")
+        ? "particle-emitter"
+        : "primitive";
+    return {
+      objectId: action.id,
+      instanceId: action.id,
+      kind: generatedKind,
+      object: { ...suppliedObject, kind: generatedKind },
+      transform: parameters.transform || suppliedObject.transform || { position: [0, 1.1, -1], scale: [1, 1, 1] },
+      appearance: parameters.appearance || suppliedObject.appearance || { visible: true, color, opacity: 1 },
+    };
+  }
+  if (kind.includes("light") || parameters.lightType || parameters.light) {
+    return {
+      objectId: action.id,
+      instanceId: action.id,
+      kind: "light",
+      object: {
+        kind: "light",
+        type: parameters.lightType || parameters.light?.type || "point",
+        color,
+        intensity: Math.max(0, Number(parameters.intensity) || 4),
+        distance: Math.max(0, Number(parameters.distance) || 8),
+        decay: 2,
+        visualSource: true,
+        visualRadiusMeters: 0.09,
+      },
+      transform: { position: [0, 1.2, -1.2], scale: [1, 1, 1] },
+      appearance: { visible: true, color, emissiveColor: color, emissiveIntensity: 2, opacity: 1 },
+    };
+  }
+  if (kind.includes("particle") || kind.includes("dissolve") || parameters.emissionCurve) {
+    const appearance = parameters.appearance || {};
+    return {
+      objectId: action.id,
+      instanceId: action.id,
+      kind: "particle-emitter",
+      object: {
+        kind: "particle-emitter",
+        shape: appearance.shape || "sphere",
+        rate: Math.max(1, Number(appearance.rate) || 48),
+        lifetimeSeconds: Math.max(0.2, Number(appearance.lifetimeSeconds) || 1.6),
+        sizeMeters: Math.max(0.005, Number(appearance.sizeMeters) || 0.035),
+        initialVelocityMetersPerSecond: appearance.velocity || [0, 0.45, 0],
+        spreadMetersPerSecond: appearance.spread || [0.55, 0.35, 0.55],
+        gravityMetersPerSecondSquared: appearance.gravity || [0, -0.12, 0],
+        color,
+        opacity: 1,
+      },
+      transform: { position: [0, 0.9, -0.5], scale: [1, 1, 1] },
+      appearance: { visible: true, color, opacity: 1 },
+    };
+  }
+  const description = String(parameters.description || action?.kind || "").toLowerCase();
+  const shape = description.includes("ring") ? "torus" : description.includes("box") ? "box" : "sphere";
+  return {
+    objectId: action.id,
+    instanceId: action.id,
+    kind: "primitive",
+    object: { kind: "primitive", shape, dimensionsMeters: shape === "torus" ? [0.9, 0.18, 0.9] : [0.35, 0.35, 0.35] },
+    transform: { position: [0, 1.15, -1], scale: [1, 1, 1] },
+    appearance: { visible: true, color, emissiveColor: color, emissiveIntensity: 1.8, opacity: 0.9, transparent: true },
+  };
+}
+
+function ensureRuntimeTransitionMiddleEntry(state, action) {
+  if (state.transitionMiddleEntries.has(action.id)) return state.transitionMiddleEntries.get(action.id);
+  const instance = runtimeTransitionMiddleVisualInstance(action);
+  const content = runtimeProceduralGeneratedContent(instance);
+  const root = new THREE.Group();
+  root.name = `storyvr-transition-middle:${action.id}`;
+  root.userData.storyvrTransitionMiddle = true;
+  root.add(content.object);
+  scene.add(root);
+  const readerCamera = runtimeReaderCamera();
+  const entry = {
+    actionId: action.id,
+    root,
+    content: content.object,
+    light: content.light || null,
+    materials: content.materials || [],
+    particleState: content.particleState || null,
+    instance,
+    anchorPosition: readerCamera.getWorldPosition(new THREE.Vector3()),
+    anchorQuaternion: readerCamera.getWorldQuaternion(new THREE.Quaternion()),
+  };
+  state.transitionMiddleEntries.set(action.id, entry);
+  return entry;
+}
+
+function runtimeTransitionMiddleTargets(state, action) {
+  const target = action?.target && typeof action.target === "object" ? action.target : {};
+  const scope = String(target.scope || target.role || "transition-scene").toLowerCase();
+  return (state.transitionMiddleTargets || []).filter((item) => {
+    const entityId = String(item.entry?.entity?.id || item.entry?.entityId || "");
+    const assetId = String(item.entry?.asset?.id || item.entry?.assetId || "");
+    if (target.entityId && entityId !== String(target.entityId)) return false;
+    if (target.assetId && assetId !== String(target.assetId)) return false;
+    if (scope === "from" || scope === "source") return item.role === "from";
+    if (scope === "to" || scope === "destination") return item.role === "to";
+    return true;
+  });
+}
+
+function restoreRuntimeTransitionMiddleTargets(state) {
+  for (const target of state?.transitionMiddleTargets || []) {
+    if (!target.root) continue;
+    if (!target.paired) {
+      target.root.position.copy(target.basePosition);
+      target.root.quaternion.copy(target.baseQuaternion);
+      target.root.scale.copy(target.baseScale);
+    }
+    (target.materials || []).forEach((material, index) => {
+      const original = target.materialState?.[index];
+      if (original?.color && material.color) material.color.copy(original.color);
+      if (original?.emissive && material.emissive) material.emissive.copy(original.emissive);
+      if (original?.emissiveIntensity !== null && original?.emissiveIntensity !== undefined && "emissiveIntensity" in material) {
+        material.emissiveIntensity = original.emissiveIntensity;
+      }
+    });
+  }
+}
+
+function updateRuntimeTransitionMiddle(state, progress) {
+  const plan = state?.generatedTransitionPlan;
+  if (!plan) return false;
+  const sample = proceduralTransitionMiddleSample(plan, progress);
+  const activeIds = new Set(sample.actions.map((action) => action.id));
+  for (const entry of state.transitionMiddleEntries.values()) entry.root.visible = activeIds.has(entry.actionId);
+  if (sample.endpoint) {
+    restoreRuntimeTransitionMiddleTargets(state);
+    if (sample.endpoint === "to") disposeRuntimeTransitionMiddle(state);
+    return false;
+  }
+  restoreRuntimeTransitionMiddleTargets(state);
+  for (const action of sample.actions) {
+    const local = proceduralTransitionEasedProgress(action.easing || "linear", action.localProgress);
+    const envelope = Math.sin(Math.PI * Math.max(0, Math.min(1, local)));
+    const kind = String(action.kind || "").toLowerCase();
+    const parameters = action.parameters && typeof action.parameters === "object" ? action.parameters : {};
+    const hasGenericTargetChange = Boolean(
+      parameters.positionOffset
+      || parameters.rotationEulerDegrees
+      || parameters.rotationOffsetDegrees
+      || parameters.scaleMultiplier
+      || parameters.opacityMultiplier !== undefined
+      || parameters.color
+      || parameters.emissiveColor
+      || parameters.emissiveIntensity !== undefined
+    );
+    if (kind.includes("spin") || kind.includes("scale") || kind.includes("dissolve") || kind.includes("transform") || hasGenericTargetChange) {
+      for (const target of runtimeTransitionMiddleTargets(state, action)) {
+        const positionOffset = parameters.positionOffset;
+        if (Array.isArray(positionOffset) && positionOffset.length >= 3) {
+          target.root.position.add(new THREE.Vector3().fromArray(positionOffset).multiplyScalar(envelope));
+        }
+        const rotationOffset = parameters.rotationEulerDegrees || parameters.rotationOffsetDegrees;
+        if (Array.isArray(rotationOffset) && rotationOffset.length >= 3) {
+          target.root.rotateX(THREE.MathUtils.degToRad(Number(rotationOffset[0]) || 0) * envelope);
+          target.root.rotateY(THREE.MathUtils.degToRad(Number(rotationOffset[1]) || 0) * envelope);
+          target.root.rotateZ(THREE.MathUtils.degToRad(Number(rotationOffset[2]) || 0) * envelope);
+        }
+        if (kind.includes("spin")) {
+          const turns = Number(parameters.turns) || 1;
+          const direction = String(parameters.direction || "clockwise").includes("counter") ? 1 : -1;
+          target.root.rotateY(direction * turns * Math.PI * 2 * envelope);
+        }
+        if (kind.includes("scale")) {
+          const curve = Array.isArray(parameters.scaleCurve) ? parameters.scaleCurve : [1, 1.18, 1];
+          const peak = Math.max(1, ...curve.map(Number).filter(Number.isFinite));
+          target.root.scale.multiplyScalar(1 + (peak - 1) * envelope);
+        }
+        if (kind.includes("dissolve")) setRuntimeAutoInterpolationOpacity(target.root, 1 - envelope * 0.88);
+        if (parameters.scaleMultiplier !== undefined) {
+          const multiplier = Array.isArray(parameters.scaleMultiplier)
+            ? new THREE.Vector3().fromArray(parameters.scaleMultiplier.slice(0, 3))
+            : new THREE.Vector3().setScalar(Number(parameters.scaleMultiplier) || 1);
+          multiplier.lerp(new THREE.Vector3(1, 1, 1), 1 - envelope);
+          target.root.scale.multiply(multiplier);
+        }
+        if (parameters.opacityMultiplier !== undefined) {
+          setRuntimeAutoInterpolationOpacity(target.root, THREE.MathUtils.lerp(1, Number(parameters.opacityMultiplier) || 0, envelope));
+        }
+        for (const [materialIndex, material] of (target.materials || []).entries()) {
+          if (parameters.color && material.color) material.color.lerp(new THREE.Color(parameters.color), envelope);
+          if (parameters.emissiveColor && material.emissive) material.emissive.lerp(new THREE.Color(parameters.emissiveColor), envelope);
+          if (parameters.emissiveIntensity !== undefined && "emissiveIntensity" in material) {
+            const base = Number(target.materialState?.[materialIndex]?.emissiveIntensity) || 0;
+            material.emissiveIntensity = THREE.MathUtils.lerp(base, Math.max(0, Number(parameters.emissiveIntensity) || 0), envelope);
+          }
+        }
+      }
+    }
+    const createsVisual = kind.includes("light")
+      || kind.includes("particle")
+      || kind.includes("dissolve")
+      || kind.includes("object")
+      || kind.includes("accent")
+      || (!kind.includes("spin") && !kind.includes("scale") && !kind.includes("transform"));
+    if (!createsVisual) continue;
+    const entry = ensureRuntimeTransitionMiddleEntry(state, action);
+    entry.root.visible = true;
+    entry.root.position
+      .fromArray(entry.instance.transform?.position || [0, 1, -1])
+      .applyQuaternion(entry.anchorQuaternion)
+      .add(entry.anchorPosition);
+    entry.root.position.x += Math.sin(local * Math.PI * 2) * 0.35 * envelope;
+    entry.root.position.y += Math.sin(local * Math.PI) * 0.28;
+    entry.root.rotation.y = local * Math.PI * 2;
+    entry.root.scale.setScalar(Math.max(0.001, envelope));
+    for (const material of entry.materials) {
+      material.opacity = Math.max(0, Math.min(1, envelope));
+      material.transparent = true;
+    }
+    if (entry.light) entry.light.intensity = Math.max(0, (Number(entry.instance.object?.intensity) || 4) * envelope);
+    updateRuntimeProceduralGeneratedParticles(entry, local * Math.max(0.1, Number(plan.durationSeconds) || 1), {
+      particleRate: (Number(entry.instance.object?.rate) || 48) * envelope,
+    });
+  }
+  return sample.actions.length > 0;
+}
+
+function disposeRuntimeTransitionMiddle(state) {
+  restoreRuntimeTransitionMiddleTargets(state);
+  for (const entry of state?.transitionMiddleEntries?.values?.() || []) {
+    entry.root?.removeFromParent?.();
+    disposeRuntimeEnvironmentObject(entry.root);
+  }
+  if (state) state.transitionMiddleEntries = new Map();
 }
 
 function updateRuntimeAutoInterpolation(frameTime = performance.now()) {
@@ -7147,16 +8091,31 @@ function updateRuntimeAutoInterpolation(frameTime = performance.now()) {
   if (!state || state.phase !== "running") return false;
   const progress = normalizedProgress((frameTime - state.startedAtMs) / state.durationMs, 0);
   const smooth = progress * progress * (3 - (2 * progress));
+  const transitionProgress = state.generatedTransitionPlan
+    ? proceduralTransitionEasedProgress(state.generatedTransitionPlan, progress)
+    : smooth;
   for (const pair of state.pairs) {
-    pair.incoming.root.position.lerpVectors(pair.start.position, pair.end.position, smooth);
-    pair.incoming.root.quaternion.slerpQuaternions(pair.start.quaternion, pair.end.quaternion, smooth);
-    pair.incoming.root.scale.lerpVectors(pair.start.scale, pair.end.scale, smooth);
+    pair.incoming.root.position.lerpVectors(pair.start.position, pair.end.position, transitionProgress);
+    if (Number(state.generatedTransitionPlan?.arcHeightMeters) > 0) {
+      pair.incoming.root.position.y += Math.sin(transitionProgress * Math.PI) * Number(state.generatedTransitionPlan.arcHeightMeters);
+    }
+    pair.incoming.root.quaternion.slerpQuaternions(pair.start.quaternion, pair.end.quaternion, transitionProgress);
+    pair.incoming.root.scale.lerpVectors(pair.start.scale, pair.end.scale, transitionProgress);
   }
-  for (const entry of state.unmatchedOutgoing) setRuntimeAutoInterpolationOpacity(entry.snapshotRoot, 1 - smooth);
-  for (const entry of state.unmatchedIncoming) setRuntimeAutoInterpolationOpacity(entry.root, smooth);
+  if (!state.generatedTransitionPlan) {
+    for (const entry of state.unmatchedOutgoing) setRuntimeAutoInterpolationOpacity(entry.snapshotRoot, 1 - smooth);
+    for (const entry of state.unmatchedIncoming) setRuntimeAutoInterpolationOpacity(entry.root, smooth);
+  } else {
+    const opacityProgress = state.generatedTransitionPlan.style === "cut"
+      ? (progress >= 0.5 ? 1 : 0)
+      : transitionProgress;
+    for (const entry of state.unmatchedOutgoing) setRuntimeAutoInterpolationOpacity(entry.snapshotRoot, 1 - opacityProgress);
+    for (const entry of state.unmatchedIncoming) setRuntimeAutoInterpolationOpacity(entry.root, opacityProgress);
+  }
   if (scene.userData.storyvrAutoInterpolation) {
     scene.userData.storyvrAutoInterpolation.progress = progress;
   }
+  if (typeof updateRuntimeTransitionMiddle === "function") updateRuntimeTransitionMiddle(state, progress);
   if (progress >= 1) finishRuntimeAutoInterpolation(state);
   return true;
 }
@@ -8880,7 +9839,8 @@ function render(frameTime = performance.now(), xrFrame = null) {
   updateConfiguredControllerInteractions();
   updateConfiguredControllerLocomotion(delta);
   updateRuntimeDirectManipulationCues();
-  updatePhysicalTraversal();
+  updateRuntimeLocomotionDestinationCues();
+  updateRuntimeTraversalArrivals();
   if (!renderer.xr.isPresenting) {
     updateDesktopKeyboardMovement(delta);
     controls.update();

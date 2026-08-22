@@ -241,19 +241,25 @@ The canvas supports drag-box selection, Shift additive selection, Command/Ctrl
 toggling, right-drag orbiting, and middle-drag panning.
 
 Set the scene is a Generate-only flow that uses the signed-in Codex CLI to
-create a story-part-scoped panorama and matching near-ground texture.
+create a panorama and matching near-ground texture for the exact open story
+scene. Parallel variant choices can own different settings; legacy beat-level
+settings remain the fallback until an exact variant is authored.
 
-Object movement shows the moving scene objects with expandable motion
-descriptions and provides edge buttons for moving directly to the previous or
-next story part. Codex can use exact-scene PNG, JPEG, and WebP image planes as
-attached visual context for a movement request, but those images remain static
-and cannot become motion actors or have their authored placement changed.
+Object movement exposes the complete saved Reader, GLB, and image roster plus
+runtime-generated objects. Codex can animate exact-scene GLBs and image planes
+with declarative timelines or create temporary primitives, lights, and particle
+emitters. Generate/Regenerate validates and saves one exact-scene plan
+atomically; saved placement and linked assets remain unchanged.
 
 Scene changes offers **Auto Interpolation** when two consecutive saved scenes
 contain safely matched GLBs or image planes whose position, rotation, or scale
 changes. Ambiguous object identities are not guessed, and a saved source scene
 change always takes precedence. The author preview and compiled reader use the
 same transform interpolation and dissolve unmatched endpoint objects in or out.
+An exact cross-part arrow can also use a generated declarative middle with
+temporary visual actions. Generate/Regenerate remains preview-only and Apply
+stores the route-scoped plan; progress 0 and 1 always remain the exact saved
+source and destination scenes.
 
 Guide attention runs after Scene changes so focus markers are inferred from the
 saved scene composition and movement state. It can target a visible GLB, named
@@ -263,16 +269,23 @@ peripheral edge until the reader reaches the target. Select a focus marker and
 press Delete or Backspace to remove it; the removal persists across scene
 reloads, and the target can be added again.
 
-Review story always uses the authored Reader camera; right-drag looks around
-from that reader pose.
+Review story opens at the authored Reader camera; right-drag looks around
+transiently, and **Reset view** restores the saved Reader pose without changing
+authored state or Undo/Redo history.
 
 Reader actions uses one shared Quest controller mapping across
 controller-button scene changes. Its defaults keep A/X for Next/Previous, use the
 left stick for continuous forward/backward movement and strafing, and use the
 right stick for 45-degree snap turns, ground-plane teleport on Up, and a
 180-degree turn on Down. Locomotion stays on directional stick inputs; Trigger
-and Grip remain reserved for UI rays and grabbing, and Menu is unavailable for
-StoryVR actions.
+and Grip remain reserved for UI rays and grabbing, while Menu can be assigned
+only to non-locomotion StoryVR navigation.
+
+Reader locomotion keeps physical walking dwell-gated and treats virtual
+teleport as route-scoped: entering the exact visible target from outside—by
+continuous movement or an exact teleport landing—advances once to the saved
+destination, while teleport elsewhere remains ordinary free movement and never
+changes the story part.
 
 ### Optional session data collection
 
@@ -345,8 +358,8 @@ credentials into the terminal. Use `login --device-auth` only if the normal
 localhost callback cannot work and device-code login is enabled for the
 study-approved account or workspace.
 
-The editor also exposes the standard Codex browser-login flow in its UI. To use a Codex
-binary from a nonstandard location:
+The editor exposes the Codex device-auth flow in its UI and never receives CLI
+credentials or tokens. To use a Codex binary from a nonstandard location:
 
 ```sh
 CODEX_BIN=/absolute/path/to/codex \
@@ -551,5 +564,5 @@ command is not specifically required on Windows.
   and headset on the same private network, use the exact printed HTTPS URL, and
   follow the certificate guidance above.
 - **AI generation is unavailable:** confirm the resolved Codex executable works
-  and run the standard `codex login` browser flow. Reserve device-code login
-  for a callback-blocked environment where it has been enabled.
+  and complete the device-auth flow shown by the editor, or run the approved
+  terminal login flow for the current workspace.

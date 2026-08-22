@@ -255,7 +255,7 @@ export async function codexStatus(options = {}) {
     codexAvailable,
     authenticated,
     version: codexAvailable ? cleanString(versionResult.stdout, 160) || null : null,
-    authMethod: "codex-cli",
+    authMethod: "codex-cli-device-auth",
     message: !codexAvailable
       ? "Codex CLI is not available on this computer."
       : authenticated

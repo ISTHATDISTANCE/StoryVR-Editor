@@ -24,16 +24,20 @@ import { createServer as createViteServer } from "vite";
 import { hostingRootForPath } from "../storyvr-adapter/storyvr-adapter.mjs";
 import {
   applyProceduralDynamicsPlan,
+  applyProceduralTransitionPlan,
   applyAnimationProbeLinks,
   buildReaderDist,
   compileAuthorRuntime,
   generateComponentProposals,
   generateProceduralDynamicsPlan,
+  generateProceduralTransitionPlan,
   generateStoryCanvasSegments,
   generateStoryCanvasSegmentsWithCodex,
   loadAuthorProject,
+  prepareProceduralDynamicsEditCandidate,
   regenerateStoryGraph,
   removeProceduralDynamicsPlan,
+  removeProceduralTransitionPlan,
   resolveAuthorPaths,
   saveCheckpointDecision,
   saveCheckpointDecisionDraft,
@@ -54,6 +58,7 @@ import {
 import {
   createEnvironmentStore,
   DEFAULT_ENVIRONMENT_MOVEMENT_CUE,
+  environmentSceneAssignmentKey,
   normalizeEnvironmentMovementCue,
 } from "./environment/store.mjs";
 import {
@@ -273,6 +278,7 @@ async function handleApi(req, res) {
       const projectState = await loadAuthorProject(authorOptions());
       const { state: environmentState } = await environmentStore.reconcileBeatAssignments(
         (projectState.graph?.beats || []).map((beat) => beat.id),
+        authoredEnvironmentVariantScenes(projectState),
       );
       const environmentEnhancement = decorateEnvironmentState(environmentState);
       writeJsonResponse(res, 200, { ...projectState, environmentEnhancement });
@@ -287,7 +293,8 @@ async function handleApi(req, res) {
     if (route === "POST /api/environment-enhancement/generate") {
       const projectState = await assertEnvironmentEnhancementReady();
       const body = await readLimitedJsonBody(req, MAX_ENVIRONMENT_GENERATION_JSON_BYTES);
-      const beatId = requireAuthoredEnvironmentBeat(projectState, body.beatId);
+      const sceneContext = requireAuthoredEnvironmentScene(projectState, body);
+      const { beatId, variantGroupId, variantOptionId } = sceneContext;
       const prompt = sanitizeEnvironmentGenerationPrompt(body.prompt);
       const referenceImages = decodeEnvironmentGenerationReferenceImages(body.referenceImages);
       sweepPendingEnvironmentGenerations();
@@ -318,7 +325,7 @@ async function handleApi(req, res) {
           codexVersion: codexStatus.version,
         });
         const generationToken = stageEnvironmentGeneration({
-          beatId,
+          sceneContext,
           baselineRevision: baselineEnvironment.revision,
           baselineSignature: environmentStateSignature(baselineEnvironment),
           generated,
@@ -327,6 +334,8 @@ async function handleApi(req, res) {
         writeJsonResponse(res, 202, {
           generationToken,
           beatId,
+          ...(variantGroupId ? { variantGroupId } : {}),
+          ...(variantOptionId ? { variantOptionId } : {}),
           generation: environmentGenerationMetadata(generated, ground),
         });
       } finally {
@@ -346,7 +355,11 @@ async function handleApi(req, res) {
       pendingEnvironmentGenerations.delete(generationToken);
 
       const projectState = await assertEnvironmentEnhancementReady();
-      const beatId = requireAuthoredEnvironmentBeat(projectState, pending.beatId);
+      const sceneContext = requireAuthoredEnvironmentScene(
+        projectState,
+        pending.sceneContext || { beatId: pending.beatId },
+      );
+      const { beatId, variantOptionId } = sceneContext;
       const currentEnvironment = await environmentStore.getState();
       if (
         currentEnvironment.revision !== pending.baselineRevision
@@ -363,6 +376,7 @@ async function handleApi(req, res) {
       const installed = await withAuthorArtifactRollback(async () => {
         const environmentState = await environmentStore.importGenerated({
           beatId,
+          variantOptionId,
           candidate,
           filename: generated.filename,
           body: generated.image,
@@ -401,9 +415,10 @@ async function handleApi(req, res) {
     if (route === "PATCH /api/environment-enhancement/draft") {
       const projectState = await assertEnvironmentEnhancementReady();
       const body = await readLimitedJsonBody(req, MAX_ENVIRONMENT_JSON_BYTES);
-      const beatId = requireAuthoredEnvironmentBeat(projectState, body.beatId);
+      const { beatId, variantOptionId } = requireAuthoredEnvironmentScene(projectState, body);
       const environmentState = await environmentStore.updateDraft({
         beatId,
+        variantOptionId,
         skipped: body.skipped,
         ...normalizeEnvironmentDraft(body),
       });
@@ -416,26 +431,40 @@ async function handleApi(req, res) {
     if (route === "POST /api/environment-enhancement/apply") {
       const projectState = await assertEnvironmentEnhancementReady();
       const body = await readLimitedJsonBody(req, MAX_ENVIRONMENT_JSON_BYTES);
-      const sourceBeatId = requireAuthoredEnvironmentBeat(projectState, body.sourceBeatId, "sourceBeatId");
-      if (!Array.isArray(body.targetBeatIds)) {
-        throw httpError(400, "Choose one or more target story parts.");
+      const sourceScene = requireAuthoredEnvironmentScene(
+        projectState,
+        body.sourceScene || {
+          beatId: body.sourceBeatId,
+          variantGroupId: body.sourceVariantGroupId,
+          variantOptionId: body.sourceVariantOptionId,
+        },
+        "sourceScene",
+      );
+      const usesSceneTargets = Array.isArray(body.targetSceneContexts);
+      if (!usesSceneTargets && !Array.isArray(body.targetBeatIds)) {
+        throw httpError(400, "Choose one or more target story scenes.");
       }
-      const targetBeatIds = [...new Set(body.targetBeatIds.map((beatId) => (
-        requireAuthoredEnvironmentBeat(projectState, beatId, "targetBeatIds")
-      )))];
-      if (!targetBeatIds.length) {
-        throw httpError(400, "Select at least one other story part.");
+      const targetSceneContexts = usesSceneTargets
+        ? uniqueAuthoredEnvironmentScenes(projectState, body.targetSceneContexts, "targetSceneContexts")
+        : [...new Set(body.targetBeatIds.map((beatId) => (
+          requireAuthoredEnvironmentBeat(projectState, beatId, "targetBeatIds")
+        )))].map((beatId) => ({ beatId, variantGroupId: null, variantOptionId: null }));
+      if (!targetSceneContexts.length) {
+        throw httpError(400, "Select at least one other story scene.");
       }
-      if (targetBeatIds.includes(sourceBeatId)) {
-        throw httpError(400, "The source story part cannot also be a target.");
+      if (targetSceneContexts.some((context) => (
+        authoredEnvironmentSceneKey(context) === authoredEnvironmentSceneKey(sourceScene)
+      ))) {
+        throw httpError(400, "The source story scene cannot also be a target.");
       }
       const expectedRevision = Number(body.expectedRevision);
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
         throw httpError(400, "The saved setting version is invalid. Reload this step and try again.");
       }
       const environmentState = await environmentStore.applyAssignment({
-        sourceBeatId,
-        targetBeatIds,
+        sourceBeatId: sourceScene.beatId,
+        sourceVariantOptionId: sourceScene.variantOptionId,
+        targetSceneContexts,
         expectedRevision,
       });
       const decision = await saveEnvironmentEnhancementDecisionDraft(authorOptions(), environmentState);
@@ -498,7 +527,10 @@ async function handleApi(req, res) {
 
     if (route === "POST /api/story-graph") {
       const graph = await saveStoryGraph(authorOptions(), await readJsonBody(req));
-      await environmentStore.reconcileBeatAssignments((graph.beats || []).map((beat) => beat.id));
+      await environmentStore.reconcileBeatAssignments(
+        (graph.beats || []).map((beat) => beat.id),
+        authoredEnvironmentVariantScenes({ graph }),
+      );
       writeJsonResponse(res, 200, graph);
       return;
     }
@@ -543,6 +575,12 @@ async function handleApi(req, res) {
       return;
     }
 
+    if (route === "POST /api/dynamics/edit-candidate") {
+      const payload = await readLimitedJsonBody(req, MAX_DYNAMICS_JSON_BYTES);
+      writeJsonResponse(res, 200, await prepareProceduralDynamicsEditCandidate(authorOptions(), payload));
+      return;
+    }
+
     if (route === "POST /api/dynamics/apply") {
       const payload = await readLimitedJsonBody(req, MAX_DYNAMICS_JSON_BYTES);
       writeJsonResponse(res, 200, await applyProceduralDynamicsPlan(authorOptions(), payload));
@@ -552,6 +590,24 @@ async function handleApi(req, res) {
     if (route === "POST /api/dynamics/remove") {
       const payload = await readLimitedJsonBody(req, MAX_DYNAMICS_JSON_BYTES);
       writeJsonResponse(res, 200, await removeProceduralDynamicsPlan(authorOptions(), payload));
+      return;
+    }
+
+    if (route === "POST /api/transitions/generate") {
+      const payload = await readLimitedJsonBody(req, MAX_DYNAMICS_JSON_BYTES);
+      writeJsonResponse(res, 200, await generateProceduralTransitionPlan(await proposalAuthorOptions(), payload));
+      return;
+    }
+
+    if (route === "POST /api/transitions/apply") {
+      const payload = await readLimitedJsonBody(req, MAX_DYNAMICS_JSON_BYTES);
+      writeJsonResponse(res, 200, await applyProceduralTransitionPlan(authorOptions(), payload));
+      return;
+    }
+
+    if (route === "POST /api/transitions/remove") {
+      const payload = await readLimitedJsonBody(req, MAX_DYNAMICS_JSON_BYTES);
+      writeJsonResponse(res, 200, await removeProceduralTransitionPlan(authorOptions(), payload));
       return;
     }
 
@@ -621,6 +677,8 @@ async function handleApi(req, res) {
     writeJsonResponse(res, error.statusCode || environmentErrorStatus(error), {
       error: error.message,
       diagnostics: error.diagnostics || [],
+      ...(Array.isArray(error.unmetRequirements) ? { unmetRequirements: error.unmetRequirements } : {}),
+      ...(error.referenceResolution ? { referenceResolution: error.referenceResolution } : {}),
     });
   }
 }
@@ -637,10 +695,12 @@ function serializedAuthorRequest(req) {
   if (pathname === "/api/state" || pathname.startsWith("/api/history/")) return true;
   if (method === "GET") return false;
   if (pathname === "/api/dynamics/generate") return false;
+  if (pathname === "/api/transitions/generate") return false;
   return pathname === "/api/compile"
     || pathname === "/api/story-build"
     || pathname === "/api/source-motion-links"
     || pathname.startsWith("/api/dynamics/")
+    || pathname.startsWith("/api/transitions/")
     || pathname.startsWith("/api/spatial-relations/")
     || pathname.startsWith("/api/story-graph")
     || pathname.startsWith("/api/proposals/")
@@ -1474,6 +1534,12 @@ function decorateEnvironmentState(state) {
       decorateEnvironmentAssignment(assignment),
     ]),
   );
+  const assignmentsByScene = Object.fromEntries(
+    Object.entries(source.assignmentsByScene || {}).map(([sceneKey, assignment]) => [
+      sceneKey,
+      decorateEnvironmentAssignment(assignment),
+    ]),
+  );
   return {
     schemaVersion: source.schemaVersion || "storyvr-environment-enhancement/v1",
     revision: Number(source.revision) || 0,
@@ -1483,6 +1549,7 @@ function decorateEnvironmentState(state) {
     skipped: projection.skipped === true,
     defaultAssignment,
     assignmentsByBeat,
+    assignmentsByScene,
   };
 }
 
@@ -1512,7 +1579,89 @@ function requireAuthoredEnvironmentBeat(projectState, value, label = "beatId") {
   return beatId;
 }
 
-function stageEnvironmentGeneration({ beatId, baselineRevision, baselineSignature, generated, ground }) {
+function requireAuthoredEnvironmentScene(projectState, value, label = "scene") {
+  const source = value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : { beatId: value };
+  const beatId = requireAuthoredEnvironmentBeat(projectState, source.beatId, `${label}.beatId`);
+  const requestedGroupId = String(source.variantGroupId || "").trim();
+  const requestedOptionId = String(source.variantOptionId || "").trim();
+  if (!requestedGroupId && !requestedOptionId) {
+    return { beatId, variantGroupId: null, variantOptionId: null };
+  }
+  if (!requestedOptionId) {
+    throw httpError(400, "A variant choice is required for this story scene.");
+  }
+  const beat = (projectState?.graph?.beats || []).find((candidate) => (
+    String(candidate?.id || "").trim() === beatId
+  ));
+  const hostedGroups = (projectState?.graph?.variantGroups || []).filter((group) => (
+    authoredEnvironmentBeatHostsVariantGroup(beat, group)
+  ));
+  const group = hostedGroups.find((candidate) => (
+    (!requestedGroupId || String(candidate?.id || "").trim() === requestedGroupId)
+    && (candidate?.options || []).some((option) => String(option?.id || "").trim() === requestedOptionId)
+  ));
+  if (!group) {
+    throw httpError(400, "Choose a current variant scene from Story order.");
+  }
+  return {
+    beatId,
+    variantGroupId: String(group.id || "").trim(),
+    variantOptionId: requestedOptionId,
+  };
+}
+
+function authoredEnvironmentBeatHostsVariantGroup(beat, group) {
+  const beatId = String(beat?.id || "").trim();
+  const groupId = String(group?.id || "").trim();
+  const groupBeatId = String(group?.beatId || "").trim();
+  const atomicBeatIds = Array.isArray(beat?.atomicBeatIds)
+    ? beat.atomicBeatIds.map((id) => String(id || "").trim())
+    : [];
+  return Boolean(
+    (beatId && beatId === groupBeatId)
+    || (groupId && String(beat?.variantGroupId || "").trim() === groupId)
+    || (groupBeatId && atomicBeatIds.includes(groupBeatId))
+  );
+}
+
+function authoredEnvironmentVariantScenes(projectState) {
+  const graph = projectState?.graph || {};
+  const scenes = [];
+  for (const beat of graph.beats || []) {
+    for (const group of graph.variantGroups || []) {
+      if (!authoredEnvironmentBeatHostsVariantGroup(beat, group)) continue;
+      for (const option of group.options || []) {
+        const variantOptionId = String(option?.id || "").trim();
+        if (!variantOptionId) continue;
+        scenes.push({
+          beatId: String(beat.id || "").trim(),
+          variantGroupId: String(group.id || "").trim(),
+          variantOptionId,
+        });
+      }
+    }
+  }
+  return scenes;
+}
+
+function authoredEnvironmentSceneKey(context) {
+  return context?.variantOptionId
+    ? environmentSceneAssignmentKey(context.beatId, context.variantOptionId)
+    : `beat:${context?.beatId || ""}`;
+}
+
+function uniqueAuthoredEnvironmentScenes(projectState, values, label) {
+  const scenes = new Map();
+  for (const value of values) {
+    const scene = requireAuthoredEnvironmentScene(projectState, value, label);
+    scenes.set(authoredEnvironmentSceneKey(scene), scene);
+  }
+  return [...scenes.values()];
+}
+
+function stageEnvironmentGeneration({ sceneContext, beatId, baselineRevision, baselineSignature, generated, ground }) {
   sweepPendingEnvironmentGenerations();
   while (pendingEnvironmentGenerations.size >= MAX_PENDING_ENVIRONMENT_GENERATIONS) {
     const oldestToken = pendingEnvironmentGenerations.keys().next().value;
@@ -1522,7 +1671,7 @@ function stageEnvironmentGeneration({ beatId, baselineRevision, baselineSignatur
   const generationToken = randomUUID();
   pendingEnvironmentGenerations.set(generationToken, {
     createdAt: Date.now(),
-    beatId,
+    sceneContext: sceneContext || { beatId },
     baselineRevision,
     baselineSignature,
     generated,
@@ -1802,7 +1951,7 @@ async function getCodexStatus({ force = false } = {}) {
       version: cachedCodexVersion,
       authenticated: loginResult.ok && /logged in/i.test(loginText),
       authText: loginText || loginResult.error || "Not logged in",
-      authMethod: "codex-cli",
+      authMethod: "codex-cli-device-auth",
     };
     cachedCodexStatus = Object.freeze(status);
     cachedCodexStatusExpiresAt = Date.now() + CODEX_STATUS_TTL_MS;
@@ -1836,7 +1985,7 @@ async function startCodexLogin() {
       authText: status.authText,
       output: [{
         source: "status",
-        line: "Codex is already signed in. No new browser login is needed.",
+        line: "Codex is already signed in. No device code is needed.",
         at: new Date().toISOString(),
       }],
     };
@@ -1852,7 +2001,7 @@ async function startCodexLogin() {
     loginCode: null,
     output: [],
   };
-  loginProcess = spawn(CODEX_BIN, ["login"], {
+  loginProcess = spawn(CODEX_BIN, ["login", "--device-auth"], {
     cwd: process.cwd(),
     env: { ...process.env, NO_COLOR: "1" },
     stdio: ["ignore", "pipe", "pipe"],
