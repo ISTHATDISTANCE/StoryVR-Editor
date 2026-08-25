@@ -249,17 +249,26 @@ Object movement exposes the complete saved Reader, GLB, and image roster plus
 runtime-generated objects. Codex can animate exact-scene GLBs and image planes
 with declarative timelines or create temporary primitives, lights, and particle
 emitters. Generate/Regenerate validates and saves one exact-scene plan
-atomically; saved placement and linked assets remain unchanged. Plans validate
-each track against its target, reject invisible or identity-only results, and
-make one bounded repair attempt when generated actions are incompatible.
-Appearance-only prompts can animate color and brightness without adding
-unrequested object movement.
+atomically; saved placement and linked assets remain unchanged. Select saved
+GLBs or image planes in the scene to make them the exact generation subjects;
+with no selection, Codex derives subjects from the prompt and saved scene, and
+Reader is never selected automatically. Plans validate each track against its
+target, reject invisible or identity-only results, and make one bounded repair
+attempt when generated actions are incompatible. Provider or validation failure
+is shown instead of inventing local fallback motion. Appearance-only prompts can
+animate color and brightness without adding unrequested object movement. The
+author preview and Reader share visible-pivot compensation and explicit clip
+loop behavior so generated motion preserves the authored object framing.
 
 Scene changes offers **Auto Interpolation** when two consecutive saved scenes
 contain safely matched GLBs or image planes whose position, rotation, or scale
 changes. Ambiguous object identities are not guessed, and a saved source scene
 change always takes precedence. The author preview and compiled reader use the
 same transform interpolation and dissolve unmatched endpoint objects in or out.
+Other exact routes without a saved mapping or safe interpolation retain the
+truthful no-saved-change label while offering a full-editor sudden-cut preview
+with one-second source and destination holds; this does not alter Reader timing
+or story-canvas thumbnails.
 An exact cross-part arrow can also use a generated declarative middle with
 temporary visual actions. Generate/Regenerate remains preview-only and Apply
 stores the route-scoped plan; progress 0 and 1 always remain the exact saved

@@ -27,7 +27,6 @@ import {
 } from "./generative-usage.mjs";
 import {
   applyMotionPlanToStore,
-  createFallbackMotionPlan,
   DYNAMICS_SCENE_PATCH_SCHEMA_VERSION,
   DYNAMICS_MOTION_ONLY_SCENE_PATCH_SCHEMA_VERSION,
   DYNAMICS_SCENE_CANDIDATE_SCHEMA_VERSION,
@@ -1264,13 +1263,17 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
     ?? null;
   const libraryContext = dynamicsLibraryContext(state);
   const previousPlan = normalizePreviousDynamicsPlan(previousPlanInput, libraryContext);
+  const generationContext = {
+    ...libraryContext,
+    subjectEntityIds: request.subjectEntityIds,
+  };
   const imagePaths = dynamicsSceneImageAttachmentPaths(libraryContext.sceneImages);
   const usageSources = [];
   let engine = { provider: "codex-cli" };
   let intent;
   try {
     intent = await generateDynamicsSceneIntent({
-      context: libraryContext,
+      context: generationContext,
       prompt: request.prompt,
       previousPlan,
       generateJson: async (prompt) => {
@@ -1298,18 +1301,9 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
       },
     });
   } catch (error) {
-    usageSources.push(error);
-    const motionPlan = createFallbackMotionPlan(libraryContext, request.prompt, previousPlan);
-    intent = {
-      prompt: motionPlan.prompt,
-      motionPlan,
-    };
-    engine = {
-      provider: "deterministic-fallback",
-      reason: String(error?.message || "Codex object movement generation failed."),
-    };
+    throw attachGenerativeUsage(error, ...usageSources);
   }
-  let projection = projectDynamicsSceneCandidate(state, intent, {
+  const projection = projectDynamicsSceneCandidate(state, intent, {
     requireSceneMatch: false,
   });
   const comparisonCandidate = [
@@ -1318,24 +1312,6 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
   ].includes(previousCandidate?.schemaVersion)
     ? previousCandidate
     : currentDynamicsSceneCandidate(state);
-  if (comparisonCandidate
-    && dynamicsSceneCandidateVisibleSignature(projection.candidate)
-      === dynamicsSceneCandidateVisibleSignature(comparisonCandidate)) {
-    const variedPlan = createDeterministicDynamicsVariation(
-      projection.candidate.scenePatch.motionPlan,
-      projection.motionContext,
-    );
-    projection = projectDynamicsSceneCandidate(state, {
-      prompt: projection.candidate.prompt,
-      motionPlan: variedPlan,
-    }, {
-      requireSceneMatch: true,
-    });
-    engine = {
-      provider: "deterministic-visible-variation",
-      reason: "The generated scene matched the previous visible preview, so StoryVR varied a visible motion parameter.",
-    };
-  }
   const materiallyChanged = !comparisonCandidate
     || dynamicsSceneCandidateVisibleSignature(projection.candidate)
       !== dynamicsSceneCandidateVisibleSignature(comparisonCandidate);
@@ -1399,6 +1375,7 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
     "sceneKey",
     "scope",
     "prompt",
+    "subjectEntityIds",
     "baseline",
     "scenePatch",
     "impact",
@@ -1410,6 +1387,20 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
     ].includes(submitted.scenePatch?.schemaVersion)) {
     throw Object.assign(new Error("Saving requires an unmodified generated Dynamics result. Generate it again."), {
       statusCode: 400,
+    });
+  }
+  if ((submitted.subjectEntityIds !== undefined && !Array.isArray(submitted.subjectEntityIds))
+    || (submitted.scenePatch?.motionPlan?.subjectEntityIds !== undefined
+      && !Array.isArray(submitted.scenePatch.motionPlan.subjectEntityIds))) {
+    throw Object.assign(new Error("The generated movement subject selection is invalid."), {
+      statusCode: 400,
+    });
+  }
+  const submittedSubjectEntityIds = uniqueStrings(submitted.subjectEntityIds || []).sort();
+  const planSubjectEntityIds = uniqueStrings(submitted.scenePatch?.motionPlan?.subjectEntityIds || []).sort();
+  if (JSON.stringify(submittedSubjectEntityIds) !== JSON.stringify(planSubjectEntityIds)) {
+    throw Object.assign(new Error("The generated movement subject selection was modified after generation."), {
+      statusCode: 409,
     });
   }
   if (submitted.impact?.sourceGraphChanged === true
@@ -1634,6 +1625,7 @@ function projectDynamicsSceneCandidate(state, intent, options = {}) {
       ...(state.context.scene.variantOptionId ? { variantOptionId: state.context.scene.variantOptionId } : {}),
     },
     prompt: motionPlan.prompt,
+    subjectEntityIds: [...(motionPlan.subjectEntityIds || [])],
     baseline: dynamicsSceneBaseline(state),
     scenePatch: {
       schemaVersion: DYNAMICS_SCENE_PATCH_SCHEMA_VERSION,
@@ -1764,6 +1756,7 @@ export function dynamicsSceneCandidateVisibleSignature(candidate) {
     || (Array.isArray(candidate?.actors) ? candidate : null);
   return dynamicsJsonSignature({
     motion: motionPlan ? {
+      subjectEntityIds: [...(motionPlan.subjectEntityIds || [])],
       actors: (motionPlan.actors || []).map((actor) => ({
         entityId: actor.entityId,
         assetId: actor.assetId,
@@ -1796,46 +1789,6 @@ function currentDynamicsSceneCandidate(state) {
       motionPlan: plan,
     },
   };
-}
-
-function createDeterministicDynamicsVariation(plan, context) {
-  const raw = cloneJson(plan);
-  const actor = raw.actors?.[0];
-  if (actor?.timeline?.tracks?.[0]?.keyframes?.length) {
-    const keyframe = actor.timeline.tracks[0].keyframes.at(-1);
-    const value = keyframe?.value;
-    if (Array.isArray(value) && value.length) value[0] = Number((Number(value[0] || 0) + 0.5).toFixed(3));
-    else if (Number.isFinite(Number(value))) keyframe.value = Number((Number(value) + 0.5).toFixed(3));
-  } else if (actor && (actor.trajectory?.type === "waypoint-loop" || actor.trajectory?.kind === "waypoint-loop")) {
-    const duration = Number(actor.trajectory.durationSeconds) || 24;
-    actor.trajectory.durationSeconds = duration <= 117
-      ? Number((duration + 3).toFixed(2))
-      : Number((duration - 3).toFixed(2));
-  } else if (actor) {
-    const radius = Number(actor.trajectory.radiusMeters) || 4.5;
-    actor.trajectory.radiusMeters = radius <= 7.4
-      ? Number((radius + 0.6).toFixed(2))
-      : Number((radius - 0.6).toFixed(2));
-  } else {
-    const generated = raw.generatedObjects?.[0];
-    if (!generated) return plan;
-    if (generated.kind === "light") {
-      generated.object = { ...(generated.object || {}) };
-      const intensity = Number(generated.object.intensity) || 2;
-      generated.object.intensity = Number((intensity + Math.max(0.25, intensity * 0.2)).toFixed(3));
-    } else {
-      generated.transform = { ...(generated.transform || {}) };
-      const position = Array.isArray(generated.transform.position)
-        ? [...generated.transform.position]
-        : [0, 0, 0];
-      position[0] = Number((Number(position[0] || 0) + 0.5).toFixed(3));
-      generated.transform.position = position;
-    }
-  }
-  return normalizeMotionPlan(raw, context, {
-    prompt: raw.prompt,
-    requireSceneMatch: true,
-  });
 }
 
 function dynamicsJsonSignature(value) {

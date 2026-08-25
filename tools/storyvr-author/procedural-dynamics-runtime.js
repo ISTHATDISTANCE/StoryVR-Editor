@@ -193,7 +193,7 @@ export function normalizeProceduralDynamicsPlan(plan, options = {}) {
     },
     lifecycle: {
       ...lifecycleSource,
-      fadeInSeconds: clampedNumber(lifecycleSource.fadeInSeconds, 0.45, 0, 5),
+      fadeInSeconds: clampedNumber(lifecycleSource.fadeInSeconds, 0, 0, 5),
       fadeOutSeconds: clampedNumber(lifecycleSource.fadeOutSeconds, 0, 0, 5),
     },
     performance: {
@@ -249,14 +249,15 @@ export function expandProceduralDynamicsInstances(plan, options = {}) {
       assetId: actor.assetId,
       targetKind: actor.targetKind,
       clip: actor.clip,
-      clipIndex: actor.clip.index,
-      clipIndexes: actor.clip.indexes,
-      clipName: actor.clip.name,
+      clipIndex: actor.clip?.index ?? null,
+      clipIndexes: actor.clip?.indexes || [],
+      clipName: actor.clip?.name || "",
       trajectory,
       ...(timeline ? { timeline } : {}),
       orientation: actor.orientation,
       animation,
       animationMode: animation.mode,
+      animationLoopMode: animation.loopMode || (animation.mode === "loop" ? "repeat" : "once"),
       animationTimeScale: animation.timeScale,
       animationPhase01: animation.phase,
       modelForwardAxis: actor.orientation.modelForwardAxis,
@@ -359,6 +360,30 @@ export function sampleProceduralDynamicsTransform(instance, elapsedSeconds) {
   return applyProceduralDynamicsAuthorOffset(sample, instance?.authorOffset, instance?.transform);
 }
 
+export function proceduralDynamicsPivotCompensatedPosition(
+  basePosition,
+  pivotPosition,
+  quaternion,
+  scale,
+) {
+  const base = finiteVector3(basePosition, [0, 0, 0]);
+  const pivot = finiteVector3(pivotPosition, [0, 0, 0]);
+  const rotation = finiteQuaternion(quaternion) || [0, 0, 0, 1];
+  const dynamicScale = finiteScale3(scale, [1, 1, 1]);
+  const scaledPivot = pivot.map((component, index) => component * dynamicScale[index]);
+  const [qx, qy, qz, qw] = rotation;
+  const [vx, vy, vz] = scaledPivot;
+  const tx = 2 * (qy * vz - qz * vy);
+  const ty = 2 * (qz * vx - qx * vz);
+  const tz = 2 * (qx * vy - qy * vx);
+  const rotatedPivot = [
+    vx + qw * tx + (qy * tz - qz * ty),
+    vy + qw * ty + (qz * tx - qx * tz),
+    vz + qw * tz + (qx * ty - qy * tx),
+  ];
+  return base.map((component, index) => component + pivot[index] - rotatedPivot[index]);
+}
+
 export function applyProceduralDynamicsAuthorOffset(sample, authorOffset, baseTransform = null) {
   const source = sample && typeof sample === "object" ? sample : {};
   const offset = normalizeProceduralDynamicsAuthorOffset(authorOffset);
@@ -399,7 +424,7 @@ function normalizePlanActors(plan) {
 
 function normalizeProceduralDynamicsActor(actor, plan, index) {
   const source = actor && typeof actor === "object" ? actor : {};
-  const trajectorySource = source.trajectory || source.motion || plan.trajectory || plan.motion || {};
+  const trajectorySource = source.trajectory || source.motion || plan.trajectory || plan.motion || { kind: "stationary" };
   const orientationSource = source.orientation || plan.orientation || {};
   const animationSource = source.animation || plan.animation || {};
   const actorId = normalizedString(source.actorId || source.id) || `actor-${index + 1}`;
@@ -409,11 +434,14 @@ function normalizeProceduralDynamicsActor(actor, plan, index) {
   );
   const orientationKind = normalizedOrientationKind(
     orientationSource.kind || orientationSource.mode,
-    targetKind === "image-plane" ? "fixed" : "path-tangent",
+    "fixed",
   );
-  const animationMode = targetKind === "image-plane" || animationSource.enabled === false
+  const requestedAnimationMode = normalizedString(animationSource.mode).toLowerCase().replace(/[\s_]+/g, "-");
+  const animationMode = targetKind === "image-plane"
+    || animationSource.enabled !== true
+    || !["once", "loop", "repeat"].includes(requestedAnimationMode)
     ? "none"
-    : normalizedString(animationSource.mode) || "loop";
+    : requestedAnimationMode === "repeat" ? "loop" : requestedAnimationMode;
   return {
     id: actorId,
     actorId,
@@ -441,10 +469,13 @@ function normalizeProceduralDynamicsActor(actor, plan, index) {
     animation: {
       enabled: animationMode !== "none",
       mode: animationMode,
-      phase: animationSource.phase ?? "staggered",
+      loopMode: animationMode === "loop"
+        ? normalizedLoopMode(animationSource.loopMode || animationSource.loop, "repeat")
+        : "once",
+      phase: animationSource.phase ?? "synchronized",
       timeScale: finiteRange(
         animationSource.timeScale ?? animationSource.playbackRate,
-        [0.9, 1.1],
+        1,
         0.05,
         4,
       ),
@@ -619,7 +650,7 @@ function normalizeTrajectory(value) {
       kind,
       keyframes,
       durationSeconds: positiveNumber(source.durationSeconds, keyframes.at(-1)?.timeSeconds || 8),
-      loopMode: normalizedLoopMode(source.loopMode || source.loop, "repeat"),
+      loopMode: normalizedLoopMode(source.loopMode || source.loop, "once"),
       interpolation: normalizedInterpolation(source.interpolation, "catmull-rom"),
       phase: source.phase ?? 0,
     };
@@ -631,9 +662,9 @@ function normalizeTrajectory(value) {
       waypoints: normalizeWaypoints(source.waypoints || source.points),
       durationSeconds: finiteRange(source.durationSeconds, [8, 12], 0.001, 1e9),
       direction: normalizedDirection(source.direction),
-      phase: source.phase ?? "staggered",
+      phase: source.phase ?? "synchronized",
       closed: source.closed !== false,
-      loopMode: normalizedLoopMode(source.loopMode || source.loop, source.closed === false ? "once" : "repeat"),
+      loopMode: normalizedLoopMode(source.loopMode || source.loop, "once"),
       interpolation: normalizedInterpolation(source.interpolation, "linear"),
     };
   }
@@ -657,9 +688,9 @@ function normalizeTrajectory(value) {
       1e6,
     ),
     direction: normalizedDirection(source.direction),
-    phase: source.phase ?? "staggered",
-    verticalSwayMeters: finiteRange(source.verticalSwayMeters, [0.08, 0.28], 0, 1e6),
-    verticalSwayFrequencyHz: finiteRange(source.verticalSwayFrequencyHz, [0.08, 0.18], 0, 1e6),
+    phase: source.phase ?? "synchronized",
+    verticalSwayMeters: finiteRange(source.verticalSwayMeters, 0, 0, 1e6),
+    verticalSwayFrequencyHz: finiteRange(source.verticalSwayFrequencyHz, 0, 0, 1e6),
   };
 }
 
@@ -677,7 +708,7 @@ function normalizeTimeline(value) {
     durationSeconds: positiveNumber(value.durationSeconds, inferredDuration || 1),
     delaySeconds: nonNegativeNumber(value.delaySeconds, 0),
     playbackRate: positiveNumber(value.playbackRate || value.timeScale, 1),
-    loopMode: normalizedLoopMode(value.loopMode || value.loop, "repeat"),
+    loopMode: normalizedLoopMode(value.loopMode || value.loop, "once"),
     phase: clamp01(value.phase),
     tracks,
   };
@@ -983,6 +1014,7 @@ function timelinePositionTangent(timeline, elapsed) {
 }
 
 function normalizeActorClip(value) {
+  if (value === undefined || value === null || value === "") return null;
   if (Number.isInteger(Number(value)) && value !== "") {
     const index = Math.max(0, Number(value));
     return { index, indexes: [index], name: "" };
@@ -998,11 +1030,13 @@ function normalizeActorClip(value) {
     source.index,
     source.clipIndex,
   ]);
+  const name = normalizedString(source.name || source.clipName || source.animationName);
+  if (!indexes.length && !name) return null;
   return {
     ...source,
     index: indexes[0] ?? null,
     indexes,
-    name: normalizedString(source.name || source.clipName || source.animationName),
+    name,
   };
 }
 
@@ -1159,12 +1193,14 @@ function normalizedDirection(value) {
 
 function normalizedTrajectoryKind(value) {
   const text = normalizedString(value).toLowerCase().replace(/[\s_]+/g, "-");
-  if (text === "stationary" || text === "none" || text === "static") return "stationary";
+  if (!text || text === "stationary" || text === "none" || text === "static") return "stationary";
   if (text.includes("keyframe") || text === "timeline" || text === "custom-path") return "keyframe-path";
-  return text.includes("waypoint") ? "waypoint-loop" : "school-orbit";
+  if (text.includes("waypoint")) return "waypoint-loop";
+  if (text === "school-orbit" || text === "orbit") return "school-orbit";
+  return "stationary";
 }
 
-function normalizedLoopMode(value, fallback = "repeat") {
+function normalizedLoopMode(value, fallback = "once") {
   const text = normalizedString(value).toLowerCase().replace(/[\s_]+/g, "-");
   if (value === false || text === "none" || text === "hold") return "once";
   if (text === "pingpong") return "ping-pong";

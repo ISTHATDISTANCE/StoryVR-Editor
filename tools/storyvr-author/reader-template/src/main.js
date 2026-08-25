@@ -15,6 +15,7 @@ import {
   clampProceduralDynamicsPlan,
   expandProceduralDynamicsGeneratedObjects,
   expandProceduralDynamicsInstances,
+  proceduralDynamicsPivotCompensatedPosition,
   proceduralDynamicsPlansForScene,
   sampleProceduralDynamicsTransform,
 } from "./procedural-dynamics-runtime.js";
@@ -6707,7 +6708,7 @@ function proceduralDynamicsClipForInstance(instance, clips) {
     const named = available.find((clip) => clip.name === requestedName);
     if (named) return named;
   }
-  return available[0] || null;
+  return null;
 }
 
 async function showProceduralDynamicsForBeat(beat, variantOption, loadRevision, suppliedPlans = null) {
@@ -6879,6 +6880,12 @@ function bindProceduralDynamicsToAuthoredTarget(target, instance, anchorPosition
   const originalParent = authorTransformRoot?.parent || null;
   if (!authorTransformRoot || !originalParent || !target?.model) return null;
   const originalChildIndex = originalParent.children.indexOf(authorTransformRoot);
+  originalParent.updateWorldMatrix(true, false);
+  authorTransformRoot.updateWorldMatrix(true, true);
+  const visibleBounds = proceduralDynamicsVisibleRenderedBounds(authorTransformRoot, new THREE.Box3());
+  const pivotPosition = visibleBounds
+    ? originalParent.worldToLocal(visibleBounds.getCenter(new THREE.Vector3()))
+    : authorTransformRoot.position.clone();
   const motionRoot = new THREE.Group();
   motionRoot.name = `storyvr-procedural-motion:${instance.planId}:${instance.actorId}`;
   motionRoot.userData.storyvrProceduralDynamics = true;
@@ -6897,7 +6904,12 @@ function bindProceduralDynamicsToAuthoredTarget(target, instance, anchorPosition
     mixer = new THREE.AnimationMixer(target.model);
     action = mixer.clipAction(clip);
     action.reset();
-    action.setLoop(THREE.LoopRepeat, Infinity);
+    if (instance.animationLoopMode === "repeat" || instance.animationMode === "loop") {
+      action.setLoop(THREE.LoopRepeat, Infinity);
+    } else {
+      action.setLoop(THREE.LoopOnce, 1);
+      action.clampWhenFinished = true;
+    }
     action.timeScale = instance.animationTimeScale;
     action.play();
     action.time = (Number(clip.duration) || 0) * instance.animationPhase01;
@@ -6928,6 +6940,8 @@ function bindProceduralDynamicsToAuthoredTarget(target, instance, anchorPosition
     parentWorldQuaternion: new THREE.Quaternion(),
     motionWorldPosition: new THREE.Vector3(),
     motionLocalPosition: new THREE.Vector3(),
+    baseMotionPosition: new THREE.Vector3(),
+    pivotPosition,
     authoredModelBinding: true,
     baseMotionScale: new THREE.Vector3(1, 1, 1),
     originalVisible: authorTransformRoot.visible,
@@ -7217,11 +7231,18 @@ function updateProceduralDynamics(delta) {
       continue;
     }
     const sample = sampleProceduralDynamicsTransform(entry.instance, localTime);
-    entry.motionWorldPosition.fromArray(sample.position).add(entry.anchorPosition);
     entry.originalParent.updateWorldMatrix(true, false);
+    if (String(entry.instance?.trajectory?.kind || "stationary") === "stationary") {
+      entry.motionWorldPosition.copy(entry.pivotPosition);
+      entry.originalParent.localToWorld(entry.motionWorldPosition);
+      entry.motionWorldPosition.add(new THREE.Vector3().fromArray(sample.position || [0, 0, 0]));
+    } else {
+      entry.motionWorldPosition.fromArray(sample.position || [0, 0, 0]).add(entry.anchorPosition);
+    }
     entry.motionLocalPosition.copy(entry.motionWorldPosition);
     entry.originalParent.worldToLocal(entry.motionLocalPosition);
-    entry.wrapper.position.copy(entry.motionLocalPosition);
+    entry.baseMotionPosition.copy(entry.motionLocalPosition).sub(entry.pivotPosition);
+    entry.wrapper.position.copy(entry.baseMotionPosition);
     entry.wrapper.scale.copy(entry.baseMotionScale);
     if (Array.isArray(sample.scale)) entry.wrapper.scale.fromArray(sample.scale);
     const hasExplicitOrientation = Array.isArray(sample.quaternion) || Array.isArray(sample.rotationEulerDegrees);
@@ -7245,6 +7266,12 @@ function updateProceduralDynamics(delta) {
       const blend = smoothing > 0 && delta > 0 ? 1 - Math.exp(-delta / smoothing) : 1;
       entry.wrapper.quaternion.slerp(entry.localTargetQuaternion, blend);
     }
+    entry.wrapper.position.fromArray(proceduralDynamicsPivotCompensatedPosition(
+      entry.baseMotionPosition.toArray(),
+      entry.pivotPosition.toArray(),
+      entry.wrapper.quaternion.toArray(),
+      entry.wrapper.scale.toArray(),
+    ));
     entry.authorTransformRoot.visible = entry.originalVisible !== false && sample.visible !== false && Number(sample.opacity) > 0.001;
     for (const [materialIndex, material] of (entry.materials || []).entries()) {
       const baseOpacity = Number(entry.originalMaterialState?.[materialIndex]?.opacity ?? 1);

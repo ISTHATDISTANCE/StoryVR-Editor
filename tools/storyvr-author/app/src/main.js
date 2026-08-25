@@ -73,6 +73,7 @@ import {
   clampProceduralDynamicsPlan,
   expandProceduralDynamicsGeneratedObjects,
   expandProceduralDynamicsInstances,
+  proceduralDynamicsPivotCompensatedPosition,
   proceduralDynamicsPlansForScene,
   proceduralDynamicsSceneKey,
   sampleProceduralDynamicsTransform,
@@ -488,7 +489,6 @@ const state = {
   selectedDynamicEntityId: null,
   selectedDynamicEntityIds: [],
   dynamicSelectionAnchorEntityId: null,
-  dynamicSelectionClearedSceneKey: "",
   dynamicSpatialDraft: null,
   dynamicSpatialDraftKey: "",
   dynamicSpatialDraftDirty: false,
@@ -705,6 +705,7 @@ let interactionControllerModelViewers = [];
 let finalReviewViewer = null;
 
 const INTER_BEAT_TRANSITION_CYCLE_SECONDS = 1 / 0.38;
+const INTER_BEAT_TRANSITION_ENDPOINT_HOLD_SECONDS = 1;
 const SOURCE_CAMERA_CUE_SECONDS = 0.65;
 const DEFAULT_SOURCE_ORDER_CYCLE_SECONDS = 3.6;
 const INTERACTION_PREVIEW_CAMERA_FRAMING_CONTRACT = "interaction-spatial-editor/v4";
@@ -1845,7 +1846,6 @@ function applyStoryvrBrowserNavigation(route, options = {}) {
     state.selectedDynamicEntityId = null;
     state.selectedDynamicEntityIds = [];
     state.dynamicSelectionAnchorEntityId = null;
-    state.dynamicSelectionClearedSceneKey = "";
     state.dynamicSpatialDraft = null;
     state.dynamicSpatialDraftKey = "";
     state.dynamicSpatialDraftDirty = false;
@@ -1949,7 +1949,6 @@ function applyStoryvrBrowserNavigation(route, options = {}) {
     state.selectedDynamicEntityId = null;
     state.selectedDynamicEntityIds = [];
     state.dynamicSelectionAnchorEntityId = null;
-    state.dynamicSelectionClearedSceneKey = "";
     ensureDynamicSpatialDraft();
     const beats = spatialPreviewBeats();
     const beatIndex = beats.findIndex((beat) => beat.id === navigation.editorScene.beatId);
@@ -2028,7 +2027,6 @@ function applyStoryvrBrowserNavigation(route, options = {}) {
     state.selectedDynamicEntityId = null;
     state.selectedDynamicEntityIds = [];
     state.dynamicSelectionAnchorEntityId = null;
-    state.dynamicSelectionClearedSceneKey = "";
     state.interBeatEditorScene = null;
     state.interBeatViewerCameraState = null;
     state.spatialEditorScene = null;
@@ -5353,7 +5351,6 @@ function resetGraphDependentPreviewState() {
   state.selectedDynamicEntityId = null;
   state.selectedDynamicEntityIds = [];
   state.dynamicSelectionAnchorEntityId = null;
-  state.dynamicSelectionClearedSceneKey = "";
   state.dynamicSpatialDraft = null;
   state.dynamicSpatialDraftKey = "";
   state.dynamicSpatialDraftDirty = false;
@@ -6770,14 +6767,6 @@ function ensureDynamicSceneObjectSelection(records = dynamicSceneObjectRecords()
     ...(state.selectedDynamicEntityIds || []),
     state.selectedDynamicEntityId,
   ].filter((id) => availableIds.has(id)))];
-  const sceneKey = proceduralDynamicsSceneKey(activeDynamicSceneContext());
-  const explicitlyCleared = state.dynamicSelectionClearedSceneKey === sceneKey;
-  if (!selectedIds.length && !explicitlyCleared) {
-    const initial = available.find((record) => spatialEntityType(record.entity) === "reader")
-      || available[0]
-      || null;
-    if (initial) selectedIds.push(initial.id);
-  }
   state.selectedDynamicEntityIds = selectedIds;
   state.selectedDynamicEntityId = selectedIds.includes(state.selectedDynamicEntityId)
     ? state.selectedDynamicEntityId
@@ -6785,13 +6774,26 @@ function ensureDynamicSceneObjectSelection(records = dynamicSceneObjectRecords()
   if (!availableIds.has(state.dynamicSelectionAnchorEntityId)) {
     state.dynamicSelectionAnchorEntityId = state.selectedDynamicEntityId;
   }
-  if (selectedIds.length) state.dynamicSelectionClearedSceneKey = "";
   return state.selectedDynamicEntityId;
 }
 
 function selectedDynamicSceneObjectRecords(records = dynamicSceneObjectRecords()) {
   const selectedIds = new Set(state.selectedDynamicEntityIds || []);
   return records.filter((record) => selectedIds.has(record.id));
+}
+
+function selectedDynamicGenerationSubjectEntityIds(
+  sceneContext = activeDynamicSceneContext(),
+  records = dynamicSceneObjectRecords(),
+) {
+  const eligibleEntityIds = new Set(
+    proceduralDynamicsLockedSceneTargets(sceneContext).map((entity) => entity.id),
+  );
+  return selectedDynamicSceneObjectRecords(records)
+    .filter((record) => record.kind === "saved"
+      && ["glb", "image-plane"].includes(spatialEntityType(record.entity))
+      && eligibleEntityIds.has(record.entity.id))
+    .map((record) => record.entity.id);
 }
 
 function dynamicSceneObjectRecord(selectionId, records = dynamicSceneObjectRecords()) {
@@ -7053,6 +7055,15 @@ function proceduralDynamicsCandidateSceneViolation(candidate, sceneContext) {
     return "Movement generation attempted to change another saved step.";
   }
   const plan = proceduralDynamicsCandidateMotionPlan(candidate);
+  if ((candidate.subjectEntityIds !== undefined && !Array.isArray(candidate.subjectEntityIds))
+    || (plan?.subjectEntityIds !== undefined && !Array.isArray(plan.subjectEntityIds))) {
+    return "Dynamics generation returned an invalid scene-object subject selection.";
+  }
+  const candidateSubjectEntityIds = uniqueStrings(candidate.subjectEntityIds || []).sort();
+  const planSubjectEntityIds = uniqueStrings(plan?.subjectEntityIds || []).sort();
+  if (JSON.stringify(candidateSubjectEntityIds) !== JSON.stringify(planSubjectEntityIds)) {
+    return "Dynamics generation returned a mismatched scene-object subject selection.";
+  }
   const actors = Array.isArray(plan?.actors) ? plan.actors : [];
   const generatedObjects = Array.isArray(plan?.generatedObjects) ? plan.generatedObjects : [];
   if (!plan || (!actors.length && !generatedObjects.length)) {
@@ -13127,6 +13138,13 @@ async function generateProceduralDynamicsPreview(sceneContext) {
     renderPreservingScroll();
     return;
   }
+  const selectedRecords = selectedDynamicSceneObjectRecords();
+  const subjectEntityIds = selectedDynamicGenerationSubjectEntityIds(sceneContext);
+  if (selectedRecords.length && subjectEntityIds.length !== selectedRecords.length) {
+    state.proceduralDynamicsUi.errorsByScene[sceneKey] = "To use scene selection as generation subjects, select only saved 3D models or images.";
+    renderPreservingScroll();
+    return;
+  }
   setProceduralDynamicsBusy(sceneContext, true);
   delete state.proceduralDynamicsUi.errorsByScene[sceneKey];
   state.proceduralDynamicsUi.statusByScene[sceneKey] = "Codex is generating and saving animation and effects…";
@@ -13139,6 +13157,7 @@ async function generateProceduralDynamicsPreview(sceneContext) {
     const response = await api.post("/api/dynamics/generate", {
       sceneContext: scope,
       prompt,
+      ...(subjectEntityIds.length ? { subjectEntityIds } : {}),
       ...(previousPlan ? { previousPlan } : {}),
       ...(["storyvr-dynamics-scene-candidate/v4", "storyvr-dynamics-scene-candidate/v3"].includes(previousCandidate?.schemaVersion)
         ? { previousCandidate }
@@ -13151,6 +13170,11 @@ async function generateProceduralDynamicsPreview(sceneContext) {
     const sceneViolation = proceduralDynamicsCandidateSceneViolation(candidate, sceneContext);
     if (sceneViolation) {
       throw new Error(sceneViolation);
+    }
+    const returnedSubjectEntityIds = uniqueStrings(candidate.subjectEntityIds || []).sort();
+    const requestedSubjectEntityIds = uniqueStrings(subjectEntityIds).sort();
+    if (JSON.stringify(returnedSubjectEntityIds) !== JSON.stringify(requestedSubjectEntityIds)) {
+      throw new Error("Dynamics generation did not preserve the selected scene-object subjects.");
     }
     state.proceduralDynamicsUi.promptsByScene[sceneKey] = proceduralDynamicsCandidatePrompt(candidate) || prompt;
     const expectedRevision = Number(response?.expectedRevision);
@@ -13168,9 +13192,7 @@ async function generateProceduralDynamicsPreview(sceneContext) {
       historyLabel: proceduralDynamicsStoredPlan(sceneContext)
         ? "Regenerate animation and effects"
         : "Generate animation and effects",
-      statusMessage: response?.engine?.provider === "deterministic-fallback"
-        ? "Codex was unavailable or returned an invalid plan, so StoryVR generated and saved safe local animation and effects automatically."
-        : "Animation and effects generated and saved automatically.",
+      statusMessage: "Animation and effects generated and saved automatically.",
     });
   } catch (error) {
     state.proceduralDynamicsUi.errorsByScene[sceneKey] = `Could not generate and save animation or effects: ${error.message}`;
@@ -15114,6 +15136,9 @@ function bindEvents() {
       if (interBeatViewer) {
         if (interBeatViewer.thumbnailMode && !interBeatViewer.thumbnailReady) {
           interBeatViewer.thumbnailAutoplayPending = state.interBeatPreviewPlaying;
+          interBeatViewer.playing = false;
+        } else if (interBeatViewer.previewAssetsReady === false) {
+          interBeatViewer.previewAutoplayPending = state.interBeatPreviewPlaying;
           interBeatViewer.playing = false;
         } else {
           interBeatViewer.playing = state.interBeatPreviewPlaying;
@@ -18682,6 +18707,38 @@ function previewCycleProgress(viewer) {
   return (((elapsed % cycleSeconds) + cycleSeconds) % cycleSeconds) / cycleSeconds;
 }
 
+function setInterBeatTransitionPreviewDuration(viewer, transitionSeconds) {
+  if (!viewer) return 0;
+  const numericDuration = Number(transitionSeconds);
+  const duration = Number.isFinite(numericDuration) && numericDuration >= 0
+    ? numericDuration
+    : INTER_BEAT_TRANSITION_CYCLE_SECONDS;
+  const endpointHoldSeconds = Math.max(0, Number(viewer.transitionEndpointHoldSeconds) || 0);
+  viewer.transitionAnimationSeconds = duration;
+  viewer.previewCycleSeconds = Math.max(0.001, duration + endpointHoldSeconds * 2);
+  return viewer.previewCycleSeconds;
+}
+
+function interBeatTransitionProgress(viewer) {
+  const endpointHoldSeconds = Math.max(0, Number(viewer?.transitionEndpointHoldSeconds) || 0);
+  if (!(endpointHoldSeconds > 0)) return previewCycleProgress(viewer);
+  const cycleSeconds = previewAnimationCycleSeconds(viewer);
+  if (!Number.isFinite(cycleSeconds) || cycleSeconds <= 0) return 0;
+  const transitionSeconds = Math.max(
+    0,
+    Number.isFinite(Number(viewer?.transitionAnimationSeconds))
+      ? Number(viewer.transitionAnimationSeconds)
+      : cycleSeconds - endpointHoldSeconds * 2,
+  );
+  const rawElapsed = previewClockSeconds(viewer);
+  const elapsed = viewer?.playOnce
+    ? Math.max(0, Math.min(cycleSeconds, rawElapsed))
+    : ((rawElapsed % cycleSeconds) + cycleSeconds) % cycleSeconds;
+  if (elapsed <= endpointHoldSeconds) return 0;
+  if (!(transitionSeconds > 0) || elapsed >= endpointHoldSeconds + transitionSeconds) return 1;
+  return Math.max(0, Math.min(1, (elapsed - endpointHoldSeconds) / transitionSeconds));
+}
+
 function previewPlaybackDeltaSeconds(viewer, delta) {
   const numericDelta = Number(delta);
   if (!Number.isFinite(numericDelta) || numericDelta <= 0) return 0;
@@ -18691,7 +18748,7 @@ function previewPlaybackDeltaSeconds(viewer, delta) {
 }
 
 function resetPreviewCycle(viewer) {
-  if (viewer) viewer.sourceElapsed = 0;
+  if (viewer && Number.isFinite(Number(viewer.sourceElapsed))) viewer.sourceElapsed = 0;
 }
 
 function setTopologyActiveSwapIndex(viewer, index, options = {}) {
@@ -18771,7 +18828,7 @@ function animateCumulativeSourceOrderModel(viewer, entry, time, phaseOffset = 0)
   if (!transitionPlaybackActive && kind === "none") return;
   if (!transitionPlaybackActive && entry.mixer && !entry.sourcePartFrozen) {
     const sourceTime = viewer.componentId === "inter-beat-dynamics"
-      ? previewCycleProgress(viewer) * Math.max(Number(entry.sourceMotionDuration) || 0, 0.001)
+      ? interBeatTransitionProgress(viewer) * Math.max(Number(entry.sourceMotionDuration) || 0, 0.001)
       : activeTime;
     entry.mixer.setTime(sourceTime);
   }
@@ -20535,9 +20592,6 @@ function setDynamicSceneObjectSelection(entityIds, options = {}) {
   state.selectedDynamicEntityIds = selectedIds;
   state.selectedDynamicEntityId = primaryEntityId;
   state.dynamicSelectionAnchorEntityId = options.anchorEntityId || primaryEntityId;
-  state.dynamicSelectionClearedSceneKey = selectedIds.length
-    ? ""
-    : proceduralDynamicsSceneKey(activeDynamicSceneContext());
   syncDynamicSceneObjectSelection();
   if (
     selectedIds.some(dynamicGeneratedObjectId)
@@ -20834,6 +20888,20 @@ function markInterBeatThumbnailReady(viewer) {
   if (shouldPlay) requestInterBeatDynamicsAnimation(viewer);
 }
 
+function restartInterBeatPreviewAfterAssetsReady(viewer) {
+  if (!viewer || viewer.thumbnailMode || viewer.disposed) return false;
+  viewer.elapsed = 0;
+  resetPreviewCycle(viewer);
+  viewer.sourcePartMaskPhase = null;
+  viewer.previewAssetsReady = true;
+  if (viewer.previewAutoplayPending !== null && viewer.previewAutoplayPending !== undefined) {
+    viewer.playing = Boolean(viewer.previewAutoplayPending && state.interBeatPreviewPlaying);
+    viewer.previewAutoplayPending = null;
+  }
+  if (viewer.playing) requestSourceCameraCue(viewer);
+  return true;
+}
+
 function interBeatSourcePlaybackPreviewAssetId(sourcePlaybackSummary) {
   if (
     sourcePlaybackSummary?.contractAvailable !== true
@@ -20892,6 +20960,7 @@ function initializeInterBeatDynamicsViewer(active) {
     canScrub: hasScrubWindow,
     autoInterpolationMatches,
     canAutoInterpolate,
+    canPreviewSuddenCut,
     canPreview,
     generatedTransitionPlan,
   } = playback;
@@ -20993,6 +21062,12 @@ function initializeInterBeatDynamicsViewer(active) {
   const readerEditorLayer = thumbnailMode
     ? null
     : createSpatialReaderRig(root, readerEntity);
+  const previewShouldAutoplay = Boolean(
+    !thumbnailMode
+    && canPreview
+    && state.interBeatPreviewPlaying
+    && (generatedTransitionPlan || canPreviewSuddenCut || sourcePartPlaybackMode !== "frozen"),
+  );
 
   const viewer = {
     scene,
@@ -21016,15 +21091,15 @@ function initializeInterBeatDynamicsViewer(active) {
     keys: new Set(),
     lastFrameAt: performance.now(),
     elapsed: 0,
-    playing: thumbnailMode
-      ? false
-      : canPreview
-        && Boolean(state.interBeatPreviewPlaying)
-        && (Boolean(generatedTransitionPlan) || sourcePartPlaybackMode !== "frozen"),
+    playing: thumbnailMode || assetLinks.length ? false : previewShouldAutoplay,
+    previewAssetsReady: thumbnailMode || !assetLinks.length,
+    previewAutoplayPending: !thumbnailMode && assetLinks.length ? previewShouldAutoplay : null,
     thumbnailReady: !thumbnailMode,
     thumbnailAutoplayPending: thumbnailMode && Boolean(state.interBeatPreviewPlaying),
     speed: Number(state.interBeatPreviewSpeed) || 1,
     previewCycleSeconds: INTER_BEAT_TRANSITION_CYCLE_SECONDS,
+    transitionAnimationSeconds: INTER_BEAT_TRANSITION_CYCLE_SECONDS,
+    transitionEndpointHoldSeconds: thumbnailMode ? 0 : INTER_BEAT_TRANSITION_ENDPOINT_HOLD_SECONDS,
     playOnce: true,
     kind,
     layers,
@@ -21036,6 +21111,8 @@ function initializeInterBeatDynamicsViewer(active) {
     sourceDynamicsAssets: proposal?.sourceDynamics?.assets || [],
     sourcePlaybackSummary,
     autoInterpolation: canAutoInterpolate,
+    suddenCutPreview: canPreviewSuddenCut,
+    transitionPreviewAvailable: canPreview,
     generatedTransitionPlan,
     autoInterpolationMatches: autoInterpolationMatches.map((match) => ({
       key: match.key,
@@ -21048,7 +21125,7 @@ function initializeInterBeatDynamicsViewer(active) {
     variantTransitionAnimationSpec: playback.variantTransitionAnimationSpec,
     sourceCameraCuePending: false,
     sourceCameraCue: null,
-    sourceMotionTransition: beatContext.fromBeatId && !canAutoInterpolate ? {
+    sourceMotionTransition: beatContext.fromBeatId && !canAutoInterpolate && !canPreviewSuddenCut ? {
       fromBeatId: beatContext.fromBeatId,
       toBeatId: beatContext.toBeatId || "",
       ...(beatContext.edgeId ? { edgeId: beatContext.edgeId } : {}),
@@ -21087,9 +21164,15 @@ function initializeInterBeatDynamicsViewer(active) {
     transitionEffects: addInterBeatTransitionOverlays(root, kind, fromPosition, toPosition, playback),
     descriptionCues: null,
   };
+  setInterBeatTransitionPreviewDuration(
+    viewer,
+    canPreviewSuddenCut ? 0 : INTER_BEAT_TRANSITION_CYCLE_SECONDS,
+  );
   if (generatedTransitionPlan) {
-    viewer.previewCycleSeconds = Number(generatedTransitionPlan.durationSeconds)
-      || INTER_BEAT_TRANSITION_CYCLE_SECONDS;
+    setInterBeatTransitionPreviewDuration(
+      viewer,
+      Number(generatedTransitionPlan.durationSeconds) || INTER_BEAT_TRANSITION_CYCLE_SECONDS,
+    );
     viewer.autoInterpolation = false;
     viewer.sourceMotionTransition = beatContext.fromBeatId ? {
       fromBeatId: beatContext.fromBeatId,
@@ -21188,6 +21271,7 @@ function initializeInterBeatDynamicsViewer(active) {
       } else {
         frameLoadedInterBeatCamera();
         viewer.swapReady = true;
+        restartInterBeatPreviewAfterAssetsReady(viewer);
         if (failed) {
           status.textContent = `Loaded cumulative scene change with ${failed} asset issue${failed === 1 ? "" : "s"}.`;
         } else {
@@ -21210,6 +21294,7 @@ function initializeInterBeatDynamicsViewer(active) {
         status.textContent = `Loading ${pending} more scene-change assets...`;
       } else {
         frameLoadedInterBeatCamera();
+        restartInterBeatPreviewAfterAssetsReady(viewer);
         applyInterBeatExactSceneVisibility(viewer, viewer.playing ? 0 : 1);
         if (failed) status.textContent = `Loaded with ${failed} scene-change preview issue${failed === 1 ? "" : "s"}.`;
         else status.remove();
@@ -32338,7 +32423,7 @@ function proceduralDynamicsClipForInstance(instance, clips) {
     const named = available.find((clip) => clip.name === requestedName);
     if (named) return named;
   }
-  return available[0] || null;
+  return null;
 }
 
 function attachProceduralDynamicsAnimation(entry, gltf, instance) {
@@ -32355,7 +32440,12 @@ function attachProceduralDynamicsAnimation(entry, gltf, instance) {
   const mixer = new THREE.AnimationMixer(entry.sourceScene);
   const action = mixer.clipAction(clip);
   action.reset();
-  action.setLoop(THREE.LoopRepeat, Infinity);
+  if (instance?.animationLoopMode === "repeat" || instance?.animationMode === "loop") {
+    action.setLoop(THREE.LoopRepeat, Infinity);
+  } else {
+    action.setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = true;
+  }
   action.play();
   entry.proceduralMixer = mixer;
   entry.proceduralAction = action;
@@ -32375,9 +32465,9 @@ function attachProceduralDynamicsAnimation(entry, gltf, instance) {
 }
 
 function proceduralDynamicsAuthoredRoot(entry) {
-  return entry?.wrapper
+  return entry?.authorWrapper
+    || entry?.wrapper
     || entry?.topologyWrapper
-    || entry?.authorWrapper
     || null;
 }
 
@@ -32400,6 +32490,13 @@ function attachProceduralDynamicsPreviewMotion(viewer, dynamicEntry, gltf) {
 
   viewer.proceduralAssignedEntityIds.add(entityId);
   const originalIndex = originalParent.children.indexOf(authoredRoot);
+  originalParent.updateWorldMatrix(true, false);
+  authoredRoot.updateWorldMatrix(true, true);
+  const visibleBounds = new THREE.Box3();
+  for (const bounds of preciseVisibleSpatialBounds(authoredRoot, viewer.scene)) visibleBounds.union(bounds);
+  const proceduralPivotPosition = visibleBounds.isEmpty()
+    ? authoredRoot.position.clone()
+    : originalParent.worldToLocal(visibleBounds.getCenter(new THREE.Vector3()));
   const motionRoot = new THREE.Group();
   motionRoot.name = `StoryVR generated motion offset · ${entityId}`;
   originalParent.add(motionRoot);
@@ -32417,6 +32514,8 @@ function attachProceduralDynamicsPreviewMotion(viewer, dynamicEntry, gltf) {
   dynamicEntry.proceduralOriginalParent = originalParent;
   dynamicEntry.proceduralOriginalIndex = originalIndex;
   dynamicEntry.proceduralOriginalVisible = authoredRoot.visible;
+  dynamicEntry.proceduralPivotPosition = proceduralPivotPosition;
+  dynamicEntry.proceduralViewerRoot = viewer.root || null;
   dynamicEntry.proceduralAnchorPosition = viewer.proceduralAnchorPosition?.clone?.() || new THREE.Vector3();
   dynamicEntry.proceduralTargetQuaternion = new THREE.Quaternion();
   dynamicEntry.proceduralBaseMotionScale = new THREE.Vector3(1, 1, 1);
@@ -32464,14 +32563,29 @@ function applyProceduralDynamicsPreviewTransform(entry, elapsedSeconds, deltaSec
   if (!instance || !motionRoot) return false;
   const sample = sampleProceduralDynamicsTransform(instance, elapsedSeconds);
   if (!sample) return false;
-  const position = sample.position;
-  if (Array.isArray(position) && position.length >= 3) {
-    motionRoot.position.fromArray(position).add(entry.proceduralAnchorPosition);
-  } else if (position && typeof position === "object") {
-    motionRoot.position
-      .set(Number(position.x) || 0, Number(position.y) || 0, Number(position.z) || 0)
-      .add(entry.proceduralAnchorPosition);
+  const sampledPosition = Array.isArray(sample.position)
+    ? new THREE.Vector3().fromArray(sample.position)
+    : new THREE.Vector3(
+      Number(sample.position?.x) || 0,
+      Number(sample.position?.y) || 0,
+      Number(sample.position?.z) || 0,
+    );
+  const pivotPosition = entry.proceduralPivotPosition || new THREE.Vector3();
+  const originalParent = entry.proceduralOriginalParent;
+  originalParent.updateWorldMatrix(true, false);
+  const trajectoryKind = String(instance?.trajectory?.kind || "stationary");
+  const desiredPivotLocal = new THREE.Vector3();
+  if (trajectoryKind === "stationary") {
+    const authoredPivotWorld = originalParent.localToWorld(pivotPosition.clone());
+    desiredPivotLocal.copy(originalParent.worldToLocal(authoredPivotWorld.add(sampledPosition)));
+  } else {
+    const anchorWorld = entry.proceduralViewerRoot
+      ? entry.proceduralViewerRoot.localToWorld(entry.proceduralAnchorPosition.clone())
+      : entry.proceduralAnchorPosition.clone();
+    desiredPivotLocal.copy(originalParent.worldToLocal(anchorWorld.add(sampledPosition)));
   }
+  const baseMotionPosition = desiredPivotLocal.clone().sub(pivotPosition);
+  motionRoot.position.copy(baseMotionPosition);
   motionRoot.scale.copy(entry.proceduralBaseMotionScale || new THREE.Vector3(1, 1, 1));
   if (Array.isArray(sample.scale) && sample.scale.length >= 3) motionRoot.scale.fromArray(sample.scale);
   const hasExplicitOrientation = Array.isArray(sample.quaternion) || Array.isArray(sample.rotationEulerDegrees);
@@ -32502,6 +32616,12 @@ function applyProceduralDynamicsPreviewTransform(entry, elapsedSeconds, deltaSec
       motionRoot.quaternion.slerp(entry.proceduralTargetQuaternion, blend);
     }
   }
+  motionRoot.position.fromArray(proceduralDynamicsPivotCompensatedPosition(
+    baseMotionPosition.toArray(),
+    pivotPosition.toArray(),
+    motionRoot.quaternion.toArray(),
+    motionRoot.scale.toArray(),
+  ));
   if (Number.isFinite(Number(sample.opacity))) {
     setPreviewOpacityMaterials(entry.opacityMaterials, Number(sample.opacity));
   }
@@ -32528,7 +32648,7 @@ function animateDynamicGeometry(viewer) {
     if (!updateSourceTransitionPlayback(viewer, item) && item.mixer && !item.sourcePartFrozen) {
       const duration = Math.max(Number(item.sourceMotionDuration) || 0, 0.001);
       const sourceTime = viewer.componentId === "inter-beat-dynamics"
-        ? (Number(item.sourceMotionStartProgress) + previewCycleProgress(viewer) * (
+        ? (Number(item.sourceMotionStartProgress) + interBeatTransitionProgress(viewer) * (
           Number(item.sourceMotionEndProgress) - Number(item.sourceMotionStartProgress)
         )) * duration
         : (
@@ -32601,6 +32721,8 @@ function disposeProceduralDynamicsPreview(viewer) {
     entry.proceduralAuthoredRoot = null;
     entry.proceduralOriginalParent = null;
     entry.proceduralOriginalVisible = null;
+    entry.proceduralPivotPosition = null;
+    entry.proceduralViewerRoot = null;
     entry.proceduralOriginalPreviewOpacities = null;
     entry.proceduralOriginalMaterialState = null;
   }
@@ -33585,7 +33707,9 @@ function updateSourceTransitionPlayback(viewer, entry) {
   if (!runtime) return false;
   runtime.clockSeconds = Number(viewer?.elapsed) || 0;
   if (runtime.windowState.mode === "scrub" && !entry.sourcePartFrozen) {
-    const cycleProgress = previewCycleProgress(viewer);
+    const cycleProgress = viewer?.componentId === "inter-beat-dynamics"
+      ? interBeatTransitionProgress(viewer)
+      : previewCycleProgress(viewer);
     const sourceProgress = runtime.windowState.startProgress + cycleProgress * (
       runtime.windowState.endProgress - runtime.windowState.startProgress
     );
@@ -33686,7 +33810,15 @@ function attachSourceTransitionPlayback(viewer, entry, gltf) {
     return true;
   }
   if (viewer.sourcePlaybackSummary?.assetId === asset.assetId) {
-    viewer.previewCycleSeconds = sourcePlaybackScrubCycleSeconds(asset, windowState, viewer.previewCycleSeconds, runtime.masterDuration);
+    const sourceCycleSeconds = sourcePlaybackScrubCycleSeconds(
+      asset,
+      windowState,
+      viewer.componentId === "inter-beat-dynamics" ? viewer.transitionAnimationSeconds : viewer.previewCycleSeconds,
+      runtime.masterDuration,
+    );
+    if (viewer.componentId === "inter-beat-dynamics") {
+      setInterBeatTransitionPreviewDuration(viewer, sourceCycleSeconds);
+    } else viewer.previewCycleSeconds = sourceCycleSeconds;
   }
   const mixer = new THREE.AnimationMixer(gltf.scene);
   runtime.mixer = mixer;
@@ -33751,7 +33883,7 @@ function viewerExecutesInterBeatTransition(viewer) {
 
 function attachSourceDynamicsPreviewAnimation(viewer, entry, gltf) {
   if (!viewer || (viewer.componentId !== "dynamic-geometry" && !viewerExecutesInterBeatTransition(viewer))) return;
-  if (viewer.autoInterpolation && viewerExecutesInterBeatTransition(viewer)) return;
+  if ((viewer.autoInterpolation || viewer.suddenCutPreview) && viewerExecutesInterBeatTransition(viewer)) return;
   const assetId = entry.assetId || entry.step?.assetId;
   if (
     viewer.componentId === "dynamic-geometry"
@@ -34153,10 +34285,11 @@ function animateDynamicEffectOverlays(effects, kind, time) {
 }
 
 function animateInterBeatDynamics(viewer) {
-  const progress = previewCycleProgress(viewer);
+  const cycleProgress = previewCycleProgress(viewer);
+  const progress = interBeatTransitionProgress(viewer);
   const smooth = progress * progress * (3 - 2 * progress);
-  const completed = viewer.playOnce && progress >= 1;
-  applyInterBeatSourcePartMasks(viewer, completed || !viewer.sourceMotionTransition ? "destination" : "transition");
+  const completed = viewer.playOnce && cycleProgress >= 1;
+  applyInterBeatSourcePartMasks(viewer, progress >= 1 ? "destination" : "transition");
   if (completed && viewer.playing) {
     viewer.playing = false;
     state.interBeatPreviewPlaying = false;
@@ -34258,7 +34391,9 @@ function animateInterBeatDynamics(viewer) {
 function applyInterBeatExactSceneVisibility(viewer, progress) {
   if (!viewer?.usesExactSceneComposition && !viewer?.generatedTransitionPlan) return false;
   const rawProgress = Math.max(0, Math.min(1, Number(progress) || 0));
-  const clamped = !viewer.playing && rawProgress <= 0 ? 1 : rawProgress;
+  const clamped = !viewer.playing && rawProgress <= 0 && viewer.transitionPreviewAvailable !== true
+    ? 1
+    : rawProgress;
   const generatedPlan = viewer.generatedTransitionPlan || null;
   const smooth = generatedPlan
     ? proceduralTransitionEasedProgress(generatedPlan, clamped)
@@ -34318,7 +34453,8 @@ function applyInterBeatExactSceneVisibility(viewer, progress) {
       interpolatedTargets.add(target);
     }
   }
-  const hardSwitch = generatedPlan?.style === "cut"
+  const hardSwitch = viewer.suddenCutPreview
+    || generatedPlan?.style === "cut"
     || (!viewer.autoInterpolation && !generatedPlan && ["discrete-hard", "discrete-pop"].includes(viewer.kind));
   const destinationOpacity = hardSwitch ? (clamped >= 0.5 ? 1 : 0) : smooth;
   for (const item of viewer.dynamicObjects || []) {
@@ -36854,13 +36990,25 @@ function interBeatBoundaryPlaybackSummary(proposal, context) {
     && boundary.fromBeatId
     && boundary.toBeatId
   );
+  const canPreviewSuddenCut = Boolean(
+    !generatedTransitionPlan
+    && boundary.fromBeatId
+    && boundary.toBeatId
+    && sourcePartPlaybackMode !== "frozen"
+    && !canScrub
+    && !canAutoInterpolate
+    && autoInterpolationAssets?.sourceAvailable
+    && autoInterpolationAssets?.targetAvailable
+  );
   const sourceOnlyPreview = {
-    canPreview: canScrub || canAutoInterpolate,
+    canPreview: canScrub || canAutoInterpolate || canPreviewSuddenCut,
     previewMode: canScrub
       ? "saved-source"
       : canAutoInterpolate
         ? "auto-interpolation"
-        : "none",
+        : canPreviewSuddenCut
+          ? "sudden-cut"
+          : "none",
   };
   return {
     boundary,
@@ -36873,6 +37021,7 @@ function interBeatBoundaryPlaybackSummary(proposal, context) {
     canScrub,
     autoInterpolationMatches,
     canAutoInterpolate,
+    canPreviewSuddenCut,
     generatedTransitionPlan: canPreviewGeneratedTransition ? generatedTransitionPlan : null,
     canPreviewGeneratedTransition,
     canPreview: sourceOnlyPreview.canPreview || canPreviewGeneratedTransition,
