@@ -13,6 +13,10 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import {
+  attachGenerativeUsage,
+  generativeUsageFromCodexJsonl,
+} from "../generative-usage.mjs";
 
 export const GENERATED_ENVIRONMENT_WIDTH = 2048;
 export const GENERATED_ENVIRONMENT_HEIGHT = 1024;
@@ -75,6 +79,7 @@ export async function generateEnvironmentImageWithCodex({
   const outputMessagePath = path.join(workspace, "codex-last-message.txt");
   const normalizedImagePath = path.join(workspace, "environment-2048x1024.png");
   const generationId = `generated-${Date.now().toString(36)}-${randomUUID()}`;
+  let usageSource = null;
 
   try {
     const referenceImagePaths = [];
@@ -116,6 +121,9 @@ export async function generateEnvironmentImageWithCodex({
       env: codexImageGenerationEnvironment(resolvedCodexHome),
       timeoutMs,
       maxOutputBytes: MAX_COMMAND_OUTPUT_BYTES,
+    });
+    usageSource = generativeUsageFromCodexJsonl(execution?.stdout, {
+      operation: "environment-panorama",
     });
     const finalMessage = await readFile(outputMessagePath, "utf8").catch(() => "");
     if (!execution?.ok) {
@@ -194,7 +202,7 @@ export async function generateEnvironmentImageWithCodex({
       );
     }
 
-    return {
+    return attachGenerativeUsage({
       generationId,
       prompt: sceneDescription,
       filename: "environment.png",
@@ -216,7 +224,9 @@ export async function generateEnvironmentImageWithCodex({
           bytes: reference.image.byteLength,
         })),
       },
-    };
+    }, usageSource);
+  } catch (error) {
+    throw attachGenerativeUsage(error, usageSource);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
@@ -253,6 +263,7 @@ export async function generateMatchingGroundTextureWithCodex({
   const outputMessagePath = path.join(workspace, "codex-last-message.txt");
   const normalizedImagePath = path.join(workspace, "ground-1024x1024.png");
   const generationId = `ground-${Date.now().toString(36)}-${randomUUID()}`;
+  let usageSource = null;
 
   try {
     const bytes = Buffer.from(referenceImage);
@@ -285,6 +296,9 @@ export async function generateMatchingGroundTextureWithCodex({
       env: codexImageGenerationEnvironment(resolvedCodexHome),
       timeoutMs,
       maxOutputBytes: MAX_COMMAND_OUTPUT_BYTES,
+    });
+    usageSource = generativeUsageFromCodexJsonl(execution?.stdout, {
+      operation: "environment-ground",
     });
     const finalMessage = await readFile(outputMessagePath, "utf8").catch(() => "");
     if (!execution?.ok) {
@@ -360,7 +374,7 @@ export async function generateMatchingGroundTextureWithCodex({
       );
     }
 
-    return {
+    return attachGenerativeUsage({
       generationId,
       prompt: sceneDescription,
       filename: "ground.png",
@@ -378,7 +392,9 @@ export async function generateMatchingGroundTextureWithCodex({
         postprocessing,
         originalArtifactName: path.basename(generatedImagePath),
       },
-    };
+    }, usageSource);
+  } catch (error) {
+    throw attachGenerativeUsage(error, usageSource);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }

@@ -24,6 +24,7 @@ The demo uses all eight StoryVR steps. It includes 3D actions, a fast group of c
 
 - A zoomable timeline with a color for each step, lavender intervals for spatial-editor time, click markers, duration spans for spatial drags, other 3D marks, key-moment flags, and optional generated annotations.
 - Time by step, step path, interaction pace, an interaction map with click dots and drag paths, repeated targets, and a searchable event list.
+- A dedicated **AI usage** metric for instrumented sessions: total provider-reported tokens, input/output counts, cached and cache-write input, reasoning output, and measured-request coverage. Legacy logs show **Not measured** rather than zero.
 - Drag details include the operation, axis, duration, affected object identifiers, and before/after transforms.
 - Possible good moments, concerns, and items to watch. Generated annotations connect to their earliest cited timeline events and expand in place to show their complete descriptions. These are clues, not facts. A long pause may be a break. Fast clicks may be on purpose.
 - A downloadable review JSON. The download does not change the source log.
@@ -32,7 +33,7 @@ The demo uses all eight StoryVR steps. It includes 3D actions, a fast group of c
 
 Imported logs stay on this computer unless the user selects **Generate insights** beside the timeline. Codex receives a short log summary, not the original file. Each generated annotation must link to recorded event numbers and times. The server does not save the log, summary, or result.
 
-The logger leaves out typed values and sensitive data fields. A log can still include story titles, button labels, scene names, and file names. Remove identifying labels before sharing it. Do not put names, email addresses, codes, prompts, or typed text in demo logs.
+The logger leaves out typed values and sensitive data fields. Generative usage contains numeric totals and bounded provider/operation labels only; it does not contain prompts, outputs, credentials, provider response IDs, Codex thread IDs, or local paths. A log can still include story titles, button labels, scene names, and file names. Remove identifying labels before sharing it. Do not put names, email addresses, codes, prompts, or typed text in demo logs.
 
 ## Interpretation limits
 

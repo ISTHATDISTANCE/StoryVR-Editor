@@ -12,6 +12,7 @@ const LOG_SCHEMA_VERSION = "storyvr-interaction-log/v1";
 const NORMALIZATION_SCHEMA_VERSION = "storyvr-workflow-lens-normalized/v1";
 const ANALYSIS_SCHEMA_VERSION = "storyvr-workflow-lens-analysis/v1";
 const CODEX_EVIDENCE_SCHEMA_VERSION = "storyvr-workflow-lens-codex-evidence/v1";
+const GENERATIVE_TOKEN_USAGE_SCHEMA_VERSION = "storyvr-generative-token-usage/v1";
 const UNKNOWN_STEP_ID = "unknown";
 const DEFAULT_ACTIVITY_BIN_MS = 30_000;
 const DEFAULT_PAUSE_THRESHOLD_MS = 120_000;
@@ -20,6 +21,7 @@ const DEFAULT_RAGE_CLICK_COUNT = 3;
 const MAX_CODEX_EVIDENCE_SESSIONS = 24;
 const MAX_CODEX_TOTAL_EVIDENCE_EVENTS = 2_048;
 const MAX_CODEX_EVIDENCE_EVENTS = 240;
+const MAX_GENERATIVE_TOKEN_COUNT = Number.MAX_SAFE_INTEGER;
 const INTERACTION_TYPES = new Set(["click", "drag"]);
 
 export const STEP_DEFINITIONS = Object.freeze([
@@ -125,6 +127,10 @@ export function normalizeInteractionLog(input, { fileName = "" } = {}) {
     warnings.push(dataWarning("missing-stop-marker", "The collection-stopped lifecycle marker is missing."));
   }
   const complete = source.complete === true || source.collectionState === "complete";
+  const generativeTokenUsage = normalizeGenerativeTokenUsage(
+    source.generativeTokenUsage,
+    warnings,
+  );
   const explicitBufferLimit = source.bufferLimitReached === true || typeSet.has("buffer-limit-reached");
   const possibleLegacyLimit = source.events.length >= 25_000 && !complete;
   const bufferLimitReached = explicitBufferLimit || possibleLegacyLimit;
@@ -173,6 +179,7 @@ export function normalizeInteractionLog(input, { fileName = "" } = {}) {
     bufferLimitReached,
     sessionContext: serializableObject(source.sessionContext),
     viewport: normalizeViewport(source.viewport),
+    generativeTokenUsage,
     events: Object.freeze(events),
     warnings: Object.freeze(warnings),
   });
@@ -273,6 +280,7 @@ export function analyzeInteractionLog(input, options = {}) {
       initialStepId: boundaries[0]?.stepId || UNKNOWN_STEP_ID,
       viewport: normalized.viewport,
     }),
+    generativeTokenUsage: normalized.generativeTokenUsage,
     events: Object.freeze(events),
     timeline: Object.freeze({
       durationMs: normalized.durationMs,
@@ -353,6 +361,77 @@ export function buildCodexEvidence(analyses) {
 
 function stepDefinition(id, label, color, order) {
   return Object.freeze({ id, label, color, order });
+}
+
+function normalizeGenerativeTokenUsage(value, warnings) {
+  if (value == null) return null;
+  if (
+    !value
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || value.schemaVersion !== GENERATIVE_TOKEN_USAGE_SCHEMA_VERSION
+  ) {
+    warnings.push(dataWarning(
+      "invalid-generative-token-usage",
+      "The generative token-usage summary is missing or uses an unsupported schema.",
+    ));
+    return null;
+  }
+  const inputTokens = usageCount(value.inputTokens);
+  const outputTokens = usageCount(value.outputTokens);
+  return Object.freeze({
+    schemaVersion: GENERATIVE_TOKEN_USAGE_SCHEMA_VERSION,
+    measurementMethod: "provider-reported",
+    measuredRequestCount: usageCount(value.measuredRequestCount),
+    unmeasuredRequestCount: usageCount(value.unmeasuredRequestCount),
+    inputTokens,
+    cachedInputTokens: Math.min(usageCount(value.cachedInputTokens), inputTokens),
+    cacheWriteInputTokens: Math.min(usageCount(value.cacheWriteInputTokens), inputTokens),
+    outputTokens,
+    reasoningOutputTokens: Math.min(usageCount(value.reasoningOutputTokens), outputTokens),
+    totalTokens: safeUsageSum(inputTokens, outputTokens),
+    byProvider: Object.freeze(normalizeUsageBreakdown(value.byProvider, "provider")),
+    byOperation: Object.freeze(normalizeUsageBreakdown(value.byOperation, "operation")),
+  });
+}
+
+function normalizeUsageBreakdown(values, key) {
+  if (!Array.isArray(values)) return [];
+  return values.slice(0, 32).map((value) => {
+    const label = cleanString(value?.[key])
+      .replace(/[^A-Za-z0-9._:/-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 120);
+    if (!label) return null;
+    const inputTokens = usageCount(value.inputTokens);
+    const outputTokens = usageCount(value.outputTokens);
+    return Object.freeze({
+      [key]: label,
+      measuredRequestCount: usageCount(value.measuredRequestCount),
+      unmeasuredRequestCount: usageCount(value.unmeasuredRequestCount),
+      inputTokens,
+      cachedInputTokens: Math.min(usageCount(value.cachedInputTokens), inputTokens),
+      cacheWriteInputTokens: Math.min(usageCount(value.cacheWriteInputTokens), inputTokens),
+      outputTokens,
+      reasoningOutputTokens: Math.min(usageCount(value.reasoningOutputTokens), outputTokens),
+      totalTokens: safeUsageSum(inputTokens, outputTokens),
+    });
+  }).filter(Boolean);
+}
+
+function usageCount(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number)
+    && number >= 0
+    && number <= MAX_GENERATIVE_TOKEN_COUNT
+    ? number
+    : 0;
+}
+
+function safeUsageSum(left, right) {
+  return left > MAX_GENERATIVE_TOKEN_COUNT - right
+    ? MAX_GENERATIVE_TOKEN_COUNT
+    : left + right;
 }
 
 function parseInput(input) {
@@ -1602,6 +1681,7 @@ function compactAnalysisForCodex(analysis, sessionId, eventLimit) {
     interactionCount: analysis.stats.interactionCount,
     clickCount: analysis.stats.clickCount,
     dragCount: analysis.stats.dragCount,
+    generativeTokenUsage: analysis.generativeTokenUsage,
     journey: analysis.journey,
     stepDwell: Object.freeze(analysis.stepDwell.map((row) => Object.freeze({
       stepId: row.stepId,

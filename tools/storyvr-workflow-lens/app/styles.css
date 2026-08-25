@@ -385,7 +385,7 @@ select {
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   align-self: stretch;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -410,6 +410,11 @@ select {
   color: var(--muted);
   font-size: 0.66rem;
   line-height: 1.35;
+}
+
+.metric-card > .metric-detail {
+  color: #78827d;
+  font-size: 0.61rem;
 }
 
 .metric-card > span {

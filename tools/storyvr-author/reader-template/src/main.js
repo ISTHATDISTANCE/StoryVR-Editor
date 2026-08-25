@@ -7131,6 +7131,11 @@ function bindProceduralDynamicsGeneratedObject(instance, anchorPosition, attachm
     content: content.object,
     light: content.light || null,
     materials: content.materials || [],
+    materialStates: (content.materials || []).map((material) => ({
+      color: material?.color?.clone?.() || null,
+      emissive: material?.emissive?.clone?.() || null,
+      emissiveIntensity: Number.isFinite(Number(material?.emissiveIntensity)) ? Number(material.emissiveIntensity) : null,
+    })),
     particleState: content.particleState || null,
     anchorPosition: resolvedAnchorPosition,
     ...(attachmentEntry || {}),
@@ -7158,6 +7163,21 @@ function updateRuntimeProceduralGeneratedParticles(entry, localTime, sample) {
   state.material.size = Math.max(0.001, Number(sample.particleSize ?? state.material.size));
 }
 
+function applyRuntimeProceduralMaterialSample(material, sample, baseState = null) {
+  if (!material) return;
+  if (material.color) {
+    if (sample.color) material.color.set(sample.color);
+    else if (Number.isFinite(sample.brightness) && baseState?.color) material.color.copy(baseState.color);
+    if (Number.isFinite(sample.brightness)) {
+      material.color.multiplyScalar(Math.max(0, Math.min(4, sample.brightness)));
+    }
+  }
+  if (sample.emissiveColor && material.emissive) material.emissive.set(sample.emissiveColor);
+  if (Number.isFinite(sample.emissiveIntensity) && "emissiveIntensity" in material) {
+    material.emissiveIntensity = Math.max(0, sample.emissiveIntensity);
+  }
+}
+
 function updateProceduralDynamicsGeneratedEntry(entry, localTime) {
   if (entry.attachment?.follow && !updateProceduralDynamicsAttachmentAnchor(entry)) {
     entry.wrapper.visible = false;
@@ -7174,12 +7194,10 @@ function updateProceduralDynamicsGeneratedEntry(entry, localTime) {
   if (Array.isArray(sample.scale)) entry.wrapper.scale.fromArray(sample.scale);
   entry.wrapper.visible = entry.instance.appearance?.visible !== false && sample.visible !== false && Number(sample.opacity) > 0.001;
   const opacity = Math.max(0, Math.min(1, Number(entry.instance.appearance?.opacity ?? 1) * Number(sample.opacity ?? 1)));
-  for (const material of entry.materials) {
+  for (const [materialIndex, material] of entry.materials.entries()) {
     material.opacity = opacity;
     material.transparent = material.transparent || opacity < 1;
-    if (sample.color && material.color) material.color.set(sample.color);
-    if (sample.emissiveColor && material.emissive) material.emissive.set(sample.emissiveColor);
-    if (Number.isFinite(sample.emissiveIntensity) && "emissiveIntensity" in material) material.emissiveIntensity = sample.emissiveIntensity;
+    applyRuntimeProceduralMaterialSample(material, sample, entry.materialStates?.[materialIndex]);
   }
   if (entry.light) {
     if (sample.color) entry.light.color.set(sample.color);
@@ -7233,9 +7251,11 @@ function updateProceduralDynamics(delta) {
       const opacity = Math.max(0, Math.min(1, baseOpacity * Number(sample.opacity ?? 1)));
       material.opacity = opacity;
       material.transparent = material.transparent || opacity < 1;
-      if (sample.color && material.color) material.color.set(sample.color);
-      if (sample.emissiveColor && material.emissive) material.emissive.set(sample.emissiveColor);
-      if (Number.isFinite(sample.emissiveIntensity) && "emissiveIntensity" in material) material.emissiveIntensity = sample.emissiveIntensity;
+      applyRuntimeProceduralMaterialSample(
+        material,
+        sample,
+        entry.originalMaterialState?.[materialIndex],
+      );
     }
     entry.mixer?.update(delta);
   }

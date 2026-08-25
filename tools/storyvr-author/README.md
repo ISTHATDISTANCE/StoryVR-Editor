@@ -164,6 +164,15 @@ the switch off stops new capture at that moment and finalizes the existing file.
 Canceling the initial folder choice leaves collection off, while a failed
 checkpoint or final save preserves the cutoff and unwritten events for retry.
 
+While collection is on, StoryVR also records one additive
+`generativeTokenUsage` summary in the same `storyvr-interaction-log/v1` file.
+Counts come directly from Codex CLI and OpenAI provider usage; StoryVR does not
+tokenize prompts locally or issue a second measurement request. The summary
+uses `storyvr-generative-token-usage/v1`, preserves cumulative counts across
+checkpoints without double counting retries or build polling, and never stores
+prompts, outputs, credentials, provider response IDs, Codex thread IDs, or
+local paths. Older logs without the field remain valid and mean not measured.
+
 Run `npm run storyvr:study-extension` to build the optional consent-gated Chrome
 bridge for an approved original-story tab. That page contributes events only
 when its exact tab, origin, and path have been approved in the extension popup

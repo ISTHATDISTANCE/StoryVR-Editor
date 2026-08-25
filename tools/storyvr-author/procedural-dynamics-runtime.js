@@ -14,6 +14,7 @@ const TRACK_PROPERTIES = new Set([
   "appearance.opacity",
   "appearance.visible",
   "appearance.color",
+  "appearance.brightness",
   "appearance.emissiveColor",
   "appearance.emissiveIntensity",
   "light.intensity",
@@ -21,6 +22,16 @@ const TRACK_PROPERTIES = new Set([
   "light.angle",
   "particle.rate",
   "particle.size",
+]);
+const EXISTING_ACTOR_TRACK_PROPERTIES = new Set([
+  "transform.position",
+  "transform.rotationEulerDegrees",
+  "transform.quaternion",
+  "transform.scale",
+  "appearance.opacity",
+  "appearance.visible",
+  "appearance.color",
+  "appearance.brightness",
 ]);
 
 export function proceduralDynamicsSceneKey(scopeOrBeatId, variantOptionId = null) {
@@ -335,6 +346,7 @@ export function sampleProceduralDynamicsTransform(instance, elapsedSeconds) {
     scale: finiteVector3(timelineSample.properties["transform.scale"], null) || undefined,
     visible: timelineSample.properties["appearance.visible"],
     color: timelineSample.properties["appearance.color"],
+    brightness: finiteOrUndefined(timelineSample.properties["appearance.brightness"]),
     emissiveColor: timelineSample.properties["appearance.emissiveColor"],
     emissiveIntensity: finiteOrUndefined(timelineSample.properties["appearance.emissiveIntensity"]),
     lightIntensity: finiteOrUndefined(timelineSample.properties["light.intensity"]),
@@ -410,7 +422,9 @@ function normalizeProceduralDynamicsActor(actor, plan, index) {
     targetKind,
     clip: normalizeActorClip(source.clip || source.animationClip || source.clipIndexes),
     trajectory: normalizeTrajectory(trajectorySource),
-    timeline: normalizeTimeline(source.timeline || source.motionTimeline),
+    timeline: normalizeExistingActorTimeline(
+      normalizeTimeline(source.timeline || source.motionTimeline),
+    ),
     orientation: {
       kind: orientationKind,
       mode: orientationKind,
@@ -436,6 +450,30 @@ function normalizeProceduralDynamicsActor(actor, plan, index) {
       ),
     },
   };
+}
+
+function normalizeExistingActorTimeline(timeline) {
+  if (!timeline) return null;
+  const explicitProperties = new Set(timeline.tracks.map((track) => track.property));
+  const tracks = timeline.tracks.map((track) => {
+    if (track.property === "appearance.emissiveIntensity") {
+      if (explicitProperties.has("appearance.brightness")) return null;
+      return {
+        ...track,
+        property: "appearance.brightness",
+        keyframes: track.keyframes.map((keyframe) => ({
+          ...keyframe,
+          value: clampedNumber(1 + Number(keyframe.value || 0), 1, 0, 4),
+        })),
+      };
+    }
+    if (track.property === "appearance.emissiveColor") {
+      if (explicitProperties.has("appearance.color")) return null;
+      return { ...track, property: "appearance.color" };
+    }
+    return EXISTING_ACTOR_TRACK_PROPERTIES.has(track.property) ? track : null;
+  }).filter(Boolean);
+  return tracks.length ? { ...timeline, tracks } : null;
 }
 
 function normalizedExistingTargetKind(value, entityId = "") {
@@ -690,6 +728,7 @@ function normalizedTrackValue(property, value) {
   }
   if (property === "appearance.visible") return Boolean(value);
   if (property === "appearance.opacity") return clampedNumber(value, 1, 0, 1);
+  if (property === "appearance.brightness") return clampedNumber(value, 1, 0, 4);
   return Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : null;
 }
 
@@ -1164,6 +1203,12 @@ function normalizedTrackProperty(value) {
     color: "appearance.color",
     "material.color": "appearance.color",
     "appearance.color": "appearance.color",
+    brightness: "appearance.brightness",
+    "material.brightness": "appearance.brightness",
+    "appearance.brightness": "appearance.brightness",
+    highlight: "appearance.brightness",
+    highlightintensity: "appearance.brightness",
+    "appearance.highlightintensity": "appearance.brightness",
     emissivecolor: "appearance.emissiveColor",
     "material.emissivecolor": "appearance.emissiveColor",
     "appearance.emissivecolor": "appearance.emissiveColor",

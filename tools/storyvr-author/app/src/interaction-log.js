@@ -1,4 +1,9 @@
 import { createInteractionLogFileInSelectedDirectory } from "./interaction-log-file.js";
+import {
+  accumulateGenerativeTokenUsage,
+  createGenerativeTokenUsageSummary,
+  normalizeGenerativeTokenUsageSummary,
+} from "./generative-token-usage.js";
 
 export const INTERACTION_LOG_SCHEMA_VERSION = "storyvr-interaction-log/v1";
 
@@ -91,6 +96,10 @@ export function createInteractionLogger({
     stopRequestedAt: null,
     extensionStopConfirmed: false,
     cleanupRequired: false,
+    generativeTokenUsage: createGenerativeTokenUsageSummary(),
+    generativeUsageRevision: 0,
+    persistedGenerativeUsageRevision: 0,
+    seenGenerativeUsageIds: new Set(),
   };
   let attached = false;
   let disposed = false;
@@ -122,8 +131,10 @@ export function createInteractionLogger({
       deferredEventCount: state.deferredEvents.length,
       bufferedBytes: state.bufferedBytes,
       persistedEventCount: Number(persisted?.eventCount) || 0,
+      sessionId: state.session?.id || null,
       startedAt: state.session?.startedAt || null,
       limitReached: state.limitReached,
+      generativeTokenUsage: normalizeGenerativeTokenUsageSummary(state.generativeTokenUsage),
       lastSaved: state.lastSaved ? { ...state.lastSaved } : null,
     });
   }
@@ -156,6 +167,10 @@ export function createInteractionLogger({
     return () => listeners.delete(listener);
   }
 
+  function collectionSessionId() {
+    return state.enabled && !state.stopRequested ? state.session?.id || null : null;
+  }
+
   function context() {
     try {
       return boundedSerializableObject(getContext());
@@ -166,6 +181,7 @@ export function createInteractionLogger({
 
   async function beginCollection() {
     if (state.saving || state.starting || state.enabled || state.session || pendingFinalTransaction) return snapshot();
+    resetGenerativeUsage();
     const started = timestamp();
     const session = {
       id: String(createSessionId()),
@@ -195,7 +211,9 @@ export function createInteractionLogger({
     try {
       // openLog calls the folder chooser before any extension handshake so the
       // browser still has the switch click's transient user activation.
-      const writer = await openLog(interactionSessionPayload(session, [startEvent], started, {}));
+      const writer = await openLog(interactionSessionPayload(session, [startEvent], started, {
+        generativeTokenUsage: state.generativeTokenUsage,
+      }));
       if (!writer?.appendBatch || !writer?.finalize || !writer?.snapshot) {
         throw new Error("The selected folder did not provide a writable interaction-log file.");
       }
@@ -256,6 +274,7 @@ export function createInteractionLogger({
       state.stopRequestedAt = null;
       state.extensionStopConfirmed = false;
       state.cleanupRequired = false;
+      resetGenerativeUsage();
       state.status = canceled ? "location-canceled" : "error";
       state.error = canceled
         ? "Folder selection canceled; collection remains off."
@@ -441,9 +460,11 @@ export function createInteractionLogger({
     try {
       preparation = await prepareExtensionCheckpoint({ checkpointedAt, final: false, reason });
       detached = detachBufferedEvents();
+      const generativeUsageRevision = state.generativeUsageRevision;
       const basePayload = interactionSessionPayload(state.session, detached, checkpointedAt, {
         complete: false,
         limitReached: state.limitReached,
+        generativeTokenUsage: state.generativeTokenUsage,
       });
       const transformedPayload = await transformCheckpoint(basePayload, preparation, { final: false, reason });
       const partition = partitionCheckpointEvents(
@@ -455,9 +476,16 @@ export function createInteractionLogger({
         eventCount: partition.ready.length,
         events: partition.ready,
       };
-      if (payload.events.length) {
+      if (
+        payload.events.length
+        || generativeUsageRevision > state.persistedGenerativeUsageRevision
+      ) {
         await state.writer.appendBatch(payload, { checkpointedAt });
         fileWritten = true;
+        state.persistedGenerativeUsageRevision = Math.max(
+          state.persistedGenerativeUsageRevision,
+          generativeUsageRevision,
+        );
       }
       if (preparation?.prepared) {
         await commitPreparedCheckpoint(preparation, {
@@ -474,6 +502,9 @@ export function createInteractionLogger({
       notify();
       if (!state.stopRequested && (state.events.length >= checkpointEvents || state.bufferedBytes >= checkpointBytes)) {
         requestCheckpoint("buffer-remains");
+      }
+      if (!state.stopRequested && state.generativeUsageRevision > state.persistedGenerativeUsageRevision) {
+        requestCheckpoint("generative-usage-remains");
       }
       return state.writer.snapshot();
     } catch (error) {
@@ -533,11 +564,18 @@ export function createInteractionLogger({
         transaction.preparationReady = true;
       }
 
-      if (!transaction.fileFinalized && (!transaction.fileWritten || state.events.length || state.deferredEvents.length)) {
+      if (!transaction.fileFinalized && (
+        !transaction.fileWritten
+        || state.events.length
+        || state.deferredEvents.length
+        || state.generativeUsageRevision > state.persistedGenerativeUsageRevision
+      )) {
         detached = detachBufferedEvents();
+        const generativeUsageRevision = state.generativeUsageRevision;
         const basePayload = interactionSessionPayload(state.session, detached, transaction.checkpointedAt, {
           complete: true,
           limitReached: state.limitReached,
+          generativeTokenUsage: state.generativeTokenUsage,
         });
         const preparationForAppend = transaction.fileWritten ? null : transaction.preparation;
         const transformedPayload = await transformCheckpoint(
@@ -556,6 +594,10 @@ export function createInteractionLogger({
         }, { checkpointedAt: transaction.checkpointedAt });
         appendedThisAttempt = true;
         transaction.fileWritten = true;
+        state.persistedGenerativeUsageRevision = Math.max(
+          state.persistedGenerativeUsageRevision,
+          generativeUsageRevision,
+        );
       }
 
       if (!transaction.fileFinalized) {
@@ -651,6 +693,7 @@ export function createInteractionLogger({
     state.stopRequestedAt = null;
     state.extensionStopConfirmed = false;
     state.cleanupRequired = false;
+    resetGenerativeUsage();
     pendingFinalTransaction = null;
     lastCapturedClick = null;
     recentSemanticClick = null;
@@ -809,13 +852,38 @@ export function createInteractionLogger({
     return true;
   }
 
+  function recordGenerativeUsage(measurements, { sessionId = null } = {}) {
+    if (!state.enabled || state.stopRequested || state.saving || pendingFinalTransaction?.fileFinalized || !state.session) return false;
+    if (!sessionId || String(sessionId) !== state.session.id) return false;
+    const result = accumulateGenerativeTokenUsage(
+      state.generativeTokenUsage,
+      measurements,
+      state.seenGenerativeUsageIds,
+    );
+    if (!result.addedCount) return false;
+    state.generativeTokenUsage = result.summary;
+    state.generativeUsageRevision += 1;
+    notify();
+    requestCheckpoint("generative-usage");
+    return true;
+  }
+
+  function resetGenerativeUsage() {
+    state.generativeTokenUsage = createGenerativeTokenUsageSummary();
+    state.generativeUsageRevision = 0;
+    state.persistedGenerativeUsageRevision = 0;
+    state.seenGenerativeUsageIds.clear();
+  }
+
   return Object.freeze({
     start,
     dispose,
     subscribe,
     snapshot,
+    collectionSessionId,
     setEnabled,
     requestCheckpoint,
+    recordGenerativeUsage,
     recordSemanticClick,
     recordDrag,
   });
@@ -836,7 +904,11 @@ function interactionLifecycleEvent({ sequence, startedAt, eventTime, type, label
   };
 }
 
-function interactionSessionPayload(session, events, endedAt, { complete = false, limitReached = false } = {}) {
+function interactionSessionPayload(session, events, endedAt, {
+  complete = false,
+  limitReached = false,
+  generativeTokenUsage = createGenerativeTokenUsageSummary(),
+} = {}) {
   const started = validDate(session?.startedAt);
   const ended = validDate(endedAt);
   return {
@@ -847,6 +919,8 @@ function interactionSessionPayload(session, events, endedAt, { complete = false,
     durationMs: Math.max(0, ended.getTime() - started.getTime()),
     sessionContext: boundedSerializableObject(session?.context),
     viewport: boundedSerializableObject(session?.viewport),
+    generativeTokenUsage: normalizeGenerativeTokenUsageSummary(generativeTokenUsage)
+      || createGenerativeTokenUsageSummary(),
     eventCount: events.length,
     complete: Boolean(complete),
     bufferLimitReached: Boolean(limitReached),

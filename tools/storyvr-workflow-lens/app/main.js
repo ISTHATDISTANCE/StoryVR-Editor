@@ -48,7 +48,8 @@ const elements = Object.fromEntries([
   "workspace", "load-demo", "log-files", "session-title",
   "session-story-status", "session-story-title", "session-story-summary",
   "metric-duration", "metric-duration-note", "metric-events", "metric-events-note", "metric-steps", "metric-steps-note",
-  "metric-moments", "metric-moments-note", "step-legend", "timeline-svg", "timeline-tooltip", "timeline-scrubber",
+  "metric-tokens", "metric-tokens-note", "metric-tokens-detail", "metric-moments", "metric-moments-note",
+  "step-legend", "timeline-svg", "timeline-tooltip", "timeline-scrubber",
   "window-label", "selected-event", "pan-left", "pan-right", "zoom-in", "zoom-out", "reset-view", "moment-count",
   "moment-list", "step-dwell", "journey-path", "rhythm-chart", "rhythm-summary", "interaction-field", "interaction-map-summary",
   "target-mix", "codex-status", "run-codex", "codex-results", "codex-key", "codex-annotation-label",
@@ -336,7 +337,9 @@ function renderEmptyState(error = "") {
   elements.sessionStoryStatus.classList.remove("complete");
   elements.sessionStoryTitle.textContent = "Import a log to see the workflow";
   elements.sessionStorySummary.textContent = error || "The session path, time by step, and noteworthy moments will appear here.";
-  for (const [key, value] of [["metricDuration", "—"], ["metricEvents", "—"], ["metricSteps", "—"], ["metricMoments", "—"]]) elements[key].textContent = value;
+  for (const [key, value] of [["metricDuration", "—"], ["metricEvents", "—"], ["metricSteps", "—"], ["metricTokens", "—"], ["metricMoments", "—"]]) elements[key].textContent = value;
+  elements.metricTokensNote.textContent = "Not measured yet";
+  elements.metricTokensDetail.textContent = "Provider-reported tokens";
   elements.timelineSvg.replaceChildren(svgText(600, 150, error || "Import a log to reveal the authoring journey.", "axis-label"));
   elements.stepLegend.replaceChildren();
   elements.momentList.innerHTML = '<div class="empty-list">No key moments yet.</div>';
@@ -381,9 +384,33 @@ function renderMetrics(analysis) {
   elements.metricEventsNote.textContent = `${clicks.length} click${clicks.length === 1 ? "" : "s"} · ${drags.length} spatial drag${drags.length === 1 ? "" : "s"}`;
   elements.metricSteps.textContent = `${visited.length}/${STEPS.length}`;
   elements.metricStepsNote.textContent = "StoryVR steps visited";
+  renderGenerativeTokenMetric(analysis?.generativeTokenUsage || null);
   const concernCount = moments.filter((moment) => momentValence(moment) === "concern").length;
   elements.metricMoments.textContent = String(concernCount);
   elements.metricMomentsNote.textContent = `${moments.length} key moment${moments.length === 1 ? "" : "s"} found`;
+}
+
+function renderGenerativeTokenMetric(usage) {
+  if (!usage) {
+    elements.metricTokens.textContent = "—";
+    elements.metricTokensNote.textContent = "Not measured in this log";
+    elements.metricTokensDetail.textContent = "Legacy session";
+    return;
+  }
+  const measured = Number(usage.measuredRequestCount) || 0;
+  const unmeasured = Number(usage.unmeasuredRequestCount) || 0;
+  const requestCount = measured + unmeasured;
+  elements.metricTokens.textContent = formatNumber(usage.totalTokens);
+  elements.metricTokensNote.textContent = `${formatNumber(usage.inputTokens)} in · ${formatNumber(usage.outputTokens)} out`;
+  const details = [];
+  if (usage.cachedInputTokens) details.push(`${formatNumber(usage.cachedInputTokens)} cached`);
+  if (usage.cacheWriteInputTokens) details.push(`${formatNumber(usage.cacheWriteInputTokens)} cache write`);
+  if (usage.reasoningOutputTokens) details.push(`${formatNumber(usage.reasoningOutputTokens)} reasoning`);
+  details.push(requestCount
+    ? `${measured}/${requestCount} request${requestCount === 1 ? "" : "s"} measured`
+    : "No generation requests");
+  if (unmeasured) details.push(`${unmeasured} unavailable`);
+  elements.metricTokensDetail.textContent = details.join(" · ");
 }
 
 function renderStepLegend(analysis) {

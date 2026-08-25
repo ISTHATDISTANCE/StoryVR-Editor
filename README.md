@@ -249,7 +249,11 @@ Object movement exposes the complete saved Reader, GLB, and image roster plus
 runtime-generated objects. Codex can animate exact-scene GLBs and image planes
 with declarative timelines or create temporary primitives, lights, and particle
 emitters. Generate/Regenerate validates and saves one exact-scene plan
-atomically; saved placement and linked assets remain unchanged.
+atomically; saved placement and linked assets remain unchanged. Plans validate
+each track against its target, reject invisible or identity-only results, and
+make one bounded repair attempt when generated actions are incompatible.
+Appearance-only prompts can animate color and brightness without adding
+unrequested object movement.
 
 Scene changes offers **Auto Interpolation** when two consecutive saved scenes
 contain safely matched GLBs or image planes whose position, rotation, or scale
@@ -300,6 +304,13 @@ and finalizes the same file; canceling the initial folder choice leaves
 collection off, and a failed checkpoint or final save keeps the cutoff and
 unwritten events available for retry.
 
+While collection is on, the same log also accumulates provider-reported token
+usage for StoryVR generation requests, including measured/unavailable request
+counts and input, output, cached-input, cache-write, and reasoning-output
+subtotals. StoryVR records no prompts, generated output, credentials, provider
+response IDs, Codex thread IDs, or local paths in this summary. Older logs
+without token usage remain valid and display as not measured rather than zero.
+
 For a consented study that also needs activity from an original story page,
 build the optional local Chrome extension:
 
@@ -327,7 +338,8 @@ npm run storyvr:workflow
 
 Then open <http://127.0.0.1:5197/> and import one or more log files. The viewer
 shows the step timeline, click markers, spatial-drag spans and paths, pauses,
-3D actions, spatial-editor intervals, and evidence-linked moments to review.
+3D actions, spatial-editor intervals, provider-reported AI usage, and
+evidence-linked moments to review.
 Imported logs stay local unless **Generate insights** is selected; that optional
 action sends only a compact summary to Codex and places expandable annotations
 beside their cited timeline events.

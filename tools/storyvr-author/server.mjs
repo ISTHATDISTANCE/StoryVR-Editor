@@ -66,6 +66,12 @@ import {
   createStoryBuildInputSignatureReader,
 } from "./history-store.mjs";
 import {
+  attachGenerativeUsage,
+  GENERATIVE_USAGE_HEADER,
+  generativeUsageHeaderValue,
+  generativeUsageOf,
+} from "./generative-usage.mjs";
+import {
   directoryLinkType,
   readerRunCommands,
 } from "./platform-commands.mjs";
@@ -318,12 +324,17 @@ async function handleApi(req, res) {
           codexBin: CODEX_BIN,
           codexVersion: codexStatus.version,
         });
-        const ground = await generateMatchingGroundTextureWithCodex({
-          prompt,
-          referenceImage: generated.image,
-          codexBin: CODEX_BIN,
-          codexVersion: codexStatus.version,
-        });
+        let ground;
+        try {
+          ground = await generateMatchingGroundTextureWithCodex({
+            prompt,
+            referenceImage: generated.image,
+            codexBin: CODEX_BIN,
+            codexVersion: codexStatus.version,
+          });
+        } catch (error) {
+          throw attachGenerativeUsage(error, generated);
+        }
         const generationToken = stageEnvironmentGeneration({
           sceneContext,
           baselineRevision: baselineEnvironment.revision,
@@ -331,13 +342,13 @@ async function handleApi(req, res) {
           generated,
           ground,
         });
-        writeJsonResponse(res, 202, {
+        writeJsonResponse(res, 202, attachGenerativeUsage({
           generationToken,
           beatId,
           ...(variantGroupId ? { variantGroupId } : {}),
           ...(variantOptionId ? { variantOptionId } : {}),
           generation: environmentGenerationMetadata(generated, ground),
-        });
+        }, generated, ground));
       } finally {
         environmentGenerationBusy = false;
       }
@@ -560,7 +571,7 @@ async function handleApi(req, res) {
           });
         },
       }, body);
-      writeJsonResponse(res, 200, { storyCanvasSegments });
+      writeJsonResponse(res, 200, attachGenerativeUsage({ storyCanvasSegments }, storyCanvasSegments));
       return;
     }
 
@@ -674,12 +685,12 @@ async function handleApi(req, res) {
 
     writeJsonResponse(res, 404, { error: "Unknown API route." });
   } catch (error) {
-    writeJsonResponse(res, error.statusCode || environmentErrorStatus(error), {
+    writeJsonResponse(res, error.statusCode || environmentErrorStatus(error), attachGenerativeUsage({
       error: error.message,
       diagnostics: error.diagnostics || [],
       ...(Array.isArray(error.unmetRequirements) ? { unmetRequirements: error.unmetRequirements } : {}),
       ...(error.referenceResolution ? { referenceResolution: error.referenceResolution } : {}),
-    });
+    }, error));
   }
 }
 
@@ -739,6 +750,7 @@ async function startStoryBuildJob() {
     promise: null,
     snapshot,
     publishRoot: null,
+    generativeUsage: [],
   };
   storyBuildJobs.set(job.id, job);
   activeStoryBuildJobId = job.id;
@@ -768,6 +780,7 @@ async function runStoryBuildJob(job) {
       codexAuthenticated: Boolean(codexStatus.codexAvailable && codexStatus.authenticated),
       codexVersion: codexStatus.version || null,
     });
+    job.generativeUsage = generativeUsageOf(runtime);
     runtime = await normalizeSnapshotBuildOutputs(runtime, job.snapshot);
     runtime = await buildNormalizedSnapshotReader(runtime, job.snapshot);
     const publication = await stageStoryBuildPublication(job);
@@ -790,6 +803,10 @@ async function runStoryBuildJob(job) {
       readerRun: finalized.readerRun,
     });
   } catch (error) {
+    job.generativeUsage = [
+      ...job.generativeUsage,
+      ...generativeUsageOf(error),
+    ];
     terminalError = {
       message: error?.message || String(error),
       diagnostics: Array.isArray(error?.diagnostics) ? error.diagnostics : [],
@@ -1323,7 +1340,7 @@ async function pathExists(filePath) {
 }
 
 function publicStoryBuildJob(job) {
-  return {
+  return attachGenerativeUsage({
     jobId: job.id,
     status: job.status,
     inputSignature: job.inputSignature,
@@ -1332,7 +1349,7 @@ function publicStoryBuildJob(job) {
     finishedAt: job.finishedAt,
     result: job.result,
     error: job.error,
-  };
+  }, job.generativeUsage);
 }
 
 function summarizeStoryBuildRuntime(runtime, options) {
@@ -2090,9 +2107,11 @@ async function readJsonBody(req) {
 
 function writeJsonResponse(res, status, value) {
   const body = `${JSON.stringify(value)}\n`;
+  const generativeUsage = generativeUsageHeaderValue(value);
   res.statusCode = status;
   res.setHeader("content-type", "application/json; charset=utf-8");
   res.setHeader("cache-control", "no-store");
+  if (generativeUsage) res.setHeader(GENERATIVE_USAGE_HEADER, generativeUsage);
   res.setHeader("content-length", String(Buffer.byteLength(body)));
   res.end(body);
 }

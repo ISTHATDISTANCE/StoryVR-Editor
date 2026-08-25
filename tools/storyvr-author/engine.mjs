@@ -21,6 +21,11 @@ import { parseCodexJsonObject as parseJsonObject } from "../codex-json.mjs";
 import { REPO_ROOT, importFetchedStoryResources } from "../storyvr-adapter/storyvr-adapter.mjs";
 import { normalizeEnvironmentMovementCue } from "./environment/store.mjs";
 import {
+  attachGenerativeUsage,
+  generativeUsageFromCodexJsonl,
+  generativeUsageFromOpenAIResponse,
+} from "./generative-usage.mjs";
+import {
   applyMotionPlanToStore,
   createFallbackMotionPlan,
   DYNAMICS_SCENE_PATCH_SCHEMA_VERSION,
@@ -818,18 +823,23 @@ export async function generateStoryCanvasSegmentsWithCodex(context, options = {}
       timeoutMs: options.storyCanvasSegmentsCodexTimeoutMs || options.codexTimeoutMs || 180_000,
       maxOutputChars: STORY_CANVAS_SEGMENTS_MAX_CODEX_OUTPUT_CHARS,
       requestLabel: "Codex story progress generation",
+      usageOperation: "story-progress",
     });
-    const finalText = extractCodexFinalText(result.stdout) || result.stdout;
-    if (finalText.length > STORY_CANVAS_SEGMENTS_MAX_CODEX_OUTPUT_CHARS) {
-      throw storyCanvasGroupingError(502, "Codex returned too much story progress output.");
+    try {
+      const finalText = extractCodexFinalText(result.stdout) || result.stdout;
+      if (finalText.length > STORY_CANVAS_SEGMENTS_MAX_CODEX_OUTPUT_CHARS) {
+        throw storyCanvasGroupingError(502, "Codex returned too much story progress output.");
+      }
+      return attachGenerativeUsage({
+        ...parseJsonObject(finalText),
+        engine: {
+          provider: "codex-cli",
+          ...(options.codexVersion ? { version: options.codexVersion } : {}),
+        },
+      }, result);
+    } catch (error) {
+      throw attachGenerativeUsage(error, result);
     }
-    return {
-      ...parseJsonObject(finalText),
-      engine: {
-        provider: "codex-cli",
-        ...(options.codexVersion ? { version: options.codexVersion } : {}),
-      },
-    };
   } finally {
     if (!configuredWorkspace) {
       await rm(codexWorkspace, { recursive: true, force: true }).catch(() => {});
@@ -930,12 +940,12 @@ async function runStoryCanvasSegmentsGenerator(generator, context, options) {
   } catch (error) {
     if (error?.statusCode) throw error;
     const timedOut = /timed out/i.test(String(error?.message || ""));
-    throw storyCanvasGroupingError(
+    throw attachGenerativeUsage(storyCanvasGroupingError(
       timedOut ? 504 : 502,
       timedOut
         ? "Codex took too long to create story progress. Retry when you are ready."
         : "Codex could not create valid story progress. Retry when you are ready.",
-    );
+    ), error);
   }
 }
 
@@ -994,44 +1004,54 @@ export async function generateStoryCanvasSegments(options, payload = {}) {
 
   const generation = (async () => {
     const context = storyCanvasSegmentsGenerationContext(graph, previousValue);
-    const artifact = !force
-      && storyCanvasSegmentsCanBaseline(previousValue, previous)
-      ? storyCanvasSegmentsLegacyBaselineArtifact(graph, previousValue, context.inputSummary)
-      : storyCanvasSegmentsGeneratedArtifact(
-        graph,
-        await runStoryCanvasSegmentsGenerator(
+    let generated = null;
+    try {
+      const useLegacyBaseline = !force
+        && storyCanvasSegmentsCanBaseline(previousValue, previous);
+      generated = useLegacyBaseline
+        ? null
+        : await runStoryCanvasSegmentsGenerator(
           options.storyCanvasSegmentsGenerator || generateStoryCanvasSegmentsWithCodex,
           context,
           options,
-        ),
-        previousValue,
-        context.inputSummary,
-      );
-    const normalized = validateStoryCanvasSegmentsGeneratedArtifact(artifact, graph);
-    const persistedArtifact = {
-      ...artifact,
-      segments: normalized.segments.map(({ id, label, beatIds }) => ({
-        id,
-        label,
-        beatIds,
-      })),
-    };
-    const finalize = typeof options.storyCanvasSegmentsFinalize === "function"
-      ? options.storyCanvasSegmentsFinalize
-      : (operation) => operation();
-    return finalize(async () => {
-      const latestGraph = normalizeSourceGraph(
-        await readRequiredJson(paths.storyGraphPath, "Finish Story order before creating story progress."),
-      );
-      if (storyCanvasSegmentGenerationSignature(latestGraph) !== generationSignature) {
-        throw storyCanvasGroupingError(
-          409,
-          "The saved story flow changed while Codex was organizing it. The outdated result was discarded.",
         );
-      }
-      await writeAuthorJsonTransaction(paths, [[paths.storyCanvasSegmentsPath, persistedArtifact]]);
-      return normalizeStoryCanvasSegments(persistedArtifact, latestGraph);
-    });
+      const artifact = useLegacyBaseline
+        ? storyCanvasSegmentsLegacyBaselineArtifact(graph, previousValue, context.inputSummary)
+        : storyCanvasSegmentsGeneratedArtifact(
+          graph,
+          generated,
+          previousValue,
+          context.inputSummary,
+        );
+      const normalized = validateStoryCanvasSegmentsGeneratedArtifact(artifact, graph);
+      const persistedArtifact = {
+        ...artifact,
+        segments: normalized.segments.map(({ id, label, beatIds }) => ({
+          id,
+          label,
+          beatIds,
+        })),
+      };
+      const finalize = typeof options.storyCanvasSegmentsFinalize === "function"
+        ? options.storyCanvasSegmentsFinalize
+        : (operation) => operation();
+      const result = await finalize(async () => {
+        const latestGraph = normalizeSourceGraph(
+          await readRequiredJson(paths.storyGraphPath, "Finish Story order before creating story progress."),
+        );
+        if (storyCanvasSegmentGenerationSignature(latestGraph) !== generationSignature) {
+          throw storyCanvasGroupingError(
+            409,
+            "The saved story flow changed while Codex was organizing it. The outdated result was discarded.",
+          );
+        }
+        await writeAuthorJsonTransaction(paths, [[paths.storyCanvasSegmentsPath, persistedArtifact]]);
+        return normalizeStoryCanvasSegments(persistedArtifact, latestGraph);
+      });
+      return attachGenerativeUsage(result, generated);
+    } catch (error) {
+      throw attachGenerativeUsage(error, generated);
+    }
   })();
   storyCanvasSegmentsGenerationInFlight.set(key, generation);
   try {
@@ -1196,15 +1216,27 @@ export async function generateComponentProposals(options, componentId, request =
     authorPrompt: request.prompt || "",
   };
 
-  const generated = await generateWithCodex(context, options)
-    .catch(() => generateWithOpenAI(context, options))
-    .catch((error) => ({
-      proposals: fallbackProposals(component, context),
-      engine: {
-        provider: "deterministic-fallback",
-        reason: error.message,
-      },
-    }));
+  const usageSources = [];
+  let generated;
+  try {
+    generated = await generateWithCodex(context, options);
+    usageSources.push(generated);
+  } catch (codexError) {
+    usageSources.push(codexError);
+    try {
+      generated = await generateWithOpenAI(context, options);
+      usageSources.push(generated);
+    } catch (openaiError) {
+      usageSources.push(openaiError);
+      generated = {
+        proposals: fallbackProposals(component, context),
+        engine: {
+          provider: "deterministic-fallback",
+          reason: openaiError.message,
+        },
+      };
+    }
+  }
 
   let proposalBundle = normalizeProposalBundle(component, generated, context);
   if (proposalBundleMatchesPrevious(proposalBundle, context.previousProposals)) {
@@ -1217,7 +1249,7 @@ export async function generateComponentProposals(options, componentId, request =
     }, context);
   }
   await writeJson(proposalPath, proposalBundle);
-  return proposalBundle;
+  return attachGenerativeUsage(proposalBundle, usageSources);
 }
 
 export async function generateProceduralDynamicsPlan(options, request = {}) {
@@ -1233,6 +1265,7 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
   const libraryContext = dynamicsLibraryContext(state);
   const previousPlan = normalizePreviousDynamicsPlan(previousPlanInput, libraryContext);
   const imagePaths = dynamicsSceneImageAttachmentPaths(libraryContext.sceneImages);
+  const usageSources = [];
   let engine = { provider: "codex-cli" };
   let intent;
   try {
@@ -1242,7 +1275,9 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
       previousPlan,
       generateJson: async (prompt) => {
         if (options.proceduralDynamicsGenerateJson) {
-          return options.proceduralDynamicsGenerateJson(prompt, { imagePaths: [...imagePaths] });
+          const generated = await options.proceduralDynamicsGenerateJson(prompt, { imagePaths: [...imagePaths] });
+          usageSources.push(generated);
+          return generated;
         }
         if (options.aiProvider === "openai") throw new Error("Codex provider is not available for this request.");
         const codexBin = options.codexBin || process.env.CODEX_BIN || "codex";
@@ -1251,12 +1286,19 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
           timeoutMs: options.codexTimeoutMs || 180_000,
           requestLabel: "Codex object movement request",
           imagePaths,
+          usageOperation: "dynamics",
         });
+        usageSources.push(result);
         engine = { provider: "codex-cli", codexBin };
-        return parseJsonObject(extractCodexFinalText(result.stdout) || result.stdout);
+        try {
+          return parseJsonObject(extractCodexFinalText(result.stdout) || result.stdout);
+        } catch (error) {
+          throw attachGenerativeUsage(error, result);
+        }
       },
     });
   } catch (error) {
+    usageSources.push(error);
     const motionPlan = createFallbackMotionPlan(libraryContext, request.prompt, previousPlan);
     intent = {
       prompt: motionPlan.prompt,
@@ -1304,12 +1346,12 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
       "The revised prompt produced no visible motion change.",
     ]);
   }
-  return {
+  return attachGenerativeUsage({
     candidate: projection.candidate,
     expectedRevision: state.proceduralDynamics.revision,
     proceduralDynamics: state.proceduralDynamics,
     engine,
-  };
+  }, usageSources);
 }
 
 export async function prepareProceduralDynamicsEditCandidate(options, request = {}) {
@@ -1664,7 +1706,9 @@ function assertDynamicsSceneBaseline(submitted, current, expectedRevision) {
     "motionContextSignature",
     "assetInventorySignature",
   ]) {
-    if (!submitted[key] || submitted[key] !== current[key]) {
+    if (!Object.hasOwn(submitted, key)
+      || typeof submitted[key] !== "string"
+      || submitted[key] !== current[key]) {
       const changedArea = ({
         sourceGraphSignature: "Story order",
         spatialRelationsSignature: "object placement",
@@ -1834,6 +1878,7 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
     || request.previousPlan
     || state.proceduralTransitions.plansByBoundary[state.boundary.boundaryKey]
     || null;
+  const usageSources = [];
   let engine = { provider: "codex-cli" };
   let candidate;
   try {
@@ -1845,7 +1890,9 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
       transitionContext: proceduralTransitionGenerationContext(state),
       generateJson: async (prompt) => {
         if (options.proceduralTransitionGenerateJson) {
-          return options.proceduralTransitionGenerateJson(prompt);
+          const generated = await options.proceduralTransitionGenerateJson(prompt);
+          usageSources.push(generated);
+          return generated;
         }
         if (options.aiProvider === "openai") throw new Error("Codex provider is not available for this request.");
         const codexBin = options.codexBin || process.env.CODEX_BIN || "codex";
@@ -1853,12 +1900,19 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
           cwd: options.codexWorkspace || REPO_ROOT,
           timeoutMs: options.codexTimeoutMs || 180_000,
           requestLabel: "Codex scene transition request",
+          usageOperation: "transition",
         });
+        usageSources.push(result);
         engine = { provider: "codex-cli", codexBin };
-        return parseJsonObject(extractCodexFinalText(result.stdout) || result.stdout);
+        try {
+          return parseJsonObject(extractCodexFinalText(result.stdout) || result.stdout);
+        } catch (error) {
+          throw attachGenerativeUsage(error, result);
+        }
       },
     });
   } catch (error) {
+    usageSources.push(error);
     const transitionPlan = createFallbackTransitionPlan(state.boundary, request.prompt, previousPlan);
     candidate = normalizeProceduralTransitionCandidate({ transitionPlan }, state.boundary, {
       prompt: transitionPlan.prompt,
@@ -1869,7 +1923,7 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
       reason: String(error?.message || "Codex scene transition generation failed."),
     };
   }
-  return {
+  return attachGenerativeUsage({
     candidate: {
       ...candidate,
       baseline: proceduralTransitionBaseline(state),
@@ -1877,7 +1931,7 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
     expectedRevision: state.proceduralTransitions.revision,
     proceduralTransitions: state.proceduralTransitions,
     engine,
-  };
+  }, usageSources);
 }
 
 export async function applyProceduralTransitionPlan(options, request = {}) {
@@ -5113,6 +5167,7 @@ async function writeDerivedAssetTopologyDecision(paths, spatialRelations, spatia
 }
 
 export async function compileAuthorRuntime(options) {
+  const usageSources = [];
   // Compilation is another entry point into the workflow, so give any
   // previously completed downstream checkpoints the same deterministic
   // revalidation pass that the author UI performs on load.
@@ -5452,66 +5507,71 @@ export async function compileAuthorRuntime(options) {
   await assertReaderProceduralDynamicsContract(paths, compiled);
   compiled.provenance.readerTemplate = readerTemplateSync.provenance;
   compiled.diagnostics.push(...readerTemplateSync.diagnostics);
-  if (options.performanceOptimizationEnabled === true) {
-    await writeJson(paths.compiledRuntimePath, compiled);
-    const performanceResult = await optimizeCompiledRuntimePerformance(paths, compiled, options);
-    compiled.performanceOptimization = performanceResult.optimization;
-    compiled.provenance.performanceOptimization = {
-      schemaVersion: PERFORMANCE_OPTIMIZATION_SCHEMA_VERSION,
-      status: performanceResult.optimization.status,
-      profile: performanceResult.optimization.profile,
-      artifactPath: performanceResult.optimization.artifactPath,
-      generatedAt: performanceResult.optimization.generatedAt,
-      engine: performanceResult.optimization.engine,
-    };
-    compiled.diagnostics.push(...performanceResult.diagnostics);
-  }
-  await writeJson(paths.compiledRuntimePath, compiled);
-  if (options.readerDistBuildEnabled === true) {
-    try {
-      const readerBuild = await buildReaderDist(paths, options);
-      compiled.readerBuild = readerBuild;
-      compiled.provenance.readerBuild = {
-        schemaVersion: readerBuild.schemaVersion,
-        status: readerBuild.status,
-        distPath: readerBuild.distPath,
-        buildBase: readerBuild.buildBase,
-        builtAt: readerBuild.builtAt,
-      };
+  try {
+    if (options.performanceOptimizationEnabled === true) {
       await writeJson(paths.compiledRuntimePath, compiled);
-    } catch (error) {
-      const message = performanceOptimizationText(error?.message || error, 1_200, "Unknown reader build error.");
-      const distPath = toPosix(path.relative(REPO_ROOT, path.join(paths.storyFolder, "dist-webxr-adaptation")));
-      const diagnostic = {
-        severity: "error",
-        code: "READER_DIST_BUILD_FAILED",
-        component: "compile",
-        path: distPath,
-        message: `The story data and reader source were saved, but the production reader build failed: ${message}`,
+      const performanceResult = await optimizeCompiledRuntimePerformance(paths, compiled, options);
+      usageSources.push(performanceResult);
+      compiled.performanceOptimization = performanceResult.optimization;
+      compiled.provenance.performanceOptimization = {
+        schemaVersion: PERFORMANCE_OPTIMIZATION_SCHEMA_VERSION,
+        status: performanceResult.optimization.status,
+        profile: performanceResult.optimization.profile,
+        artifactPath: performanceResult.optimization.artifactPath,
+        generatedAt: performanceResult.optimization.generatedAt,
+        engine: performanceResult.optimization.engine,
       };
-      const readerBuild = {
-        schemaVersion: READER_DIST_BUILD_SCHEMA_VERSION,
-        status: "failed",
-        attemptedAt: new Date().toISOString(),
-        distPath,
-        error: message,
-      };
-      compiled.readerBuild = readerBuild;
-      compiled.provenance.readerBuild = {
-        schemaVersion: readerBuild.schemaVersion,
-        status: readerBuild.status,
-        distPath: readerBuild.distPath,
-        attemptedAt: readerBuild.attemptedAt,
-      };
-      compiled.diagnostics.push(diagnostic);
-      await writeJson(paths.compiledRuntimePath, compiled);
-      throw Object.assign(new Error(diagnostic.message), {
-        statusCode: 500,
-        diagnostics: [diagnostic],
-      });
+      compiled.diagnostics.push(...performanceResult.diagnostics);
     }
+    await writeJson(paths.compiledRuntimePath, compiled);
+    if (options.readerDistBuildEnabled === true) {
+      try {
+        const readerBuild = await buildReaderDist(paths, options);
+        compiled.readerBuild = readerBuild;
+        compiled.provenance.readerBuild = {
+          schemaVersion: readerBuild.schemaVersion,
+          status: readerBuild.status,
+          distPath: readerBuild.distPath,
+          buildBase: readerBuild.buildBase,
+          builtAt: readerBuild.builtAt,
+        };
+        await writeJson(paths.compiledRuntimePath, compiled);
+      } catch (error) {
+        const message = performanceOptimizationText(error?.message || error, 1_200, "Unknown reader build error.");
+        const distPath = toPosix(path.relative(REPO_ROOT, path.join(paths.storyFolder, "dist-webxr-adaptation")));
+        const diagnostic = {
+          severity: "error",
+          code: "READER_DIST_BUILD_FAILED",
+          component: "compile",
+          path: distPath,
+          message: `The story data and reader source were saved, but the production reader build failed: ${message}`,
+        };
+        const readerBuild = {
+          schemaVersion: READER_DIST_BUILD_SCHEMA_VERSION,
+          status: "failed",
+          attemptedAt: new Date().toISOString(),
+          distPath,
+          error: message,
+        };
+        compiled.readerBuild = readerBuild;
+        compiled.provenance.readerBuild = {
+          schemaVersion: readerBuild.schemaVersion,
+          status: readerBuild.status,
+          distPath: readerBuild.distPath,
+          attemptedAt: readerBuild.attemptedAt,
+        };
+        compiled.diagnostics.push(diagnostic);
+        await writeJson(paths.compiledRuntimePath, compiled);
+        throw Object.assign(new Error(diagnostic.message), {
+          statusCode: 500,
+          diagnostics: [diagnostic],
+        });
+      }
+    }
+    return attachGenerativeUsage(compiled, usageSources);
+  } catch (error) {
+    throw attachGenerativeUsage(error, usageSources);
   }
-  return compiled;
 }
 
 export async function optimizeCompiledRuntimePerformance(paths, compiled, options = {}) {
@@ -5520,14 +5580,14 @@ export async function optimizeCompiledRuntimePerformance(paths, compiled, option
     || path.join(paths.storyFolder, "analysis", "storyvr", "performance-optimization.json");
   const publicArtifactPath = toPosix(path.relative(REPO_ROOT, artifactPath));
   const evidence = performanceOptimizationEvidence(compiled);
-  const writeResult = async (optimization, diagnostics = []) => {
+  const writeResult = async (optimization, diagnostics = [], usageSources = []) => {
     const result = {
       ...optimization,
       artifactPath: publicArtifactPath,
       evidence,
     };
     await writeJson(artifactPath, result);
-    return { optimization: result, diagnostics };
+    return attachGenerativeUsage({ optimization: result, diagnostics }, usageSources);
   };
 
   if (options.codexAuthenticated === false) {
@@ -5582,7 +5642,7 @@ export async function optimizeCompiledRuntimePerformance(paths, compiled, option
         version: options.codexVersion || null,
       },
     });
-    return writeResult(optimization);
+    return await writeResult(optimization, [], generated);
   } catch (error) {
     const failureMessage = performanceOptimizationText(error?.message || error, 600);
     return writeResult({
@@ -5604,7 +5664,7 @@ export async function optimizeCompiledRuntimePerformance(paths, compiled, option
       code: "CODEX_PERFORMANCE_OPTIMIZATION_FAILED",
       component: "compile",
       message: `The story data was built successfully, but the Codex performance pass failed${failureMessage ? `: ${failureMessage}` : "."}`,
-    }]);
+    }], error);
   }
 }
 
@@ -5624,16 +5684,21 @@ async function generatePerformanceOptimizationWithCodex(context, options = {}) {
     cwd: options.codexWorkspace || REPO_ROOT,
     timeoutMs: options.performanceOptimizationTimeoutMs || 180_000,
     requestLabel: "Codex performance optimization request",
+    usageOperation: "performance-optimization",
   });
-  const finalText = extractCodexFinalText(result.stdout) || result.stdout;
-  return {
-    ...parseJsonObject(finalText),
-    engine: {
-      provider: "codex-cli",
-      codexBin,
-      version: options.codexVersion || null,
-    },
-  };
+  try {
+    const finalText = extractCodexFinalText(result.stdout) || result.stdout;
+    return attachGenerativeUsage({
+      ...parseJsonObject(finalText),
+      engine: {
+        provider: "codex-cli",
+        codexBin,
+        version: options.codexVersion || null,
+      },
+    }, result);
+  } catch (error) {
+    throw attachGenerativeUsage(error, result);
+  }
 }
 
 export function normalizePerformanceOptimizationPlan(plan, metadata = {}) {
@@ -14610,12 +14675,17 @@ async function generateWithCodex(context, options = {}) {
   const result = await runCodexExec(codexBin, prompt, {
     cwd: options.codexWorkspace || REPO_ROOT,
     timeoutMs: options.codexTimeoutMs || 180_000,
+    usageOperation: `component-proposal:${context.component?.id || "unknown"}`,
   });
-  const finalText = extractCodexFinalText(result.stdout) || result.stdout;
-  return {
-    ...parseJsonObject(finalText),
-    engine: { provider: "codex-cli", codexBin },
-  };
+  try {
+    const finalText = extractCodexFinalText(result.stdout) || result.stdout;
+    return attachGenerativeUsage({
+      ...parseJsonObject(finalText),
+      engine: { provider: "codex-cli", codexBin },
+    }, result);
+  } catch (error) {
+    throw attachGenerativeUsage(error, result);
+  }
 }
 
 async function generateWithOpenAI(context, options = {}) {
@@ -14665,12 +14735,20 @@ async function generateWithOpenAI(context, options = {}) {
     throw new Error(`OpenAI proposal request failed: HTTP ${response.status} ${await response.text()}`);
   }
   const data = await response.json();
-  const text = data.output_text || data.output?.flatMap((item) => item.content || []).find((item) => item.type === "output_text")?.text;
-  if (!text) throw new Error("OpenAI response did not include output_text.");
-  return {
-    ...JSON.parse(text),
-    engine: { provider: "openai", model },
-  };
+  const usage = generativeUsageFromOpenAIResponse(data, {
+    operation: `component-proposal:${context.component?.id || "unknown"}`,
+    model,
+  });
+  try {
+    const text = data.output_text || data.output?.flatMap((item) => item.content || []).find((item) => item.type === "output_text")?.text;
+    if (!text) throw new Error("OpenAI response did not include output_text.");
+    return attachGenerativeUsage({
+      ...JSON.parse(text),
+      engine: { provider: "openai", model },
+    }, usage);
+  } catch (error) {
+    throw attachGenerativeUsage(error, usage);
+  }
 }
 
 function runCodexExec(codexBin, prompt, options) {
@@ -14733,19 +14811,25 @@ function runCodexExec(codexBin, prompt, options) {
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      const usage = generativeUsageFromCodexJsonl(stdout, {
+        operation: options.usageOperation || requestLabel,
+      });
       if (timedOut) {
-        reject(new Error(`${requestLabel} timed out.`));
+        reject(attachGenerativeUsage(new Error(`${requestLabel} timed out.`), usage));
         return;
       }
       if (outputTooLarge) {
-        reject(new Error(`${requestLabel} returned too much output.`));
+        reject(attachGenerativeUsage(new Error(`${requestLabel} returned too much output.`), usage));
         return;
       }
       if (code !== 0) {
-        reject(new Error(`${requestLabel} failed: ${stderr || stdout || `exit ${code}`}`));
+        reject(attachGenerativeUsage(
+          new Error(`${requestLabel} failed: ${stderr || stdout || `exit ${code}`}`),
+          usage,
+        ));
         return;
       }
-      resolve({ stdout, stderr });
+      resolve(attachGenerativeUsage({ stdout, stderr }, usage));
     });
   });
 }

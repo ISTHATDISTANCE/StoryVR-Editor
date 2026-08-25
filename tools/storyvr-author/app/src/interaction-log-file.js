@@ -1,3 +1,8 @@
+import {
+  createGenerativeTokenUsageSummary,
+  normalizeGenerativeTokenUsageSummary,
+} from "./generative-token-usage.js";
+
 const LOG_FILE_PICKER_ID = "storyvr-interaction-logs";
 const CAPTURE_SOURCE_STORYVR = "storyvr";
 const CAPTURE_SOURCE_EXTENSION = "study-extension";
@@ -68,6 +73,7 @@ export function createInteractionLogFileWriter({ fileHandle, fileName = fileHand
     studyExtension: null,
     sourceSequences: new Map(),
     endedAt: null,
+    generativeTokenUsage: createGenerativeTokenUsageSummary(),
   };
   let writeQueue = Promise.resolve();
 
@@ -169,6 +175,7 @@ export function createInteractionLogFileWriter({ fileHandle, fileName = fileHand
       checkpointCount: state.checkpointCount,
       complete: state.complete,
       endedAt: state.endedAt?.toISOString?.() || null,
+      generativeTokenUsage: normalizeGenerativeTokenUsageSummary(state.generativeTokenUsage),
       method: "selected-directory",
     });
   }
@@ -203,6 +210,10 @@ function prepareAppendState(current, payload, { startedAt, checkpointedAt, exist
     current.bufferLimitReached
     || payload?.bufferLimitReached
     || payload?.limitReached,
+  );
+  next.generativeTokenUsage = latestCumulativeGenerativeTokenUsage(
+    current.generativeTokenUsage,
+    payload?.generativeTokenUsage,
   );
 
   const sourceSequences = next.sourceSequences;
@@ -320,6 +331,8 @@ function interactionLogTail(state, endedAt, complete) {
     captureScope: state.extensionConnected ? "storyvr-and-approved-study-tabs" : "storyvr-only",
     captureSources: [...state.captureSources],
     studyExtension: extension,
+    generativeTokenUsage: normalizeGenerativeTokenUsageSummary(state.generativeTokenUsage)
+      || createGenerativeTokenUsageSummary(),
   };
   return `\n  ],\n${Object.entries(properties).map(([key, value]) => formatJsonProperty(key, value)).join(",\n")}\n}\n`;
 }
@@ -343,6 +356,8 @@ function cloneWriterState(value) {
     captureSources: new Set(value.captureSources || []),
     sourceSequences: cloneSourceSequences(value.sourceSequences),
     studyExtension: value.studyExtension ? { ...value.studyExtension } : null,
+    generativeTokenUsage: normalizeGenerativeTokenUsageSummary(value.generativeTokenUsage)
+      || createGenerativeTokenUsageSummary(),
   };
 }
 
@@ -356,8 +371,32 @@ function commitPreparedState(target, next, { tailOffset, complete }) {
   target.extensionConnected = next.extensionConnected;
   target.extensionEventCount = next.extensionEventCount;
   target.studyExtension = next.studyExtension ? { ...next.studyExtension } : null;
+  target.generativeTokenUsage = normalizeGenerativeTokenUsageSummary(next.generativeTokenUsage)
+    || createGenerativeTokenUsageSummary();
   target.sourceSequences = cloneSourceSequences(next.sourceSequences);
   target.endedAt = next.endedAt;
+}
+
+function latestCumulativeGenerativeTokenUsage(currentValue, incomingValue) {
+  const current = normalizeGenerativeTokenUsageSummary(currentValue)
+    || createGenerativeTokenUsageSummary();
+  const incoming = normalizeGenerativeTokenUsageSummary(incomingValue);
+  if (!incoming) return current;
+  const currentRequests = current.measuredRequestCount + current.unmeasuredRequestCount;
+  const incomingRequests = incoming.measuredRequestCount + incoming.unmeasuredRequestCount;
+  if (incomingRequests < currentRequests) return current;
+  const cumulativeFields = [
+    "measuredRequestCount",
+    "unmeasuredRequestCount",
+    "inputTokens",
+    "cachedInputTokens",
+    "cacheWriteInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+    "totalTokens",
+  ];
+  if (cumulativeFields.some((key) => incoming[key] < current[key])) return current;
+  return incoming;
 }
 
 function cloneSourceSequences(value) {

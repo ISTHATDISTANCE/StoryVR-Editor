@@ -59,6 +59,9 @@ import {
   createInteractionLogger,
 } from "./interaction-log.js";
 import {
+  parseGenerativeUsageEnvelope,
+} from "./generative-token-usage.js";
+import {
   createStoryvrStudyExtensionBridge,
   mergeStoryvrStudyExtensionEvents,
 } from "./study-extension-bridge.js";
@@ -728,25 +731,28 @@ const ASSET_TOPOLOGY_COLUMNS = [
 ];
 
 const api = {
-  async get(path) {
+  async get(path, options = {}) {
+    const generativeSessionId = requestGenerativeSessionId(options);
     const response = await fetch(path);
-    return readResponse(response);
+    return readResponse(response, { generativeSessionId });
   },
-  async post(path, body = {}) {
+  async post(path, body = {}, options = {}) {
+    const generativeSessionId = requestGenerativeSessionId(options);
     const response = await fetch(path, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    return readResponse(response);
+    return readResponse(response, { generativeSessionId });
   },
-  async patch(path, body = {}) {
+  async patch(path, body = {}, options = {}) {
+    const generativeSessionId = requestGenerativeSessionId(options);
     const response = await fetch(path, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    return readResponse(response);
+    return readResponse(response, { generativeSessionId });
   },
 };
 
@@ -17821,6 +17827,7 @@ async function buildStoryInBackground() {
   }
 
   const requestId = state.storyBuildUi.requestId + 1;
+  const generativeSessionId = interactionLogger.collectionSessionId();
   state.storyBuildUi.requestId = requestId;
   state.storyBuildUi.busy = true;
   state.storyBuildUi.phase = "building";
@@ -17833,23 +17840,23 @@ async function buildStoryInBackground() {
   updateStoryBuildDom();
 
   try {
-    const job = await api.post("/api/story-build");
+    const job = await api.post("/api/story-build", {}, { generativeSessionId });
     if (requestId !== state.storyBuildUi.requestId) return;
     state.storyBuildUi.jobId = job.jobId;
-    await waitForStoryBuildJob(job.jobId, requestId);
+    await waitForStoryBuildJob(job.jobId, requestId, generativeSessionId);
   } catch (error) {
     if (requestId !== state.storyBuildUi.requestId) return;
     finishStoryBuildWithError(error);
   }
 }
 
-async function waitForStoryBuildJob(jobId, requestId) {
+async function waitForStoryBuildJob(jobId, requestId, generativeSessionId) {
   let consecutiveFailures = 0;
   while (requestId === state.storyBuildUi.requestId && state.storyBuildUi.busy) {
     let job;
     let recoveredStatusPolling = false;
     try {
-      job = await api.get(`/api/story-build/${encodeURIComponent(jobId)}`);
+      job = await api.get(`/api/story-build/${encodeURIComponent(jobId)}`, { generativeSessionId });
       if (consecutiveFailures > 0) {
         recoveredStatusPolling = true;
         consecutiveFailures = 0;
@@ -18146,8 +18153,24 @@ async function run(task) {
   }
 }
 
-async function readResponse(response) {
+function requestGenerativeSessionId(options = {}) {
+  return Object.prototype.hasOwnProperty.call(options, "generativeSessionId")
+    ? options.generativeSessionId
+    : interactionLogger.collectionSessionId();
+}
+
+async function readResponse(response, { generativeSessionId = null } = {}) {
   const text = await response.text();
+  try {
+    const measurements = parseGenerativeUsageEnvelope(
+      response.headers?.get?.("x-storyvr-generative-usage"),
+    );
+    if (measurements.length) {
+      interactionLogger.recordGenerativeUsage(measurements, { sessionId: generativeSessionId });
+    }
+  } catch {
+    // Usage measurement is best-effort and must never affect authoring calls.
+  }
   const data = text ? JSON.parse(text) : {};
   if (!response.ok) {
     const error = new Error(data.error || `HTTP ${response.status}`);
@@ -32168,6 +32191,11 @@ function attachProceduralDynamicsGeneratedObjects(viewer) {
       content: content.object,
       light: content.light || null,
       materials: content.materials || [],
+      materialStates: (content.materials || []).map((material) => ({
+        color: material?.color?.clone?.() || null,
+        emissive: material?.emissive?.clone?.() || null,
+        emissiveIntensity: Number.isFinite(Number(material?.emissiveIntensity)) ? Number(material.emissiveIntensity) : null,
+      })),
       particleState: content.particleState || null,
       anchorPosition: anchor.clone().add(new THREE.Vector3().fromArray(instance.anchor?.offsetMeters || [0, 0, 0])),
       baseScale: new THREE.Vector3().fromArray(instance.transform?.scale || [1, 1, 1]),
@@ -32232,6 +32260,21 @@ function updateProceduralDynamicsGeneratedParticles(entry, elapsedSeconds, sampl
   state.material.size = Math.max(0.001, Number(sample?.particleSize ?? state.material.size));
 }
 
+function applyProceduralDynamicsMaterialSample(material, sample, baseState = null) {
+  if (!material) return;
+  if (material.color) {
+    if (sample.color) material.color.set(sample.color);
+    else if (Number.isFinite(sample.brightness) && baseState?.color) material.color.copy(baseState.color);
+    if (Number.isFinite(sample.brightness)) {
+      material.color.multiplyScalar(Math.max(0, Math.min(4, sample.brightness)));
+    }
+  }
+  if (sample.emissiveColor && material.emissive) material.emissive.set(sample.emissiveColor);
+  if (Number.isFinite(sample.emissiveIntensity) && "emissiveIntensity" in material) {
+    material.emissiveIntensity = Math.max(0, sample.emissiveIntensity);
+  }
+}
+
 function applyProceduralDynamicsGeneratedSample(entry, elapsedSeconds) {
   const sample = sampleProceduralDynamicsTransform(entry.instance, elapsedSeconds);
   const root = entry.root;
@@ -32250,12 +32293,10 @@ function applyProceduralDynamicsGeneratedSample(entry, elapsedSeconds) {
   if (Array.isArray(sample.scale)) root.scale.fromArray(sample.scale);
   root.visible = entry.instance.appearance?.visible !== false && sample.visible !== false && Number(sample.opacity) > 0.001;
   const opacity = Math.max(0, Math.min(1, Number(entry.instance.appearance?.opacity ?? 1) * Number(sample.opacity ?? 1)));
-  for (const material of entry.materials) {
+  for (const [materialIndex, material] of entry.materials.entries()) {
     material.opacity = opacity;
     material.transparent = material.transparent || opacity < 1;
-    if (sample.color && material.color) material.color.set(sample.color);
-    if (sample.emissiveColor && material.emissive) material.emissive.set(sample.emissiveColor);
-    if (Number.isFinite(sample.emissiveIntensity) && "emissiveIntensity" in material) material.emissiveIntensity = sample.emissiveIntensity;
+    applyProceduralDynamicsMaterialSample(material, sample, entry.materialStates?.[materialIndex]);
   }
   if (entry.light) {
     if (sample.color) entry.light.color.set(sample.color);
@@ -32467,12 +32508,12 @@ function applyProceduralDynamicsPreviewTransform(entry, elapsedSeconds, deltaSec
   if (sample.visible !== undefined && entry.proceduralAuthoredRoot) {
     entry.proceduralAuthoredRoot.visible = sample.visible !== false;
   }
-  for (const material of entry.opacityMaterials || []) {
-    if (sample.color && material?.color) material.color.set(sample.color);
-    if (sample.emissiveColor && material?.emissive) material.emissive.set(sample.emissiveColor);
-    if (Number.isFinite(sample.emissiveIntensity) && "emissiveIntensity" in material) {
-      material.emissiveIntensity = Math.max(0, sample.emissiveIntensity);
-    }
+  for (const [materialIndex, material] of (entry.opacityMaterials || []).entries()) {
+    applyProceduralDynamicsMaterialSample(
+      material,
+      sample,
+      entry.proceduralOriginalMaterialState?.[materialIndex],
+    );
   }
   return true;
 }
