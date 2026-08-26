@@ -518,6 +518,9 @@ const state = {
   interBeatPreviewRestartToken: 0,
   interBeatViewerCameraState: null,
   interBeatEditorScene: null,
+  selectedInterBeatSceneObjectId: null,
+  selectedInterBeatSceneObjectIds: [],
+  interBeatSceneObjectSelectionAnchorId: null,
   interBeatCanvasPreviewScene: null,
   interBeatCanvasReturnScroll: null,
   selectedMotionTrackIds: {
@@ -1968,6 +1971,9 @@ function applyStoryvrBrowserNavigation(route, options = {}) {
     }
     state.interBeatCanvasPreviewScene = null;
     state.interBeatEditorScene = navigation.editorScene;
+    state.selectedInterBeatSceneObjectId = null;
+    state.selectedInterBeatSceneObjectIds = [];
+    state.interBeatSceneObjectSelectionAnchorId = null;
     const proposal = selectedComponentPreview(componentById("inter-beat-dynamics"));
     const boundary = interBeatBoundaryForSceneContext(proposal, navigation.editorScene);
     state.selectedInterBeatBeatIndex = boundary.beatIndex;
@@ -5357,6 +5363,9 @@ function resetGraphDependentPreviewState() {
   state.selectedInterBeatTransitionIndex = 0;
   state.selectedInterBeatBeatIndex = 0;
   state.interBeatEditorScene = null;
+  state.selectedInterBeatSceneObjectId = null;
+  state.selectedInterBeatSceneObjectIds = [];
+  state.interBeatSceneObjectSelectionAnchorId = null;
   state.interBeatCanvasPreviewScene = null;
   state.interBeatCanvasReturnScroll = null;
   state.selectedContextBeatIndex = 0;
@@ -7245,6 +7254,94 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
   `;
 }
 
+function interBeatSceneObjectEntities(
+  sceneContext = activeInterBeatSceneContext(),
+  proposal = selectedComponentPreview(componentById("inter-beat-dynamics")),
+) {
+  if (!sceneContext?.beatId) return [];
+  const boundary = interBeatBoundaryForSceneContext(proposal, sceneContext);
+  const destinationContext = boundary?.toSceneContext || sceneContext;
+  return spatialSceneEntities(lockedSpatialRelationsContract(), destinationContext)
+    .filter((entity) => (
+      ["glb", "image-plane"].includes(spatialEntityType(entity))
+      && entity?.id
+      && entity?.assetId
+    ));
+}
+
+function interBeatSceneObjectRecords(
+  sceneContext = activeInterBeatSceneContext(),
+  proposal = selectedComponentPreview(componentById("inter-beat-dynamics")),
+) {
+  return interBeatSceneObjectEntities(sceneContext, proposal).map((entity) => ({
+    id: entity.id,
+    entity,
+    label: spatialRelationEntityLabel(entity),
+  }));
+}
+
+function ensureInterBeatSceneObjectSelection(records = interBeatSceneObjectRecords()) {
+  const availableIds = new Set(records.map((record) => record.id));
+  const selectedIds = [...new Set([
+    ...(state.selectedInterBeatSceneObjectIds || []),
+    state.selectedInterBeatSceneObjectId,
+  ].filter((id) => availableIds.has(id)))];
+  state.selectedInterBeatSceneObjectIds = selectedIds;
+  state.selectedInterBeatSceneObjectId = selectedIds.includes(state.selectedInterBeatSceneObjectId)
+    ? state.selectedInterBeatSceneObjectId
+    : selectedIds[selectedIds.length - 1] || null;
+  if (!availableIds.has(state.interBeatSceneObjectSelectionAnchorId)) {
+    state.interBeatSceneObjectSelectionAnchorId = state.selectedInterBeatSceneObjectId;
+  }
+  return state.selectedInterBeatSceneObjectId;
+}
+
+function selectedInterBeatSceneObjectRecords(records = interBeatSceneObjectRecords()) {
+  const selectedIds = new Set(state.selectedInterBeatSceneObjectIds || []);
+  return records.filter((record) => selectedIds.has(record.id));
+}
+
+function selectedInterBeatGenerationSubjectEntityIds(records = interBeatSceneObjectRecords()) {
+  return selectedInterBeatSceneObjectRecords(records).map((record) => record.id);
+}
+
+function interBeatSceneObjectSelectionForClick(orderedIds, clickedId, options = {}) {
+  if (options.toggle && state.selectedInterBeatSceneObjectIds.includes(clickedId)) {
+    const entityIds = orderedIds.filter((entityId) => (
+      entityId !== clickedId && state.selectedInterBeatSceneObjectIds.includes(entityId)
+    ));
+    return {
+      entityIds,
+      primaryEntityId: entityIds[entityIds.length - 1] || null,
+      anchorEntityId: clickedId,
+    };
+  }
+  return spatialHierarchySelectionForClick(
+    orderedIds,
+    state.selectedInterBeatSceneObjectIds,
+    clickedId,
+    state.interBeatSceneObjectSelectionAnchorId,
+    options,
+  );
+}
+
+function renderInterBeatSceneObjectHierarchy(sceneContext, proposal) {
+  const entities = interBeatSceneObjectEntities(sceneContext, proposal);
+  const records = interBeatSceneObjectRecords(sceneContext, proposal);
+  ensureInterBeatSceneObjectSelection(records);
+  const selectedCount = selectedInterBeatSceneObjectRecords(records).length;
+  return renderSpatialHierarchy(entities, {
+    selectedEntityIds: state.selectedInterBeatSceneObjectIds,
+    primaryEntityId: state.selectedInterBeatSceneObjectId,
+    selectionAttribute: "data-inter-beat-select-entity",
+    ariaLabel: "Scene changes destination object hierarchy",
+    className: "inter-beat-scene-object-hierarchy",
+    countLabel: selectedCount ? `${selectedCount} selected` : `${records.length}`,
+    helpText: "Select objects to make them generation subjects. Command/Ctrl-click adds or removes objects; leave the selection empty to let the description choose.",
+    emptyMessage: "This destination scene has no selectable 3D models or images.",
+  });
+}
+
 function proceduralTransitionScope(sceneContext, proposal = selectedComponentPreview(componentById("inter-beat-dynamics"))) {
   if (!sceneContext?.beatId) return null;
   const boundary = interBeatBoundaryForSceneContext(proposal, sceneContext);
@@ -7294,6 +7391,31 @@ function proceduralTransitionCandidatePlan(candidate) {
   return candidate.transitionPlan || candidate.plan || null;
 }
 
+function proceduralTransitionSubjectEntityIds(value) {
+  return uniqueStrings(Array.isArray(value) ? value : []).sort();
+}
+
+function proceduralTransitionCandidateSubjectEntityIds(candidate) {
+  const plan = proceduralTransitionCandidatePlan(candidate);
+  return proceduralTransitionSubjectEntityIds(
+    candidate?.subjectEntityIds !== undefined
+      ? candidate.subjectEntityIds
+      : plan?.subjectEntityIds,
+  );
+}
+
+function proceduralTransitionSelectedSubjectEntityIds(sceneContext, proposal) {
+  return proceduralTransitionSubjectEntityIds(
+    selectedInterBeatGenerationSubjectEntityIds(interBeatSceneObjectRecords(sceneContext, proposal)),
+  );
+}
+
+function proceduralTransitionCandidateSelectionChanged(candidate, sceneContext, proposal) {
+  if (!candidate) return false;
+  return JSON.stringify(proceduralTransitionCandidateSubjectEntityIds(candidate))
+    !== JSON.stringify(proceduralTransitionSelectedSubjectEntityIds(sceneContext, proposal));
+}
+
 function proceduralTransitionCandidatePrompt(candidate) {
   return String(candidate?.prompt || proceduralTransitionCandidatePlan(candidate)?.prompt || "");
 }
@@ -7320,12 +7442,26 @@ function proceduralTransitionCandidateViolation(candidate, sceneContext, proposa
   if (candidate.boundaryKey !== scope.boundaryKey || String(candidate.edgeId || "") !== scope.edgeId) {
     return "This generated preview belongs to a different scene-change arrow.";
   }
+  const plan = proceduralTransitionCandidatePlan(candidate);
+  if ((candidate.subjectEntityIds !== undefined && !Array.isArray(candidate.subjectEntityIds))
+    || (plan?.subjectEntityIds !== undefined && !Array.isArray(plan.subjectEntityIds))) {
+    return "Scene-change generation returned an invalid scene-object subject selection.";
+  }
+  const candidateSubjectEntityIds = proceduralTransitionSubjectEntityIds(candidate.subjectEntityIds);
+  const planSubjectEntityIds = proceduralTransitionSubjectEntityIds(plan?.subjectEntityIds);
+  if (JSON.stringify(candidateSubjectEntityIds) !== JSON.stringify(planSubjectEntityIds)) {
+    return "Scene-change generation returned a mismatched scene-object subject selection.";
+  }
+  const eligibleEntityIds = new Set(interBeatSceneObjectRecords(sceneContext, proposal).map((record) => record.id));
+  if (candidateSubjectEntityIds.some((entityId) => !eligibleEntityIds.has(entityId))) {
+    return "Scene-change generation targeted an object outside this destination scene.";
+  }
   const impact = proceduralTransitionCandidateImpact(candidate);
   if (impact.sourceGraphChanged || impact.spatialRelationsChanged || impact.sourceMotionChanged) {
     return "Scene-change generation attempted to change an earlier authoring step.";
   }
   try {
-    normalizeProceduralTransitionPlan(proceduralTransitionCandidatePlan(candidate), scope, {
+    normalizeProceduralTransitionPlan(plan, scope, {
       prompt: proceduralTransitionCandidatePrompt(candidate),
       requireBoundaryMatch: true,
     });
@@ -7342,6 +7478,58 @@ function proceduralTransitionPromptForBoundary(sceneContext, proposal = selected
     return String(state.proceduralTransitionsUi.promptsByBoundary[scope.boundaryKey] || "");
   }
   return String(proceduralTransitionStoredPlan(sceneContext, proposal)?.prompt || "");
+}
+
+function proceduralTransitionCandidateReview(
+  candidate,
+  sceneContext,
+  proposal = selectedComponentPreview(componentById("inter-beat-dynamics")),
+  prompt = proceduralTransitionPromptForBoundary(sceneContext, proposal),
+) {
+  const impact = proceduralTransitionCandidateImpact(candidate);
+  const promptChanged = Boolean(
+    candidate
+    && proceduralDynamicsComparablePrompt(proceduralTransitionCandidatePrompt(candidate))
+      !== proceduralDynamicsComparablePrompt(prompt),
+  );
+  const selectionChanged = proceduralTransitionCandidateSelectionChanged(candidate, sceneContext, proposal);
+  const violation = candidate ? proceduralTransitionCandidateViolation(candidate, sceneContext, proposal) : "";
+  const message = promptChanged
+    ? "The description changed. Generate a new preview before applying the scene change."
+    : selectionChanged
+      ? "The selected scene objects changed. Generate a new preview before applying the scene change."
+      : violation
+        || (impact.unmetRequirements.length ? "Revise the description to resolve the unmet requirements before applying." : "")
+        || (impact.materiallyChanged === false ? "This preview is not materially different. Revise the description and regenerate." : "");
+  return {
+    impact,
+    promptChanged,
+    selectionChanged,
+    violation,
+    message,
+    applyBlocked: promptChanged
+      || selectionChanged
+      || Boolean(violation)
+      || impact.unmetRequirements.length > 0
+      || impact.materiallyChanged === false,
+  };
+}
+
+function syncProceduralTransitionCandidateControls(sceneContext, proposal) {
+  const candidate = proceduralTransitionCandidate(sceneContext, proposal);
+  const review = proceduralTransitionCandidateReview(candidate, sceneContext, proposal);
+  const apply = document.querySelector("[data-procedural-transition-apply]");
+  if (apply) apply.disabled = review.applyBlocked;
+  const message = document.querySelector("[data-procedural-transition-message]");
+  if (message) {
+    const error = proceduralTransitionScope(sceneContext, proposal)
+      ? state.proceduralTransitionsUi.errorsByBoundary[proceduralTransitionScope(sceneContext, proposal).boundaryKey] || ""
+      : "";
+    message.textContent = error || review.message;
+    message.hidden = !message.textContent;
+    message.classList.toggle("error", Boolean(message.textContent));
+    message.classList.remove("success");
+  }
 }
 
 function activeProceduralTransitionPlan(sceneContext, proposal = selectedComponentPreview(componentById("inter-beat-dynamics"))) {
@@ -7411,23 +7599,8 @@ function renderProceduralTransitionAuthoring(sceneContext, ready, proposal) {
   const busy = Boolean(state.proceduralTransitionsUi.busyByBoundary[scope.boundaryKey]);
   const playback = interBeatBoundaryPlaybackSummary(proposal, sceneContext);
   const prompt = proceduralTransitionPromptForBoundary(sceneContext, proposal);
-  const impact = proceduralTransitionCandidateImpact(candidate);
-  const candidateIsStale = Boolean(
-    candidate
-    && proceduralDynamicsComparablePrompt(proceduralTransitionCandidatePrompt(candidate))
-      !== proceduralDynamicsComparablePrompt(prompt),
-  );
-  const violation = candidate ? proceduralTransitionCandidateViolation(candidate, sceneContext, proposal) : "";
-  const applyBlocked = candidateIsStale
-    || Boolean(violation)
-    || impact.unmetRequirements.length > 0
-    || impact.materiallyChanged === false;
+  const review = proceduralTransitionCandidateReview(candidate, sceneContext, proposal, prompt);
   const error = state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey] || "";
-  const staleMessage = candidateIsStale
-    ? "The description changed. Generate a new preview before applying the scene change."
-    : violation
-      || (impact.unmetRequirements.length ? "Revise the description to resolve the unmet requirements before applying." : "")
-      || (impact.materiallyChanged === false ? "This preview is not materially different. Revise the description and regenerate." : "");
   const activePlan = candidate ? proceduralTransitionCandidatePlan(candidate) : storedPlan;
   const canGenerate = ready && !busy && Boolean(prompt.trim());
   return `
@@ -7459,17 +7632,17 @@ function renderProceduralTransitionAuthoring(sceneContext, ready, proposal) {
       <div class="procedural-dynamics-actions">
         <button class="primary" type="button" data-procedural-transition-generate ${canGenerate ? "" : "disabled"}>${busy ? "Generating…" : candidate ? "Regenerate preview" : "Generate preview"}</button>
         ${candidate ? `
-          <button type="button" data-procedural-transition-apply ${busy || applyBlocked ? "disabled" : ""}>Apply transition</button>
+          <button type="button" data-procedural-transition-apply ${busy || review.applyBlocked ? "disabled" : ""}>Apply transition</button>
           <button type="button" data-procedural-transition-discard ${busy ? "disabled" : ""}>Discard preview</button>
         ` : ""}
         ${storedPlan ? `<button class="danger-action" type="button" data-procedural-transition-remove ${busy ? "disabled" : ""}>Remove generated transition</button>` : ""}
       </div>
       <p
-        class="procedural-dynamics-message ${error || staleMessage ? "error" : ""}"
+        class="procedural-dynamics-message ${error || review.message ? "error" : ""}"
         data-procedural-transition-message
         aria-live="polite"
-        ${error || staleMessage ? "" : "hidden"}
-      >${escapeHtml(error || staleMessage)}</p>
+        ${error || review.message ? "" : "hidden"}
+      >${escapeHtml(error || review.message)}</p>
     </section>
   `;
 }
@@ -7798,6 +7971,7 @@ function renderInterBeatDynamicsEditorWorkspace(component, proposal, ready, scen
       ${renderInterBeatDynamicsStatus()}
       <div class="spatial-relations-workbench storyvr-spatial-workbench dynamic-geometry-workbench dynamic-editor-workbench transition-editor-workbench">
         <div class="spatial-workbench-sidebar storyvr-spatial-sidebar transition-workbench-sidebar">
+          ${renderInterBeatSceneObjectHierarchy(sceneContext, proposal)}
           <aside class="topology-inspector spatial-inspector transition-scene-inspector storyvr-spatial-sidebar-card">
             <div class="spatial-inspector-head">
               <div><p class="eyebrow">Scene status</p><h3>Scene change</h3></div>
@@ -10326,8 +10500,11 @@ function renderSpatialHierarchy(visibleEntities, options = {}) {
       : selectedSpatialRelationEntityIds(),
   );
   const primaryEntityId = options.primaryEntityId ?? state.selectedSpatialEntityId;
-  const selectionAttribute = options.selectionAttribute === "data-dynamic-select-entity"
-    ? "data-dynamic-select-entity"
+  const selectionAttribute = [
+    "data-dynamic-select-entity",
+    "data-inter-beat-select-entity",
+  ].includes(options.selectionAttribute)
+    ? options.selectionAttribute
     : "data-spatial-select-entity";
   const ariaLabel = options.ariaLabel || "Spatial object hierarchy";
   const className = ["spatial-hierarchy", options.className].filter(Boolean).join(" ");
@@ -10381,10 +10558,13 @@ function renderSpatialHierarchy(visibleEntities, options = {}) {
   return `
     <aside class="${escapeHtml(className)}" aria-label="${escapeHtml(ariaLabel)}">
       <div class="visual-card-head"><h3>Scene objects</h3></div>
+      ${options.countLabel ? `<p class="spatial-hierarchy-selection-summary" data-spatial-hierarchy-selection-summary>${escapeHtml(options.countLabel)}</p>` : ""}
+      ${options.helpText ? `<p class="spatial-multi-selection-note">${escapeHtml(options.helpText)}</p>` : ""}
       <div class="spatial-hierarchy-scroll">
         <div class="spatial-hierarchy-items">
           ${orderedEntities.map(renderEntityItem).join("")}
           ${generatedObjects.map(renderGeneratedItem).join("")}
+          ${!orderedEntities.length && !generatedObjects.length ? `<p class="muted">${escapeHtml(options.emptyMessage || "No scene objects are available.")}</p>` : ""}
         </div>
       </div>
     </aside>
@@ -13392,32 +13572,7 @@ function bindProceduralTransitionAuthoringEvents() {
     delete state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey];
     const ready = Boolean(state.data?.readiness?.["inter-beat-dynamics"]?.canGenerate);
     if (generate) generate.disabled = !ready || !prompt.value.trim();
-    const candidate = proceduralTransitionCandidate(sceneContext, proposal);
-    const impact = proceduralTransitionCandidateImpact(candidate);
-    const stale = Boolean(
-      candidate
-      && proceduralDynamicsComparablePrompt(proceduralTransitionCandidatePrompt(candidate))
-        !== proceduralDynamicsComparablePrompt(prompt.value),
-    );
-    const violation = candidate ? proceduralTransitionCandidateViolation(candidate, sceneContext, proposal) : "";
-    const apply = document.querySelector("[data-procedural-transition-apply]");
-    if (apply) {
-      apply.disabled = stale
-        || Boolean(violation)
-        || impact.unmetRequirements.length > 0
-        || impact.materiallyChanged === false;
-    }
-    const message = document.querySelector("[data-procedural-transition-message]");
-    if (message) {
-      message.textContent = stale
-        ? "The description changed. Generate a new preview before applying the scene change."
-        : violation
-          || (impact.unmetRequirements.length ? "Revise the description to resolve the unmet requirements before applying." : "")
-          || (impact.materiallyChanged === false ? "This preview is not materially different. Revise the description and regenerate." : "");
-      message.hidden = !message.textContent;
-      message.classList.toggle("error", Boolean(message.textContent));
-      message.classList.remove("success");
-    }
+    syncProceduralTransitionCandidateControls(sceneContext, proposal);
   });
   generate?.addEventListener("click", () => generateProceduralTransitionPreview(sceneContext));
   document.querySelector("[data-procedural-transition-apply]")?.addEventListener("click", () => (
@@ -13463,6 +13618,7 @@ async function generateProceduralTransitionPreview(sceneContext) {
   if (!scope || state.proceduralTransitionsUi.busyByBoundary[scope.boundaryKey]) return;
   const prompt = proceduralTransitionPromptForBoundary(sceneContext).trim();
   if (!prompt) return;
+  const subjectEntityIds = proceduralTransitionSelectedSubjectEntityIds(sceneContext);
   setProceduralTransitionBusy(sceneContext, true);
   delete state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey];
   state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey] = "Codex is preparing a route-scoped transition preview…";
@@ -13474,12 +13630,16 @@ async function generateProceduralTransitionPreview(sceneContext) {
     const response = await api.post("/api/transitions/generate", {
       boundaryContext: proceduralTransitionRequestBoundary(scope),
       prompt,
+      ...(subjectEntityIds.length ? { subjectEntityIds } : {}),
       ...(previousPlan ? { previousPlan } : {}),
       ...(previousCandidate ? { previousCandidate } : {}),
     });
     const candidate = proceduralTransitionCandidateFromResponse(response);
     if (!candidate || !proceduralTransitionCandidatePlan(candidate)) {
       throw new Error("Transition generation did not return a valid route-scoped preview.");
+    }
+    if (JSON.stringify(proceduralTransitionCandidateSubjectEntityIds(candidate)) !== JSON.stringify(subjectEntityIds)) {
+      throw new Error("Transition generation did not preserve the selected scene-object subjects.");
     }
     const violation = proceduralTransitionCandidateViolation(candidate, sceneContext);
     if (violation) throw new Error(violation);
@@ -13509,18 +13669,10 @@ async function applyProceduralTransitionCandidate(sceneContext) {
   const candidate = proceduralTransitionCandidate(sceneContext);
   if (!scope || !candidate || state.proceduralTransitionsUi.busyByBoundary[scope.boundaryKey]) return;
   const prompt = proceduralTransitionPromptForBoundary(sceneContext).trim();
-  const impact = proceduralTransitionCandidateImpact(candidate);
-  const violation = proceduralTransitionCandidateViolation(candidate, sceneContext);
-  if (proceduralDynamicsComparablePrompt(proceduralTransitionCandidatePrompt(candidate))
-    !== proceduralDynamicsComparablePrompt(prompt)) {
-    state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey] = "The description changed. Generate a new preview before applying the scene change.";
-    renderPreservingScroll();
-    return;
-  }
-  if (violation || impact.unmetRequirements.length || impact.materiallyChanged === false) {
-    state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey] = violation
-      || (impact.unmetRequirements.length ? "The preview still has unmet requirements. Revise the description and regenerate." : "")
-      || "The preview is not materially different. Revise the description and regenerate.";
+  const review = proceduralTransitionCandidateReview(candidate, sceneContext, undefined, prompt);
+  if (review.applyBlocked) {
+    state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey] = review.message
+      || "The transition preview cannot be applied. Revise the description and regenerate.";
     renderPreservingScroll();
     return;
   }
@@ -13605,6 +13757,24 @@ function bindInterBeatDynamicsCanvasEvents() {
     });
   }
   document.querySelector("[data-inter-beat-close-save]")?.addEventListener("click", () => closeInterBeatSceneEditor());
+  for (const button of document.querySelectorAll("[data-inter-beat-select-entity]")) {
+    button.addEventListener("click", (event) => {
+      const entityId = button.dataset.interBeatSelectEntity;
+      const sceneContext = activeInterBeatSceneContext();
+      const proposal = selectedComponentPreview(componentById("inter-beat-dynamics"));
+      const records = interBeatSceneObjectRecords(sceneContext, proposal);
+      if (!records.some((record) => record.id === entityId)) return;
+      const selection = interBeatSceneObjectSelectionForClick(
+        records.map((record) => record.id),
+        entityId,
+        { range: event.shiftKey, toggle: event.metaKey || event.ctrlKey },
+      );
+      state.selectedInterBeatSceneObjectIds = selection.entityIds;
+      state.selectedInterBeatSceneObjectId = selection.primaryEntityId;
+      state.interBeatSceneObjectSelectionAnchorId = selection.anchorEntityId;
+      commitInterBeatSceneObjectSelection(sceneContext, proposal);
+    });
+  }
   bindProceduralTransitionAuthoringEvents();
 }
 
@@ -20522,6 +20692,133 @@ function dynamicSceneObjectForEntityId(viewer, entityId) {
     || null;
 }
 
+function interBeatSceneObjectForEntityId(viewer, entityId) {
+  if (!viewer || !entityId) return null;
+  const entry = (viewer.dynamicObjects || []).find((candidate) => (
+    candidate.transitionSceneRole === "to"
+    && String(candidate.entityId || "") === String(entityId)
+  ));
+  return entry?.authorWrapper || entry?.sourceScene || entry?.wrapper || null;
+}
+
+function syncInterBeatSceneObjectSelection(
+  sceneContext = activeInterBeatSceneContext(),
+  proposal = selectedComponentPreview(componentById("inter-beat-dynamics")),
+) {
+  const records = interBeatSceneObjectRecords(sceneContext, proposal);
+  const primaryEntityId = ensureInterBeatSceneObjectSelection(records);
+  const selectedRecords = selectedInterBeatSceneObjectRecords(records);
+  const selectedIds = new Set(selectedRecords.map((record) => record.id));
+  for (const item of document.querySelectorAll("[data-inter-beat-select-entity]")) {
+    const selected = selectedIds.has(item.dataset.interBeatSelectEntity);
+    item.classList.toggle("selected", selected);
+    item.classList.toggle("selection-primary", item.dataset.interBeatSelectEntity === primaryEntityId);
+    item.setAttribute("aria-pressed", String(selected));
+  }
+  const summary = document.querySelector(".inter-beat-scene-object-hierarchy [data-spatial-hierarchy-selection-summary]");
+  if (summary) summary.textContent = selectedRecords.length ? `${selectedRecords.length} selected` : `${records.length}`;
+  const selectedObjects = selectedRecords
+    .map((record) => interBeatSceneObjectForEntityId(interBeatViewer, record.id))
+    .filter(Boolean);
+  syncSpatialSelectionHelpers(interBeatViewer, selectedObjects);
+  for (const [index, helper] of (interBeatViewer?.selectionHelpers || []).entries()) {
+    helper.userData.transitionSelectionTarget = selectedObjects[index] || null;
+  }
+  syncProceduralTransitionCandidateControls(sceneContext, proposal);
+}
+
+function commitInterBeatSceneObjectSelection(sceneContext, proposal) {
+  const scope = proceduralTransitionScope(sceneContext, proposal);
+  if (scope) {
+    delete state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey];
+    delete state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey];
+  }
+  syncInterBeatSceneObjectSelection(sceneContext, proposal);
+}
+
+function interBeatSceneObjectIdAtPointer(viewer, event, sceneContext, proposal) {
+  const rect = viewer?.renderer?.domElement?.getBoundingClientRect?.();
+  if (!rect?.width || !rect?.height) return null;
+  const pointer = viewer.interBeatSelectionPointer || new THREE.Vector2();
+  const raycaster = viewer.interBeatSelectionRaycaster || new THREE.Raycaster();
+  viewer.interBeatSelectionPointer = pointer;
+  viewer.interBeatSelectionRaycaster = raycaster;
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, viewer.camera);
+  let closest = null;
+  for (const record of interBeatSceneObjectRecords(sceneContext, proposal)) {
+    const object = interBeatSceneObjectForEntityId(viewer, record.id);
+    if (!object || !spatialObjectIsEffectivelyVisible(object, viewer.scene)) continue;
+    for (const bounds of preciseVisibleSpatialBounds(object, viewer.scene)) {
+      const point = raycaster.ray.intersectBox(bounds, new THREE.Vector3());
+      if (!point) continue;
+      const distance = raycaster.ray.origin.distanceToSquared(point);
+      if (!closest || distance < closest.distance) closest = { entityId: record.id, distance };
+    }
+  }
+  return closest?.entityId || null;
+}
+
+function initializeInterBeatSceneObjectPicking(viewer, sceneContext, proposal) {
+  if (!viewer?.renderer?.domElement || viewer.thumbnailMode) return;
+  const canvas = viewer.renderer.domElement;
+  const movementThresholdSquared = 36;
+  viewer.interBeatSelectionPointerDownHandler = (event) => {
+    if (event.button !== 0 || event.isPrimary === false) return;
+    viewer.interBeatSelectionGesture = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      entityId: interBeatSceneObjectIdAtPointer(viewer, event, sceneContext, proposal),
+      toggle: event.shiftKey || event.metaKey || event.ctrlKey,
+    };
+  };
+  viewer.interBeatSelectionPointerMoveHandler = (event) => {
+    const gesture = viewer.interBeatSelectionGesture;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - gesture.clientX;
+    const deltaY = event.clientY - gesture.clientY;
+    if (deltaX * deltaX + deltaY * deltaY > movementThresholdSquared) gesture.moved = true;
+  };
+  viewer.interBeatSelectionPointerUpHandler = (event) => {
+    const gesture = viewer.interBeatSelectionGesture;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    viewer.interBeatSelectionGesture = null;
+    if (gesture.moved || event.button !== 0) return;
+    const entityId = gesture.entityId
+      || interBeatSceneObjectIdAtPointer(viewer, event, sceneContext, proposal);
+    if (!entityId) {
+      if (!gesture.toggle) {
+        state.selectedInterBeatSceneObjectIds = [];
+        state.selectedInterBeatSceneObjectId = null;
+        state.interBeatSceneObjectSelectionAnchorId = null;
+        commitInterBeatSceneObjectSelection(sceneContext, proposal);
+      }
+      return;
+    }
+    const records = interBeatSceneObjectRecords(sceneContext, proposal);
+    const selection = interBeatSceneObjectSelectionForClick(
+      records.map((record) => record.id),
+      entityId,
+      { toggle: gesture.toggle },
+    );
+    state.selectedInterBeatSceneObjectIds = selection.entityIds;
+    state.selectedInterBeatSceneObjectId = selection.primaryEntityId;
+    state.interBeatSceneObjectSelectionAnchorId = selection.anchorEntityId;
+    commitInterBeatSceneObjectSelection(sceneContext, proposal);
+  };
+  viewer.interBeatSelectionPointerCancelHandler = (event) => {
+    if (viewer.interBeatSelectionGesture?.pointerId === event.pointerId) {
+      viewer.interBeatSelectionGesture = null;
+    }
+  };
+  canvas.addEventListener("pointerdown", viewer.interBeatSelectionPointerDownHandler);
+  window.addEventListener("pointermove", viewer.interBeatSelectionPointerMoveHandler);
+  window.addEventListener("pointerup", viewer.interBeatSelectionPointerUpHandler);
+  window.addEventListener("pointercancel", viewer.interBeatSelectionPointerCancelHandler);
+}
+
 function syncDynamicSceneObjectSelection() {
   const records = dynamicSceneObjectRecords();
   const selectedEntityId = ensureDynamicSceneObjectSelection(records);
@@ -21160,6 +21457,7 @@ function initializeInterBeatDynamicsViewer(active) {
     duplicateCount: topologySwapDuplicateCount(state.data?.decisions?.["asset-topology"]?.option),
     assetLinks,
     dynamicObjects: [],
+    selectionHelpers: [],
     effects: addDynamicEffectOverlays(root, previousDynamicKind || "motion", fromPosition, beatContext.from),
     transitionEffects: addInterBeatTransitionOverlays(root, kind, fromPosition, toPosition, playback),
     descriptionCues: null,
@@ -21184,6 +21482,10 @@ function initializeInterBeatDynamicsViewer(active) {
   }
   if (!thumbnailMode) configureAuthoringSpatialCameraViewer(viewer, beatContext.toSceneContext || sceneContext);
   interBeatViewer = viewer;
+  if (!thumbnailMode) {
+    syncInterBeatSceneObjectSelection(sceneContext, proposal);
+    initializeInterBeatSceneObjectPicking(viewer, sceneContext, proposal);
+  }
   viewer.inheritedTextLayer = null;
   attachLockedEnvironmentToViewer(viewer);
   const restoredCameraState = thumbnailMode
@@ -21258,6 +21560,7 @@ function initializeInterBeatDynamicsViewer(active) {
 
   if (!assetLinks.length) {
     frameLoadedInterBeatCamera();
+    if (!thumbnailMode) syncInterBeatSceneObjectSelection(sceneContext, proposal);
     markInterBeatThumbnailReady(viewer);
   } else if (cumulativeContext) {
     let pending = assetLinks.length;
@@ -21272,6 +21575,7 @@ function initializeInterBeatDynamicsViewer(active) {
         frameLoadedInterBeatCamera();
         viewer.swapReady = true;
         restartInterBeatPreviewAfterAssetsReady(viewer);
+        if (!thumbnailMode) syncInterBeatSceneObjectSelection(sceneContext, proposal);
         if (failed) {
           status.textContent = `Loaded cumulative scene change with ${failed} asset issue${failed === 1 ? "" : "s"}.`;
         } else {
@@ -21296,6 +21600,7 @@ function initializeInterBeatDynamicsViewer(active) {
         frameLoadedInterBeatCamera();
         restartInterBeatPreviewAfterAssetsReady(viewer);
         applyInterBeatExactSceneVisibility(viewer, viewer.playing ? 0 : 1);
+        if (!thumbnailMode) syncInterBeatSceneObjectSelection(sceneContext, proposal);
         if (failed) status.textContent = `Loaded with ${failed} scene-change preview issue${failed === 1 ? "" : "s"}.`;
         else status.remove();
         markInterBeatThumbnailReady(viewer);
@@ -21317,6 +21622,11 @@ function initializeInterBeatDynamicsViewer(active) {
     if (!thumbnailMode) updateTopologyKeyboardMovement(viewer, delta);
     if (animateNarrativeSingleAnchorViewer(viewer, delta)) return;
     animateInterBeatDynamics(viewer);
+    for (const helper of viewer.selectionHelpers || []) {
+      const target = helper.userData.transitionSelectionTarget;
+      helper.visible = Boolean(target && spatialObjectIsEffectivelyVisible(target, viewer.scene));
+      if (helper.visible) helper.update();
+    }
     syncSourceCameraPreview(viewer, thumbnailMode ? playbackDelta : delta);
     controls.update();
     renderer.render(scene, camera);
@@ -34571,6 +34881,7 @@ function ensureProceduralTransitionMiddleEntry(viewer, action) {
     materials: content.materials || [],
     particleState: content.particleState || null,
     instance,
+    targetEntityId: String(action?.target?.entityId || "").trim() || null,
     anchorPosition: viewer.proceduralAnchorPosition?.clone?.()
       || viewer.readerRig?.getWorldPosition?.(new THREE.Vector3())
       || new THREE.Vector3(),
@@ -34589,6 +34900,19 @@ function transitionMiddleTargetObjects(viewer, action) {
     if (scope === "to" || scope === "destination") return item.transitionSceneRole === "to";
     return true;
   });
+}
+
+function transitionMiddleTargetAnchorPosition(viewer, action) {
+  const item = transitionMiddleTargetObjects(viewer, action)[0];
+  const target = item?.authorWrapper || item?.wrapper || item?.sourceScene;
+  if (!target) return null;
+  target.updateWorldMatrix?.(true, true);
+  const bounds = new THREE.Box3().setFromObject(target, true);
+  const center = bounds.isEmpty()
+    ? target.getWorldPosition(new THREE.Vector3())
+    : bounds.getCenter(new THREE.Vector3());
+  viewer.root?.updateWorldMatrix?.(true, false);
+  return viewer.root?.worldToLocal ? viewer.root.worldToLocal(center) : center;
 }
 
 function applyProceduralTransitionMiddle(viewer, progress) {
@@ -34682,8 +35006,11 @@ function applyProceduralTransitionMiddle(viewer, progress) {
     if (!createsVisual) continue;
     const entry = ensureProceduralTransitionMiddleEntry(viewer, action);
     entry.root.visible = true;
-    const basePosition = entry.instance.transform?.position || [0, 1, -1];
-    entry.root.position.fromArray(basePosition).add(entry.anchorPosition);
+    const targetedAnchor = entry.targetEntityId ? transitionMiddleTargetAnchorPosition(viewer, action) : null;
+    const basePosition = targetedAnchor
+      ? parameters.transform?.position || parameters.anchorOffsetMeters || parameters.offsetMeters || [0, 0, 0]
+      : entry.instance.transform?.position || [0, 1, -1];
+    entry.root.position.fromArray(basePosition).add(targetedAnchor || entry.anchorPosition);
     entry.root.position.x += Math.sin(local * Math.PI * 2) * 0.35 * envelope;
     entry.root.position.y += Math.sin(local * Math.PI) * 0.28;
     entry.root.rotation.y = local * Math.PI * 2;
@@ -35247,6 +35574,18 @@ function disposeInterBeatDynamicsViewer() {
   if (interBeatViewer.keyDownHandler) window.removeEventListener("keydown", interBeatViewer.keyDownHandler);
   if (interBeatViewer.keyUpHandler) window.removeEventListener("keyup", interBeatViewer.keyUpHandler);
   if (interBeatViewer.pointerDownHandler) document.removeEventListener("pointerdown", interBeatViewer.pointerDownHandler);
+  if (interBeatViewer.interBeatSelectionPointerDownHandler) {
+    interBeatViewer.renderer?.domElement?.removeEventListener("pointerdown", interBeatViewer.interBeatSelectionPointerDownHandler);
+  }
+  if (interBeatViewer.interBeatSelectionPointerMoveHandler) {
+    window.removeEventListener("pointermove", interBeatViewer.interBeatSelectionPointerMoveHandler);
+  }
+  if (interBeatViewer.interBeatSelectionPointerUpHandler) {
+    window.removeEventListener("pointerup", interBeatViewer.interBeatSelectionPointerUpHandler);
+  }
+  if (interBeatViewer.interBeatSelectionPointerCancelHandler) {
+    window.removeEventListener("pointercancel", interBeatViewer.interBeatSelectionPointerCancelHandler);
+  }
   if (interBeatViewer.sourceCameraControlStartHandler) interBeatViewer.controls?.removeEventListener("start", interBeatViewer.sourceCameraControlStartHandler);
   interBeatViewer.controls?.dispose();
   disposeProceduralTransitionMiddle(interBeatViewer);

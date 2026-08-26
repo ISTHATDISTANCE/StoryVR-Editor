@@ -272,7 +272,10 @@ or story-canvas thumbnails.
 An exact cross-part arrow can also use a generated declarative middle with
 temporary visual actions. Generate/Regenerate remains preview-only and Apply
 stores the route-scoped plan; progress 0 and 1 always remain the exact saved
-source and destination scenes.
+source and destination scenes. Authors can select exact destination-scene GLBs
+or image planes as authoritative generation subjects; selected-target effects
+anchor to each object's visible bounds, and changing the selection requires a
+new preview before Apply.
 
 Guide attention runs after Scene changes so focus markers are inferred from the
 saved scene composition and movement state. It can target a visible GLB, named

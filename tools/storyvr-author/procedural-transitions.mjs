@@ -5,6 +5,7 @@ import {
   PROCEDURAL_TRANSITIONS_SCHEMA_VERSION,
   emptyProceduralTransitionsStore,
   normalizeProceduralTransitionPlan,
+  normalizeProceduralTransitionSubjectEntityIds,
   normalizeProceduralTransitionsStore,
   proceduralTransitionBoundaryKey,
 } from "./procedural-transitions-runtime.js";
@@ -81,10 +82,20 @@ export async function generateProceduralTransitionIntent({
   transitionContext = null,
   endpointScenes = null,
   availableAssets = null,
+  subjectEntityIds = undefined,
   generateJson,
 }) {
   const exactBoundary = requireBoundaryContext(boundaryContext || boundary);
   const safePrompt = sanitizePrompt(prompt);
+  const generationContext = objectValue(transitionContext) || {
+    endpointScenes,
+    availableAssets,
+  };
+  const eligibleSubjectTargets = transitionDestinationSubjectTargets(generationContext);
+  const selectedSubjectEntityIds = normalizeTransitionSubjectSelection(
+    subjectEntityIds,
+    eligibleSubjectTargets.map((target) => target.entityId),
+  );
   if (typeof generateJson !== "function") {
     throw new TypeError("Procedural transition generation requires a JSON generator.");
   }
@@ -92,14 +103,15 @@ export async function generateProceduralTransitionIntent({
     boundaryContext: exactBoundary,
     prompt: safePrompt,
     previousPlan: previousCandidate?.transitionPlan || previousPlan,
-    transitionContext: transitionContext || {
-      endpointScenes,
-      availableAssets,
-    },
+    transitionContext: generationContext,
+    subjectEntityIds: selectedSubjectEntityIds,
+    subjectTargets: eligibleSubjectTargets.filter((target) => selectedSubjectEntityIds.includes(target.entityId)),
   }));
   return normalizeProceduralTransitionCandidate(generated, exactBoundary, {
     prompt: safePrompt,
     previousPlan: previousCandidate?.transitionPlan || previousPlan,
+    subjectEntityIds: selectedSubjectEntityIds,
+    eligibleSubjectEntityIds: eligibleSubjectTargets.map((target) => target.entityId),
   });
 }
 
@@ -124,6 +136,27 @@ export function normalizeProceduralTransitionCandidate(generated, boundaryContex
     throw transitionError(400, "Transition generation must return candidate.transitionPlan.");
   }
   assertNoAuthoredStateMutations(planSource);
+  const sourceHasSubjects = Object.hasOwn(source, "subjectEntityIds");
+  const planHasSubjects = Object.hasOwn(planSource, "subjectEntityIds");
+  const sourceSubjectEntityIds = sourceHasSubjects
+    ? normalizeTransitionSubjectSelection(source.subjectEntityIds, options.eligibleSubjectEntityIds)
+    : null;
+  const planSubjectEntityIds = planHasSubjects
+    ? normalizeTransitionSubjectSelection(planSource.subjectEntityIds, options.eligibleSubjectEntityIds)
+    : null;
+  if (sourceSubjectEntityIds && planSubjectEntityIds
+    && !sameTransitionSubjectSelection(sourceSubjectEntityIds, planSubjectEntityIds)) {
+    throw transitionError(409, "The generated transition candidate and transition plan have mismatched scene-object subjects.");
+  }
+  const hasAuthoritativeSubjects = Object.hasOwn(options, "subjectEntityIds");
+  const subjectEntityIds = hasAuthoritativeSubjects
+    ? normalizeTransitionSubjectSelection(options.subjectEntityIds, options.eligibleSubjectEntityIds)
+    : planSubjectEntityIds || sourceSubjectEntityIds || [];
+  if (hasAuthoritativeSubjects && [sourceSubjectEntityIds, planSubjectEntityIds].some((selection) => (
+    selection && !sameTransitionSubjectSelection(selection, subjectEntityIds)
+  ))) {
+    throw transitionError(409, "Transition generation changed the selected destination scene objects.");
+  }
   const safePrompt = sanitizePrompt(options.prompt ?? source.prompt ?? planSource.prompt);
   const transitionPlan = normalizeProceduralTransitionPlan({
     ...planSource,
@@ -132,6 +165,7 @@ export function normalizeProceduralTransitionCandidate(generated, boundaryContex
     fromContext: planSource.fromContext ?? source.fromContext ?? exactBoundary.fromContext,
     toContext: planSource.toContext ?? source.toContext ?? exactBoundary.toContext,
     prompt: safePrompt,
+    subjectEntityIds,
     summary: planSource.summary ?? source.summary,
   }, exactBoundary);
   const previousPlan = normalizePreviousPlan(options.previousPlan, exactBoundary);
@@ -145,6 +179,7 @@ export function normalizeProceduralTransitionCandidate(generated, boundaryContex
     fromContext: transitionPlan.fromContext,
     toContext: transitionPlan.toContext,
     prompt: safePrompt,
+    subjectEntityIds: [...(transitionPlan.subjectEntityIds || [])],
     transitionPlan,
     impact: {
       assetsChanged: false,
@@ -159,11 +194,17 @@ export function normalizeProceduralTransitionCandidate(generated, boundaryContex
   };
 }
 
-export function createFallbackTransitionPlan(boundaryContext, prompt, previousPlan = null) {
+export function createFallbackTransitionPlan(boundaryContext, prompt, previousPlan = null, options = {}) {
   const exactBoundary = requireBoundaryContext(boundaryContext);
   const safePrompt = sanitizePrompt(prompt);
   const source = safePrompt.toLowerCase();
   const previous = normalizePreviousPlan(previousPlan, exactBoundary);
+  const subjectEntityIds = normalizeTransitionSubjectSelection(
+    Object.hasOwn(options || {}, "subjectEntityIds")
+      ? options.subjectEntityIds
+      : previous?.subjectEntityIds,
+    options?.eligibleSubjectEntityIds,
+  );
   const style = fallbackTransitionStyle(source) || previous?.style || "interpolate";
   const explicitDuration = fallbackExplicitDurationSeconds(source);
   const speedDuration = /\b(?:slow|slower|slowly|gradual|gradually|linger|lingering)\b/.test(source)
@@ -181,9 +222,10 @@ export function createFallbackTransitionPlan(boundaryContext, prompt, previousPl
     ? fallbackTransitionArcHeight(source) ?? previous?.arcHeightMeters ?? 0
     : 0;
   const requestedMiddle = fallbackTransitionMiddle(source, safePrompt);
-  const middle = requestedMiddle.actions.length || fallbackPromptRemovesMiddle(source)
+  const selectedMiddle = requestedMiddle.actions.length || fallbackPromptRemovesMiddle(source)
     ? requestedMiddle
     : previous?.middle;
+  const middle = scopeFallbackMiddleToSelectedSubjects(selectedMiddle, subjectEntityIds);
   const baseSummary = style === "crossfade"
     ? "Crossfades between the two saved scenes without changing their assets or placement."
     : style === "cut"
@@ -199,6 +241,7 @@ export function createFallbackTransitionPlan(boundaryContext, prompt, previousPl
     ...exactBoundary,
     boundaryKey: proceduralTransitionBoundaryKey(exactBoundary),
     prompt: safePrompt,
+    subjectEntityIds,
     summary,
     style,
     durationSeconds,
@@ -224,11 +267,21 @@ export function applyProceduralTransitionPlanToStore(
   const rawCandidate = payload?.candidate || {
     schemaVersion: PROCEDURAL_TRANSITION_CANDIDATE_SCHEMA_VERSION,
     prompt: payload?.prompt || payload?.transitionPlan?.prompt || payload?.plan?.prompt,
+    subjectEntityIds: payload?.subjectEntityIds
+      ?? payload?.transitionPlan?.subjectEntityIds
+      ?? payload?.plan?.subjectEntityIds,
     transitionPlan: payload?.transitionPlan || payload?.plan,
   };
-  const candidate = normalizeProceduralTransitionCandidate(rawCandidate, exactBoundary, {
+  const candidateOptions = {
     prompt: payload?.prompt || rawCandidate?.prompt || rawCandidate?.transitionPlan?.prompt,
-  });
+    ...(Object.hasOwn(payload || {}, "subjectEntityIds")
+      ? { subjectEntityIds: payload.subjectEntityIds }
+      : {}),
+    ...(Object.hasOwn(payload || {}, "eligibleSubjectEntityIds")
+      ? { eligibleSubjectEntityIds: payload.eligibleSubjectEntityIds }
+      : {}),
+  };
+  const candidate = normalizeProceduralTransitionCandidate(rawCandidate, exactBoundary, candidateOptions);
   const plan = candidate.transitionPlan;
   const nextStore = {
     schemaVersion: PROCEDURAL_TRANSITIONS_SCHEMA_VERSION,
@@ -277,7 +330,14 @@ export function removeProceduralTransitionPlanFromStore(
   };
 }
 
-function proceduralTransitionPrompt({ boundaryContext, prompt, previousPlan, transitionContext }) {
+function proceduralTransitionPrompt({
+  boundaryContext,
+  prompt,
+  previousPlan,
+  transitionContext,
+  subjectEntityIds,
+  subjectTargets,
+}) {
   const generationContext = objectValue(transitionContext) || {};
   return [
     "You are the StoryVR procedural scene-transition planner running inside Codex.",
@@ -290,6 +350,9 @@ function proceduralTransitionPrompt({ boundaryContext, prompt, previousPlan, tra
     "style, durationSeconds, easing, and arcHeightMeters are a backward-compatible base blend for older Readers. Choose the closest supported base style: interpolate, crossfade, or cut.",
     `For everything that happens strictly between the endpoints, return middle with schemaVersion ${PROCEDURAL_TRANSITION_MIDDLE_SCHEMA_VERSION}, a short description, and an actions array.`,
     "middle.actions is open-ended. Use as many declarative actions as the request needs. Each action has id, any concise descriptive kind, startProgress, endProgress, optional easing and target, and arbitrary JSON parameters.",
+    subjectEntityIds.length
+      ? `The author selected ${subjectEntityIds.length} exact destination scene subject${subjectEntityIds.length === 1 ? "" : "s"}. This selection is authoritative for the middle sequence: every middle action must target exactly one selected object with {"scope":"to","entityId":"<exact selected ID>"}, no action may use a broad, source, unscoped, or out-of-selection target, and every selected object must be covered by at least one middle action. If the request needs only the base endpoint blend, middle.actions may be empty.`
+      : "No destination scene objects are selected, so resolve any middle-action targets from the author request and endpoint scene context.",
     "Temporary middle actions may create, animate, transform, light, recolor, hide, reveal, duplicate, dissolve, emit, sonify, or otherwise affect transient transition-only content. Action kinds and parameter shapes are not limited to a fixed vocabulary.",
     "All middle actions are automatically inactive at progress 0 and progress 1 and are cleaned up on completion. Do not encode a lasting change to either endpoint.",
     "Never emit JavaScript, shader source, URLs, filesystem paths, HTML, or executable expressions. Refer to supplied assets by identity, not by external URL.",
@@ -300,9 +363,90 @@ function proceduralTransitionPrompt({ boundaryContext, prompt, previousPlan, tra
       ...boundaryContext,
       endpointScenes: generationContext.endpointScenes || null,
       availableAssets: generationContext.availableAssets || null,
+      subjectEntityIds,
+      subjectTargets,
       previousPlan: previousPlan || null,
     }, null, 2)}`,
   ].join("\n\n");
+}
+
+function transitionDestinationSubjectTargets(transitionContext) {
+  const entities = transitionContext?.endpointScenes?.to?.entities;
+  if (!Array.isArray(entities)) return [];
+  const targets = [];
+  const seen = new Set();
+  for (const entity of entities) {
+    const kind = String(entity?.kind || "").trim();
+    const entityId = typeof entity?.entityId === "string"
+      ? entity.entityId
+      : typeof entity?.id === "string"
+        ? entity.id
+        : "";
+    if (!["glb", "image-plane"].includes(kind) || !entityId || seen.has(entityId)) continue;
+    seen.add(entityId);
+    targets.push({
+      entityId,
+      assetId: String(entity?.assetId || "").trim() || null,
+      kind,
+      role: String(entity?.role || "").trim() || null,
+      sourceInstanceId: String(entity?.sourceInstanceId || "").trim() || null,
+    });
+  }
+  return targets;
+}
+
+function normalizeTransitionSubjectSelection(value, eligibleSubjectEntityIds = undefined) {
+  const subjectEntityIds = normalizeProceduralTransitionSubjectEntityIds(value);
+  if (eligibleSubjectEntityIds === undefined) return subjectEntityIds;
+  const eligibleSet = new Set((Array.isArray(eligibleSubjectEntityIds) ? eligibleSubjectEntityIds : [])
+    .filter((entityId) => typeof entityId === "string" && entityId));
+  const invalidEntityId = subjectEntityIds.find((entityId) => !eligibleSet.has(entityId));
+  if (invalidEntityId) {
+    const error = transitionError(
+      400,
+      `A selected transition subject is not an eligible GLB or image plane in this exact destination scene: ${invalidEntityId}.`,
+    );
+    error.code = "transition-subject-not-eligible";
+    throw error;
+  }
+  return subjectEntityIds;
+}
+
+function sameTransitionSubjectSelection(left, right) {
+  return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+}
+
+function scopeFallbackMiddleToSelectedSubjects(middle, subjectEntityIds) {
+  if (!middle || !subjectEntityIds.length || !Array.isArray(middle.actions) || !middle.actions.length) {
+    return middle;
+  }
+  const templates = [];
+  const templateSignatures = new Set();
+  for (const action of middle.actions) {
+    const template = { ...action };
+    delete template.id;
+    delete template.target;
+    const signature = JSON.stringify(template);
+    if (templateSignatures.has(signature)) continue;
+    templateSignatures.add(signature);
+    templates.push(template);
+  }
+  return {
+    ...middle,
+    actions: templates.flatMap((template, templateIndex) => subjectEntityIds.map((entityId, subjectIndex) => ({
+      ...template,
+      id: `fallback-${fallbackActionIdToken(template.kind)}-${templateIndex + 1}-subject-${subjectIndex + 1}`,
+      target: { scope: "to", entityId },
+    }))),
+  };
+}
+
+function fallbackActionIdToken(value) {
+  return String(value || "action")
+    .toLowerCase()
+    .replace(/[^a-z0-9._:-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "action";
 }
 
 function fallbackTransitionStyle(source) {
@@ -479,6 +623,7 @@ function normalizePreviousPlan(value, boundaryContext) {
 function transitionPlanSignature(plan) {
   return JSON.stringify({
     boundaryKey: plan.boundaryKey,
+    subjectEntityIds: plan.subjectEntityIds || [],
     style: plan.style,
     durationSeconds: plan.durationSeconds,
     easing: plan.easing,
@@ -493,6 +638,7 @@ function looksLikeTransitionPlan(value) {
     "durationSeconds",
     "easing",
     "arcHeightMeters",
+    "subjectEntityIds",
     "middle",
     "middleSequence",
     "transientMiddle",
@@ -581,6 +727,7 @@ export {
   PROCEDURAL_TRANSITIONS_SCHEMA_VERSION,
   emptyProceduralTransitionsStore,
   normalizeProceduralTransitionPlan,
+  normalizeProceduralTransitionSubjectEntityIds,
   normalizeProceduralTransitionsStore,
   proceduralTransitionBoundaryKey,
 };

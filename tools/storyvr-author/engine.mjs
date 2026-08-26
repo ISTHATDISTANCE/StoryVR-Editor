@@ -52,6 +52,7 @@ import {
   PROCEDURAL_TRANSITION_MIDDLE_SCHEMA_VERSION,
   emptyProceduralTransitionsStore,
   normalizeProceduralTransitionPlan,
+  normalizeProceduralTransitionSubjectEntityIds,
   normalizeProceduralTransitionsStore,
   proceduralTransitionBoundaryKey,
 } from "./procedural-transitions-runtime.js";
@@ -328,6 +329,7 @@ const STORYVR_TEXT_LAYOUT_CONTRACT_VERSION = "storyvr-text-layout/v1";
 const STORYVR_TEXT_LAYOUT_CONTRACT_MARKER = `const STORYVR_TEXT_LAYOUT_CONTRACT_VERSION = "${STORYVR_TEXT_LAYOUT_CONTRACT_VERSION}";`;
 const STORYVR_TEXT_LAYOUT_CSS_CONTRACT_MARKER = `/* STORYVR_TEXT_LAYOUT_CONTRACT_VERSION: ${STORYVR_TEXT_LAYOUT_CONTRACT_VERSION} */`;
 const STORYVR_PROCEDURAL_TRANSITIONS_READER_CONTRACT_MARKER = `const STORYVR_PROCEDURAL_TRANSITION_MIDDLE_CONTRACT_VERSION = "${PROCEDURAL_TRANSITION_MIDDLE_SCHEMA_VERSION}";`;
+const STORYVR_TRANSITION_SUBJECT_TARGETS_CONTRACT_VERSION = "storyvr-transition-subject-targets/v1";
 const STORYVR_PROCEDURAL_DYNAMICS_FEATURE_CONTRACT_VERSION = "storyvr-procedural-dynamics-declarative/v2";
 const STORYVR_PROCEDURAL_DYNAMICS_READER_CONTRACT_MARKER = `const STORYVR_PROCEDURAL_DYNAMICS_FEATURE_CONTRACT_VERSION = "${STORYVR_PROCEDURAL_DYNAMICS_FEATURE_CONTRACT_VERSION}";`;
 const READER_DIST_BUILD_SCRIPT = fileURLToPath(new URL("./build-reader-dist.mjs", import.meta.url));
@@ -1831,6 +1833,10 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
     || request.previousPlan
     || state.proceduralTransitions.plansByBoundary[state.boundary.boundaryKey]
     || null;
+  const subjectEntityIds = proceduralTransitionSubjectEntityIdsForRequest(
+    state,
+    request.subjectEntityIds,
+  );
   const usageSources = [];
   let engine = { provider: "codex-cli" };
   let candidate;
@@ -1841,6 +1847,7 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
       previousPlan,
       previousCandidate,
       transitionContext: proceduralTransitionGenerationContext(state),
+      subjectEntityIds,
       generateJson: async (prompt) => {
         if (options.proceduralTransitionGenerateJson) {
           const generated = await options.proceduralTransitionGenerateJson(prompt);
@@ -1866,10 +1873,15 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
     });
   } catch (error) {
     usageSources.push(error);
-    const transitionPlan = createFallbackTransitionPlan(state.boundary, request.prompt, previousPlan);
+    const transitionPlan = createFallbackTransitionPlan(state.boundary, request.prompt, previousPlan, {
+      subjectEntityIds,
+      eligibleSubjectEntityIds: state.eligibleSubjectEntityIds,
+    });
     candidate = normalizeProceduralTransitionCandidate({ transitionPlan }, state.boundary, {
       prompt: transitionPlan.prompt,
       previousPlan,
+      subjectEntityIds,
+      eligibleSubjectEntityIds: state.eligibleSubjectEntityIds,
     });
     engine = {
       provider: "deterministic-fallback",
@@ -1890,9 +1902,16 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
 export async function applyProceduralTransitionPlan(options, request = {}) {
   const state = await proceduralTransitionRequestState(options, request.boundaryContext || request.boundary);
   assertProceduralTransitionRequestEligible(state);
+  const requestHasSubjects = Object.hasOwn(request, "subjectEntityIds");
+  const requestSubjectEntityIds = requestHasSubjects
+    ? proceduralTransitionSubjectEntityIdsForRequest(state, request.subjectEntityIds)
+    : null;
   const submitted = request.candidate || (request.transitionPlan || request.plan ? {
     schemaVersion: PROCEDURAL_TRANSITION_CANDIDATE_SCHEMA_VERSION,
     prompt: request.prompt || request.transitionPlan?.prompt || request.plan?.prompt,
+    subjectEntityIds: requestHasSubjects
+      ? requestSubjectEntityIds
+      : request.transitionPlan?.subjectEntityIds || request.plan?.subjectEntityIds || [],
     transitionPlan: request.transitionPlan || request.plan,
   } : null);
   if (submitted?.schemaVersion !== PROCEDURAL_TRANSITION_CANDIDATE_SCHEMA_VERSION) {
@@ -1923,6 +1942,8 @@ export async function applyProceduralTransitionPlan(options, request = {}) {
   const candidate = normalizeProceduralTransitionCandidate(submitted, state.boundary, {
     prompt: submitted.prompt,
     previousPlan,
+    ...(requestHasSubjects ? { subjectEntityIds: requestSubjectEntityIds } : {}),
+    eligibleSubjectEntityIds: state.eligibleSubjectEntityIds,
   });
   if (submitted.impact?.materiallyChanged === false || candidate.impact.materiallyChanged === false) {
     throw Object.assign(new Error("This transition preview has no material visible change. Revise the description and regenerate."), {
@@ -1933,6 +1954,7 @@ export async function applyProceduralTransitionPlan(options, request = {}) {
     boundaryContext: state.boundary,
     expectedRevision,
     candidate,
+    eligibleSubjectEntityIds: state.eligibleSubjectEntityIds,
   });
   await writeProceduralTransitionMutation(state, result.store, {
     boundaryKey: result.boundaryKey,
@@ -2016,6 +2038,13 @@ async function proceduralTransitionRequestState(options, rawBoundaryContext) {
 function proceduralTransitionBoundaryEligibility(graph, runtime, spatialRelations, boundary) {
   const fromSpatialScene = dynamicsSpatialSceneForContext(spatialRelations, boundary.fromContext);
   const toSpatialScene = dynamicsSpatialSceneForContext(spatialRelations, boundary.toContext);
+  const eligibleSubjectEntities = (Array.isArray(toSpatialScene?.entities) ? toSpatialScene.entities : [])
+    .filter((entity) => (
+      ["glb", "image-plane"].includes(String(entity?.kind || ""))
+      && typeof entity?.id === "string"
+      && entity.id
+    ));
+  const eligibleSubjectEntityIds = [...new Set(eligibleSubjectEntities.map((entity) => entity.id))];
   const endpointVisualCount = [fromSpatialScene, toSpatialScene]
     .flatMap((scene) => Array.isArray(scene?.entities) ? scene.entities : [])
     .filter((entity) => ["glb", "image-plane"].includes(String(entity?.kind || "")))
@@ -2037,7 +2066,22 @@ function proceduralTransitionBoundaryEligibility(graph, runtime, spatialRelation
     endpointVisualCount,
     destinationFrozen,
     sourceMappedTransition,
+    eligibleSubjectEntities,
+    eligibleSubjectEntityIds,
   };
+}
+
+function proceduralTransitionSubjectEntityIdsForRequest(state, value) {
+  const subjectEntityIds = normalizeProceduralTransitionSubjectEntityIds(value);
+  const eligibleEntityIds = new Set(state?.eligibleSubjectEntityIds || []);
+  const invalidEntityId = subjectEntityIds.find((entityId) => !eligibleEntityIds.has(entityId));
+  if (invalidEntityId) {
+    const error = Object.assign(new Error(
+      `A selected transition subject is not an eligible GLB or image plane in this exact destination scene: ${invalidEntityId}.`,
+    ), { statusCode: 400, code: "transition-subject-not-eligible" });
+    throw error;
+  }
+  return subjectEntityIds;
 }
 
 function proceduralTransitionGenerationContext(state) {
@@ -5824,21 +5868,42 @@ function readerSourceHasProceduralTransitionsContract(source) {
   return String(source || "").includes(STORYVR_PROCEDURAL_TRANSITIONS_READER_CONTRACT_MARKER);
 }
 
+function runtimeUsesProceduralTransitionSubjectTargets(runtime) {
+  return Object.values(runtime?.proceduralTransitions?.plansByBoundary || {}).some((plan) => (
+    Array.isArray(plan?.subjectEntityIds) && plan.subjectEntityIds.length > 0
+  ));
+}
+
 async function assertReaderProceduralTransitionsContract(paths, runtime) {
   if (!proceduralTransitionPlanCount(runtime)) return;
   const readerMainPath = path.join(paths.storyFolder, "webxr-adaptation", "src", "main.js");
   const readerMainSource = await exists(readerMainPath) ? await readFile(readerMainPath, "utf8") : "";
-  if (readerSourceHasProceduralTransitionsContract(readerMainSource)) return;
+  if (!readerSourceHasProceduralTransitionsContract(readerMainSource)) {
+    throw Object.assign(new Error(
+      `Reader source ${toPosix(path.relative(REPO_ROOT, readerMainPath))} does not support ${PROCEDURAL_TRANSITIONS_SCHEMA_VERSION}; merge the pending managed Reader template before building generated transitions.`,
+    ), {
+      statusCode: 409,
+      diagnostics: [{
+        severity: "error",
+        code: "READER_PROCEDURAL_TRANSITIONS_CONTRACT_MISSING",
+        component: "inter-beat-dynamics",
+        path: toPosix(path.relative(REPO_ROOT, readerMainPath)),
+        message: `Generated transitions require the ${PROCEDURAL_TRANSITIONS_SCHEMA_VERSION} Reader playback contract.`,
+      }],
+    });
+  }
+  if (!runtimeUsesProceduralTransitionSubjectTargets(runtime)
+    || readerMainSource.includes(STORYVR_TRANSITION_SUBJECT_TARGETS_CONTRACT_VERSION)) return;
   throw Object.assign(new Error(
-    `Reader source ${toPosix(path.relative(REPO_ROOT, readerMainPath))} does not support ${PROCEDURAL_TRANSITIONS_SCHEMA_VERSION}; merge the pending managed Reader template before building generated transitions.`,
+    `Reader source ${toPosix(path.relative(REPO_ROOT, readerMainPath))} does not support selected destination-object transition targets; merge the pending managed Reader template before building.`,
   ), {
     statusCode: 409,
     diagnostics: [{
       severity: "error",
-      code: "READER_PROCEDURAL_TRANSITIONS_CONTRACT_MISSING",
+      code: "READER_TRANSITION_SUBJECT_TARGETS_CONTRACT_MISSING",
       component: "inter-beat-dynamics",
       path: toPosix(path.relative(REPO_ROOT, readerMainPath)),
-      message: `Generated transitions require the ${PROCEDURAL_TRANSITIONS_SCHEMA_VERSION} Reader playback contract.`,
+      message: `Selected transition subjects require the ${STORYVR_TRANSITION_SUBJECT_TARGETS_CONTRACT_VERSION} Reader playback contract.`,
     }],
   });
 }
@@ -6010,6 +6075,12 @@ export async function buildReaderDist(paths, options = {}) {
     && !readerSourceHasProceduralTransitionsContract(readerMainSource)) {
     throw new Error(
       `Reader source ${toPosix(path.relative(repoRoot, readerMainPath))} is missing the ${PROCEDURAL_TRANSITIONS_SCHEMA_VERSION} generated-transition playback contract.`,
+    );
+  }
+  if (runtimeUsesProceduralTransitionSubjectTargets(compiledRuntime)
+    && !readerMainSource.includes(STORYVR_TRANSITION_SUBJECT_TARGETS_CONTRACT_VERSION)) {
+    throw new Error(
+      `Reader source ${toPosix(path.relative(repoRoot, readerMainPath))} is missing the ${STORYVR_TRANSITION_SUBJECT_TARGETS_CONTRACT_VERSION} selected transition-target playback contract.`,
     );
   }
   if (runtimeUsesExpandedProceduralDynamics(compiledRuntime)

@@ -7968,6 +7968,7 @@ function runtimeTransitionMiddleVisualInstance(action) {
 }
 
 function ensureRuntimeTransitionMiddleEntry(state, action) {
+  // storyvr-transition-subject-targets/v1
   if (state.transitionMiddleEntries.has(action.id)) return state.transitionMiddleEntries.get(action.id);
   const instance = runtimeTransitionMiddleVisualInstance(action);
   const content = runtimeProceduralGeneratedContent(instance);
@@ -7985,6 +7986,7 @@ function ensureRuntimeTransitionMiddleEntry(state, action) {
     materials: content.materials || [],
     particleState: content.particleState || null,
     instance,
+    targetEntityId: String(action?.target?.entityId || "").trim() || null,
     anchorPosition: readerCamera.getWorldPosition(new THREE.Vector3()),
     anchorQuaternion: readerCamera.getWorldQuaternion(new THREE.Quaternion()),
   };
@@ -8004,6 +8006,19 @@ function runtimeTransitionMiddleTargets(state, action) {
     if (scope === "to" || scope === "destination") return item.role === "to";
     return true;
   });
+}
+
+function runtimeTransitionMiddleTargetAnchor(state, action) {
+  const target = runtimeTransitionMiddleTargets(state, action)[0]?.root;
+  if (!target) return null;
+  target.updateWorldMatrix?.(true, true);
+  const bounds = new THREE.Box3().setFromObject(target, true);
+  return {
+    position: bounds.isEmpty()
+      ? target.getWorldPosition(new THREE.Vector3())
+      : bounds.getCenter(new THREE.Vector3()),
+    quaternion: new THREE.Quaternion(),
+  };
 }
 
 function restoreRuntimeTransitionMiddleTargets(state) {
@@ -8104,10 +8119,14 @@ function updateRuntimeTransitionMiddle(state, progress) {
     if (!createsVisual) continue;
     const entry = ensureRuntimeTransitionMiddleEntry(state, action);
     entry.root.visible = true;
+    const targetedAnchor = entry.targetEntityId ? runtimeTransitionMiddleTargetAnchor(state, action) : null;
+    const basePosition = targetedAnchor
+      ? parameters.transform?.position || parameters.anchorOffsetMeters || parameters.offsetMeters || [0, 0, 0]
+      : entry.instance.transform?.position || [0, 1, -1];
     entry.root.position
-      .fromArray(entry.instance.transform?.position || [0, 1, -1])
-      .applyQuaternion(entry.anchorQuaternion)
-      .add(entry.anchorPosition);
+      .fromArray(basePosition)
+      .applyQuaternion(targetedAnchor?.quaternion || entry.anchorQuaternion)
+      .add(targetedAnchor?.position || entry.anchorPosition);
     entry.root.position.x += Math.sin(local * Math.PI * 2) * 0.35 * envelope;
     entry.root.position.y += Math.sin(local * Math.PI) * 0.28;
     entry.root.rotation.y = local * Math.PI * 2;

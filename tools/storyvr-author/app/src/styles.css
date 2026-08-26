@@ -9437,6 +9437,14 @@ button.interaction-ui-button-preview:hover:not(:disabled) {
   padding-right: 0.18rem;
 }
 
+.spatial-hierarchy-selection-summary {
+  margin: -0.2rem 0 0.45rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
 .spatial-hierarchy-group + .spatial-hierarchy-group {
   margin-top: 0.8rem;
   padding-top: 0.72rem;

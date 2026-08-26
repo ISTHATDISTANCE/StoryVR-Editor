@@ -79,6 +79,7 @@ export function normalizeProceduralTransitionPlan(value, boundaryContext = null)
     ? nonNegativeFiniteNumber(source.arcHeightMeters, 0)
     : 0;
   const prompt = requiredSafeText(source.prompt, 2000, "The procedural transition plan requires its author prompt.");
+  const subjectEntityIds = normalizeProceduralTransitionSubjectEntityIds(source.subjectEntityIds);
   const summary = safeGeneratedText(
     source.summary,
     defaultTransitionSummary(style, durationSeconds),
@@ -88,6 +89,7 @@ export function normalizeProceduralTransitionPlan(value, boundaryContext = null)
   const middle = normalizeProceduralTransitionMiddle(
     source.middle || source.middleSequence || source.transientMiddle,
   );
+  assertSelectedTransitionSubjectScope(subjectEntityIds, middle);
 
   return {
     schemaVersion: PROCEDURAL_TRANSITION_PLAN_SCHEMA_VERSION,
@@ -96,6 +98,7 @@ export function normalizeProceduralTransitionPlan(value, boundaryContext = null)
     fromContext: planBoundary.fromContext,
     toContext: planBoundary.toContext,
     prompt,
+    ...(subjectEntityIds.length ? { subjectEntityIds } : {}),
     summary,
     style,
     durationSeconds,
@@ -104,6 +107,28 @@ export function normalizeProceduralTransitionPlan(value, boundaryContext = null)
     endpointPolicy,
     middle,
   };
+}
+
+export function normalizeProceduralTransitionSubjectEntityIds(value) {
+  if (value === undefined || value === null || value === "") return [];
+  if (!Array.isArray(value)) {
+    throw transitionContractError("Procedural transition subjectEntityIds must be an array of exact destination scene entity IDs.");
+  }
+  const subjectEntityIds = [];
+  const seen = new Set();
+  for (const entityId of value) {
+    if (typeof entityId !== "string"
+      || !entityId
+      || entityId !== entityId.trim()
+      || entityId.length > 240
+      || /[\u0000-\u001f\u007f]/.test(entityId)) {
+      throw transitionContractError("Every procedural transition subject must be an exact destination scene entity ID string.");
+    }
+    if (seen.has(entityId)) continue;
+    seen.add(entityId);
+    subjectEntityIds.push(entityId);
+  }
+  return subjectEntityIds;
 }
 
 export function normalizeProceduralTransitionMiddle(value) {
@@ -361,6 +386,29 @@ function normalizeTransientMiddleAction(value, index) {
     parameters,
     cleanup: "restore-endpoint",
   };
+}
+
+function assertSelectedTransitionSubjectScope(subjectEntityIds, middle) {
+  if (!subjectEntityIds.length || !middle.actions.length) return;
+  const subjectSet = new Set(subjectEntityIds);
+  const coveredSubjects = new Set();
+  for (const action of middle.actions) {
+    const target = objectValue(action.target);
+    const scope = String(target?.scope || "").trim().toLowerCase();
+    const entityId = typeof target?.entityId === "string" ? target.entityId : "";
+    if (scope !== "to" || !subjectSet.has(entityId)) {
+      throw transitionContractError(
+        "Every selected-subject transition middle action must target one selected destination object with {scope:'to', entityId}.",
+      );
+    }
+    coveredSubjects.add(entityId);
+  }
+  const missingEntityId = subjectEntityIds.find((entityId) => !coveredSubjects.has(entityId));
+  if (missingEntityId) {
+    throw transitionContractError(
+      `The procedural transition middle does not affect the selected destination subject: ${missingEntityId}.`,
+    );
+  }
 }
 
 function transientActionParameters(source) {
