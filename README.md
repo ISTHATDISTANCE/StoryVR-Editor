@@ -6,6 +6,10 @@ This repository contains the editor, adapter, animation probe, session viewer,
 reader template, and local HTTPS server. Story-specific source files and
 authored output live in separate story folders beside this repository.
 
+For the upcoming user study, **session data collection and AI features are
+required**. Complete the [session data collection setup](#required-session-data-collection)
+and [AI setup](#required-ai-features) before the participant begins study tasks.
+
 ## Supported platforms and release branches
 
 StoryVR supports macOS, Linux, and native Windows 11. Use the release branch
@@ -31,10 +35,10 @@ Every platform needs:
 - Node.js 24 or newer and its bundled npm
 - Python 3; macOS `main` requires `python3`, the portable Linux/WSL launcher
   accepts `python3` or `python`, and native Windows additionally accepts `py -3`
-- A current Chromium-based browser such as Chrome or Edge
-- The [Codex CLI](https://developers.openai.com/codex/cli/) is optional for
-  core/manual StoryVR, but required for this study's complete AI-backed
-  environment and motion workflow
+- Google Chrome 114 or newer for the study's data-collection extension and
+  validated manual installation workflow
+- The [Codex CLI](https://developers.openai.com/codex/cli/) with a study-approved
+  sign-in, required for the study's AI-backed environment and motion workflow
 - Optional: OpenSSL and a WebXR headset for local HTTPS immersive testing
 
 On Windows, use 64-bit Node.js and Python unless the computer is ARM64. Run the
@@ -303,10 +307,16 @@ continuous movement or an exact teleport landing—advances once to the saved
 destination, while teleport elsewhere remains ordinary free movement and never
 changes the story part.
 
-### Optional session data collection
+### Required session data collection
 
-The editor's **Data collection** switch is off by default. In a current Chrome
-browser, turning it on opens a folder chooser, creates a named
+Session data collection, including the StoryVR study Chrome extension, is
+required for every user-study session. Complete the extension setup below
+before the session. The editor's **Data collection** switch is off by default
+and must stay off during installation. After informed consent is complete, the
+facilitator must approve the original story page and turn collection on before
+the participant begins study tasks.
+
+In Chrome, turning **Data collection** on opens a folder chooser, creates a named
 `storyvr-interaction-log/v1` JSON file, and records clicks, selected 3D actions,
 and completed spatial transform drags without recording typed values. A drag
 record can include its operation, axis, sampled pointer path, affected objects,
@@ -323,21 +333,30 @@ subtotals. StoryVR records no prompts, generated output, credentials, provider
 response IDs, Codex thread IDs, or local paths in this summary. Older logs
 without token usage remain valid and display as not measured rather than zero.
 
-For a consented study that also needs activity from an original story page,
-build the optional local Chrome extension:
+Build the required local Chrome extension from the repository root:
 
 ```sh
 npm run storyvr:study-extension
 ```
 
-Then load `tools/storyvr-study-extension/unpacked/` as an unpacked extension.
+On native Windows PowerShell, use `npm.cmd run storyvr:study-extension`.
+The build creates `tools/storyvr-study-extension/unpacked/`, including its
+`manifest.json`. This generated folder is intentionally excluded from GitHub
+and will not exist in a fresh clone until the build runs.
+
+In the dedicated study Chrome profile, open `chrome://extensions`, enable
+**Developer mode**, select **Load unpacked**, and choose the generated folder.
+Keep StoryVR and the original story in that same profile. If StoryVR was already
+open, reload its tab once after loading the extension.
 An original page is observed only after its exact tab, origin, and path are
 explicitly approved and StoryVR's **Data collection** switch is on. See
 `tools/storyvr-study-extension/README.md` for the privacy boundary and setup.
 
 For participant-study setup, `PARTICIPANT_INSTALL_PROMPT.md` builds and
-statically verifies this unpacked directory, then hands Chrome loading to the
-facilitator as an explicit manual checklist. `PARTICIPANT_UNINSTALL_PROMPT.md`
+statically verifies a unique `tools/storyvr-study-extension/builds/participant-<installId>/`
+directory, then hands Chrome loading to the facilitator as an explicit manual
+checklist. When using that workflow, load the exact absolute directory printed
+in its final checklist. `PARTICIPANT_UNINSTALL_PROMPT.md`
 requires collection finalization and log preservation first, then pauses for
 manual removal from the exact study Chrome profile. Neither prompt automates
 Developer mode, extension loading/removal, or browser-profile deletion.
@@ -356,11 +375,12 @@ Imported logs stay local unless **Generate insights** is selected; that optional
 action sends only a compact summary to Codex and places expandable annotations
 beside their cited timeline events.
 
-### Optional AI features
+### Required AI features
 
-StoryVR remains usable without an AI login, but Story order progress grouping,
-setting generation, and some movement-generation features require a signed-in
-Codex CLI:
+AI features are required for the upcoming user study. Install the Codex CLI and
+complete the study-approved sign-in before the participant begins study tasks.
+Story order progress grouping, setting generation, and AI movement-generation
+features depend on this setup. Sign in with:
 
 ```sh
 codex login
@@ -397,6 +417,8 @@ npm.cmd run storyvr:author -- --story-folder "$StoryFolder"
 
 `OPENAI_API_KEY` can support some proposal and recommendation fallbacks, but
 environment panorama and matching-ground generation require the Codex CLI.
+Study AI setup is complete only when the Codex CLI is signed in and available
+to StoryVR.
 
 ## Build and preview the WebXR reader
 
