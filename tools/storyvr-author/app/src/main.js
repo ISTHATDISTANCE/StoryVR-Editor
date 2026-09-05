@@ -497,6 +497,8 @@ const state = {
   dynamicCanvasReturnScroll: null,
   proceduralDynamicsUi: {
     promptsByScene: {},
+    pendingMessagesByScene: {},
+    conversationScrollByScene: {},
     candidatesByScene: {},
     expectedRevisionsByScene: {},
     busyByScene: {},
@@ -562,6 +564,7 @@ const state = {
     draftRevision: 0,
     draftTimer: null,
     draftPromise: null,
+    draftError: null,
   },
   environmentEditorScene: null,
   environmentCanvasReturnScroll: null,
@@ -1086,6 +1089,8 @@ function restoreAuthorHistoryUi(snapshot) {
     const restored = historyClone(snapshot.proceduralDynamicsUi);
     state.proceduralDynamicsUi = {
       promptsByScene: restored.promptsByScene || {},
+      pendingMessagesByScene: {},
+      conversationScrollByScene: restored.conversationScrollByScene || {},
       candidatesByScene: restored.candidatesByScene || {},
       expectedRevisionsByScene: restored.expectedRevisionsByScene || {},
       busyByScene: {},
@@ -1206,7 +1211,7 @@ function recordAuthorHistory(label, mutator, componentId = state.activeId) {
   }
 }
 
-async function withAuthorHistory(label, operation, { persistent = false, componentId = state.activeId } = {}) {
+async function withAuthorHistory(label, operation, { persistent = false, componentId = state.activeId, rollbackOnError = true } = {}) {
   const started = beginAuthorHistory(label, componentId);
   const before = started ? authorHistory.active.before : null;
   if (persistent && started) setAuthorHistoryInteractionBusy(true);
@@ -1219,6 +1224,11 @@ async function withAuthorHistory(label, operation, { persistent = false, compone
     return value;
   } catch (error) {
     if (started) {
+      if (!rollbackOnError) {
+        if (persistent) await captureAuthorHistoryCheckpoint().catch(() => null);
+        commitAuthorHistory();
+        throw error;
+      }
       authorHistory.cancel();
       if (persistent && before?.checkpoint?.id) {
         await api.post(`/api/history/session/${encodeURIComponent(state.historySessionId)}/restore`, {
@@ -1616,18 +1626,6 @@ async function persistStoryvrComponentDraft(componentId) {
   return changed;
 }
 
-function storyvrComponentCanFinish(componentId) {
-  const readiness = state.data?.readiness?.[componentId] || {};
-  if ((readiness.canSave ?? readiness.canGenerate) !== true) return false;
-  if (componentId === "environment-enhancement") return environmentCheckpointAssignmentsReady();
-  if (componentId === "interaction-control") {
-    return interactionBoundaryContextIsComplete(interactionBoundaryContext(selectedInteractionControlBase()));
-  }
-  if ([ATTENTION_GUIDANCE_COMPONENT_ID, "transition-pacing"].includes(componentId)) return true;
-  const component = componentById(componentId);
-  return Boolean(component && selectedOptionIdForComponent(component));
-}
-
 function finalizeActiveStoryvrCanvasGesture() {
   if (activeStoryvrPointerGestureFinalizer) {
     const finalize = activeStoryvrPointerGestureFinalizer;
@@ -1677,54 +1675,31 @@ async function synchronizeActiveStoryvrAuthoringControl() {
   if (authorHistory.active) commitAuthorHistory();
 }
 
-function storyvrRouteOwnsCheckpointCompletion(route) {
-  return !route?.editorScene || route?.componentId === "transition-pacing";
-}
-
 async function prepareStoryvrRouteExit(fromRoute, toRoute) {
   if (storyvrNavigationRoutesEqual(fromRoute, toRoute)) return false;
   await synchronizeActiveStoryvrAuthoringControl();
   const componentId = fromRoute.componentId;
-  const componentChanged = componentId !== toRoute.componentId;
   const hasPendingPersistence = storyvrComponentHasPendingPersistence(componentId);
-  const routeOwnsCheckpointCompletion = storyvrRouteOwnsCheckpointCompletion(fromRoute);
 
   if (componentId === "source-graph") {
     if (!state.graphDirty) return false;
-    await withAuthorHistory("Finish Story order", () => saveStoryGraphCore({ silent: true }), {
+    await withAuthorHistory("Save Story order", () => saveStoryGraphCore({ silent: true }), {
       persistent: true,
       componentId,
+      rollbackOnError: false,
     });
     return true;
   }
 
-  const canFinishExistingDraft = componentChanged
-    && routeOwnsCheckpointCompletion
-    && !checkpointIsCurrent(componentId)
-    && storyvrComponentCanFinish(componentId);
-  if (
-    !hasPendingPersistence
-    && !pendingStoryvrCheckpointCompletions.has(componentId)
-    && !canFinishExistingDraft
-  ) return false;
-  if (!componentChanged && !hasPendingPersistence) return false;
+  if (!hasPendingPersistence) return false;
 
   const component = componentById(componentId);
   await withAuthorHistory(`Save ${component?.label || componentId}`, async () => {
     await persistStoryvrComponentDraft(componentId);
-    if (
-      componentChanged
-      && routeOwnsCheckpointCompletion
-      && (pendingStoryvrCheckpointCompletions.has(componentId) || canFinishExistingDraft)
-      && storyvrComponentCanFinish(componentId)
-    ) {
-      if (componentId === "environment-enhancement") await saveEnvironmentCheckpointCore();
-      else await saveDecisionCheckpointCore(component);
-      clearStoryvrCheckpointCompletionPending(componentId);
-    }
   }, {
     persistent: true,
     componentId,
+    rollbackOnError: false,
   });
   return true;
 }
@@ -2758,7 +2733,7 @@ function checkpointState(componentId) {
     stale,
     current,
     saved,
-    unlocked: componentId === "source-graph" || (readiness.unlocked ?? readiness.canGenerate) === true,
+    unlocked: componentId === "source-graph" || (readiness.canEdit ?? readiness.unlocked ?? readiness.canGenerate) === true,
   };
 }
 
@@ -7075,7 +7050,7 @@ function proceduralDynamicsCandidateSceneViolation(candidate, sceneContext) {
   }
   const actors = Array.isArray(plan?.actors) ? plan.actors : [];
   const generatedObjects = Array.isArray(plan?.generatedObjects) ? plan.generatedObjects : [];
-  if (!plan || (!actors.length && !generatedObjects.length)) {
+  if (!plan || (!actors.length && !generatedObjects.length && !candidate?.conversationTurn)) {
     return "Dynamics generation did not animate an existing object or create a runtime object or effect.";
   }
   if (
@@ -7153,7 +7128,66 @@ function proceduralDynamicsPromptForScene(sceneContext) {
   if (Object.prototype.hasOwnProperty.call(state.proceduralDynamicsUi.promptsByScene, sceneKey)) {
     return String(state.proceduralDynamicsUi.promptsByScene[sceneKey] || "");
   }
-  return String(proceduralDynamicsStoredPlan(sceneContext)?.prompt || "");
+  return "";
+}
+
+function proceduralDynamicsConversationForScene(sceneContext) {
+  const sceneKey = proceduralDynamicsSceneKey(sceneContext);
+  const conversation = state.data?.proceduralDynamics?.conversationsByScene?.[sceneKey];
+  if (Array.isArray(conversation?.messages) && conversation.messages.length) {
+    return conversation.messages.filter((message) => (
+      ["user", "assistant"].includes(message?.role)
+      && typeof message?.content === "string"
+      && message.content.trim()
+    ));
+  }
+  const storedPlan = proceduralDynamicsStoredPlan(sceneContext);
+  if (!storedPlan) return [];
+  const prompt = String(storedPlan.prompt || "").trim();
+  return [
+    ...(prompt ? [{ id: "saved-request", role: "user", content: prompt }] : []),
+    {
+      id: "saved-baseline",
+      role: "assistant",
+      content: "Your saved animation and effects are the starting point. Tell me what you would like to change.",
+    },
+  ];
+}
+
+function renderProceduralDynamicsConversation(sceneContext) {
+  const sceneKey = proceduralDynamicsSceneKey(sceneContext);
+  const messages = proceduralDynamicsConversationForScene(sceneContext);
+  const pendingMessage = state.proceduralDynamicsUi.pendingMessagesByScene[sceneKey];
+  const pending = Boolean(pendingMessage);
+  if (!messages.length && !pending) return "";
+  return `
+    <div
+      class="procedural-dynamics-conversation"
+      data-procedural-dynamics-conversation
+      role="log"
+      aria-label="Animation and effects conversation"
+      aria-live="polite"
+      aria-relevant="additions text"
+      aria-busy="${pending ? "true" : "false"}"
+    >
+      ${messages.map((message) => `
+        <article class="procedural-dynamics-chat-message is-${message.role}">
+          <span>${message.role === "user" ? "You" : "StoryVR"}</span>
+          <p>${escapeHtml(message.content)}</p>
+        </article>
+      `).join("")}
+      ${pending ? `
+        <article class="procedural-dynamics-chat-message is-user is-pending">
+          <span>You · Sending</span>
+          <p>${escapeHtml(pendingMessage)}</p>
+        </article>
+        <article class="procedural-dynamics-chat-message is-assistant is-pending">
+          <span>StoryVR</span>
+          <p>Updating the animation and effects from your conversation…</p>
+        </article>
+      ` : ""}
+    </div>
+  `;
 }
 
 function proceduralDynamicsComparablePrompt(value) {
@@ -7187,6 +7221,7 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
   const sceneKey = scope.sceneKey;
   const candidate = proceduralDynamicsCandidate(sceneContext);
   const storedPlan = proceduralDynamicsStoredPlan(sceneContext);
+  const hasConversation = Boolean(proceduralDynamicsConversationForScene(sceneContext).length);
   const prompt = proceduralDynamicsPromptForScene(sceneContext);
   const busy = Boolean(state.proceduralDynamicsUi.busyByScene[sceneKey]);
   const error = state.proceduralDynamicsUi.errorsByScene[sceneKey] || "";
@@ -7202,27 +7237,23 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
       class="procedural-dynamics-authoring dynamic-generation-sidebar-card storyvr-spatial-sidebar-card"
       data-procedural-dynamics-authoring
       data-procedural-dynamics-scene-key="${escapeHtml(sceneKey)}"
+      aria-label="Animation and effects conversation"
       aria-busy="${busy ? "true" : "false"}"
     >
-      <div class="procedural-dynamics-heading">
-        <div>
-          <p class="eyebrow">Optional animation and effects</p>
-          <h3>Describe what should happen</h3>
-          <p class="muted">Animate existing 3D models and image planes, or create temporary lights, shapes, particles, and multi-stage effects.</p>
-        </div>
-        <span class="procedural-dynamics-scope">${escapeHtml(spatialSceneContextLabel(sceneContext))}</span>
-      </div>
+      ${renderProceduralDynamicsConversation(sceneContext)}
       <label class="procedural-dynamics-prompt" for="procedural-dynamics-prompt">
-        <span>Animation and effects description</span>
+        <span>${hasConversation ? "What would you like to change?" : "Describe the first animation or effect"}</span>
         <textarea
           id="procedural-dynamics-prompt"
           data-procedural-dynamics-prompt
           rows="3"
           maxlength="1000"
-          placeholder="${escapeHtml(storyDynamicsPlaceholder(state.data))}"
+          aria-describedby="procedural-dynamics-composer-hint"
+          placeholder="${escapeHtml(hasConversation ? "Make it slower, change the timing, or add another effect…" : storyDynamicsPlaceholder(state.data))}"
           ${busy || !ready ? "disabled" : ""}
         >${escapeHtml(prompt)}</textarea>
       </label>
+      <p class="procedural-dynamics-composer-hint" id="procedural-dynamics-composer-hint">Each message uses this scene’s conversation and current saved dynamics. Cmd/Ctrl + Enter to send.</p>
       ${state.dynamicSpatialDraftDirty
         ? `<p class="procedural-dynamics-message">Save this scene's object placement before generating or adjusting runtime-only objects.</p>`
         : generatedAdjustmentDirty
@@ -7234,7 +7265,7 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
           type="button"
           data-procedural-dynamics-generate
           ${canGenerate ? "" : "disabled"}
-        >${busy ? "Generating and saving…" : storedPlan || candidate ? "Regenerate animation &amp; effects" : "Generate animation &amp; effects"}</button>
+        >${busy ? "Generating and saving…" : error ? "Retry message" : hasConversation || candidate ? "Send update" : "Send &amp; generate"}</button>
         ${storedPlan ? `
           <button
             class="danger-action"
@@ -9877,6 +9908,7 @@ function syncEnvironmentUiFromState(options = {}) {
   if (options.resetDraft || !state.environmentUi.draft) {
     state.environmentUi.draft = environmentDraftFromManifest(manifest);
     state.environmentUi.draftDirty = false;
+    state.environmentUi.draftError = null;
   }
   if (options.resetDraft || !state.environmentUi.selectionMode) {
     state.environmentUi.selectionMode = manifest.skipped ? "none" : "asset";
@@ -13178,15 +13210,32 @@ function bindProceduralDynamicsAuthoringEvents() {
   const sceneKey = proceduralDynamicsSceneKey(sceneContext);
   const prompt = document.querySelector("[data-procedural-dynamics-prompt]");
   const generate = document.querySelector("[data-procedural-dynamics-generate]");
+  const transcript = document.querySelector("[data-procedural-dynamics-conversation]");
+  if (transcript) {
+    const scroll = state.proceduralDynamicsUi.conversationScrollByScene[sceneKey];
+    transcript.scrollTop = !scroll || scroll.atBottom ? transcript.scrollHeight : scroll.top;
+    transcript.addEventListener("scroll", () => {
+      state.proceduralDynamicsUi.conversationScrollByScene[sceneKey] = {
+        top: transcript.scrollTop,
+        atBottom: transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop < 32,
+      };
+    }, { passive: true });
+  }
   prompt?.addEventListener("input", () => {
     state.proceduralDynamicsUi.promptsByScene[sceneKey] = prompt.value;
     delete state.proceduralDynamicsUi.statusByScene[sceneKey];
     delete state.proceduralDynamicsUi.errorsByScene[sceneKey];
     const ready = Boolean(state.data?.readiness?.["dynamic-geometry"]?.canGenerate);
     if (generate) generate.disabled = !ready
+      || state.proceduralDynamicsUi.busyByScene[sceneKey]
       || state.dynamicSpatialDraftDirty
       || state.dynamicGeneratedEditScenes[sceneKey] === "dirty"
       || !prompt.value.trim();
+    if (generate && !state.proceduralDynamicsUi.busyByScene[sceneKey]) {
+      generate.textContent = proceduralDynamicsConversationForScene(sceneContext).length
+        ? "Send update"
+        : "Send & generate";
+    }
     const message = document.querySelector("[data-procedural-dynamics-message]");
     if (message) {
       message.textContent = "";
@@ -13194,6 +13243,11 @@ function bindProceduralDynamicsAuthoringEvents() {
       message.classList.remove("error");
       message.classList.remove("success");
     }
+  });
+  prompt?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey) || event.isComposing) return;
+    event.preventDefault();
+    if (!generate?.disabled) generate?.click();
   });
   generate?.addEventListener("click", () => generateProceduralDynamicsPreview(sceneContext));
   document.querySelector("[data-procedural-dynamics-remove]")?.addEventListener("click", () => (
@@ -13326,22 +13380,17 @@ async function generateProceduralDynamicsPreview(sceneContext) {
     return;
   }
   setProceduralDynamicsBusy(sceneContext, true);
+  state.proceduralDynamicsUi.pendingMessagesByScene[sceneKey] = prompt;
+  state.proceduralDynamicsUi.conversationScrollByScene[sceneKey] = { top: 0, atBottom: true };
   delete state.proceduralDynamicsUi.errorsByScene[sceneKey];
-  state.proceduralDynamicsUi.statusByScene[sceneKey] = "Codex is generating and saving animation and effects…";
+  state.proceduralDynamicsUi.statusByScene[sceneKey] = "Updating and saving animation and effects…";
   renderPreservingScroll();
   try {
-    const previousCandidate = proceduralDynamicsCandidate(sceneContext);
-    const previousPlan = previousCandidate
-      ? proceduralDynamicsCandidateMotionPlan(previousCandidate)
-      : proceduralDynamicsStoredPlan(sceneContext);
     const response = await api.post("/api/dynamics/generate", {
       sceneContext: scope,
       prompt,
+      conversation: true,
       ...(subjectEntityIds.length ? { subjectEntityIds } : {}),
-      ...(previousPlan ? { previousPlan } : {}),
-      ...(["storyvr-dynamics-scene-candidate/v4", "storyvr-dynamics-scene-candidate/v3"].includes(previousCandidate?.schemaVersion)
-        ? { previousCandidate }
-        : {}),
     });
     const candidate = proceduralDynamicsCandidateFromResponse(response);
     if (!candidate || !proceduralDynamicsCandidateMotionPlan(candidate)) {
@@ -13356,7 +13405,6 @@ async function generateProceduralDynamicsPreview(sceneContext) {
     if (JSON.stringify(returnedSubjectEntityIds) !== JSON.stringify(requestedSubjectEntityIds)) {
       throw new Error("Dynamics generation did not preserve the selected scene-object subjects.");
     }
-    state.proceduralDynamicsUi.promptsByScene[sceneKey] = proceduralDynamicsCandidatePrompt(candidate) || prompt;
     const expectedRevision = Number(response?.expectedRevision);
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
       throw new Error("Dynamics generation did not return a valid saved-state revision.");
@@ -13369,15 +13417,18 @@ async function generateProceduralDynamicsPreview(sceneContext) {
     await commitProceduralDynamicsCandidate(sceneContext, {
       candidate,
       expectedRevision,
-      historyLabel: proceduralDynamicsStoredPlan(sceneContext)
-        ? "Regenerate animation and effects"
+      historyLabel: proceduralDynamicsConversationForScene(sceneContext).length
+        ? "Update animation and effects"
         : "Generate animation and effects",
-      statusMessage: "Animation and effects generated and saved automatically.",
+      statusMessage: "Update saved. Send another message to keep refining this scene.",
     });
+    state.proceduralDynamicsUi.promptsByScene[sceneKey] = "";
+    state.proceduralDynamicsUi.conversationScrollByScene[sceneKey] = { top: 0, atBottom: true };
   } catch (error) {
     state.proceduralDynamicsUi.errorsByScene[sceneKey] = `Could not generate and save animation or effects: ${error.message}`;
     delete state.proceduralDynamicsUi.statusByScene[sceneKey];
   } finally {
+    delete state.proceduralDynamicsUi.pendingMessagesByScene[sceneKey];
     setProceduralDynamicsBusy(sceneContext, false);
     renderPreservingScroll();
   }
@@ -13402,13 +13453,14 @@ async function commitProceduralDynamicsCandidate(sceneContext, options = {}) {
       });
       await refreshAfterProceduralDynamicsApply(response);
       if (!state.data?.proceduralDynamics) throw new Error("Object movement did not return the updated author state.");
-      if (!proceduralDynamicsStoredPlan(sceneContext)) {
+      if ((!candidate.conversationTurn || proceduralDynamicsPlanRuntimeCount(proceduralDynamicsCandidateMotionPlan(candidate)))
+        && !proceduralDynamicsStoredPlan(sceneContext)) {
         throw new Error("Object movement was saved but the exact scene plan could not be reloaded.");
       }
       delete state.proceduralDynamicsUi.candidatesByScene[sceneKey];
       delete state.proceduralDynamicsUi.expectedRevisionsByScene[sceneKey];
       delete state.dynamicGeneratedEditScenes[sceneKey];
-      markStoryvrCheckpointCompletionPending("dynamic-geometry");
+      if (response?.conversationOnly !== true) markStoryvrCheckpointCompletionPending("dynamic-geometry");
       state.proceduralDynamicsUi.statusByScene[sceneKey] = options.statusMessage
         || "Animation and effects generated and saved automatically.";
       return response;
@@ -13420,9 +13472,12 @@ async function commitProceduralDynamicsCandidate(sceneContext, options = {}) {
 
 function proceduralDynamicsCandidateApplyViolation(sceneContext, candidate) {
   if (!candidate) return "The generated animation is no longer available. Generate it again.";
+  const sceneKey = proceduralDynamicsSceneKey(sceneContext);
+  const isGeneratedObjectEdit = ["prepared", "dirty"].includes(state.dynamicGeneratedEditScenes[sceneKey]);
   const currentPrompt = proceduralDynamicsPromptForScene(sceneContext).trim();
-  if (proceduralDynamicsComparablePrompt(proceduralDynamicsCandidatePrompt(candidate))
-    !== proceduralDynamicsComparablePrompt(currentPrompt)) {
+  if (!isGeneratedObjectEdit
+    && proceduralDynamicsComparablePrompt(proceduralDynamicsCandidatePrompt(candidate))
+      !== proceduralDynamicsComparablePrompt(currentPrompt)) {
     return "The description changed. Generate the animation and effects again.";
   }
   const sceneViolation = proceduralDynamicsCandidateSceneViolation(candidate, sceneContext);
@@ -13431,7 +13486,7 @@ function proceduralDynamicsCandidateApplyViolation(sceneContext, candidate) {
   if (impact.unmetRequirements.length) {
     return "The generated result still has unmet prompt requirements. Revise the description and generate again.";
   }
-  if (impact.materiallyChanged === false) {
+  if (impact.materiallyChanged === false && !candidate.conversationTurn) {
     return "The generated result has no material visible change to save.";
   }
   return "";
@@ -14761,8 +14816,7 @@ function markEnvironmentDraftDirty() {
     status.className = "environment-save-state dirty";
   }
   clearTimeout(state.environmentUi.draftTimer);
-  const revision = state.environmentUi.draftRevision;
-  state.environmentUi.draftTimer = setTimeout(() => saveEnvironmentDraft(revision), 320);
+  state.environmentUi.draftTimer = setTimeout(() => saveEnvironmentDraft(), 320);
 }
 
 function environmentDraftFromControls() {
@@ -14836,56 +14890,69 @@ function updateEnvironmentTuningOutputs() {
   }
 }
 
-async function saveEnvironmentDraft(revision = state.environmentUi.draftRevision) {
-  const pending = state.environmentUi.draftPromise;
-  if (pending) {
-    await pending;
-    if (!state.environmentUi.draftDirty) return false;
-    return saveEnvironmentDraft(state.environmentUi.draftRevision);
-  }
-  const sceneContext = activeEnvironmentSceneContext();
-  if (!state.environmentUi.draftDirty || !sceneContext?.beatId) return false;
+async function saveEnvironmentDraft() {
   clearTimeout(state.environmentUi.draftTimer);
   state.environmentUi.draftTimer = null;
-  const status = document.querySelector("[data-environment-save-state]");
-  if (status) {
-    status.textContent = "Saving…";
-    status.className = "environment-save-state saving";
-  }
+  if (state.environmentUi.draftPromise) return state.environmentUi.draftPromise;
+  if (!state.environmentUi.draftDirty || !activeEnvironmentSceneContext()?.beatId) return false;
+
   const promise = (async () => {
-    const response = await api.patch("/api/environment-enhancement/draft", {
-      ...cloneJson(environmentDraft()),
-      beatId: sceneContext.beatId,
-      variantGroupId: sceneContext.variantGroupId,
-      variantOptionId: sceneContext.variantOptionId,
-      skipped: state.environmentUi.selectionMode === "none",
-    });
-    if (revision !== state.environmentUi.draftRevision) return false;
-    applyEnvironmentEnhancementPayload(response, { resetDraft: true });
-    state.environmentUi.draftDirty = false;
-    if (response?.decision?.current === true && response?.decision?.stale !== true) {
-      clearStoryvrCheckpointCompletionPending("environment-enhancement");
-    } else {
-      markStoryvrCheckpointCompletionPending("environment-enhancement");
+    let saved = false;
+    while (state.environmentUi.draftDirty) {
+      const sceneContext = cloneJson(activeEnvironmentSceneContext());
+      if (!sceneContext?.beatId) return saved;
+      const revision = state.environmentUi.draftRevision;
+      const status = document.querySelector("[data-environment-save-state]");
+      const previousError = state.environmentUi.draftError;
+      clearTimeout(state.environmentUi.draftTimer);
+      state.environmentUi.draftTimer = null;
+      state.environmentUi.draftError = null;
+      if (status) {
+        status.textContent = "Saving…";
+        status.className = "environment-save-state saving";
+      }
+      try {
+        const response = await api.patch("/api/environment-enhancement/draft", {
+          ...cloneJson(environmentDraft()),
+          beatId: sceneContext.beatId,
+          variantGroupId: sceneContext.variantGroupId,
+          variantOptionId: sceneContext.variantOptionId,
+          skipped: state.environmentUi.selectionMode === "none",
+        });
+        saved = true;
+        if (previousError && state.output?.error === previousError.message) state.output = null;
+        const stillCurrent = revision === state.environmentUi.draftRevision
+          && environmentContextMatchesActive(sceneContext);
+        applyEnvironmentEnhancementPayload(response, { resetDraft: stillCurrent, syncUi: stillCurrent });
+        if (!stillCurrent) continue;
+        state.environmentUi.draftDirty = false;
+        if (response?.decision?.current === true && response?.decision?.stale !== true) {
+          clearStoryvrCheckpointCompletionPending("environment-enhancement");
+        } else {
+          markStoryvrCheckpointCompletionPending("environment-enhancement");
+        }
+        updateCheckpointStatusDom("environment-enhancement");
+        if (status) {
+          status.textContent = "Saved locally";
+          status.className = "environment-save-state saved";
+        }
+      } catch (error) {
+        state.environmentUi.draftError = error;
+        if (status) {
+          status.textContent = "Save failed — changes kept";
+          status.className = "environment-save-state error";
+        }
+        state.output = { error: error.message, diagnostics: error.diagnostics || [] };
+        clearTimeout(state.environmentUi.draftTimer);
+        state.environmentUi.draftTimer = null;
+        return false;
+      }
     }
-    updateCheckpointStatusDom("environment-enhancement");
-    if (status) {
-      status.textContent = "Saved locally";
-      status.className = "environment-save-state saved";
-    }
-    return true;
+    return saved;
   })();
   state.environmentUi.draftPromise = promise;
   try {
     return await promise;
-  } catch (error) {
-    if (revision !== state.environmentUi.draftRevision) return;
-    if (status) {
-      status.textContent = "Save failed";
-      status.className = "environment-save-state error";
-    }
-    state.output = { error: error.message, diagnostics: error.diagnostics || [] };
-    return false;
   } finally {
     if (state.environmentUi.draftPromise === promise) state.environmentUi.draftPromise = null;
   }
@@ -14893,8 +14960,10 @@ async function saveEnvironmentDraft(revision = state.environmentUi.draftRevision
 
 async function flushEnvironmentDraft() {
   if (!state.environmentUi.draftDirty && !state.environmentUi.draftPromise) return false;
-  const saved = await saveEnvironmentDraft(state.environmentUi.draftRevision);
-  if (state.environmentUi.draftDirty) throw new Error("Save the setting changes before finishing this step.");
+  const saved = await saveEnvironmentDraft();
+  if (state.environmentUi.draftDirty) {
+    throw state.environmentUi.draftError || new Error("Setting changes are still unsaved. Try saving this scene again.");
+  }
   return saved;
 }
 
@@ -22318,20 +22387,25 @@ function environmentEnhancementContractForBeat(contract, beatId, variantOptionId
 
 function lockedEnvironmentPreviewContract(viewer) {
   const decision = state.data?.decisions?.["environment-enhancement"];
-  const decisionBundle = checkpointIsCurrent("environment-enhancement") ? decision?.option?.environmentEnhancement : null;
+  const decisionBundle = decision?.option?.environmentEnhancement || null;
   const viewerContext = spatialSceneContext(
     viewer?.sceneContext?.beatId || viewer?.beat?.id,
     viewer?.sceneContext?.variantGroupId || viewer?.beat?.variantGroupId,
     viewer?.sceneContext?.variantOptionId || viewer?.beat?.variantOptionId,
   );
   const manifest = environmentManifest(viewerContext.beatId ? viewerContext : null);
+  // Scene previews use the latest persisted setting, including autosaved drafts.
+  // Completion status governs the final build, not whether the setting is visible.
+  if (Object.keys(environmentRawState()).length) {
+    return manifest.assigned && !manifest.skipped && manifest.asset ? manifest : null;
+  }
   const decisionContract = environmentEnhancementContractForBeat(
     decisionBundle,
     viewerContext.beatId,
     viewerContext.variantOptionId,
   );
   if (decisionBundle && !decisionContract) return null;
-  if (!decisionContract && !manifest.current) return null;
+  if (!decisionContract) return null;
   const contract = decisionContract || manifest;
   const asset = contract.asset || manifest.asset
     ? { ...(manifest.asset || {}), ...(contract.asset || {}) }

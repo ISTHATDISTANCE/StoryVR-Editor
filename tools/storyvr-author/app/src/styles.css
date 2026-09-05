@@ -5281,6 +5281,65 @@ dd {
   font-weight: 900;
 }
 
+.procedural-dynamics-conversation {
+  display: grid;
+  gap: 0.65rem;
+  min-width: 0;
+  max-height: 360px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.15rem;
+  scrollbar-gutter: stable;
+}
+
+.procedural-dynamics-chat-message {
+  min-width: 0;
+  border: 1px solid rgba(16, 32, 28, 0.1);
+  border-radius: 13px;
+  padding: 0.65rem 0.75rem;
+  background: rgba(255, 253, 244, 0.94);
+}
+
+.procedural-dynamics-chat-message.is-user {
+  margin-left: 1rem;
+  border-color: rgba(0, 127, 115, 0.2);
+  background: rgba(0, 127, 115, 0.075);
+}
+
+.procedural-dynamics-chat-message.is-assistant {
+  margin-right: 0.5rem;
+}
+
+.procedural-dynamics-chat-message.is-pending {
+  border-style: dashed;
+}
+
+.procedural-dynamics-chat-message > span {
+  display: block;
+  margin-bottom: 0.25rem;
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+
+.procedural-dynamics-chat-message p,
+.procedural-dynamics-composer-hint {
+  margin: 0;
+  font-size: 0.76rem;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.procedural-dynamics-chat-message p {
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.procedural-dynamics-composer-hint {
+  color: var(--muted);
+}
+
 .procedural-dynamics-prompt {
   display: grid;
   gap: 0.4rem;

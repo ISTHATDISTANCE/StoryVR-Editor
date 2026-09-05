@@ -22,6 +22,7 @@ import { pipeline } from "node:stream/promises";
 import { parseArgs } from "node:util";
 import { createServer as createViteServer } from "vite";
 import { hostingRootForPath } from "../storyvr-adapter/storyvr-adapter.mjs";
+import { resolveStoryvrCodexBin } from "./codex-cli.mjs";
 import {
   applyProceduralDynamicsPlan,
   applyProceduralTransitionPlan,
@@ -136,7 +137,7 @@ if (!options.resourceFolder && !options.storyFolder) {
 const host = args.values.host;
 const port = Number(args.values.port);
 const appRoot = path.join(import.meta.dirname, "app");
-const CODEX_BIN = process.env.CODEX_BIN || "codex";
+const CODEX_BIN = resolveStoryvrCodexBin();
 const CODEX_STATUS_TTL_MS = 30_000;
 
 let cachedCodexVersion = null;
@@ -1575,11 +1576,10 @@ function decorateEnvironmentStateFromDisk(state) {
 }
 
 async function assertEnvironmentEnhancementReady() {
-  const projectState = await loadAuthorProject(authorOptions());
-  if (!projectState.readiness?.["environment-enhancement"]?.canGenerate) {
-    throw httpError(409, "Finish Place objects before editing Set the scene.");
-  }
-  return projectState;
+  // Environment edits use the current story scenes, including saved drafts.
+  // Scene identity and asset validation below still apply independently of
+  // whether the author has finished any earlier checkpoint.
+  return loadAuthorProject(authorOptions());
 }
 
 function requireAuthoredEnvironmentBeat(projectState, value, label = "beatId") {

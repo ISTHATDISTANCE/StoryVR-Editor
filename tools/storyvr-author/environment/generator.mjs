@@ -13,6 +13,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { resolveStoryvrCodexBin, STORYVR_CODEX_MODEL_ARGS } from "../codex-cli.mjs";
 import {
   attachGenerativeUsage,
   generativeUsageFromCodexJsonl,
@@ -58,7 +59,7 @@ const PARENT_CODEX_SESSION_ENV_KEYS = [
 export async function generateEnvironmentImageWithCodex({
   prompt,
   referenceImages = [],
-  codexBin = process.env.CODEX_BIN || "codex",
+  codexBin = resolveStoryvrCodexBin(),
   codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
   codexVersion = null,
   timeoutMs = DEFAULT_GENERATION_TIMEOUT_MS,
@@ -104,6 +105,7 @@ export async function generateEnvironmentImageWithCodex({
       "--ask-for-approval",
       "never",
       "exec",
+      ...STORYVR_CODEX_MODEL_ARGS,
       "--ignore-user-config",
       "--ephemeral",
       "--sandbox",
@@ -239,7 +241,7 @@ export async function generateEnvironmentImageWithCodex({
 export async function generateMatchingGroundTextureWithCodex({
   prompt,
   referenceImage = null,
-  codexBin = process.env.CODEX_BIN || "codex",
+  codexBin = resolveStoryvrCodexBin(),
   codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
   codexVersion = null,
   timeoutMs = DEFAULT_GENERATION_TIMEOUT_MS,
@@ -279,6 +281,7 @@ export async function generateMatchingGroundTextureWithCodex({
       "--ask-for-approval",
       "never",
       "exec",
+      ...STORYVR_CODEX_MODEL_ARGS,
       "--ignore-user-config",
       "--ephemeral",
       "--sandbox",

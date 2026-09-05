@@ -213,12 +213,15 @@ Work through the eight participant-facing steps in order:
 
 Select **Finish this step** to complete a top-level step and open the next step
 automatically. Inside a 3D editor, use **Save scene and return** to return to
-that step's story canvas without completing the top-level step. If an earlier
-step changes, StoryVR revalidates completed downstream work in order, preserves
-steps that are still safe, and stops at the first scene or field that needs
-review. Review story stays open after completion so **Build story** remains an
-explicit action. It starts a background build from a stable snapshot and writes
-the current authored decisions into:
+that step's story canvas without completing the top-level step. Every editor can
+be opened, changed, and autosaved independently using the latest saved drafts
+and inferred scene data; switching steps saves pending drafts without marking a
+step finished. A material upstream edit can mark affected downstream work for
+review, but it does not lock those editors. **Review story** completion and
+**Build story** still require every decision to be current and valid. Review
+story stays open after completion so **Build story** remains an explicit action.
+It starts a background build from a stable snapshot and writes the current
+authored decisions into:
 
 ```text
 <story-folder>/discovery/storyvr-runtime.json
@@ -235,8 +238,9 @@ Windows and Linux.
 
 When a project opens, StoryVR can use the signed-in Codex CLI to generate a
 semantic progress strip for the saved Story order. Missing or stale grouping
-is refreshed in the background after Story order is finished; the continuous
-story-part and choice graph remains the source of truth.
+is refreshed in the background from the latest saved graph regardless of which
+step is open; the continuous story-part and choice graph remains the source of
+truth.
 
 Place objects flattens probe-verified source layouts into independent GLB
 placements while preserving their shared framing, relative transforms, and
@@ -252,17 +256,22 @@ settings remain the fallback until an exact variant is authored.
 Object movement exposes the complete saved Reader, GLB, and image roster plus
 runtime-generated objects. Codex can animate exact-scene GLBs and image planes
 with declarative timelines or create temporary primitives, lights, and particle
-emitters. Generate/Regenerate validates and saves one exact-scene plan
-atomically; saved placement and linked assets remain unchanged. Select saved
-GLBs or image planes in the scene to make them the exact generation subjects;
-with no selection, Codex derives subjects from the prompt and saved scene, and
-Reader is never selected automatically. Plans validate each track against its
-target, reject invisible or identity-only results, and make one bounded repair
-attempt when generated actions are incompatible. Provider or validation failure
-is shown instead of inventing local fallback motion. Appearance-only prompts can
-animate color and brightness without adding unrequested object movement. The
-author preview and Reader share visible-pivot compensation and explicit clip
-loop behavior so generated motion preserves the authored object framing.
+emitters. Each scene and variant keeps its own saved conversation and accepted
+plan, so follow-ups such as “make it slower” can refine, add, remove, or stop
+behavior without restating the original request. Successful turns and plan
+updates save atomically; clarification-only or no-change replies can be kept
+without invalidating the Reader build, while failures leave the prior result
+intact. Select saved GLBs or image planes in the scene to make them the exact
+subjects for the next message; unselected animation remains unchanged. With no
+selection, Codex derives subjects from the request and saved scene, and Reader
+is never selected automatically. Plans validate each track against its target,
+reject invisible or identity-only results, and make one bounded repair attempt
+when generated actions are incompatible. Appearance-only prompts can animate
+color and brightness without adding unrequested object movement. Conversation
+history remains authoring-only and is omitted from Reader exports and build
+input signatures. The author preview and Reader share visible-pivot compensation
+and explicit clip loop behavior so generated motion preserves the authored
+object framing.
 
 Scene changes offers **Auto Interpolation** when two consecutive saved scenes
 contain safely matched GLBs or image planes whose position, rotation, or scale
@@ -402,6 +411,12 @@ credentials into the terminal. Use `login --device-auth` only if the normal
 localhost callback cannot work and device-code login is enabled for the
 study-approved account or workspace.
 
+StoryVR pins generation to `gpt-5.6-sol` independently of the user's global
+Codex model. Structured text and JSON planning—Story progress, Object movement,
+Scene changes, proposals, and performance planning—uses Ultra reasoning and has
+no StoryVR-imposed time limit. Output-size safeguards remain; image generation,
+login, uploads, and local builds retain their separate bounded timeouts.
+
 The editor exposes the Codex device-auth flow in its UI and never receives CLI
 credentials or tokens. To use a Codex binary from a nonstandard location:
 
@@ -414,6 +429,11 @@ CODEX_BIN=/absolute/path/to/codex \
 $env:CODEX_BIN = $CodexCommand.Source
 npm.cmd run storyvr:author -- --story-folder "$StoryFolder"
 ```
+
+An explicit `CODEX_BIN` takes priority. Otherwise StoryVR checks an executable
+`CODEX_CLI_PATH`, then on macOS the CLI bundled with ChatGPT or Codex, and then
+`codex` on `PATH`. Restart the StoryVR server after changing the executable or
+its configuration.
 
 `OPENAI_API_KEY` can support some proposal and recommendation fallbacks, but
 environment panorama and matching-ground generation require the Codex CLI.

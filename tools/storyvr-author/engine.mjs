@@ -21,6 +21,17 @@ import { parseCodexJsonObject as parseJsonObject } from "../codex-json.mjs";
 import { REPO_ROOT, importFetchedStoryResources } from "../storyvr-adapter/storyvr-adapter.mjs";
 import { normalizeEnvironmentMovementCue } from "./environment/store.mjs";
 import {
+  resolveStoryvrCodexBin,
+  STORYVR_CODEX_PLANNING_ARGS,
+} from "./codex-cli.mjs";
+import {
+  appendDynamicsConversationTurn,
+  createDynamicsConversationTurn,
+  dynamicsConversationForScene,
+  dynamicsStoreForReader,
+  validateDynamicsConversationTurn,
+} from "./dynamics-conversation.mjs";
+import {
   attachGenerativeUsage,
   generativeUsageFromCodexJsonl,
   generativeUsageFromOpenAIResponse,
@@ -382,7 +393,7 @@ export async function loadAuthorProject(options) {
   const previouslyCompletedCheckpointIds = new Set();
   for (const component of DECISION_COMPONENTS) {
     const stored = await readJsonIfExists(path.join(paths.decisionsRoot, `${component.id}.json`));
-    if (stored?.savedAt) previouslyCompletedCheckpointIds.add(component.id);
+    if (stored?.savedAt && stored.status !== "draft") previouslyCompletedCheckpointIds.add(component.id);
   }
   await migrateEnvironmentEnhancementWorkflow(paths, project);
   await migrateSpatialRelationsWorkflow(paths, project, { preMigrationComponentOrder });
@@ -412,9 +423,7 @@ export async function loadAuthorProject(options) {
   if (sourceMotionChanged) await invalidateSourceMotionDependents(paths);
   let proposals = await readProposalIndex(paths);
   let decisions = await readDecisionIndex(paths);
-  if (previousComponentsCurrent(SPATIAL_RELATIONS_COMPONENT_ID, decisions)) {
-    ({ proposals, decisions } = await ensureSpatialRelationsInferenceState(paths, proposals, decisions, graph, runtime));
-  }
+  ({ proposals, decisions } = await ensureSpatialRelationsInferenceState(paths, proposals, decisions, graph, runtime));
   const workflowRevalidation = await revalidatePreviouslyCompletedWorkflow({
     options,
     paths,
@@ -425,13 +434,9 @@ export async function loadAuthorProject(options) {
     previouslyCompletedCheckpointIds,
   });
   ({ proposals, decisions } = workflowRevalidation);
-  if (previousComponentsCurrent(ATTENTION_GUIDANCE_COMPONENT_ID, decisions)) {
-    ({ proposals, decisions } = await ensureAttentionGuidanceInferenceState(paths, proposals, decisions, graph, runtime));
-  }
-  if (sourceDynamicsPreviewPrerequisitesCurrent(decisions)) {
-    await ensureSourceDynamicsPreviewDecisionsAvailable(paths, graph, { force: sourceMotionChanged });
-    decisions = await readDecisionIndex(paths);
-  }
+  ({ proposals, decisions } = await ensureAttentionGuidanceInferenceState(paths, proposals, decisions, graph, runtime));
+  await ensureSourceDynamicsPreviewDecisionsAvailable(paths, graph, { force: sourceMotionChanged });
+  decisions = await readDecisionIndex(paths);
   const spatialRelations = proposals[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations
     || decisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations
     || null;
@@ -451,7 +456,7 @@ export async function loadAuthorProject(options) {
     runtime,
     spatialRelations,
   );
-  const interactionControlDraft = previousComponentsCurrent("interaction-control", decisions) && spatialRelations
+  const interactionControlDraft = spatialRelations
     ? interactionControlDraftFor(
       graph,
       runtime,
@@ -569,12 +574,8 @@ export async function saveStoryGraph(options, graph) {
     await invalidateSourceGraphDependents(paths);
   } else if (inferenceChanged) {
     await invalidateSourceMotionDependents(paths);
-    const decisions = await readDecisionIndex(paths);
-    if (sourceDynamicsPreviewPrerequisitesCurrent(decisions)) {
-      await ensureSourceDynamicsPreviewDecisionsAvailable(paths, next, { force: true });
-    } else {
-      await invalidateSourceDynamicsPreviewDecisions(paths, "source-graph-links");
-    }
+    await invalidateSourceDynamicsPreviewDecisions(paths, "source-graph-links");
+    await ensureSourceDynamicsPreviewDecisionsAvailable(paths, next, { force: true });
   }
   return next;
 }
@@ -813,7 +814,7 @@ function storyCanvasSegmentsGenerationPrompt(context) {
 }
 
 export async function generateStoryCanvasSegmentsWithCodex(context, options = {}) {
-  const codexBin = options.codexBin || process.env.CODEX_BIN || "codex";
+  const codexBin = resolveStoryvrCodexBin(options.codexBin);
   const configuredWorkspace = options.storyCanvasSegmentsCodexWorkspace || options.codexWorkspace;
   const codexWorkspace = configuredWorkspace
     ? path.resolve(configuredWorkspace)
@@ -821,7 +822,6 @@ export async function generateStoryCanvasSegmentsWithCodex(context, options = {}
   try {
     const result = await runCodexExec(codexBin, storyCanvasSegmentsGenerationPrompt(context), {
       cwd: codexWorkspace,
-      timeoutMs: options.storyCanvasSegmentsCodexTimeoutMs || options.codexTimeoutMs || 180_000,
       maxOutputChars: STORY_CANVAS_SEGMENTS_MAX_CODEX_OUTPUT_CHARS,
       requestLabel: "Codex story progress generation",
       usageOperation: "story-progress",
@@ -1149,17 +1149,14 @@ export async function saveSourceMotionLinks(options, payload = {}) {
   const changed = sourceMotionEffectiveSignature(currentLinking, currentGraph.sourceMotionPlayback)
     !== sourceMotionEffectiveSignature(nextGraph.sourceMotionLinking, nextGraph.sourceMotionPlayback);
   if (changed) await invalidateSourceMotionDependents(paths);
-  const decisions = await readDecisionIndex(paths);
-  if (sourceDynamicsPreviewPrerequisitesCurrent(decisions)) {
-    await ensureSourceDynamicsPreviewDecisionsAvailable(paths, nextGraph, { force: true });
-  }
+  await ensureSourceDynamicsPreviewDecisionsAvailable(paths, nextGraph, { force: true });
   return nextGraph.sourceMotionLinking || emptySourceMotionLinking();
 }
 
 export async function generateComponentProposals(options, componentId, request = {}) {
   const component = requireProposalComponent(componentId);
   if (isSpatialRelationsComponent(component)) {
-    throw Object.assign(new Error("Place objects creates its suggested layout automatically when earlier steps are current. Review or edit that layout instead of generating AI options."), {
+    throw Object.assign(new Error("Place objects creates its suggested layout automatically from the current story. Review or edit that layout instead of generating AI options."), {
       statusCode: 409,
     });
   }
@@ -1169,7 +1166,7 @@ export async function generateComponentProposals(options, componentId, request =
     });
   }
   if (isAttentionGuidanceComponent(component)) {
-    throw Object.assign(new Error("The Guide attention step automatically creates conservative visible-object suggestions after the Scene changes step is current. Review and edit those focus markers in the story-part editor instead of generating AI options."), {
+    throw Object.assign(new Error("The Guide attention step automatically creates conservative visible-object suggestions from the current scene layout. Review and edit those focus markers in the story-part editor instead of generating AI options."), {
       statusCode: 409,
     });
   }
@@ -1193,7 +1190,6 @@ export async function generateComponentProposals(options, componentId, request =
   const proposalPath = path.join(paths.proposalsRoot, `${component.id}.json`);
   const rawGraph = await readRequiredJson(paths.storyGraphPath, "Generate the source graph before proposals.");
   const decisions = await readDecisionIndex(paths);
-  assertPreviousCurrent(componentId, decisions);
   const previousBundle = await readJsonIfExists(proposalPath);
 
   const runtime = await importFetchedStoryResources(paths.resourceFolder, "dev", {
@@ -1255,16 +1251,28 @@ export async function generateComponentProposals(options, componentId, request =
 
 export async function generateProceduralDynamicsPlan(options, request = {}) {
   const state = await proceduralDynamicsRequestState(options, request.sceneContext);
+  const conversational = request.conversation === true;
+  const storedPlan = state.proceduralDynamics.plansByScene[state.context.scene.sceneKey] || null;
+  const conversation = conversational
+    ? dynamicsConversationForScene(state.proceduralDynamics, state.context.scene.sceneKey, storedPlan)
+    : null;
+  if (conversational) {
+    state.dynamicsConversationContext = {
+      messages: conversation.messages,
+      previousPlan: storedPlan,
+      subjectEntityIds: request.subjectEntityIds || [],
+    };
+  }
   const previousCandidate = request.previousCandidate
     && typeof request.previousCandidate === "object"
     ? request.previousCandidate
     : null;
-  const previousPlanInput = previousCandidate?.scenePatch?.motionPlan
+  const previousPlanInput = conversational ? storedPlan : previousCandidate?.scenePatch?.motionPlan
     ?? request.previousPlan
     ?? state.proceduralDynamics.plansByScene[state.context.scene.sceneKey]
     ?? null;
   const libraryContext = dynamicsLibraryContext(state);
-  const previousPlan = normalizePreviousDynamicsPlan(previousPlanInput, libraryContext);
+  const previousPlan = conversational ? storedPlan : normalizePreviousDynamicsPlan(previousPlanInput, libraryContext);
   const generationContext = {
     ...libraryContext,
     subjectEntityIds: request.subjectEntityIds,
@@ -1272,6 +1280,15 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
   const imagePaths = dynamicsSceneImageAttachmentPaths(libraryContext.sceneImages);
   const usageSources = [];
   let engine = { provider: "codex-cli" };
+  let assistantMessage = "";
+  let needsClarification = false;
+  const captureReply = (generated) => {
+    const reply = generated?.assistantMessage ?? generated?.reply;
+    assistantMessage = typeof reply === "string" ? reply.trim().slice(0, 4000) : "";
+    needsClarification = generated?.needsClarification === true && Boolean(assistantMessage);
+    if (state.dynamicsConversationContext) state.dynamicsConversationContext.needsClarification = needsClarification;
+    return generated;
+  };
   let intent;
   try {
     intent = await generateDynamicsSceneIntent({
@@ -1282,13 +1299,12 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
         if (options.proceduralDynamicsGenerateJson) {
           const generated = await options.proceduralDynamicsGenerateJson(prompt, { imagePaths: [...imagePaths] });
           usageSources.push(generated);
-          return generated;
+          return captureReply(generated);
         }
         if (options.aiProvider === "openai") throw new Error("Codex provider is not available for this request.");
-        const codexBin = options.codexBin || process.env.CODEX_BIN || "codex";
+        const codexBin = resolveStoryvrCodexBin(options.codexBin);
         const result = await runCodexExec(codexBin, prompt, {
           cwd: options.codexWorkspace || REPO_ROOT,
-          timeoutMs: options.codexTimeoutMs || 180_000,
           requestLabel: "Codex object movement request",
           imagePaths,
           usageOperation: "dynamics",
@@ -1296,7 +1312,7 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
         usageSources.push(result);
         engine = { provider: "codex-cli", codexBin };
         try {
-          return parseJsonObject(extractCodexFinalText(result.stdout) || result.stdout);
+          return captureReply(parseJsonObject(extractCodexFinalText(result.stdout) || result.stdout));
         } catch (error) {
           throw attachGenerativeUsage(error, result);
         }
@@ -1308,16 +1324,26 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
   const projection = projectDynamicsSceneCandidate(state, intent, {
     requireSceneMatch: false,
   });
-  const comparisonCandidate = [
+  const comparisonCandidate = !conversational && [
     DYNAMICS_SCENE_CANDIDATE_SCHEMA_VERSION,
     LEGACY_DYNAMICS_SCENE_CANDIDATE_SCHEMA_VERSION,
   ].includes(previousCandidate?.schemaVersion)
     ? previousCandidate
     : currentDynamicsSceneCandidate(state);
+  const visibleSignature = conversational ? dynamicsConversationVisibleSignature : dynamicsSceneCandidateVisibleSignature;
   const materiallyChanged = !comparisonCandidate
-    || dynamicsSceneCandidateVisibleSignature(projection.candidate)
-      !== dynamicsSceneCandidateVisibleSignature(comparisonCandidate);
+    || visibleSignature(projection.candidate) !== visibleSignature(comparisonCandidate);
   projection.candidate.impact.materiallyChanged = materiallyChanged;
+  if (conversational) {
+    const hasMotion = projection.candidate.scenePatch.motionPlan.actors.length
+      || projection.candidate.scenePatch.motionPlan.generatedObjects.length;
+    assistantMessage ||= materiallyChanged && (hasMotion || storedPlan)
+      ? hasMotion ? "Updated the animation using your message and the current scene." : "Removed the generated animation and effects."
+      : "The animation is unchanged.";
+    projection.candidate.conversationTurn = createDynamicsConversationTurn(conversation, request.prompt, assistantMessage, {
+      needsClarification: needsClarification && (!materiallyChanged || (!hasMotion && !storedPlan)),
+    });
+  }
   if (!materiallyChanged) {
     projection.candidate.impact.warnings = uniqueStrings([
       ...(projection.candidate.impact.warnings || []),
@@ -1329,6 +1355,7 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
     expectedRevision: state.proceduralDynamics.revision,
     proceduralDynamics: state.proceduralDynamics,
     engine,
+    ...(conversational ? { assistantMessage } : {}),
   }, usageSources);
 }
 
@@ -1339,6 +1366,9 @@ export async function prepareProceduralDynamicsEditCandidate(options, request = 
     throw Object.assign(new Error("Generate and save animation or effects for this scene before editing them directly."), {
       statusCode: 409,
     });
+  }
+  if (state.proceduralDynamics.conversationsByScene?.[state.context.scene.sceneKey]) {
+    state.dynamicsConversationContext = { previousPlan: plan, subjectEntityIds: [], messages: [] };
   }
 
   const projection = projectDynamicsSceneCandidate(state, {
@@ -1381,6 +1411,7 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
     "baseline",
     "scenePatch",
     "impact",
+    "conversationTurn",
   ].includes(key));
   if (extraCandidateKeys.length
     || ![
@@ -1436,6 +1467,22 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
   }
   const currentBaseline = dynamicsSceneBaseline(state);
   assertDynamicsSceneBaseline(submitted.baseline, currentBaseline, expectedRevision);
+  const storedPlan = state.proceduralDynamics.plansByScene[state.context.scene.sceneKey] || null;
+  let conversation = null;
+  let conversationTurn = null;
+  if (submitted.conversationTurn) {
+    conversation = dynamicsConversationForScene(state.proceduralDynamics, state.context.scene.sceneKey, storedPlan);
+    conversationTurn = validateDynamicsConversationTurn(submitted.conversationTurn, conversation, submitted.prompt);
+    state.dynamicsConversationContext = {
+      previousPlan: storedPlan,
+      messages: conversation.messages,
+      subjectEntityIds: submittedSubjectEntityIds,
+      needsClarification: conversationTurn.needsClarification === true,
+    };
+  } else if (submitted.impact?.editBaselineVisibleSignature
+    && state.proceduralDynamics.conversationsByScene?.[state.context.scene.sceneKey]) {
+    state.dynamicsConversationContext = { previousPlan: storedPlan, messages: [], subjectEntityIds: [] };
+  }
   const normalizedIntent = normalizeDynamicsSceneIntent(submitted, dynamicsLibraryContext(state), {
     prompt: submitted.prompt,
   });
@@ -1460,7 +1507,7 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
         statusCode: 409,
       });
     }
-  } else if (submitted.impact?.materiallyChanged === false) {
+  } else if (submitted.impact?.materiallyChanged === false && !conversationTurn) {
     throw Object.assign(new Error("This generated result has no material visible change. Revise the description and generate it again."), {
       statusCode: 409,
     });
@@ -1473,7 +1520,17 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
   }
 
   const now = new Date().toISOString();
-  const { store, plan } = applyMotionPlanToStore(
+  const visibleSignature = conversationTurn ? dynamicsConversationVisibleSignature : dynamicsSceneCandidateVisibleSignature;
+  const changed = visibleSignature(submitted) !== visibleSignature(currentDynamicsSceneCandidate(state));
+  const hasMotion = projection.candidate.scenePatch.motionPlan.actors.length
+    || projection.candidate.scenePatch.motionPlan.generatedObjects.length;
+  let { store, plan } = conversationTurn && !changed
+    ? { store: state.proceduralDynamics, plan: storedPlan }
+    : conversationTurn && !hasMotion
+      ? { store: removeMotionPlanFromStore(state.proceduralDynamics, {
+        sceneContext: state.context.scene, expectedRevision,
+      }, new Date(now)).store, plan: null }
+      : applyMotionPlanToStore(
     state.proceduralDynamics,
     {
       sceneContext: state.context.scene,
@@ -1483,6 +1540,27 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
     projection.motionContext,
     new Date(now),
   );
+
+  if (conversationTurn) {
+    if (changed && (hasMotion || storedPlan)) delete conversationTurn.needsClarification;
+    store = {
+      ...store,
+      conversationsByScene: {
+        ...store.conversationsByScene,
+        [state.context.scene.sceneKey]: appendDynamicsConversationTurn(conversation, conversationTurn, plan, now),
+      },
+    };
+    projection.candidate.conversationTurn = conversationTurn;
+    if (!changed || (!hasMotion && !storedPlan)) {
+      await writeAuthorJsonTransaction(state.paths, [[state.paths.proceduralDynamicsPath, store]]);
+      return {
+        plan, proceduralDynamics: store, graph: projection.graph,
+        spatialRelations: projection.spatialRelations, attentionGuidance: projection.attentionGuidance,
+        candidate: projection.candidate, assistantMessage: conversationTurn.reply,
+        conversationOnly: true,
+      };
+    }
+  }
 
   const dynamicsCurrent = state.decisions["dynamic-geometry"] || {};
   const dynamicsDecision = decisionWithStatus({
@@ -1524,11 +1602,12 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
     spatialRelations: projection.spatialRelations,
     attentionGuidance: projection.attentionGuidance,
     candidate: projection.candidate,
+    ...(conversationTurn ? { assistantMessage: conversationTurn.reply } : {}),
   };
 }
 
 function dynamicsLibraryContext(state) {
-  const spatialRelations = state.decisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations || null;
+  const spatialRelations = state.spatialRelations;
   const spatialScene = dynamicsSpatialSceneForContext(spatialRelations, state.context.scene);
   const spatialEntities = spatialScene?.entities || [];
   const libraryById = new Map(state.libraryAssets.map((asset) => [asset.assetId, asset]));
@@ -1582,6 +1661,10 @@ function dynamicsLibraryContext(state) {
     assets,
     sceneImages,
     linkedAssetIds: uniqueStrings(assets.map((asset) => asset.assetId)),
+    ...(state.dynamicsConversationContext ? {
+      conversation: state.dynamicsConversationContext,
+      subjectEntityIds: state.dynamicsConversationContext.subjectEntityIds,
+    } : {}),
   };
 }
 
@@ -1615,7 +1698,7 @@ function projectDynamicsSceneCandidate(state, intent, options = {}) {
     prompt: intent.prompt,
     requireSceneMatch: options.requireSceneMatch !== false,
   });
-  const currentSpatial = state.decisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations || null;
+  const currentSpatial = state.spatialRelations;
   const currentSpatialScene = dynamicsSpatialSceneForContext(currentSpatial, state.context.scene);
   const attentionGuidance = state.decisions[ATTENTION_GUIDANCE_COMPONENT_ID]?.attentionGuidance || null;
   const candidate = {
@@ -1663,7 +1746,7 @@ function dynamicsSpatialSceneForContext(contract, scene) {
 }
 
 function dynamicsSceneBaseline(state) {
-  const spatial = state.decisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations || null;
+  const spatial = state.spatialRelations;
   const attention = state.decisions[ATTENTION_GUIDANCE_COMPONENT_ID]?.attentionGuidance || null;
   const motionContext = dynamicsLibraryContext(state);
   return {
@@ -1751,6 +1834,14 @@ function dynamicsSpatialSceneVisibleSignature(scene) {
   });
 }
 
+function dynamicsConversationVisibleSignature(candidate) {
+  const plan = candidate?.scenePatch?.motionPlan || candidate?.motionPlan || candidate?.plan;
+  const hasMotion = plan?.actors?.length || plan?.generatedObjects?.length;
+  return dynamicsSceneCandidateVisibleSignature({
+    scenePatch: { motionPlan: hasMotion ? { ...plan, subjectEntityIds: [] } : null },
+  });
+}
+
 export function dynamicsSceneCandidateVisibleSignature(candidate) {
   const motionPlan = candidate?.scenePatch?.motionPlan
     || candidate?.motionPlan
@@ -1813,6 +1904,15 @@ export async function removeProceduralDynamicsPlan(options, request = {}) {
     { ...request, sceneContext: state.context.scene },
   );
   if (result.removed) {
+    const previousPlan = state.proceduralDynamics.plansByScene[state.context.scene.sceneKey] || null;
+    const conversation = dynamicsConversationForScene(state.proceduralDynamics, state.context.scene.sceneKey, previousPlan);
+    const turn = createDynamicsConversationTurn(conversation,
+      "Remove the generated animation and effects from this scene.",
+      "Removed the generated animation and effects. The conversation is kept for future edits.");
+    result.store.conversationsByScene = {
+      ...result.store.conversationsByScene,
+      [state.context.scene.sceneKey]: appendDynamicsConversationTurn(conversation, turn, null),
+    };
     await writeJson(state.paths.proceduralDynamicsPath, result.store);
     await markProceduralDynamicsDecisionDraft(state.paths, result.store);
   }
@@ -1855,10 +1955,9 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
           return generated;
         }
         if (options.aiProvider === "openai") throw new Error("Codex provider is not available for this request.");
-        const codexBin = options.codexBin || process.env.CODEX_BIN || "codex";
+        const codexBin = resolveStoryvrCodexBin(options.codexBin);
         const result = await runCodexExec(codexBin, prompt, {
           cwd: options.codexWorkspace || REPO_ROOT,
-          timeoutMs: options.codexTimeoutMs || 180_000,
           requestLabel: "Codex scene transition request",
           usageOperation: "transition",
         });
@@ -2002,7 +2101,6 @@ async function proceduralTransitionRequestState(options, rawBoundaryContext) {
   );
   const graph = await enrichSourceGraphWithAnimationProbe(paths, rawGraph, runtime);
   const decisions = await readDecisionIndex(paths);
-  assertPreviousCurrent("inter-beat-dynamics", decisions);
   const requestedBoundaryKey = proceduralTransitionBoundaryKey(rawBoundaryContext);
   if (!requestedBoundaryKey) {
     throw Object.assign(new Error("boundaryContext must identify one exact directed Story order edge."), {
@@ -2016,7 +2114,7 @@ async function proceduralTransitionRequestState(options, rawBoundaryContext) {
       statusCode: 409,
     });
   }
-  const spatialRelations = decisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations || null;
+  const spatialRelations = await spatialRelationsForAuthoring(paths, graph, runtime, decisions);
   const eligibility = proceduralTransitionBoundaryEligibility(
     graph,
     runtime,
@@ -2235,7 +2333,7 @@ export async function saveCheckpointDecision(options, componentId, payload = {})
     throw Object.assign(new Error("Use the Set the scene save action to validate and save its selected setting."), { statusCode: 409 });
   }
   const decisions = await readDecisionIndex(paths);
-  assertPreviousCurrent(componentId, decisions);
+  if (isFinalReviewComponent(component)) assertPreviousCurrent(componentId, decisions);
   const decisionPath = path.join(paths.decisionsRoot, `${component.id}.json`);
   const current = await readJsonIfExists(decisionPath);
   const previousMaterialSignature = decisionMaterialSignature(current);
@@ -2412,7 +2510,6 @@ export async function saveCheckpointDecisionDraft(options, componentId, payload 
     throw Object.assign(new Error("Use the Set the scene draft action to save its selected or pending setting."), { statusCode: 409 });
   }
   const decisions = await readDecisionIndex(paths);
-  assertPreviousCurrent(componentId, decisions);
   const decisionPath = path.join(paths.decisionsRoot, `${component.id}.json`);
   const current = await readJsonIfExists(decisionPath);
   const previousMaterialSignature = decisionMaterialSignature(current);
@@ -2587,6 +2684,14 @@ export async function saveCheckpointDecisionDraft(options, componentId, payload 
   return decision;
 }
 
+async function spatialRelationsForAuthoring(paths, graph, runtime, decisions) {
+  // Saved drafts are valid editing inputs. A first visit can use the inferred
+  // layout without marking Place objects complete on the author's behalf.
+  return decisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations
+    || (await readJsonIfExists(path.join(paths.proposalsRoot, `${SPATIAL_RELATIONS_COMPONENT_ID}.json`)))?.spatialRelations
+    || inferSpatialRelationsContract(graph, runtime, decisions);
+}
+
 async function currentSpatialTraversal(paths, decisionsInput = null) {
   const runtime = await importFetchedStoryResources(paths.resourceFolder, "dev", {
     repoRoot: REPO_ROOT,
@@ -2598,10 +2703,7 @@ async function currentSpatialTraversal(paths, decisionsInput = null) {
     runtime,
   );
   const decisions = decisionsInput || await readDecisionIndex(paths);
-  const spatialRelations = decisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations;
-  if (!spatialRelations) {
-    throw Object.assign(new Error("Finish Place objects before editing Reader actions."), { statusCode: 409 });
-  }
+  const spatialRelations = await spatialRelationsForAuthoring(paths, graph, runtime, decisions);
   return analyzeSpatialTraversal(graph, runtime, spatialRelations, decisions);
 }
 
@@ -2616,10 +2718,7 @@ async function currentInteractionControlState(paths, decisionsInput = null) {
     runtime,
   );
   const decisions = decisionsInput || await readDecisionIndex(paths);
-  const spatialRelations = decisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations;
-  if (!spatialRelations) {
-    throw Object.assign(new Error("Finish Place objects before editing Reader actions."), { statusCode: 409 });
-  }
+  const spatialRelations = await spatialRelationsForAuthoring(paths, graph, runtime, decisions);
   const spatialTraversal = analyzeSpatialTraversal(graph, runtime, spatialRelations, decisions);
   const proceduralTransitions = await readProceduralTransitionsStore(
     paths,
@@ -4568,7 +4667,6 @@ export async function saveSpatialRelationsDecisionDraft(options, payload = {}) {
   const component = COMPONENT_BY_ID.get(SPATIAL_RELATIONS_COMPONENT_ID);
   const paths = resolveAuthorPaths(options);
   const decisions = await readDecisionIndex(paths);
-  assertPreviousCurrent(component.id, decisions);
 
   const decisionPath = path.join(paths.decisionsRoot, `${component.id}.json`);
   const current = await readJsonIfExists(decisionPath);
@@ -4620,7 +4718,6 @@ export async function saveAttentionGuidanceDecisionDraft(options, payload = {}) 
   const component = COMPONENT_BY_ID.get(ATTENTION_GUIDANCE_COMPONENT_ID);
   const paths = resolveAuthorPaths(options);
   const decisions = await readDecisionIndex(paths);
-  assertPreviousCurrent(component.id, decisions);
 
   const decisionPath = path.join(paths.decisionsRoot, `${component.id}.json`);
   const current = await readJsonIfExists(decisionPath);
@@ -4845,7 +4942,6 @@ export async function saveEnvironmentEnhancementCheckpoint(options, environmentS
   const component = COMPONENT_BY_ID.get(ENVIRONMENT_ENHANCEMENT_COMPONENT_ID);
   const paths = resolveAuthorPaths(options);
   const decisions = await readDecisionIndex(paths);
-  assertPreviousCurrent(component.id, decisions);
 
   const decisionPath = path.join(paths.decisionsRoot, `${component.id}.json`);
   const current = await readJsonIfExists(decisionPath);
@@ -4886,7 +4982,6 @@ export async function saveNoEnvironmentEnhancementCheckpoint(options) {
   const component = COMPONENT_BY_ID.get(ENVIRONMENT_ENHANCEMENT_COMPONENT_ID);
   const paths = resolveAuthorPaths(options);
   const decisions = await readDecisionIndex(paths);
-  assertPreviousCurrent(component.id, decisions);
 
   const decisionPath = path.join(paths.decisionsRoot, `${component.id}.json`);
   const current = await readJsonIfExists(decisionPath);
@@ -4913,7 +5008,6 @@ export async function saveEnvironmentEnhancementDecisionDraft(options, environme
   const component = COMPONENT_BY_ID.get(ENVIRONMENT_ENHANCEMENT_COMPONENT_ID);
   const paths = resolveAuthorPaths(options);
   const decisions = await readDecisionIndex(paths);
-  assertPreviousCurrent(component.id, decisions);
   const decisionPath = path.join(paths.decisionsRoot, `${component.id}.json`);
   const current = await readJsonIfExists(decisionPath);
   const scoped = isEnvironmentEnhancementAssignmentsSource(environmentState);
@@ -5040,8 +5134,6 @@ async function readEnrichedSourceGraphForSourceDynamics(paths) {
 }
 
 async function refreshDerivedSourceDynamicsDecisionsWhenReady(paths) {
-  const decisions = await readDecisionIndex(paths);
-  if (!sourceDynamicsPreviewPrerequisitesCurrent(decisions)) return {};
   if (!await readJsonIfExists(paths.storyGraphPath)) return {};
   const graph = await readEnrichedSourceGraphForSourceDynamics(paths);
   return ensureSourceDynamicsPreviewDecisionsAvailable(paths, graph);
@@ -5204,7 +5296,7 @@ export async function compileAuthorRuntime(options) {
   const pointCloudEffects = Array.isArray(graph.pointCloudEffects) && graph.pointCloudEffects.length
     ? cloneJson(graph.pointCloudEffects)
     : Array.isArray(runtime.pointCloudEffects) ? cloneJson(runtime.pointCloudEffects) : [];
-  const proceduralDynamics = await readProceduralDynamicsStore(
+  const proceduralDynamics = dynamicsStoreForReader(await readProceduralDynamicsStore(
     paths,
     graph,
     runtime,
@@ -5213,7 +5305,7 @@ export async function compileAuthorRuntime(options) {
       runtime,
       decisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations || null,
     ),
-  );
+  ));
   if (proceduralDynamics.revision > 0
     && Number(decisions["dynamic-geometry"]?.proceduralDynamicsRevision) !== proceduralDynamics.revision) {
     throw Object.assign(new Error("Cannot build the reader; finish Object movement after applying or removing generated movement."), {
@@ -5666,7 +5758,7 @@ export async function optimizeCompiledRuntimePerformance(paths, compiled, option
 }
 
 async function generatePerformanceOptimizationWithCodex(context, options = {}) {
-  const codexBin = options.codexBin || process.env.CODEX_BIN || "codex";
+  const codexBin = resolveStoryvrCodexBin(options.codexBin);
   const prompt = [
     "You are the final StoryVR WebXR performance planner running inside Codex.",
     "Analyze the supplied built-reader workload and choose only the bounded renderer settings listed in the context.",
@@ -5679,7 +5771,6 @@ async function generatePerformanceOptimizationWithCodex(context, options = {}) {
   ].join("\n\n");
   const result = await runCodexExec(codexBin, prompt, {
     cwd: options.codexWorkspace || REPO_ROOT,
-    timeoutMs: options.performanceOptimizationTimeoutMs || 180_000,
     requestLabel: "Codex performance optimization request",
     usageOperation: "performance-optimization",
   });
@@ -6338,12 +6429,12 @@ async function proceduralDynamicsRequestState(options, rawSceneContext) {
   );
   const graph = await enrichSourceGraphWithAnimationProbe(paths, rawGraph, runtime);
   const decisions = await readDecisionIndex(paths);
-  assertPreviousCurrent("dynamic-geometry", decisions);
   const requested = requireSceneContext(rawSceneContext);
+  const spatialRelations = await spatialRelationsForAuthoring(paths, graph, runtime, decisions);
   const contextsByScene = proceduralDynamicsContexts(
     graph,
     runtime,
-    decisions[SPATIAL_RELATIONS_COMPONENT_ID]?.spatialRelations || null,
+    spatialRelations,
   );
   const context = contextsByScene[requested.sceneKey];
   if (!context) {
@@ -6367,6 +6458,7 @@ async function proceduralDynamicsRequestState(options, rawSceneContext) {
     graph,
     decisions,
     context,
+    spatialRelations,
     currentSceneAssetIds: [...(context.sceneAssetIds || context.linkedAssetIds || [])],
     libraryAssets: proceduralDynamicsLibraryAssets(graph, runtime),
     sceneImageAttachments,
@@ -10849,10 +10941,6 @@ function previousComponentsCurrent(componentId, decisions) {
   return index >= 0 && DECISION_COMPONENTS.slice(0, index).every((component) => isValidCurrentDecision(component, decisions[component.id]));
 }
 
-function sourceDynamicsPreviewPrerequisitesCurrent(decisions) {
-  return previousComponentsCurrent("dynamic-geometry", decisions);
-}
-
 function spatialRelationsInputSignature(graph, runtime, decisions) {
   const cues = graph?.sourceSpatialCues || sourceSpatialCuesForGraph(graph);
   const input = {
@@ -12404,7 +12492,9 @@ async function ensureAttentionGuidanceInferenceState(paths, proposals, decisions
     || existingContract.inputSignature !== inferred.inputSignature
   );
   let reconciliationError = null;
-  let contract = inferred;
+  // Persist the canonical draft shape on the first visit as well, so opening
+  // another editor does not manufacture a new change on the next project load.
+  let contract = validateAttentionGuidanceContract(inferred, inferred);
   if (existingContract) {
     try {
       contract = stale
@@ -14681,7 +14771,7 @@ function missingAssetNotes(runtime) {
 
 async function generateWithCodex(context, options = {}) {
   if (options.aiProvider === "openai") throw new Error("Codex provider disabled for this request.");
-  const codexBin = options.codexBin || process.env.CODEX_BIN || "codex";
+  const codexBin = resolveStoryvrCodexBin(options.codexBin);
   const prompt = [
     "You are the StoryVR proposal engine running inside Codex.",
     "Generate structured design options only. Do not edit files. Do not run commands.",
@@ -14698,7 +14788,6 @@ async function generateWithCodex(context, options = {}) {
 
   const result = await runCodexExec(codexBin, prompt, {
     cwd: options.codexWorkspace || REPO_ROOT,
-    timeoutMs: options.codexTimeoutMs || 180_000,
     usageOperation: `component-proposal:${context.component?.id || "unknown"}`,
   });
   try {
@@ -14786,6 +14875,7 @@ function runCodexExec(codexBin, prompt, options) {
       "--ask-for-approval",
       "never",
       "exec",
+      ...STORYVR_CODEX_PLANNING_ARGS,
       "--json",
       "--color",
       "never",
@@ -14804,15 +14894,21 @@ function runCodexExec(codexBin, prompt, options) {
     });
     let stdout = "";
     let stderr = "";
-    let timedOut = false;
     let outputTooLarge = false;
+    let forceKillTimer = null;
     const maximumOutputChars = Number.isFinite(Number(options.maxOutputChars))
       ? Math.max(1, Number(options.maxOutputChars))
       : Number.POSITIVE_INFINITY;
-    const timer = setTimeout(() => {
-      timedOut = true;
+    function stopChild() {
+      if (forceKillTimer) return;
       child.kill("SIGTERM");
-    }, options.timeoutMs);
+      forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+      forceKillTimer.unref?.();
+    }
+
+    function clearTimers() {
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+    }
 
     child.stdin.end(prompt);
     child.stdout.on("data", (chunk) => {
@@ -14821,7 +14917,7 @@ function runCodexExec(codexBin, prompt, options) {
       if (stdout.length + text.length > maximumOutputChars) {
         stdout += text.slice(0, Math.max(0, maximumOutputChars - stdout.length));
         outputTooLarge = true;
-        child.kill("SIGTERM");
+        stopChild();
         return;
       }
       stdout += text;
@@ -14830,25 +14926,21 @@ function runCodexExec(codexBin, prompt, options) {
       if (stderr.length < 65_536) stderr += chunk.toString("utf8").slice(0, 65_536 - stderr.length);
     });
     child.on("error", (error) => {
-      clearTimeout(timer);
+      clearTimers();
       reject(error);
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
+      clearTimers();
       const usage = generativeUsageFromCodexJsonl(stdout, {
         operation: options.usageOperation || requestLabel,
       });
-      if (timedOut) {
-        reject(attachGenerativeUsage(new Error(`${requestLabel} timed out.`), usage));
-        return;
-      }
       if (outputTooLarge) {
         reject(attachGenerativeUsage(new Error(`${requestLabel} returned too much output.`), usage));
         return;
       }
       if (code !== 0) {
         reject(attachGenerativeUsage(
-          new Error(`${requestLabel} failed: ${stderr || stdout || `exit ${code}`}`),
+          new Error(`${requestLabel} failed: ${codexExecFailureMessage(stdout) || stderr || stdout || `exit ${code}`}`),
           usage,
         ));
         return;
@@ -14856,6 +14948,30 @@ function runCodexExec(codexBin, prompt, options) {
       resolve(attachGenerativeUsage({ stdout, stderr }, usage));
     });
   });
+}
+
+function codexExecFailureMessage(stdout) {
+  let failed = "";
+  let error = "";
+  for (const line of String(stdout || "").split("\n")) {
+    try {
+      const event = JSON.parse(line);
+      const message = event.error?.message || event.error?.detail || event.message
+        || (typeof event.error === "string" ? event.error : "");
+      if (typeof message !== "string" || !message.trim()) continue;
+      if (event.type === "turn.failed") failed = message;
+      else if (event.type === "error") error = message;
+    } catch {
+      // Other CLI output is retained as a fallback by the caller.
+    }
+  }
+  const message = failed || error;
+  try {
+    const detail = JSON.parse(message);
+    return typeof detail.error?.message === "string" ? detail.error.message : message;
+  } catch {
+    return message;
+  }
 }
 
 function extractCodexFinalText(stdout) {
@@ -16347,17 +16463,19 @@ function previousCurrentDecisionContext(decisions, componentId) {
 function readinessFor(decisions) {
   return Object.fromEntries(
     DECISION_COMPONENTS.map((component, index) => {
-      const unlocked = DECISION_COMPONENTS.slice(0, index).every((item) => isValidCurrentDecision(item, decisions[item.id]));
+      const canFinish = !isFinalReviewComponent(component)
+        || DECISION_COMPONENTS.slice(0, index).every((item) => isValidCurrentDecision(item, decisions[item.id]));
       const decision = decisions[component.id] || null;
       const current = isValidCurrentDecision(component, decision);
       const status = DECISION_STATUSES.has(decision?.status) ? decision.status : (decision ? "draft" : "draft");
       return [
         component.id,
         {
-          ...(component.id === "interaction-control" ? {} : { canGenerate: unlocked }),
-          unlocked,
-          canEdit: unlocked,
-          canSave: unlocked,
+          ...(component.id === "interaction-control" ? {} : { canGenerate: true }),
+          unlocked: true,
+          canEdit: true,
+          canSaveDraft: true,
+          canSave: canFinish,
           current,
           saved: Boolean(decision?.savedAt),
           stale: status === "stale",

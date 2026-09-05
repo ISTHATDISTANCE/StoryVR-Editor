@@ -15,6 +15,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { dynamicsStoreForReader } from "./dynamics-conversation.mjs";
 
 const DEFAULT_SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_MAX_CHECKPOINTS = 128;
@@ -277,7 +278,9 @@ async function collectStoryBuildInputArtifacts({
     path.join(paths.analysisRoot, "environment-enhancement.json"),
   ].filter(Boolean);
   for (const filePath of staticFiles) {
-    await addFileIfPresent(entries, storyFolder, filePath, "build-author-json", digestCache);
+    await addFileIfPresent(entries, storyFolder, filePath, "build-author-json", digestCache, {
+      dynamicsRuntimeOnly: filePath === paths.proceduralDynamicsPath,
+    });
   }
   await addJsonDirectory(entries, storyFolder, paths.decisionsRoot, digestCache);
   const localAnimationProbeRoot = path.join(storyFolder, "analysis", "animation-logic-probe");
@@ -430,7 +433,7 @@ async function addJsonDirectory(entries, storyFolder, directory, digestCache) {
   }
 }
 
-async function addFileIfPresent(entries, storyFolder, filePath, kind, digestCache) {
+async function addFileIfPresent(entries, storyFolder, filePath, kind, digestCache, options = {}) {
   let metadata;
   try {
     metadata = await lstat(filePath);
@@ -442,6 +445,18 @@ async function addFileIfPresent(entries, storyFolder, filePath, kind, digestCach
   const absolutePath = path.resolve(filePath);
   assertInside(storyFolder, absolutePath, "history artifact");
   const relativePath = toPosix(path.relative(storyFolder, absolutePath));
+  if (options.dynamicsRuntimeOnly) {
+    const serialized = await readFile(absolutePath, "utf8");
+    let bytes;
+    try {
+      bytes = Buffer.from(JSON.stringify(dynamicsStoreForReader(JSON.parse(serialized))));
+    } catch {
+      bytes = Buffer.from(serialized);
+    }
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    entries.push({ absolutePath, relativePath, kind, size: bytes.byteLength, digest });
+    return;
+  }
   const digest = await digestForFile(absolutePath, metadata, digestCache);
   entries.push({ absolutePath, relativePath, kind, size: metadata.size, digest });
 }
