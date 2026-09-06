@@ -6339,11 +6339,23 @@ dd {
   margin-bottom: 0.65rem;
 }
 
+.environment-scene-description-head label {
+  font-weight: 800;
+}
+
+.environment-scene-description-form .procedural-dynamics-conversation {
+  margin-bottom: 0.85rem;
+}
+
+.environment-clear-conversation-button {
+  margin-top: 0.65rem;
+}
+
 .environment-scene-description-input {
   display: block;
   box-sizing: border-box;
   width: 100%;
-  min-height: clamp(180px, 28vh, 260px);
+  min-height: 112px;
   border: 1px solid rgba(16, 32, 28, 0.14);
   border-radius: 20px;
   padding: 0.85rem;

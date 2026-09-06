@@ -23,6 +23,7 @@ import {
   proceduralTransitionEasedProgress,
   proceduralTransitionMiddleSample,
   proceduralTransitionPlanForBoundary,
+  proceduralTransitionTrackSample,
 } from "./procedural-transitions-runtime.js";
 import {
   augmentGltfLoaderWithStoryVrPointClouds,
@@ -3958,9 +3959,7 @@ function advanceRuntimeLocomotionZone(zone) {
   if (!zone || runtimeNavigationPending || activeRuntimeAutoInterpolation) return false;
   if (zone.kind === "variant") {
     if (!zone.variantGroup?.id || !zone.toVariantOptionId) return false;
-    activeVariantOptionByGroupId.set(zone.variantGroup.id, zone.toVariantOptionId);
-    setBeat(activeIndex);
-    return true;
+    return activateRuntimeVariantOption(zone.variantGroup, zone.toVariantOptionId, zone.record);
   }
   const nextIndex = zone.destinationIndex;
   if (!Number.isInteger(nextIndex) || nextIndex < 0 || nextIndex >= beats.length) return false;
@@ -4041,9 +4040,7 @@ function performRuntimeControllerAction(action) {
     const current = runtimeVariantOptionForGroup(group);
     const next = runtimeVariantSteppedOption(group, current, normalizedAction === "next-option" ? 1 : -1);
     if (!next) return false;
-    activeVariantOptionByGroupId.set(group.id, next.id);
-    setBeat(activeIndex);
-    return true;
+    return activateRuntimeVariantOption(group, next.id);
   }
   return false;
 }
@@ -5627,9 +5624,7 @@ function evaluateRuntimeDirectManipulationCompletion() {
   const interaction = activeRuntimeDirectInteractions.find((candidate) => runtimeDirectInteractionComplete(candidate));
   if (!interaction) return false;
   if (interaction.kind === "variant") {
-    activeVariantOptionByGroupId.set(interaction.variantGroup.id, interaction.toVariantOptionId);
-    setBeat(activeIndex);
-    return true;
+    return activateRuntimeVariantOption(interaction.variantGroup, interaction.toVariantOptionId, interaction.record);
   }
   setBeat(interaction.destinationIndex, { route: interaction.route, autoInterpolation: true });
   return true;
@@ -6285,8 +6280,49 @@ function selectRuntimeVariantOption(group, optionId) {
   if (!group?.options.some((option) => option.id === optionId)) return;
   const current = runtimeVariantOptionForGroup(group);
   if (current?.id !== optionId && !runtimeVariantUiButtonAllowed(group, current?.id, optionId)) return;
+  return activateRuntimeVariantOption(group, optionId);
+}
+
+function runtimeVariantTransitionRoute(group, fromOptionId, toOptionId, selectedEdge = null) {
+  if (!group || !fromOptionId || !toOptionId || fromOptionId === toOptionId) return null;
+  const edge = selectedEdge?.edgeId ? selectedEdge : runtimeVariantInteractionForEdge(group, fromOptionId, toOptionId);
+  if ((edge?.variantGroupId && edge.variantGroupId !== group.id)
+    || (edge?.fromVariantOptionId && edge.fromVariantOptionId !== fromOptionId)
+    || (edge?.toVariantOptionId && edge.toVariantOptionId !== toOptionId)) return null;
+  const beatId = String(edge?.beatId || beats[activeIndex]?.id || group.beatId || "");
+  const context = (variantOptionId) => ({ beatId, variantGroupId: group.id, variantOptionId });
+  const endpointSlug = (optionId) => `variant:${beatId}:${group.id}:${optionId}`
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 96);
+  return {
+    edgeId: edge?.edgeId || `source-transition-${endpointSlug(fromOptionId)}-to-${endpointSlug(toOptionId)}`,
+    fromBeatId: beatId,
+    toBeatId: beatId,
+    fromContext: context(fromOptionId),
+    toContext: context(toOptionId),
+  };
+}
+
+function runtimeVariantTransitionRouteForBeat(route, beat) {
+  if (!route?.edgeId || !beat) return null;
+  const from = route.fromContext;
+  const to = route.toContext;
+  const group = runtimeVariantGroupForBeat(beat);
+  if (!group || from?.beatId !== to?.beatId || !beatIdentitySet(beat).has(from?.beatId)) return null;
+  if (from?.variantGroupId !== group.id || to?.variantGroupId !== group.id) return null;
+  if (!from.variantOptionId || !to.variantOptionId || from.variantOptionId === to.variantOptionId) return null;
+  if (![from.variantOptionId, to.variantOptionId].every((id) => group.options.some((option) => option.id === id))) return null;
+  return route;
+}
+
+function activateRuntimeVariantOption(group, optionId, selectedEdge = null) {
+  if (runtimeNavigationPending || activeRuntimeAutoInterpolation) return false;
+  if (!group?.options.some((option) => option.id === optionId)) return false;
+  const current = runtimeVariantOptionForGroup(group);
+  const route = runtimeVariantTransitionRoute(group, current?.id, optionId, selectedEdge);
+  const transitionPlan = route && runtimeProceduralTransitionPlanForBeatChange(activeIndex, activeIndex, route);
   activeVariantOptionByGroupId.set(group.id, optionId);
-  setBeat(activeIndex);
+  if (transitionPlan) setBeat(activeIndex, { route });
+  else setBeat(activeIndex);
   return true;
 }
 
@@ -7422,18 +7458,21 @@ function disposePreservedGeometryMaterialCompatibility(root) {
   });
 }
 
-function runtimeAutoInterpolationSceneEntries(index) {
+function runtimeAutoInterpolationSceneEntries(index, context = null) {
   const beat = beats[index] || null;
   if (!beat) return [];
   const group = runtimeVariantGroupForBeat(beat);
-  return runtimeSpatialAssetEntriesForBeat(beat, index, runtimeVariantOptionForGroup(group));
+  const option = context?.variantOptionId
+    ? group?.options.find((candidate) => candidate.id === context.variantOptionId) || null
+    : runtimeVariantOptionForGroup(group);
+  return runtimeSpatialAssetEntriesForBeat(beat, index, option);
 }
 
 function runtimeProceduralTransitionPlanForBeatChange(fromIndex, toIndex, route = null) {
   if (!runtimeProceduralTransitions || !Number.isInteger(fromIndex) || !Number.isInteger(toIndex)) return null;
-  const progressionRoute = normalizeRuntimeProgressionRoute(
-    route || runtimeProgressionRouteForNavigation(fromIndex, toIndex),
-  );
+  const progressionRoute = fromIndex === toIndex
+    ? runtimeVariantTransitionRouteForBeat(route, beats[fromIndex])
+    : normalizeRuntimeProgressionRoute(route || runtimeProgressionRouteForNavigation(fromIndex, toIndex));
   if (!progressionRoute) return null;
   return proceduralTransitionPlanForBoundary(runtimeProceduralTransitions, progressionRoute) || null;
 }
@@ -7441,12 +7480,12 @@ function runtimeProceduralTransitionPlanForBeatChange(fromIndex, toIndex, route 
 function runtimeGeneratedTransitionEligibility(fromIndex, toIndex, route = null) {
   const transitionPlan = runtimeProceduralTransitionPlanForBeatChange(fromIndex, toIndex, route);
   if (!transitionPlan) return { eligible: false, reason: "no-generated-transition" };
-  if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex) || fromIndex === toIndex) {
+  if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex)) {
     return { eligible: false, reason: "invalid-directed-boundary" };
   }
   const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
-  const fromEntries = runtimeAutoInterpolationSceneEntries(fromIndex);
-  const toEntries = runtimeAutoInterpolationSceneEntries(toIndex);
+  const fromEntries = runtimeAutoInterpolationSceneEntries(fromIndex, transitionPlan.fromContext);
+  const toEntries = runtimeAutoInterpolationSceneEntries(toIndex, transitionPlan.toContext);
   return {
     eligible: true,
     transitionPlan: reducedMotion ? {
@@ -7814,7 +7853,9 @@ function startRuntimeAutoInterpolation(loadRevision) {
     cancelRuntimeAutoInterpolation();
     return false;
   }
-  const pairing = pairRuntimeAutoInterpolationEntries(state.outgoing, incoming);
+  const pairing = state.generatedTransitionPlan?.style === "generated"
+    ? { pairs: [], unmatchedOutgoing: state.outgoing, unmatchedIncoming: incoming }
+    : pairRuntimeAutoInterpolationEntries(state.outgoing, incoming);
   if (!state.generatedTransitionPlan && !pairing.pairs.some(runtimeAutoInterpolationPairHasTransformChange)) {
     cancelRuntimeAutoInterpolation();
     return false;
@@ -8040,6 +8081,37 @@ function restoreRuntimeTransitionMiddleTargets(state) {
   }
 }
 
+function applyRuntimeTransitionTracks(state, action) {
+  // storyvr-transition-property-tracks/v1
+  const values = proceduralTransitionTrackSample(action, action.localProgress);
+  for (const target of runtimeTransitionMiddleTargets(state, action)) {
+    if (!target.root) continue;
+    if (values.positionOffset !== undefined) {
+      target.root.position.copy(target.basePosition).add(new THREE.Vector3().fromArray(values.positionOffset));
+    }
+    if (values.rotationOffsetDegrees !== undefined) {
+      target.root.quaternion.copy(target.baseQuaternion);
+      target.root.rotateX(THREE.MathUtils.degToRad(values.rotationOffsetDegrees[0]));
+      target.root.rotateY(THREE.MathUtils.degToRad(values.rotationOffsetDegrees[1]));
+      target.root.rotateZ(THREE.MathUtils.degToRad(values.rotationOffsetDegrees[2]));
+    }
+    if (values.scaleMultiplier !== undefined) {
+      const multiplier = Array.isArray(values.scaleMultiplier)
+        ? new THREE.Vector3().fromArray(values.scaleMultiplier)
+        : new THREE.Vector3().setScalar(values.scaleMultiplier);
+      target.root.scale.copy(target.baseScale).multiply(multiplier);
+    }
+    if (values.opacity !== undefined) setRuntimeAutoInterpolationOpacity(target.root, values.opacity);
+    for (const material of target.materials || []) {
+      if (values.color !== undefined && material.color) material.color.set(values.color);
+      if (values.emissiveColor !== undefined && material.emissive) material.emissive.set(values.emissiveColor);
+      if (values.emissiveIntensity !== undefined && "emissiveIntensity" in material) {
+        material.emissiveIntensity = values.emissiveIntensity;
+      }
+    }
+  }
+}
+
 function updateRuntimeTransitionMiddle(state, progress) {
   const plan = state?.generatedTransitionPlan;
   if (!plan) return false;
@@ -8053,6 +8125,10 @@ function updateRuntimeTransitionMiddle(state, progress) {
   }
   restoreRuntimeTransitionMiddleTargets(state);
   for (const action of sample.actions) {
+    if (action.tracks?.length) {
+      applyRuntimeTransitionTracks(state, action);
+      continue;
+    }
     const local = proceduralTransitionEasedProgress(action.easing || "linear", action.localProgress);
     const envelope = Math.sin(Math.PI * Math.max(0, Math.min(1, local)));
     const kind = String(action.kind || "").toLowerCase();
@@ -8172,9 +8248,11 @@ function updateRuntimeAutoInterpolation(frameTime = performance.now()) {
     for (const entry of state.unmatchedOutgoing) setRuntimeAutoInterpolationOpacity(entry.snapshotRoot, 1 - smooth);
     for (const entry of state.unmatchedIncoming) setRuntimeAutoInterpolationOpacity(entry.root, smooth);
   } else {
-    const opacityProgress = state.generatedTransitionPlan.style === "cut"
-      ? (progress >= 0.5 ? 1 : 0)
-      : transitionProgress;
+    const opacityProgress = state.generatedTransitionPlan.style === "generated"
+      ? (progress >= 1 ? 1 : 0)
+      : state.generatedTransitionPlan.style === "cut"
+        ? (progress >= 0.5 ? 1 : 0)
+        : transitionProgress;
     for (const entry of state.unmatchedOutgoing) setRuntimeAutoInterpolationOpacity(entry.snapshotRoot, 1 - opacityProgress);
     for (const entry of state.unmatchedIncoming) setRuntimeAutoInterpolationOpacity(entry.root, opacityProgress);
   }

@@ -16,6 +16,8 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { dynamicsStoreForReader } from "./dynamics-conversation.mjs";
+import { transitionsStoreForReader } from "./transitions-conversation.mjs";
+import { environmentStoreForReader } from "./environment/conversation.mjs";
 
 const DEFAULT_SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_MAX_CHECKPOINTS = 128;
@@ -280,6 +282,8 @@ async function collectStoryBuildInputArtifacts({
   for (const filePath of staticFiles) {
     await addFileIfPresent(entries, storyFolder, filePath, "build-author-json", digestCache, {
       dynamicsRuntimeOnly: filePath === paths.proceduralDynamicsPath,
+      transitionsRuntimeOnly: filePath === paths.proceduralTransitionsPath,
+      environmentRuntimeOnly: filePath === path.join(paths.analysisRoot, "environment-enhancement.json"),
     });
   }
   await addJsonDirectory(entries, storyFolder, paths.decisionsRoot, digestCache);
@@ -445,11 +449,24 @@ async function addFileIfPresent(entries, storyFolder, filePath, kind, digestCach
   const absolutePath = path.resolve(filePath);
   assertInside(storyFolder, absolutePath, "history artifact");
   const relativePath = toPosix(path.relative(storyFolder, absolutePath));
-  if (options.dynamicsRuntimeOnly) {
+  if (options.dynamicsRuntimeOnly || options.transitionsRuntimeOnly || options.environmentRuntimeOnly) {
     const serialized = await readFile(absolutePath, "utf8");
     let bytes;
     try {
-      bytes = Buffer.from(JSON.stringify(dynamicsStoreForReader(JSON.parse(serialized))));
+      const readerStore = options.environmentRuntimeOnly ? environmentStoreForReader
+        : options.transitionsRuntimeOnly ? transitionsStoreForReader : dynamicsStoreForReader;
+      const runtime = readerStore(JSON.parse(serialized));
+      // An initial chat-only reply creates an authoring file but contributes
+      // exactly the same Reader input as no Dynamics file at all.
+      if (runtime.schemaVersion === "storyvr-procedural-dynamics/v1"
+        && runtime.revision === 0 && !Object.keys(runtime.plansByScene || {}).length) return;
+      if (runtime.schemaVersion === "storyvr-procedural-transitions/v1"
+        && runtime.revision === 0 && !Object.keys(runtime.plansByBoundary || {}).length) return;
+      if (runtime.schemaVersion === "storyvr-environment-enhancement/v1"
+        && runtime.revision === 0 && !runtime.asset && !runtime.defaultAssignment
+        && !Object.keys(runtime.assignmentsByBeat || {}).length
+        && !Object.keys(runtime.assignmentsByScene || {}).length) return;
+      bytes = Buffer.from(JSON.stringify(runtime));
     } catch {
       bytes = Buffer.from(serialized);
     }

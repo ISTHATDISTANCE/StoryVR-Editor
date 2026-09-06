@@ -251,7 +251,13 @@ toggling, right-drag orbiting, and middle-drag panning.
 Set the scene is a Generate-only flow that uses the signed-in Codex CLI to
 create a panorama and matching near-ground texture for the exact open story
 scene. Parallel variant choices can own different settings; legacy beat-level
-settings remain the fallback until an exact variant is authored.
+settings remain the fallback until an exact variant is authored. Each exact
+scene keeps its own conversation, so follow-up messages edit the saved panorama
+and matching ground while preserving prior visual intent and tuning. Successful
+image updates save with the exchange atomically; clarification-only and
+unchanged replies keep the current setting and Reader build valid. Clearing a
+scene's conversation keeps its installed images, and author-only conversation
+metadata is excluded from the compiled Reader and build signatures.
 
 Object movement exposes the complete saved Reader, GLB, and image roster plus
 runtime-generated objects. Codex can animate exact-scene GLBs and image planes
@@ -282,13 +288,17 @@ Other exact routes without a saved mapping or safe interpolation retain the
 truthful no-saved-change label while offering a full-editor sudden-cut preview
 with one-second source and destination holds; this does not alter Reader timing
 or story-canvas thumbnails.
-An exact cross-part arrow can also use a generated declarative middle with
-temporary visual actions. Generate/Regenerate remains preview-only and Apply
-stores the route-scoped plan; progress 0 and 1 always remain the exact saved
-source and destination scenes. Authors can select exact destination-scene GLBs
-or image planes as authoritative generation subjects; selected-target effects
-anchor to each object's visible bounds, and changing the selection requires a
-new preview before Apply.
+Every exact directed scene arrow—including choices within one story part—can
+keep its own generated-transition conversation. Follow-up messages refine the
+latest saved transition while preserving effects outside the current selection.
+Validated messages save the route-scoped plan and conversation atomically, and
+clarifications can be retained without invalidating an unchanged Reader build.
+New transition actions use explicit property keyframes for visibility,
+saved-relative transforms, material color, and emissive effects; the Author and
+Reader share the same sampler while preserving the exact saved endpoints.
+Clearing a connection removes its generated transition and conversation as one
+Undoable change. Conversation text remains author-only and is excluded from the
+compiled Reader.
 
 Guide attention runs after Scene changes so focus markers are inferred from the
 saved scene composition and movement state. It can target a visible GLB, named

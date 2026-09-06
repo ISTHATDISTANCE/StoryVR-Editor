@@ -84,6 +84,7 @@ import {
   proceduralTransitionEasedProgress,
   proceduralTransitionMiddleSample,
   proceduralTransitionPlanForBoundary,
+  proceduralTransitionTrackSample,
 } from "../../procedural-transitions-runtime.js";
 import {
   augmentGltfLoaderWithStoryVrPointClouds,
@@ -507,6 +508,8 @@ const state = {
   },
   proceduralTransitionsUi: {
     promptsByBoundary: {},
+    pendingMessagesByBoundary: {},
+    conversationScrollByBoundary: {},
     candidatesByBoundary: {},
     expectedRevisionsByBoundary: {},
     busyByBoundary: {},
@@ -554,6 +557,9 @@ const state = {
     generationRequestId: 0,
     generationResult: null,
     generationDraftsByScene: {},
+    pendingMessagesByScene: {},
+    errorsByScene: {},
+    conversationScrollByScene: {},
     applyTargetsOpen: false,
     applyTargetSceneKeys: [],
     applyStatus: "",
@@ -1106,6 +1112,8 @@ function restoreAuthorHistoryUi(snapshot) {
     const restored = historyClone(snapshot.proceduralTransitionsUi);
     state.proceduralTransitionsUi = {
       promptsByBoundary: restored.promptsByBoundary || {},
+      pendingMessagesByBoundary: {},
+      conversationScrollByBoundary: restored.conversationScrollByBoundary || {},
       candidatesByBoundary: restored.candidatesByBoundary || {},
       expectedRevisionsByBoundary: restored.expectedRevisionsByBoundary || {},
       busyByBoundary: {},
@@ -7266,13 +7274,13 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
           data-procedural-dynamics-generate
           ${canGenerate ? "" : "disabled"}
         >${busy ? "Generating and saving…" : error ? "Retry message" : hasConversation || candidate ? "Send update" : "Send &amp; generate"}</button>
-        ${storedPlan ? `
+        ${storedPlan || hasConversation ? `
           <button
             class="danger-action"
             type="button"
             data-procedural-dynamics-remove
             ${busy ? "disabled" : ""}
-          >Remove generated animation &amp; effects</button>
+          >${storedPlan ? "Clear animation, effects, and conversation" : "Clear conversation"}</button>
         ` : ""}
       </div>
       <p
@@ -7360,15 +7368,12 @@ function renderInterBeatSceneObjectHierarchy(sceneContext, proposal) {
   const entities = interBeatSceneObjectEntities(sceneContext, proposal);
   const records = interBeatSceneObjectRecords(sceneContext, proposal);
   ensureInterBeatSceneObjectSelection(records);
-  const selectedCount = selectedInterBeatSceneObjectRecords(records).length;
   return renderSpatialHierarchy(entities, {
     selectedEntityIds: state.selectedInterBeatSceneObjectIds,
     primaryEntityId: state.selectedInterBeatSceneObjectId,
     selectionAttribute: "data-inter-beat-select-entity",
     ariaLabel: "Scene changes destination object hierarchy",
     className: "inter-beat-scene-object-hierarchy",
-    countLabel: selectedCount ? `${selectedCount} selected` : `${records.length}`,
-    helpText: "Select objects to make them generation subjects. Command/Ctrl-click adds or removes objects; leave the selection empty to let the description choose.",
     emptyMessage: "This destination scene has no selectable 3D models or images.",
   });
 }
@@ -7379,9 +7384,10 @@ function proceduralTransitionScope(sceneContext, proposal = selectedComponentPre
   const edgeId = String(boundary?.edgeId || boundary?.authoredTransition?.edgeId || "").trim();
   const fromBeatId = String(boundary?.fromBeatId || "").trim();
   const toBeatId = String(boundary?.toBeatId || "").trim();
-  if (!edgeId || !fromBeatId || !toBeatId || fromBeatId === toBeatId) return null;
+  if (!edgeId || !fromBeatId || !toBeatId) return null;
   const fromContext = normalizeMotionSceneContext(boundary.fromSceneContext, fromBeatId);
   const toContext = normalizeMotionSceneContext(boundary.toSceneContext, toBeatId);
+  if (sourceGraphTransitionContextMatches(fromContext, toContext)) return null;
   const scope = {
     edgeId,
     boundaryId: edgeId,
@@ -7480,17 +7486,19 @@ function proceduralTransitionCandidateViolation(candidate, sceneContext, proposa
   }
   const candidateSubjectEntityIds = proceduralTransitionSubjectEntityIds(candidate.subjectEntityIds);
   const planSubjectEntityIds = proceduralTransitionSubjectEntityIds(plan?.subjectEntityIds);
-  if (JSON.stringify(candidateSubjectEntityIds) !== JSON.stringify(planSubjectEntityIds)) {
+  if (plan && !candidate.conversationTurn
+    && JSON.stringify(candidateSubjectEntityIds) !== JSON.stringify(planSubjectEntityIds)) {
     return "Scene-change generation returned a mismatched scene-object subject selection.";
   }
   const eligibleEntityIds = new Set(interBeatSceneObjectRecords(sceneContext, proposal).map((record) => record.id));
-  if (candidateSubjectEntityIds.some((entityId) => !eligibleEntityIds.has(entityId))) {
+  if ([...candidateSubjectEntityIds, ...planSubjectEntityIds].some((entityId) => !eligibleEntityIds.has(entityId))) {
     return "Scene-change generation targeted an object outside this destination scene.";
   }
   const impact = proceduralTransitionCandidateImpact(candidate);
   if (impact.sourceGraphChanged || impact.spatialRelationsChanged || impact.sourceMotionChanged) {
     return "Scene-change generation attempted to change an earlier authoring step.";
   }
+  if (!plan && candidate.conversationTurn && candidate.transitionPlan === null) return "";
   try {
     normalizeProceduralTransitionPlan(plan, scope, {
       prompt: proceduralTransitionCandidatePrompt(candidate),
@@ -7508,7 +7516,68 @@ function proceduralTransitionPromptForBoundary(sceneContext, proposal = selected
   if (Object.prototype.hasOwnProperty.call(state.proceduralTransitionsUi.promptsByBoundary, scope.boundaryKey)) {
     return String(state.proceduralTransitionsUi.promptsByBoundary[scope.boundaryKey] || "");
   }
-  return String(proceduralTransitionStoredPlan(sceneContext, proposal)?.prompt || "");
+  return "";
+}
+
+function proceduralTransitionConversationForBoundary(sceneContext, proposal) {
+  const scope = proceduralTransitionScope(sceneContext, proposal);
+  if (!scope) return [];
+  const conversation = state.data?.proceduralTransitions?.conversationsByBoundary?.[scope.boundaryKey];
+  if (Array.isArray(conversation?.messages) && conversation.messages.length) {
+    return conversation.messages.filter((message) => (
+      ["user", "assistant"].includes(message?.role)
+      && typeof message?.content === "string"
+      && message.content.trim()
+    ));
+  }
+  const storedPlan = proceduralTransitionStoredPlan(sceneContext, proposal);
+  if (!storedPlan) return [];
+  const prompt = String(storedPlan.prompt || "").trim();
+  return [
+    ...(prompt ? [{ id: "saved-request", role: "user", content: prompt }] : []),
+    {
+      id: "saved-baseline",
+      role: "assistant",
+      content: "Your saved transition is the starting point. Tell me what you would like to change.",
+    },
+  ];
+}
+
+function renderProceduralTransitionConversation(sceneContext, proposal) {
+  const scope = proceduralTransitionScope(sceneContext, proposal);
+  if (!scope) return "";
+  const messages = proceduralTransitionConversationForBoundary(sceneContext, proposal);
+  const pendingMessage = state.proceduralTransitionsUi.pendingMessagesByBoundary[scope.boundaryKey];
+  const pending = Boolean(pendingMessage);
+  if (!messages.length && !pending) return "";
+  return `
+    <div
+      class="procedural-dynamics-conversation"
+      data-procedural-transition-conversation
+      role="log"
+      aria-label="Transition conversation"
+      aria-live="polite"
+      aria-relevant="additions text"
+      aria-busy="${pending ? "true" : "false"}"
+    >
+      ${messages.map((message) => `
+        <article class="procedural-dynamics-chat-message is-${message.role}">
+          <span>${message.role === "user" ? "You" : "StoryVR"}</span>
+          <p>${escapeHtml(message.content)}</p>
+        </article>
+      `).join("")}
+      ${pending ? `
+        <article class="procedural-dynamics-chat-message is-user is-pending">
+          <span>You · Sending</span>
+          <p>${escapeHtml(pendingMessage)}</p>
+        </article>
+        <article class="procedural-dynamics-chat-message is-assistant is-pending">
+          <span>StoryVR</span>
+          <p>Updating the transition from your conversation…</p>
+        </article>
+      ` : ""}
+    </div>
+  `;
 }
 
 function proceduralTransitionCandidateReview(
@@ -7516,6 +7585,7 @@ function proceduralTransitionCandidateReview(
   sceneContext,
   proposal = selectedComponentPreview(componentById("inter-beat-dynamics")),
   prompt = proceduralTransitionPromptForBoundary(sceneContext, proposal),
+  requestedSubjectEntityIds,
 ) {
   const impact = proceduralTransitionCandidateImpact(candidate);
   const promptChanged = Boolean(
@@ -7523,7 +7593,10 @@ function proceduralTransitionCandidateReview(
     && proceduralDynamicsComparablePrompt(proceduralTransitionCandidatePrompt(candidate))
       !== proceduralDynamicsComparablePrompt(prompt),
   );
-  const selectionChanged = proceduralTransitionCandidateSelectionChanged(candidate, sceneContext, proposal);
+  const selectionChanged = requestedSubjectEntityIds === undefined
+    ? proceduralTransitionCandidateSelectionChanged(candidate, sceneContext, proposal)
+    : JSON.stringify(proceduralTransitionCandidateSubjectEntityIds(candidate))
+      !== JSON.stringify(proceduralTransitionSubjectEntityIds(requestedSubjectEntityIds));
   const violation = candidate ? proceduralTransitionCandidateViolation(candidate, sceneContext, proposal) : "";
   const message = promptChanged
     ? "The description changed. Generate a new preview before applying the scene change."
@@ -7531,7 +7604,7 @@ function proceduralTransitionCandidateReview(
       ? "The selected scene objects changed. Generate a new preview before applying the scene change."
       : violation
         || (impact.unmetRequirements.length ? "Revise the description to resolve the unmet requirements before applying." : "")
-        || (impact.materiallyChanged === false ? "This preview is not materially different. Revise the description and regenerate." : "");
+        || (impact.materiallyChanged === false && !candidate?.conversationTurn ? "This preview is not materially different. Revise the description and regenerate." : "");
   return {
     impact,
     promptChanged,
@@ -7542,23 +7615,20 @@ function proceduralTransitionCandidateReview(
       || selectionChanged
       || Boolean(violation)
       || impact.unmetRequirements.length > 0
-      || impact.materiallyChanged === false,
+      || (impact.materiallyChanged === false && !candidate?.conversationTurn),
   };
 }
 
 function syncProceduralTransitionCandidateControls(sceneContext, proposal) {
-  const candidate = proceduralTransitionCandidate(sceneContext, proposal);
-  const review = proceduralTransitionCandidateReview(candidate, sceneContext, proposal);
-  const apply = document.querySelector("[data-procedural-transition-apply]");
-  if (apply) apply.disabled = review.applyBlocked;
+  const scope = proceduralTransitionScope(sceneContext, proposal);
+  if (!scope) return;
   const message = document.querySelector("[data-procedural-transition-message]");
   if (message) {
-    const error = proceduralTransitionScope(sceneContext, proposal)
-      ? state.proceduralTransitionsUi.errorsByBoundary[proceduralTransitionScope(sceneContext, proposal).boundaryKey] || ""
-      : "";
-    message.textContent = error || review.message;
+    const error = state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey] || "";
+    const status = state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey] || "";
+    message.textContent = error || status;
     message.hidden = !message.textContent;
-    message.classList.toggle("error", Boolean(message.textContent));
+    message.classList.toggle("error", Boolean(error));
     message.classList.remove("success");
   }
 }
@@ -7588,6 +7658,7 @@ function proceduralTransitionStyleLabel(plan) {
 }
 
 function proceduralTransitionPreviewKind(plan, fallbackKind) {
+  if (plan?.style === "generated") return "generated";
   if (plan?.style === "cut") return "discrete-hard";
   if (plan?.style === "crossfade") return "discrete-fade";
   if (plan?.style === "interpolate") return "continuous-passive";
@@ -7595,6 +7666,7 @@ function proceduralTransitionPreviewKind(plan, fallbackKind) {
 }
 
 function renderProceduralTransitionUnavailable(message, scope = null, storedPlan = null, busy = false) {
+  const hasConversation = Boolean(scope && state.data?.proceduralTransitions?.conversationsByBoundary?.[scope.boundaryKey]?.messages?.length);
   return `
     <section
       class="procedural-dynamics-authoring procedural-transition-authoring dynamic-generation-sidebar-card storyvr-spatial-sidebar-card"
@@ -7608,9 +7680,9 @@ function renderProceduralTransitionUnavailable(message, scope = null, storedPlan
           <p class="muted">${escapeHtml(message)}</p>
         </div>
       </div>
-      ${storedPlan ? `
+      ${storedPlan || hasConversation ? `
         <div class="procedural-dynamics-actions">
-          <button class="danger-action" type="button" data-procedural-transition-remove ${busy ? "disabled" : ""}>Remove generated transition</button>
+          <button class="danger-action" type="button" data-procedural-transition-remove ${busy ? "disabled" : ""}>${storedPlan ? "Clear transition and conversation" : "Clear conversation"}</button>
         </div>
       ` : ""}
     </section>
@@ -7618,62 +7690,47 @@ function renderProceduralTransitionUnavailable(message, scope = null, storedPlan
 }
 
 function renderProceduralTransitionAuthoring(sceneContext, ready, proposal) {
-  const boundary = interBeatBoundaryForSceneContext(proposal, sceneContext);
   const scope = proceduralTransitionScope(sceneContext, proposal);
-  if (!scope) {
-    return boundary?.fromBeatId && boundary.fromBeatId === boundary.toBeatId
-      ? renderProceduralTransitionUnavailable("Generated transitions are available on arrows between story parts. Choice arrows within one story part keep their existing saved behavior.")
-      : "";
-  }
-  const candidate = proceduralTransitionCandidate(sceneContext, proposal);
+  if (!scope) return "";
   const storedPlan = proceduralTransitionStoredPlan(sceneContext, proposal);
+  const hasConversation = Boolean(proceduralTransitionConversationForBoundary(sceneContext, proposal).length);
   const busy = Boolean(state.proceduralTransitionsUi.busyByBoundary[scope.boundaryKey]);
-  const playback = interBeatBoundaryPlaybackSummary(proposal, sceneContext);
   const prompt = proceduralTransitionPromptForBoundary(sceneContext, proposal);
-  const review = proceduralTransitionCandidateReview(candidate, sceneContext, proposal, prompt);
   const error = state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey] || "";
-  const activePlan = candidate ? proceduralTransitionCandidatePlan(candidate) : storedPlan;
+  const status = state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey] || "";
   const canGenerate = ready && !busy && Boolean(prompt.trim());
   return `
     <section
       class="procedural-dynamics-authoring procedural-transition-authoring dynamic-generation-sidebar-card storyvr-spatial-sidebar-card"
       data-procedural-transition-authoring
       data-procedural-transition-boundary-key="${escapeHtml(scope.boundaryKey)}"
+      aria-label="Transition conversation"
       aria-busy="${busy ? "true" : "false"}"
     >
-      <div class="procedural-dynamics-heading">
-        <div>
-          <p class="eyebrow">Optional scene change</p>
-          <h3>Describe this transition</h3>
-          <p class="muted">Anything declarative may happen in the middle. The exact saved source and destination scenes are always restored at the endpoints.</p>
-        </div>
-        ${activePlan ? `<span class="procedural-dynamics-scope">${escapeHtml(proceduralTransitionStyleLabel(activePlan))}</span>` : ""}
-      </div>
+      ${renderProceduralTransitionConversation(sceneContext, proposal)}
       <label class="procedural-dynamics-prompt" for="procedural-transition-prompt">
-        <span>Transition description</span>
+        <span>${hasConversation ? "What would you like to change?" : "Describe the first transition"}</span>
         <textarea
           id="procedural-transition-prompt"
           data-procedural-transition-prompt
           rows="3"
           maxlength="1000"
-          placeholder="For example: Dim the scene, create pulsing lights and drifting particles, then reveal the next scene."
+          aria-describedby="procedural-transition-composer-hint"
+          placeholder="${escapeHtml(hasConversation ? "Make it slower, change the timing, or add another effect…" : "For example: Dim the scene, create pulsing lights and drifting particles, then reveal the next scene.")}"
           ${busy || !ready ? "disabled" : ""}
         >${escapeHtml(prompt)}</textarea>
       </label>
+      <p class="procedural-dynamics-composer-hint" id="procedural-transition-composer-hint">Each message uses this arrow’s conversation and current saved transition. Cmd/Ctrl + Enter to send.</p>
       <div class="procedural-dynamics-actions">
-        <button class="primary" type="button" data-procedural-transition-generate ${canGenerate ? "" : "disabled"}>${busy ? "Generating…" : candidate ? "Regenerate preview" : "Generate preview"}</button>
-        ${candidate ? `
-          <button type="button" data-procedural-transition-apply ${busy || review.applyBlocked ? "disabled" : ""}>Apply transition</button>
-          <button type="button" data-procedural-transition-discard ${busy ? "disabled" : ""}>Discard preview</button>
-        ` : ""}
-        ${storedPlan ? `<button class="danger-action" type="button" data-procedural-transition-remove ${busy ? "disabled" : ""}>Remove generated transition</button>` : ""}
+        <button class="primary" type="button" data-procedural-transition-generate ${canGenerate ? "" : "disabled"}>${busy ? "Generating and saving…" : error ? "Retry message" : hasConversation ? "Send update" : "Send &amp; generate"}</button>
+        ${storedPlan || hasConversation ? `<button class="danger-action" type="button" data-procedural-transition-remove ${busy ? "disabled" : ""}>${storedPlan ? "Clear transition and conversation" : "Clear conversation"}</button>` : ""}
       </div>
       <p
-        class="procedural-dynamics-message ${error || review.message ? "error" : ""}"
+        class="procedural-dynamics-message ${error ? "error" : ""}"
         data-procedural-transition-message
         aria-live="polite"
-        ${error || review.message ? "" : "hidden"}
-      >${escapeHtml(error || review.message)}</p>
+        ${error || status ? "" : "hidden"}
+      >${escapeHtml(error || status)}</p>
     </section>
   `;
 }
@@ -9516,6 +9573,8 @@ function renderEnvironmentEnhancementEditorWorkspace(component, sceneContext) {
   const checkpointStatus = checkpointFlowStatus(component.id);
   const beat = spatialSceneBeat(sceneContext);
   const generationPrompt = environmentGenerationPrompt();
+  const hasConversation = Boolean(environmentConversationForScene(sceneContext).length);
+  const generationError = state.environmentUi.errorsByScene[environmentSceneKey(sceneContext)] || "";
   return `
     <section class="panel asset-topology-panel spatial-relations-panel spatial-editor-mode environment-enhancement-panel environment-editor-mode" data-environment-workspace-mode="editor">
       ${renderEnvironmentBeatEdgeNavigation(sceneContext)}
@@ -9538,19 +9597,22 @@ function renderEnvironmentEnhancementEditorWorkspace(component, sceneContext) {
             class="environment-scene-description-form storyvr-spatial-sidebar-card"
             data-environment-generation-form
           >
+            <div data-environment-conversation-region>${renderEnvironmentConversation(sceneContext)}</div>
             <div class="visual-card-head environment-scene-description-head">
-              <h3>360° setting description</h3>
+              <label for="environment-generation-prompt">${hasConversation ? "What would you like to change?" : "Describe the first 360° setting"}</label>
             </div>
             <textarea
               id="environment-generation-prompt"
               class="environment-scene-description-input"
-              rows="8"
+              rows="4"
               maxlength="1000"
               aria-label="360° setting description"
-              placeholder="Describe the full 360° place, lighting, weather, and mood"
+              aria-describedby="environment-composer-hint"
+              placeholder="${hasConversation ? "Change the lighting, weather, mood, or another part of the setting…" : "Describe the full 360° place, lighting, weather, and mood"}"
               required
-              ${!ready || state.environmentUi.generationBusy ? "disabled" : ""}
+              ${!ready || state.environmentUi.operationBusy ? "disabled" : ""}
             >${escapeHtml(generationPrompt)}</textarea>
+            <p class="procedural-dynamics-composer-hint" id="environment-composer-hint">Each message uses this scene’s conversation and current saved setting. Cmd/Ctrl + Enter to send.</p>
             ${renderEnvironmentRangeControl(
               "movement-cue-opacity",
               "Ground opacity",
@@ -9566,7 +9628,9 @@ function renderEnvironmentEnhancementEditorWorkspace(component, sceneContext) {
               type="submit"
               data-environment-generate-button
               ${!ready || state.environmentUi.generationBusy || !generationPrompt ? "disabled" : ""}
-            >${state.environmentUi.generationBusy ? "Generating…" : "Generate setting"}</button>
+            >${state.environmentUi.generationBusy ? "Generating and saving…" : generationError ? "Retry message" : hasConversation ? "Send update" : "Send &amp; generate"}</button>
+            <button class="danger-action environment-clear-conversation-button" type="button" data-environment-clear-conversation ${hasConversation ? "" : "hidden"} ${state.environmentUi.generationBusy || state.environmentUi.operationBusy ? "disabled" : ""}>Clear conversation</button>
+            <p class="procedural-dynamics-message ${generationError ? "error" : ""}" data-environment-conversation-status aria-live="polite" ${generationError ? "" : "hidden"}>${escapeHtml(generationError)}</p>
           </form>
         </div>
 
@@ -9959,6 +10023,95 @@ function environmentGenerationPrompt() {
   return state.environmentUi.generationPrompt;
 }
 
+function environmentConversationKey(context = activeEnvironmentSceneContext()) {
+  return context?.variantOptionId ? environmentSceneKey(context) : String(context?.beatId || "").trim();
+}
+
+function environmentConversationForScene(context = activeEnvironmentSceneContext()) {
+  const key = environmentConversationKey(context);
+  if (!key) return [];
+  const conversations = environmentRawState().conversationsByScene || {};
+  if (Object.prototype.hasOwnProperty.call(conversations, key)) {
+    const conversation = conversations[key];
+    const messages = Array.isArray(conversation) ? conversation : conversation?.messages;
+    return (Array.isArray(messages) ? messages : []).filter((message) => (
+      ["user", "assistant"].includes(message?.role)
+      && typeof message?.content === "string"
+      && message.content.trim()
+    ));
+  }
+  const assignment = environmentAssignmentForContext(context);
+  if (!assignment || !(assignment.selection?.asset || assignment.asset)) return [];
+  const provenance = assignment.provenance || assignment.selection?.provenance || {};
+  const prompt = String(provenance.prompt || provenance.sourceMetadata?.generationIntent || "").trim();
+  return [
+    ...(prompt ? [{ id: "saved-request", role: "user", content: prompt }] : []),
+    {
+      id: "saved-baseline",
+      role: "assistant",
+      content: "Your saved setting is the starting point. Tell me what you would like to change.",
+    },
+  ];
+}
+
+function renderEnvironmentConversation(context = activeEnvironmentSceneContext()) {
+  const key = environmentSceneKey(context);
+  if (!key) return "";
+  const messages = environmentConversationForScene(context);
+  const pendingMessage = state.environmentUi.pendingMessagesByScene[key];
+  if (!messages.length && !pendingMessage) return "";
+  return `
+    <div class="procedural-dynamics-conversation" data-environment-conversation role="log" aria-label="Setting conversation" aria-live="polite" aria-relevant="additions text" aria-busy="${pendingMessage ? "true" : "false"}">
+      ${messages.map((message) => `
+        <article class="procedural-dynamics-chat-message is-${message.role}">
+          <span>${message.role === "user" ? "You" : "StoryVR"}</span>
+          <p>${escapeHtml(message.content)}</p>
+        </article>
+      `).join("")}
+      ${pendingMessage ? `
+        <article class="procedural-dynamics-chat-message is-user is-pending"><span>You · Sending</span><p>${escapeHtml(pendingMessage)}</p></article>
+        <article class="procedural-dynamics-chat-message is-assistant is-pending"><span>StoryVR</span><p>Updating the setting from your conversation…</p></article>
+      ` : ""}
+    </div>
+  `;
+}
+
+function bindEnvironmentConversationScroll(context = activeEnvironmentSceneContext()) {
+  const transcript = document.querySelector("[data-environment-conversation]");
+  const key = environmentSceneKey(context);
+  if (!transcript || !key) return;
+  const scroll = state.environmentUi.conversationScrollByScene[key];
+  transcript.scrollTop = !scroll || scroll.atBottom ? transcript.scrollHeight : scroll.top;
+  transcript.addEventListener("scroll", () => {
+    state.environmentUi.conversationScrollByScene[key] = {
+      top: transcript.scrollTop,
+      atBottom: transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop < 32,
+    };
+  }, { passive: true });
+}
+
+function updateEnvironmentConversationDom() {
+  const context = activeEnvironmentSceneContext();
+  const region = document.querySelector("[data-environment-conversation-region]");
+  if (region) {
+    const markup = renderEnvironmentConversation(context);
+    if (region.environmentConversationMarkup !== markup) {
+      region.innerHTML = markup;
+      region.environmentConversationMarkup = markup;
+      bindEnvironmentConversationScroll(context);
+    }
+  }
+  const error = state.environmentUi.errorsByScene[environmentSceneKey(context)] || "";
+  const message = document.querySelector("[data-environment-conversation-status]");
+  if (message) {
+    message.textContent = error;
+    message.hidden = !error;
+    message.classList.toggle("error", Boolean(error));
+  }
+  const clear = document.querySelector("[data-environment-clear-conversation]");
+  if (clear) clear.hidden = !environmentConversationForScene(context).length;
+}
+
 function environmentGenerationDraftKey(context = activeEnvironmentSceneContext()) {
   return environmentSceneKey(context);
 }
@@ -9975,6 +10128,17 @@ function restoreEnvironmentGenerationDraft(context = activeEnvironmentSceneConte
   const key = environmentGenerationDraftKey(context);
   const draft = key ? state.environmentUi.generationDraftsByScene[key] : null;
   state.environmentUi.generationPrompt = String(draft?.prompt || "");
+}
+
+function clearInstalledEnvironmentComposer(context, sentPrompt) {
+  const key = environmentGenerationDraftKey(context);
+  const draft = state.environmentUi.generationDraftsByScene[key];
+  if (draft?.prompt === sentPrompt) state.environmentUi.generationDraftsByScene[key] = { prompt: "" };
+  if (environmentContextMatchesActive(context) && state.environmentUi.generationPrompt === sentPrompt) {
+    state.environmentUi.generationPrompt = "";
+    const input = document.querySelector("#environment-generation-prompt");
+    if (input?.value === sentPrompt) input.value = "";
+  }
 }
 
 function environmentGenerationActivityTitle() {
@@ -12872,11 +13036,15 @@ function bindEnvironmentEnhancementEvents() {
   }
   const generationForm = document.querySelector("[data-environment-generation-form]");
   const generationInput = document.querySelector("#environment-generation-prompt");
+  const sceneContext = activeEnvironmentSceneContext();
+  bindEnvironmentConversationScroll(sceneContext);
   generationInput?.addEventListener("input", () => {
     state.environmentUi.generationPrompt = generationInput.value;
-    if (state.environmentUi.generationError) {
+    preserveEnvironmentGenerationDraft(sceneContext);
+    delete state.environmentUi.errorsByScene[environmentSceneKey(sceneContext)];
+    if (state.environmentUi.generationError && environmentContextMatchesActive(state.environmentUi.generationSceneContext)) {
       state.environmentUi.generationError = false;
-      state.environmentUi.generationStatus = "Prompt updated. Generate when the description is ready.";
+      state.environmentUi.generationStatus = "Message updated. Send when you are ready.";
       if (!state.environmentUi.generationBusy) {
         state.environmentUi.generationPhase = "idle";
         state.environmentUi.generationNoticeVisible = false;
@@ -12885,10 +13053,17 @@ function bindEnvironmentEnhancementEvents() {
     updateEnvironmentActionAvailability();
     updateEnvironmentGenerationDom();
   });
+  generationInput?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey) || event.isComposing) return;
+    event.preventDefault();
+    const generate = document.querySelector("[data-environment-generate-button]");
+    if (!generate?.disabled) generate?.click();
+  });
   generationForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     generateEnvironmentFromUi();
   });
+  document.querySelector("[data-environment-clear-conversation]")?.addEventListener("click", () => clearEnvironmentConversation(sceneContext));
   bindEnvironmentApplyTargetEvents();
 
   document.querySelector("[data-environment-reset-view]")?.addEventListener("click", () => frameEnvironmentViewer(contextViewer, { force: true }));
@@ -13424,6 +13599,12 @@ async function generateProceduralDynamicsPreview(sceneContext) {
     });
     state.proceduralDynamicsUi.promptsByScene[sceneKey] = "";
     state.proceduralDynamicsUi.conversationScrollByScene[sceneKey] = { top: 0, atBottom: true };
+    const activeScene = activeDynamicSceneContext();
+    if (state.activeId === "dynamic-geometry" && activeScene
+      && proceduralDynamicsSceneKey(activeScene) === sceneKey) {
+      state.dynamicPreviewPlaying = true;
+      state.dynamicPreviewRestartToken += 1;
+    }
   } catch (error) {
     state.proceduralDynamicsUi.errorsByScene[sceneKey] = `Could not generate and save animation or effects: ${error.message}`;
     delete state.proceduralDynamicsUi.statusByScene[sceneKey];
@@ -13581,31 +13762,41 @@ async function persistDynamicSpatialAdjustments() {
 async function removeProceduralDynamicsPlan(sceneContext) {
   const scope = proceduralDynamicsScope(sceneContext);
   const sceneKey = scope.sceneKey;
-  if (!proceduralDynamicsStoredPlan(sceneContext) || state.proceduralDynamicsUi.busyByScene[sceneKey]) return;
-  setProceduralDynamicsBusy(sceneContext, true);
-  delete state.proceduralDynamicsUi.errorsByScene[sceneKey];
-  state.proceduralDynamicsUi.statusByScene[sceneKey] = "Removing generated movement from this scene…";
-  renderPreservingScroll();
+  if ((!proceduralDynamicsStoredPlan(sceneContext) && !proceduralDynamicsConversationForScene(sceneContext).length)
+    || state.proceduralDynamicsUi.busyByScene[sceneKey]) return;
+  await historyFinalizePromise;
+  if (state.proceduralDynamicsUi.busyByScene[sceneKey]) return;
+  if (authorHistory.active) commitAuthorHistory();
   try {
-    await withAuthorHistory("Remove generated object movement", async () => {
+    await withAuthorHistory("Clear animation, effects, and conversation", async () => {
+      setProceduralDynamicsBusy(sceneContext, true);
+      delete state.proceduralDynamicsUi.errorsByScene[sceneKey];
+      state.proceduralDynamicsUi.statusByScene[sceneKey] = "Clearing this scene's animation, effects, and conversation…";
+      renderPreservingScroll();
       const response = await api.post("/api/dynamics/remove", {
         sceneContext: scope,
         expectedRevision: Number(state.data?.proceduralDynamics?.revision) || 0,
       });
       if (!response?.proceduralDynamics) throw new Error("Object movement removal did not return the updated author state.");
       state.data.proceduralDynamics = response.proceduralDynamics;
-      delete state.proceduralDynamicsUi.candidatesByScene[sceneKey];
-      delete state.proceduralDynamicsUi.expectedRevisionsByScene[sceneKey];
+      if (proceduralDynamicsStoredPlan(sceneContext) || proceduralDynamicsConversationForScene(sceneContext).length) {
+        throw new Error("The animation, effects, and conversation could not be cleared from this scene.");
+      }
+      for (const field of [
+        "promptsByScene", "pendingMessagesByScene", "conversationScrollByScene",
+        "candidatesByScene", "expectedRevisionsByScene", "busyByScene", "errorsByScene", "statusByScene",
+      ]) {
+        delete state.proceduralDynamicsUi[field][sceneKey];
+      }
       delete state.dynamicGeneratedEditScenes[sceneKey];
+      if (response.removedPlan !== false) markStoryvrCheckpointCompletionPending("dynamic-geometry");
       return response;
     }, {
       persistent: true,
       componentId: "dynamic-geometry",
     });
-    markStoryvrCheckpointCompletionPending("dynamic-geometry");
-    state.proceduralDynamicsUi.statusByScene[sceneKey] = "Generated movement removed. Saved 3D model animation mappings are unchanged.";
   } catch (error) {
-    state.proceduralDynamicsUi.errorsByScene[sceneKey] = `Could not remove movement: ${error.message}`;
+    state.proceduralDynamicsUi.errorsByScene[sceneKey] = `Could not clear animation, effects, and conversation: ${error.message}`;
     delete state.proceduralDynamicsUi.statusByScene[sceneKey];
   } finally {
     setProceduralDynamicsBusy(sceneContext, false);
@@ -13621,25 +13812,38 @@ function bindProceduralTransitionAuthoringEvents() {
   if (!sceneContext || !boundary?.edgeId || !scope) return;
   const prompt = document.querySelector("[data-procedural-transition-prompt]");
   const generate = document.querySelector("[data-procedural-transition-generate]");
+  const transcript = document.querySelector("[data-procedural-transition-conversation]");
+  if (transcript) {
+    const scroll = state.proceduralTransitionsUi.conversationScrollByBoundary[scope.boundaryKey];
+    transcript.scrollTop = !scroll || scroll.atBottom ? transcript.scrollHeight : scroll.top;
+    transcript.addEventListener("scroll", () => {
+      state.proceduralTransitionsUi.conversationScrollByBoundary[scope.boundaryKey] = {
+        top: transcript.scrollTop,
+        atBottom: transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop < 32,
+      };
+    }, { passive: true });
+  }
   prompt?.addEventListener("input", () => {
     state.proceduralTransitionsUi.promptsByBoundary[scope.boundaryKey] = prompt.value;
     delete state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey];
     delete state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey];
     const ready = Boolean(state.data?.readiness?.["inter-beat-dynamics"]?.canGenerate);
-    if (generate) generate.disabled = !ready || !prompt.value.trim();
+    if (generate) generate.disabled = !ready
+      || state.proceduralTransitionsUi.busyByBoundary[scope.boundaryKey]
+      || !prompt.value.trim();
+    if (generate && !state.proceduralTransitionsUi.busyByBoundary[scope.boundaryKey]) {
+      generate.textContent = proceduralTransitionConversationForBoundary(sceneContext, proposal).length
+        ? "Send update"
+        : "Send & generate";
+    }
     syncProceduralTransitionCandidateControls(sceneContext, proposal);
   });
-  generate?.addEventListener("click", () => generateProceduralTransitionPreview(sceneContext));
-  document.querySelector("[data-procedural-transition-apply]")?.addEventListener("click", () => (
-    applyProceduralTransitionCandidate(sceneContext)
-  ));
-  document.querySelector("[data-procedural-transition-discard]")?.addEventListener("click", () => {
-    delete state.proceduralTransitionsUi.candidatesByBoundary[scope.boundaryKey];
-    delete state.proceduralTransitionsUi.expectedRevisionsByBoundary[scope.boundaryKey];
-    state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey] = "Transition preview discarded. Story order, placed objects, and source motion remain unchanged.";
-    delete state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey];
-    renderPreservingScroll();
+  prompt?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey) || event.isComposing) return;
+    event.preventDefault();
+    if (!generate?.disabled) generate?.click();
   });
+  generate?.addEventListener("click", () => generateProceduralTransitionPreview(sceneContext));
   document.querySelector("[data-procedural-transition-remove]")?.addEventListener("click", () => (
     removeProceduralTransitionPlan(sceneContext)
   ));
@@ -13675,120 +13879,136 @@ async function generateProceduralTransitionPreview(sceneContext) {
   if (!prompt) return;
   const subjectEntityIds = proceduralTransitionSelectedSubjectEntityIds(sceneContext);
   setProceduralTransitionBusy(sceneContext, true);
+  state.proceduralTransitionsUi.pendingMessagesByBoundary[scope.boundaryKey] = prompt;
+  state.proceduralTransitionsUi.conversationScrollByBoundary[scope.boundaryKey] = { top: 0, atBottom: true };
   delete state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey];
-  state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey] = "Codex is preparing a route-scoped transition preview…";
+  state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey] = "Updating and saving the transition…";
   renderPreservingScroll();
   try {
-    const previousCandidate = proceduralTransitionCandidate(sceneContext);
-    const previousPlan = proceduralTransitionCandidatePlan(previousCandidate)
-      || proceduralTransitionStoredPlan(sceneContext);
     const response = await api.post("/api/transitions/generate", {
       boundaryContext: proceduralTransitionRequestBoundary(scope),
       prompt,
+      conversation: true,
       ...(subjectEntityIds.length ? { subjectEntityIds } : {}),
-      ...(previousPlan ? { previousPlan } : {}),
-      ...(previousCandidate ? { previousCandidate } : {}),
     });
     const candidate = proceduralTransitionCandidateFromResponse(response);
-    if (!candidate || !proceduralTransitionCandidatePlan(candidate)) {
-      throw new Error("Transition generation did not return a valid route-scoped preview.");
+    if (!candidate || (!proceduralTransitionCandidatePlan(candidate)
+      && !(candidate.conversationTurn && candidate.transitionPlan === null))) {
+      throw new Error("Transition generation did not return a valid scene-change suggestion.");
     }
     if (JSON.stringify(proceduralTransitionCandidateSubjectEntityIds(candidate)) !== JSON.stringify(subjectEntityIds)) {
       throw new Error("Transition generation did not preserve the selected scene-object subjects.");
     }
     const violation = proceduralTransitionCandidateViolation(candidate, sceneContext);
     if (violation) throw new Error(violation);
-    state.proceduralTransitionsUi.candidatesByBoundary[scope.boundaryKey] = candidate;
-    state.proceduralTransitionsUi.promptsByBoundary[scope.boundaryKey] = proceduralTransitionCandidatePrompt(candidate) || prompt;
     const expectedRevision = Number(response?.expectedRevision);
-    state.proceduralTransitionsUi.expectedRevisionsByBoundary[scope.boundaryKey] = Number.isSafeInteger(expectedRevision)
-      ? expectedRevision
-      : Number(response?.proceduralTransitions?.revision) || proceduralTransitionExpectedRevision(sceneContext);
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+      throw new Error("Transition generation did not return a valid saved-state revision.");
+    }
     if (response?.proceduralTransitions) state.data.proceduralTransitions = response.proceduralTransitions;
-    state.interBeatPreviewPlaying = true;
-    state.interBeatPreviewRestartToken += 1;
-    state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey] = response?.engine?.provider === "deterministic-fallback"
-      ? "Codex was unavailable or returned an invalid plan, so StoryVR prepared a safe local transition preview. Story order, placed objects, and source motion are unchanged."
-      : "Transition preview ready. Story order, placed objects, and source motion are unchanged.";
+    delete state.proceduralTransitionsUi.candidatesByBoundary[scope.boundaryKey];
+    delete state.proceduralTransitionsUi.expectedRevisionsByBoundary[scope.boundaryKey];
+    delete state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey];
+    await commitProceduralTransitionCandidate(sceneContext, {
+      candidate,
+      expectedRevision,
+      subjectEntityIds,
+      historyLabel: proceduralTransitionConversationForBoundary(sceneContext).length
+        ? "Update scene transition"
+        : "Generate scene transition",
+      statusMessage: "Update saved. Send another message to keep refining this transition.",
+    });
+    state.proceduralTransitionsUi.promptsByBoundary[scope.boundaryKey] = "";
+    state.proceduralTransitionsUi.conversationScrollByBoundary[scope.boundaryKey] = { top: 0, atBottom: true };
+    const activeScope = proceduralTransitionScope(activeInterBeatSceneContext());
+    if (activeScope?.boundaryKey === scope.boundaryKey) {
+      state.interBeatPreviewPlaying = true;
+      state.interBeatPreviewRestartToken += 1;
+    }
   } catch (error) {
-    state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey] = `Could not generate transition: ${error.message}`;
+    state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey] = `Could not generate and save the transition: ${error.message}`;
     delete state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey];
   } finally {
-    setProceduralTransitionBusy(sceneContext, false);
+    delete state.proceduralTransitionsUi.pendingMessagesByBoundary[scope.boundaryKey];
+    delete state.proceduralTransitionsUi.busyByBoundary[scope.boundaryKey];
     renderPreservingScroll();
   }
 }
 
-async function applyProceduralTransitionCandidate(sceneContext) {
+async function commitProceduralTransitionCandidate(sceneContext, options = {}) {
   const scope = proceduralTransitionScope(sceneContext);
-  const candidate = proceduralTransitionCandidate(sceneContext);
-  if (!scope || !candidate || state.proceduralTransitionsUi.busyByBoundary[scope.boundaryKey]) return;
-  const prompt = proceduralTransitionPromptForBoundary(sceneContext).trim();
-  const review = proceduralTransitionCandidateReview(candidate, sceneContext, undefined, prompt);
+  const candidate = options.candidate || proceduralTransitionCandidate(sceneContext);
+  if (!scope || !candidate) throw new Error("The generated transition is no longer available. Generate it again.");
+  const review = proceduralTransitionCandidateReview(
+    candidate, sceneContext, undefined, proceduralTransitionPromptForBoundary(sceneContext).trim(), options.subjectEntityIds,
+  );
   if (review.applyBlocked) {
-    state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey] = review.message
-      || "The transition preview cannot be applied. Revise the description and regenerate.";
-    renderPreservingScroll();
-    return;
+    throw new Error(review.message || "The transition cannot be saved. Revise the description and generate again.");
   }
-  setProceduralTransitionBusy(sceneContext, true);
-  delete state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey];
-  state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey] = "Applying the generated transition to this scene-change arrow…";
-  renderPreservingScroll();
-  try {
-    await withAuthorHistory("Apply generated scene transition", async () => {
-      const response = await api.post("/api/transitions/apply", {
-        boundaryContext: proceduralTransitionRequestBoundary(scope),
-        expectedRevision: proceduralTransitionExpectedRevision(sceneContext),
-        candidate,
-      });
-      await refreshAfterProceduralDynamicsApply(response);
-      if (!state.data?.proceduralTransitions) throw new Error("Transition apply did not return the updated author state.");
-      delete state.proceduralTransitionsUi.candidatesByBoundary[scope.boundaryKey];
-      delete state.proceduralTransitionsUi.expectedRevisionsByBoundary[scope.boundaryKey];
-      return response;
-    }, {
-      persistent: true,
-      componentId: "inter-beat-dynamics",
+  if (!Number.isSafeInteger(options.expectedRevision) || options.expectedRevision < 0) {
+    throw new Error("Transition generation did not return a valid saved-state revision. Generate it again.");
+  }
+  await historyFinalizePromise;
+  if (authorHistory.active) commitAuthorHistory();
+  return withAuthorHistory(options.historyLabel || "Generate scene transition", async () => {
+    const response = await api.post("/api/transitions/apply", {
+      boundaryContext: proceduralTransitionRequestBoundary(scope),
+      expectedRevision: options.expectedRevision,
+      candidate,
     });
-    markStoryvrCheckpointCompletionPending("inter-beat-dynamics");
-    state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey] = "Generated transition applied to this arrow. Story order, placed objects, and source motion remain unchanged.";
-  } catch (error) {
-    state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey] = `Could not apply transition: ${error.message}`;
-    delete state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey];
-  } finally {
-    setProceduralTransitionBusy(sceneContext, false);
-    renderPreservingScroll();
-  }
+    await refreshAfterProceduralDynamicsApply(response);
+    if (!state.data?.proceduralTransitions) throw new Error("Transition save did not return the updated author state.");
+    if (proceduralTransitionCandidatePlan(candidate) && !proceduralTransitionStoredPlan(sceneContext)) {
+      throw new Error("The transition was saved but the exact arrow plan could not be reloaded.");
+    }
+    delete state.proceduralTransitionsUi.candidatesByBoundary[scope.boundaryKey];
+    delete state.proceduralTransitionsUi.expectedRevisionsByBoundary[scope.boundaryKey];
+    if (response?.conversationOnly !== true) markStoryvrCheckpointCompletionPending("inter-beat-dynamics");
+    state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey] = options.statusMessage
+      || "Transition generated and saved automatically.";
+    return response;
+  }, {
+    persistent: true,
+    componentId: "inter-beat-dynamics",
+  });
 }
 
 async function removeProceduralTransitionPlan(sceneContext) {
   const scope = proceduralTransitionScope(sceneContext);
-  if (!scope || !proceduralTransitionStoredPlan(sceneContext)
+  if (!scope || (!proceduralTransitionStoredPlan(sceneContext) && !proceduralTransitionConversationForBoundary(sceneContext).length)
     || state.proceduralTransitionsUi.busyByBoundary[scope.boundaryKey]) return;
-  setProceduralTransitionBusy(sceneContext, true);
-  delete state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey];
-  state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey] = "Removing the generated transition from this arrow…";
-  renderPreservingScroll();
+  await historyFinalizePromise;
+  if (state.proceduralTransitionsUi.busyByBoundary[scope.boundaryKey]) return;
+  if (authorHistory.active) commitAuthorHistory();
   try {
-    await withAuthorHistory("Remove generated scene transition", async () => {
+    await withAuthorHistory("Clear scene transition and conversation", async () => {
+      setProceduralTransitionBusy(sceneContext, true);
+      delete state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey];
+      state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey] = "Clearing this transition and conversation…";
+      renderPreservingScroll();
       const response = await api.post("/api/transitions/remove", {
         boundaryContext: proceduralTransitionRequestBoundary(scope),
         expectedRevision: Number(state.data?.proceduralTransitions?.revision) || 0,
       });
       if (!response?.proceduralTransitions) throw new Error("Transition removal did not return the updated author state.");
       state.data.proceduralTransitions = response.proceduralTransitions;
-      delete state.proceduralTransitionsUi.candidatesByBoundary[scope.boundaryKey];
-      delete state.proceduralTransitionsUi.expectedRevisionsByBoundary[scope.boundaryKey];
+      if (proceduralTransitionStoredPlan(sceneContext) || proceduralTransitionConversationForBoundary(sceneContext).length) {
+        throw new Error("The transition and conversation could not be cleared from this arrow.");
+      }
+      for (const field of [
+        "promptsByBoundary", "pendingMessagesByBoundary", "conversationScrollByBoundary",
+        "candidatesByBoundary", "expectedRevisionsByBoundary", "busyByBoundary", "errorsByBoundary", "statusByBoundary",
+      ]) {
+        delete state.proceduralTransitionsUi[field][scope.boundaryKey];
+      }
+      if (response.removedPlan !== false) markStoryvrCheckpointCompletionPending("inter-beat-dynamics");
       return response;
     }, {
       persistent: true,
       componentId: "inter-beat-dynamics",
     });
-    markStoryvrCheckpointCompletionPending("inter-beat-dynamics");
-    state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey] = "Generated transition removed. Saved source-motion mappings are unchanged.";
   } catch (error) {
-    state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey] = `Could not remove transition: ${error.message}`;
+    state.proceduralTransitionsUi.errorsByBoundary[scope.boundaryKey] = `Could not clear transition and conversation: ${error.message}`;
     delete state.proceduralTransitionsUi.statusByBoundary[scope.boundaryKey];
   } finally {
     setProceduralTransitionBusy(sceneContext, false);
@@ -14647,6 +14867,43 @@ function selectEnvironmentMode(mode) {
   renderPreservingScroll();
 }
 
+async function clearEnvironmentConversation(context = activeEnvironmentSceneContext()) {
+  if (!context?.beatId || state.environmentUi.generationBusy || state.environmentUi.operationBusy) return;
+  const sceneContext = cloneJson(context);
+  const sceneKey = environmentSceneKey(sceneContext);
+  state.environmentUi.operationBusy = true;
+  delete state.environmentUi.errorsByScene[sceneKey];
+  updateEnvironmentActionAvailability();
+  updateEnvironmentConversationDom();
+  try {
+    await flushEnvironmentDraft();
+    await historyFinalizePromise;
+    await withAuthorHistory("Clear setting conversation", async () => {
+      const response = await api.post("/api/environment-enhancement/clear-conversation", {
+        beatId: sceneContext.beatId,
+        variantGroupId: sceneContext.variantGroupId,
+        variantOptionId: sceneContext.variantOptionId,
+        expectedRevision: Number(environmentRawState().revision) || 0,
+      });
+      if (!response?.environmentEnhancement) throw new Error("Clearing the conversation did not return the updated setting state.");
+      applyEnvironmentEnhancementPayload(response, { syncUi: false });
+      const record = environmentRawState().conversationsByScene?.[environmentConversationKey(sceneContext)];
+      const messages = Array.isArray(record) ? record : record?.messages;
+      if (!Array.isArray(messages) || messages.length) throw new Error("The setting conversation could not be cleared from this scene.");
+      delete state.environmentUi.conversationScrollByScene[sceneKey];
+      if (environmentSceneKey(state.environmentUi.generationSceneContext) === sceneKey) {
+        state.environmentUi.generationNoticeVisible = false;
+      }
+      return response;
+    }, { persistent: true, componentId: "environment-enhancement" });
+  } catch (error) {
+    state.environmentUi.errorsByScene[sceneKey] = `Could not clear conversation: ${error.message}`;
+  } finally {
+    state.environmentUi.operationBusy = false;
+    renderPreservingScroll();
+  }
+}
+
 async function generateEnvironmentFromUi() {
   const input = document.querySelector("#environment-generation-prompt");
   const prompt = String(input?.value ?? environmentGenerationPrompt()).trim();
@@ -14665,10 +14922,14 @@ async function generateEnvironmentFromUi() {
   const sceneContext = activeEnvironmentSceneContext();
   if (!sceneContext?.beatId) return;
   const generationSceneContext = cloneJson(sceneContext);
+  const sceneKey = environmentSceneKey(generationSceneContext);
 
   const requestId = state.environmentUi.generationRequestId + 1;
   state.environmentUi.generationRequestId = requestId;
   state.environmentUi.generationPrompt = prompt;
+  preserveEnvironmentGenerationDraft(generationSceneContext);
+  state.environmentUi.pendingMessagesByScene[sceneKey] = prompt;
+  delete state.environmentUi.errorsByScene[sceneKey];
   state.environmentUi.generationBusy = true;
   state.environmentUi.generationPhase = "generating";
   state.environmentUi.generationSceneContext = generationSceneContext;
@@ -14684,6 +14945,7 @@ async function generateEnvironmentFromUi() {
     await flushEnvironmentDraft();
     const staged = await api.post("/api/environment-enhancement/generate", {
       prompt,
+      conversation: true,
       beatId: generationSceneContext.beatId,
       variantGroupId: generationSceneContext.variantGroupId,
       variantOptionId: generationSceneContext.variantOptionId,
@@ -14691,13 +14953,17 @@ async function generateEnvironmentFromUi() {
     if (requestId !== state.environmentUi.generationRequestId) return;
     if (!staged?.generationToken) throw new Error("Setting generation did not return an installable result.");
     state.environmentUi.generationPhase = "waiting";
-    state.environmentUi.generationStatus = "The 360° setting and matching ground are ready. StoryVR will install them as soon as the current edit is finished.";
+    state.environmentUi.generationStatus = staged.generation?.conversationOnly
+      ? "Your reply is ready. StoryVR will save it as soon as the current edit is finished."
+      : "The 360° setting and matching ground are ready. StoryVR will install them as soon as the current edit is finished.";
     updateEnvironmentGenerationDom();
 
     const canInstall = await waitForBackgroundEnvironmentInstallTurn(requestId);
     if (!canInstall) return;
     state.environmentUi.generationPhase = "installing";
-    state.environmentUi.generationStatus = "The generated 360° setting and matching ground are ready. StoryVR is installing them now…";
+    state.environmentUi.generationStatus = staged.generation?.conversationOnly
+      ? "StoryVR is saving the conversation reply…"
+      : "The generated 360° setting and matching ground are ready. StoryVR is installing them now…";
     updateEnvironmentGenerationDom();
 
     await withAuthorHistory("Generate setting image", async () => {
@@ -14705,29 +14971,35 @@ async function generateEnvironmentFromUi() {
         generationToken: staged.generationToken,
       });
       if (requestId !== state.environmentUi.generationRequestId) return installed;
+      if (!installed?.environmentEnhancement) throw new Error("Saving the generated setting did not return the updated author state.");
       const previousActiveCheckpointStatus = checkpointFlowStatus(state.activeId);
       const requestedSceneIsActive = environmentContextMatchesActive(generationSceneContext);
       const environmentCanvasIsActive = state.activeId === "environment-enhancement" && !activeEnvironmentSceneContext();
+      if (requestedSceneIsActive && installed.conversationOnly !== true) state.environmentUi.selectionMode = "asset";
       applyEnvironmentEnhancementPayload(installed, {
-        resetDraft: requestedSceneIsActive,
-        syncUi: requestedSceneIsActive,
+        resetDraft: requestedSceneIsActive && installed.conversationOnly !== true,
+        syncUi: requestedSceneIsActive && installed.conversationOnly !== true,
       });
-      environmentStoryCardPreviewRequestId += 1;
-      environmentStoryCardPreviewCache.clear();
-      markStoryvrCheckpointCompletionPending("environment-enhancement");
-      if (requestedSceneIsActive) {
-        state.environmentUi.selectionMode = "asset";
-        resetEnvironmentApplyTargets();
+      if (installed.conversationOnly !== true) {
+        environmentStoryCardPreviewRequestId += 1;
+        environmentStoryCardPreviewCache.clear();
+        markStoryvrCheckpointCompletionPending("environment-enhancement");
+        if (requestedSceneIsActive) {
+          resetEnvironmentApplyTargets();
+        }
       }
       const manifest = environmentManifest(generationSceneContext);
       const source = manifest.assetSource || manifest.selectedSource || {};
       state.environmentUi.generationResult = {
         ...(installed.generation || {}),
-        title: installed.generation?.title || environmentCandidateTitle(source) || "Generated 360° setting and ground ready",
-        description: installed.generation?.description
+        title: installed.conversationOnly === true ? "Conversation saved"
+          : installed.generation?.title || environmentCandidateTitle(source) || "Generated 360° setting and ground ready",
+        description: installed.assistantMessage || installed.generation?.description
           || "The generated 360° setting and matching ground are installed as requested.",
       };
-      state.environmentUi.generationStatus = `Generated 360° setting and matching ground installed for ${spatialSceneBeat(generationSceneContext)?.title || generationSceneContext.beatId}. Open that scene to inspect the alignment, then save the scene.`;
+      state.environmentUi.generationStatus = installed.assistantMessage
+        || (installed.conversationOnly === true ? "Your conversation was saved."
+          : `Generated 360° setting and matching ground installed for ${spatialSceneBeat(generationSceneContext)?.title || generationSceneContext.beatId}. Open that scene to inspect the alignment, then save the scene.`);
       state.environmentUi.generationError = false;
       state.environmentUi.generationPhase = "ready";
       state.environmentUi.generationNoticeVisible = true;
@@ -14741,15 +15013,18 @@ async function generateEnvironmentFromUi() {
       componentId: "environment-enhancement",
     });
     if (requestId !== state.environmentUi.generationRequestId) return;
+    clearInstalledEnvironmentComposer(generationSceneContext, prompt);
   } catch (error) {
     if (requestId === state.environmentUi.generationRequestId) {
       state.environmentUi.generationError = true;
       state.environmentUi.generationPhase = "error";
       state.environmentUi.generationStatus = `Generation failed: ${error.message}`;
+      state.environmentUi.errorsByScene[sceneKey] = `Could not send your message: ${error.message}`;
     }
   } finally {
     if (requestId === state.environmentUi.generationRequestId) {
       state.environmentUi.generationBusy = false;
+      delete state.environmentUi.pendingMessagesByScene[sceneKey];
       updateEnvironmentGenerationDom();
       updateEnvironmentActionAvailability();
     }
@@ -14772,7 +15047,7 @@ async function waitForBackgroundEnvironmentInstallTurn(requestId) {
     await historyFinalizePromise;
     if (!backgroundEnvironmentInstallBlocked()) return true;
     state.environmentUi.generationPhase = "waiting";
-    state.environmentUi.generationStatus = "The generated images are ready. StoryVR is waiting for your current edit to finish before installing them.";
+    state.environmentUi.generationStatus = "The setting response is ready. StoryVR is waiting for your current edit to finish before saving it.";
     updateEnvironmentGenerationDom();
     await new Promise((resolve) => window.setTimeout(resolve, 120));
   }
@@ -14789,10 +15064,12 @@ function updateEnvironmentGenerationDom() {
   }
   const button = document.querySelector("[data-environment-generate-button]");
   if (button) {
+    const error = state.environmentUi.errorsByScene[environmentSceneKey(activeEnvironmentSceneContext())];
     button.textContent = state.environmentUi.generationBusy
-      ? "Generating…"
-      : "Generate setting";
+      ? "Generating and saving…"
+      : error ? "Retry message" : environmentConversationForScene().length ? "Send update" : "Send & generate";
   }
+  updateEnvironmentConversationDom();
   updateEnvironmentGenerationActivityDom();
 }
 
@@ -15016,7 +15293,9 @@ function updateEnvironmentActionAvailability() {
   const save = document.querySelector('[data-environment-action="save"]');
   if (save) save.disabled = !ready || busy || !environmentCheckpointAssignmentsReady();
   const generationInput = document.querySelector("#environment-generation-prompt");
-  if (generationInput) generationInput.disabled = !ready || busy || state.environmentUi.generationBusy;
+  if (generationInput) generationInput.disabled = !ready || state.environmentUi.operationBusy;
+  const clearConversation = document.querySelector("[data-environment-clear-conversation]");
+  if (clearConversation) clearConversation.disabled = busy;
   const generate = document.querySelector("[data-environment-generate-button]");
   if (generate) {
     generate.disabled = !ready
@@ -25496,7 +25775,7 @@ function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight, maxLines, request
 }
 
 function addFinalReviewTransitionEffects(viewer, region, transitionKind = null, playback = null) {
-  if (playback?.canScrub !== true || transitionKind !== "discrete-pop") return;
+  if (playback?.generatedTransitionPlan?.style === "generated" || playback?.canScrub !== true || transitionKind !== "discrete-pop") return;
   const flash = new THREE.Mesh(
     new THREE.SphereGeometry(0.78, 48, 28),
     new THREE.MeshBasicMaterial({ color: 0xfff0b5, transparent: true, opacity: 0 }),
@@ -32186,7 +32465,7 @@ function addDynamicEffectOverlays(root, kind, activePosition, beat) {
 }
 
 function addInterBeatTransitionOverlays(root, kind, fromPosition, toPosition, playback) {
-  if (playback?.canScrub !== true || kind === "none") return null;
+  if (playback?.generatedTransitionPlan?.style === "generated" || playback?.canScrub !== true || kind === "none") return null;
   const group = new THREE.Group();
   root.add(group);
 
@@ -34805,7 +35084,7 @@ function applyInterBeatExactSceneVisibility(viewer, progress) {
       }
     });
   }
-  if (viewer.autoInterpolation || generatedPlan?.style === "interpolate") {
+  if ((!generatedPlan && viewer.autoInterpolation) || generatedPlan?.style === "interpolate") {
     for (const match of viewer.autoInterpolationMatches || []) {
       const source = (viewer.dynamicObjects || []).find((item) => (
         item.transitionSceneRole === "from"
@@ -34840,7 +35119,9 @@ function applyInterBeatExactSceneVisibility(viewer, progress) {
   const hardSwitch = viewer.suddenCutPreview
     || generatedPlan?.style === "cut"
     || (!viewer.autoInterpolation && !generatedPlan && ["discrete-hard", "discrete-pop"].includes(viewer.kind));
-  const destinationOpacity = hardSwitch ? (clamped >= 0.5 ? 1 : 0) : smooth;
+  const destinationOpacity = generatedPlan?.style === "generated"
+    ? (clamped >= 1 ? 1 : 0)
+    : hardSwitch ? (clamped >= 0.5 ? 1 : 0) : smooth;
   for (const item of viewer.dynamicObjects || []) {
     let opacity = 1;
     if (interpolatedSources.has(item)) opacity = 0;
@@ -34989,6 +35270,38 @@ function transitionMiddleTargetAnchorPosition(viewer, action) {
   return viewer.root?.worldToLocal ? viewer.root.worldToLocal(center) : center;
 }
 
+function applyProceduralTransitionTracks(viewer, action) {
+  const values = proceduralTransitionTrackSample(action, action.localProgress);
+  for (const item of transitionMiddleTargetObjects(viewer, action)) {
+    const target = item.authorWrapper || item.wrapper;
+    const saved = item.authoredTransform;
+    if (!target || !saved) continue;
+    if (values.positionOffset !== undefined) {
+      target.position.copy(saved.position).add(new THREE.Vector3().fromArray(values.positionOffset));
+    }
+    if (values.rotationOffsetDegrees !== undefined) {
+      target.quaternion.copy(saved.quaternion);
+      target.rotateX(THREE.MathUtils.degToRad(values.rotationOffsetDegrees[0]));
+      target.rotateY(THREE.MathUtils.degToRad(values.rotationOffsetDegrees[1]));
+      target.rotateZ(THREE.MathUtils.degToRad(values.rotationOffsetDegrees[2]));
+    }
+    if (values.scaleMultiplier !== undefined) {
+      const multiplier = Array.isArray(values.scaleMultiplier)
+        ? new THREE.Vector3().fromArray(values.scaleMultiplier)
+        : new THREE.Vector3().setScalar(values.scaleMultiplier);
+      target.scale.copy(saved.scale).multiply(multiplier);
+    }
+    if (values.opacity !== undefined) setDynamicPreviewObjectOpacity(item, values.opacity);
+    for (const material of item.opacityMaterials || []) {
+      if (values.color !== undefined && material?.color) material.color.set(values.color);
+      if (values.emissiveColor !== undefined && material?.emissive) material.emissive.set(values.emissiveColor);
+      if (values.emissiveIntensity !== undefined && material && "emissiveIntensity" in material) {
+        material.emissiveIntensity = values.emissiveIntensity;
+      }
+    }
+  }
+}
+
 function applyProceduralTransitionMiddle(viewer, progress) {
   const plan = viewer?.generatedTransitionPlan;
   if (!plan) return false;
@@ -35006,6 +35319,10 @@ function applyProceduralTransitionMiddle(viewer, progress) {
     return false;
   }
   for (const action of sample.actions) {
+    if (action.tracks?.length) {
+      applyProceduralTransitionTracks(viewer, action);
+      continue;
+    }
     const local = proceduralTransitionEasedProgress(action.easing || "linear", action.localProgress);
     const envelope = Math.sin(Math.PI * Math.max(0, Math.min(1, local)));
     const kind = String(action.kind || "").toLowerCase();

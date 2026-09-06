@@ -9,8 +9,13 @@ export const PROCEDURAL_TRANSITION_ENDPOINT_POLICY = Object.freeze({
   completion: "restore-exact-destination-scene",
 });
 
-const TRANSITION_STYLES = new Set(["interpolate", "crossfade", "cut"]);
+const TRANSITION_STYLES = new Set(["generated", "interpolate", "crossfade", "cut"]);
 const TRANSITION_EASINGS = new Set(["linear", "ease-in", "ease-out", "ease-in-out"]);
+const TRANSITION_TRACK_PROPERTIES = new Set([
+  "opacity", "positionOffset", "rotationOffsetDegrees", "scaleMultiplier",
+  "color", "emissiveColor", "emissiveIntensity",
+]);
+const TRANSITION_TRACK_INTERPOLATIONS = new Set(["linear", "step", "smooth"]);
 const UNSAFE_TEXT_PATTERN = /(?:\b(?:https?|file|data|javascript):|```|<\/?[a-z][^>]*>|\beval\s*\(|\bfunction\s*\(|=>)/i;
 const EXECUTABLE_DECLARATIVE_KEYS = new Set([
   "code",
@@ -67,7 +72,7 @@ export function normalizeProceduralTransitionPlan(value, boundaryContext = null)
   }
 
   const style = normalizePlanEnum(source.style, TRANSITION_STYLES, "interpolate", "style");
-  const defaultDuration = style === "cut" ? 0.4 : style === "crossfade" ? 1.2 : 1.6;
+  const defaultDuration = style === "generated" ? 2 : style === "cut" ? 0.4 : style === "crossfade" ? 1.2 : 1.6;
   const durationSeconds = positiveFiniteNumber(source.durationSeconds, defaultDuration);
   const easing = normalizePlanEnum(
     source.easing,
@@ -89,6 +94,9 @@ export function normalizeProceduralTransitionPlan(value, boundaryContext = null)
   const middle = normalizeProceduralTransitionMiddle(
     source.middle || source.middleSequence || source.transientMiddle,
   );
+  if (style === "generated" && !middle.actions.some((action) => action.tracks?.length)) {
+    throw transitionContractError("A generated procedural transition requires explicit property tracks.");
+  }
   assertSelectedTransitionSubjectScope(subjectEntityIds, middle);
 
   return {
@@ -177,7 +185,8 @@ export function proceduralTransitionMiddleSample(planOrMiddle, progress) {
     };
   }
   const actions = middle.actions.flatMap((action) => {
-    if (normalizedProgress < action.startProgress || normalizedProgress > action.endProgress) return [];
+    if (normalizedProgress < action.startProgress
+      || (normalizedProgress > action.endProgress && !action.tracks?.length)) return [];
     const span = action.endProgress - action.startProgress;
     const localProgress = span > 0
       ? clampUnitInterval((normalizedProgress - action.startProgress) / span)
@@ -190,6 +199,102 @@ export function proceduralTransitionMiddleSample(planOrMiddle, progress) {
     endpointPolicy: { ...PROCEDURAL_TRANSITION_ENDPOINT_POLICY },
     actions,
   };
+}
+
+export function proceduralTransitionHasTracks(plan) {
+  const actions = plan?.middle?.actions;
+  return Array.isArray(actions) && actions.some((action) => Array.isArray(action?.tracks) && action.tracks.length > 0);
+}
+
+export function normalizeProceduralTransitionTracks(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw transitionContractError("Procedural transition tracks must be an array.");
+  const properties = new Set();
+  return value.map((rawTrack) => {
+    const track = objectValue(rawTrack);
+    if (!track || Object.keys(track).some((key) => !["property", "interpolation", "keyframes"].includes(key))) {
+      throw transitionContractError("A procedural transition track must contain only property, interpolation, and keyframes.");
+    }
+    const property = track.property;
+    if (!TRANSITION_TRACK_PROPERTIES.has(property)) {
+      throw transitionContractError("The procedural transition track property is not supported.");
+    }
+    if (properties.has(property)) throw transitionContractError("A procedural transition action cannot repeat a track property.");
+    properties.add(property);
+    const interpolation = track.interpolation ?? "linear";
+    if (!TRANSITION_TRACK_INTERPOLATIONS.has(interpolation)) {
+      throw transitionContractError("The procedural transition track interpolation is not supported.");
+    }
+    if (!Array.isArray(track.keyframes) || !track.keyframes.length) {
+      throw transitionContractError("A procedural transition track requires at least one keyframe.");
+    }
+    const progressValues = new Set();
+    const keyframes = track.keyframes.map((rawKeyframe) => {
+      const keyframe = objectValue(rawKeyframe);
+      if (!keyframe || Object.keys(keyframe).some((key) => !["progress", "value"].includes(key))
+        || typeof keyframe.progress !== "number" || !Number.isFinite(keyframe.progress)
+        || keyframe.progress < 0 || keyframe.progress > 1) {
+        throw transitionContractError("A procedural transition keyframe requires progress from 0 to 1 and a value.");
+      }
+      if (progressValues.has(keyframe.progress)) throw transitionContractError("A procedural transition track cannot repeat keyframe progress.");
+      progressValues.add(keyframe.progress);
+      return { progress: keyframe.progress, value: normalizeTransitionTrackValue(property, keyframe.value) };
+    }).sort((left, right) => left.progress - right.progress);
+    const vectorValues = keyframes.filter((keyframe) => Array.isArray(keyframe.value));
+    if (vectorValues.length && vectorValues.length !== keyframes.length) {
+      throw transitionContractError("A procedural transition track must use the same value shape for every keyframe.");
+    }
+    return { property, interpolation, keyframes };
+  });
+}
+
+export function proceduralTransitionTrackSample(action, localProgress) {
+  const tracks = normalizeProceduralTransitionTracks(action?.tracks);
+  const progress = clampUnitInterval(localProgress);
+  return Object.fromEntries(tracks.map((track) => [track.property, sampleTransitionTrack(track, progress)]));
+}
+
+function normalizeTransitionTrackValue(property, value) {
+  if (property === "color" || property === "emissiveColor") {
+    if (typeof value !== "string" || !/^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/i.test(value)) {
+      throw transitionContractError("Procedural transition color tracks require hex colors.");
+    }
+    return value.length === 4
+      ? `#${[...value.slice(1)].map((channel) => channel.repeat(2)).join("")}`.toLowerCase()
+      : value.toLowerCase();
+  }
+  const vector = property === "positionOffset" || property === "rotationOffsetDegrees"
+    || (property === "scaleMultiplier" && Array.isArray(value));
+  const values = vector ? value : [value];
+  if (!Array.isArray(values) || (vector && values.length !== 3)
+    || !values.every((item) => typeof item === "number" && Number.isFinite(item))
+    || (["opacity", "scaleMultiplier", "emissiveIntensity"].includes(property) && values.some((item) => item < 0))
+    || (property === "opacity" && values.some((item) => item > 1))) {
+    throw transitionContractError(`The procedural transition ${property} track has an invalid value.`);
+  }
+  return vector ? [...values] : value;
+}
+
+function sampleTransitionTrack(track, progress) {
+  const keyframes = track.keyframes;
+  const copyValue = (value) => Array.isArray(value) ? [...value] : value;
+  if (progress <= keyframes[0].progress) return copyValue(keyframes[0].value);
+  if (progress >= keyframes.at(-1).progress) return copyValue(keyframes.at(-1).value);
+  const upperIndex = keyframes.findIndex((keyframe) => keyframe.progress > progress);
+  const left = keyframes[upperIndex - 1];
+  const right = keyframes[upperIndex];
+  if (track.interpolation === "step") return copyValue(left.value);
+  const ratio = (progress - left.progress) / (right.progress - left.progress);
+  const blend = track.interpolation === "smooth" ? ratio * ratio * (3 - 2 * ratio) : ratio;
+  const lerp = (from, to) => from * (1 - blend) + to * blend;
+  if (Array.isArray(left.value)) return left.value.map((value, index) => lerp(value, right.value[index]));
+  if (typeof left.value === "string") {
+    return `#${[1, 3, 5].map((offset) => Math.round(lerp(
+      Number.parseInt(left.value.slice(offset, offset + 2), 16),
+      Number.parseInt(right.value.slice(offset, offset + 2), 16),
+    )).toString(16).padStart(2, "0")).join("")}`;
+  }
+  return lerp(left.value, right.value);
 }
 
 export function normalizeProceduralTransitionsStore(value) {
@@ -305,7 +410,12 @@ function transitionSceneContextToken(context) {
 }
 
 function normalizePlanEnum(value, allowed, fallback, label) {
-  const normalized = String(value ?? "").trim().toLowerCase();
+  const text = String(value ?? "").trim();
+  // Providers may spell the same base easing as easeInOut or ease_in_out.
+  // Canonicalize spelling while keeping the supported easing set unchanged.
+  const normalized = (label === "easing"
+    ? text.replace(/([a-z])([A-Z])/g, "$1-$2").replace(/[_\s]+/g, "-")
+    : text).toLowerCase();
   if (!normalized) return fallback;
   if (!allowed.has(normalized)) {
     throw transitionContractError(`The procedural transition ${label} is not supported.`);
@@ -376,6 +486,10 @@ function normalizeTransientMiddleAction(value, index) {
     parametersSource,
     `middle action ${index + 1} parameters`,
   );
+  const tracks = source.tracks === undefined ? null : normalizeProceduralTransitionTracks(source.tracks);
+  if (tracks?.length && (!objectValue(target) || !["from", "to", "both"].includes(target.scope))) {
+    throw transitionContractError("A procedural transition track action requires an explicit from, to, or both target scope.");
+  }
   return {
     id,
     kind,
@@ -384,6 +498,7 @@ function normalizeTransientMiddleAction(value, index) {
     easing: safeGeneratedText(source.easing, "linear", 240),
     target,
     parameters,
+    ...(tracks ? { tracks } : {}),
     cleanup: "restore-endpoint",
   };
 }
@@ -429,6 +544,7 @@ function transientActionParameters(source) {
     "params",
     "payload",
     "cleanup",
+    "tracks",
   ].includes(key)));
 }
 
@@ -489,7 +605,9 @@ function nonNegativeFiniteNumber(value, fallback) {
 }
 
 function defaultTransitionSummary(style, durationSeconds) {
-  const label = style === "crossfade"
+  const label = style === "generated"
+    ? "Runs generated property tracks between the saved scenes"
+    : style === "crossfade"
     ? "Crossfades between the saved scenes"
     : style === "cut"
       ? "Cuts directly to the next saved scene"

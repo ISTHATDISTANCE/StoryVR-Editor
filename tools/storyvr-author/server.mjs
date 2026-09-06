@@ -59,9 +59,14 @@ import {
 import {
   createEnvironmentStore,
   DEFAULT_ENVIRONMENT_MOVEMENT_CUE,
+  effectiveEnvironmentAssignment,
   environmentSceneAssignmentKey,
   normalizeEnvironmentMovementCue,
 } from "./environment/store.mjs";
+import {
+  createEnvironmentConversationTurn,
+  environmentConversationForScene,
+} from "./environment/conversation.mjs";
 import {
   createHistoryCheckpointStore,
   createStoryBuildInputSignatureReader,
@@ -319,29 +324,47 @@ async function handleApi(req, res) {
           throw httpError(409, "Sign in to Codex CLI before generating a setting image.");
         }
         const baselineEnvironment = await environmentStore.getState();
+        const conversation = body.conversation === true
+          ? environmentConversationForScene(baselineEnvironment, sceneContext)
+          : null;
+        const previousEnvironment = conversation
+          ? await environmentGenerationPreviousResult(baselineEnvironment, sceneContext)
+          : null;
         const generated = await generateEnvironmentImageWithCodex({
           prompt,
           referenceImages,
+          conversation,
+          previousEnvironment,
           codexBin: CODEX_BIN,
           codexVersion: codexStatus.version,
         });
-        let ground;
+        let ground = null;
         try {
-          ground = await generateMatchingGroundTextureWithCodex({
+          if (!generated.conversationOnly) ground = await generateMatchingGroundTextureWithCodex({
             prompt,
             referenceImage: generated.image,
+            conversation,
+            previousEnvironment,
             codexBin: CODEX_BIN,
             codexVersion: codexStatus.version,
           });
         } catch (error) {
           throw attachGenerativeUsage(error, generated);
         }
+        const conversationTurn = conversation
+          ? createEnvironmentConversationTurn(conversation, prompt, generated.assistantMessage
+            || "Updated the 360° setting and matching ground using your message and saved environment.", {
+            needsClarification: generated.needsClarification === true,
+            unchanged: generated.unchanged === true,
+          })
+          : null;
         const generationToken = stageEnvironmentGeneration({
           sceneContext,
           baselineRevision: baselineEnvironment.revision,
           baselineSignature: environmentStateSignature(baselineEnvironment),
           generated,
           ground,
+          conversationTurn,
         });
         writeJsonResponse(res, 202, attachGenerativeUsage({
           generationToken,
@@ -383,13 +406,24 @@ async function handleApi(req, res) {
         );
       }
 
-      const { generated, ground } = pending;
-      const candidate = createGeneratedEnvironmentCandidate(generated);
+      const { generated, ground, conversationTurn } = pending;
       const installed = await withAuthorArtifactRollback(async () => {
+        if (generated.conversationOnly) {
+          if (!conversationTurn) throw httpError(400, "A conversation reply requires a background conversation.");
+          const environmentState = await environmentStore.appendConversationTurn({
+            beatId,
+            variantOptionId,
+            conversationTurn,
+            prompt: generated.prompt,
+          });
+          return { environmentEnhancement: decorateEnvironmentState(environmentState), conversationOnly: true };
+        }
+        const candidate = createGeneratedEnvironmentCandidate(generated);
         const environmentState = await environmentStore.importGenerated({
           beatId,
           variantOptionId,
           candidate,
+          conversationTurn,
           filename: generated.filename,
           body: generated.image,
           expectedBytes: generated.image.byteLength,
@@ -420,6 +454,23 @@ async function handleApi(req, res) {
       writeJsonResponse(res, 200, {
         ...installed,
         generation: environmentGenerationMetadata(generated, ground),
+        ...(conversationTurn ? { assistantMessage: conversationTurn.reply } : {}),
+      });
+      return;
+    }
+
+    if (route === "POST /api/environment-enhancement/clear-conversation") {
+      const projectState = await assertEnvironmentEnhancementReady();
+      const body = await readLimitedJsonBody(req, MAX_ENVIRONMENT_JSON_BYTES);
+      const { beatId, variantOptionId } = requireAuthoredEnvironmentScene(projectState, body);
+      const environmentState = await environmentStore.clearConversation({
+        beatId,
+        variantOptionId,
+        expectedRevision: body.expectedRevision,
+      });
+      writeJsonResponse(res, 200, {
+        environmentEnhancement: decorateEnvironmentState(environmentState),
+        conversationOnly: true,
       });
       return;
     }
@@ -1568,6 +1619,7 @@ function decorateEnvironmentState(state) {
     defaultAssignment,
     assignmentsByBeat,
     assignmentsByScene,
+    conversationsByScene: source.conversationsByScene || {},
   };
 }
 
@@ -1678,7 +1730,24 @@ function uniqueAuthoredEnvironmentScenes(projectState, values, label) {
   return [...scenes.values()];
 }
 
-function stageEnvironmentGeneration({ sceneContext, beatId, baselineRevision, baselineSignature, generated, ground }) {
+async function environmentGenerationPreviousResult(state, sceneContext) {
+  const assignment = effectiveEnvironmentAssignment(state, sceneContext.beatId, sceneContext.variantOptionId);
+  if (!assignment?.asset || assignment.skipped === true) return null;
+  const loadImage = async (asset, label) => {
+    if (!asset) return null;
+    const assetPath = environmentStore.assetPathFromUrl(asset.localPath
+      || `/environment-assets/${asset.entryPath || ""}`);
+    if (!assetPath) throw httpError(409, `The saved ${label} is unavailable. Restore the setting before sending an update.`);
+    return readFile(assetPath);
+  };
+  const [panorama, ground] = await Promise.all([
+    loadImage(assignment.asset, "setting image"),
+    loadImage(assignment.movementCue?.texture, "ground texture"),
+  ]);
+  return { assignment, panorama, ground };
+}
+
+function stageEnvironmentGeneration({ sceneContext, beatId, baselineRevision, baselineSignature, generated, ground, conversationTurn = null }) {
   sweepPendingEnvironmentGenerations();
   while (pendingEnvironmentGenerations.size >= MAX_PENDING_ENVIRONMENT_GENERATIONS) {
     const oldestToken = pendingEnvironmentGenerations.keys().next().value;
@@ -1693,6 +1762,7 @@ function stageEnvironmentGeneration({ sceneContext, beatId, baselineRevision, ba
     baselineSignature,
     generated,
     ground,
+    conversationTurn,
   });
   return generationToken;
 }
@@ -1716,11 +1786,16 @@ function environmentGenerationMetadata(generated, ground) {
     generationId: generated.generationId,
     prompt: generated.prompt,
     ...generated.metadata,
-    ground: {
+    ...(generated.conversationOnly ? {
+      conversationOnly: true,
+      needsClarification: generated.needsClarification === true,
+      assistantMessage: generated.assistantMessage,
+    } : {}),
+    ground: ground ? {
       generationId: ground.generationId,
       prompt: ground.prompt,
       ...ground.metadata,
-    },
+    } : null,
   };
 }
 

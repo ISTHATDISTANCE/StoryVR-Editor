@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { normalizeDynamicsConversations } from "./dynamics-conversation.mjs";
+import { normalizeDynamicsConversation, normalizeDynamicsConversations } from "./dynamics-conversation.mjs";
 import {
   normalizeProceduralDynamicsAuthorOffset,
   proceduralDynamicsSceneKey,
@@ -311,9 +311,20 @@ export async function generateDynamicsSceneIntent({
     previousPlan,
   });
   const generated = await generateJson(plannerPrompt);
+  const normalizeCandidate = (value) => {
+    const normalized = preserveGeneratedObjectAuthorOffsets(
+      normalizeDynamicsSceneIntent(value, context, { prompt: safePrompt }),
+      isDynamicsConversation(context) ? conversationBaselineForPrompt(context, safePrompt) : previousPlan,
+    );
+    if (isDynamicsConversation(context) && value?.needsClarification === true
+      && conversationPlanSignature(normalized.motionPlan) !== conversationPlanSignature(context.conversation.previousPlan)) {
+      throw dynamicsError(400, "A clarification must preserve the saved animation and effects.");
+    }
+    return normalized;
+  };
   let intent;
   try {
-    intent = normalizeDynamicsSceneIntent(generated, context, { prompt: safePrompt });
+    intent = normalizeCandidate(generated);
   } catch (error) {
     if (!dynamicsCandidateCanBeRepaired(error)) throw error;
     const repaired = await generateJson(proceduralDynamicsRepairPrompt({
@@ -321,11 +332,9 @@ export async function generateDynamicsSceneIntent({
       generated,
       error,
     }));
-    intent = normalizeDynamicsSceneIntent(repaired, context, { prompt: safePrompt });
+    intent = normalizeCandidate(repaired);
   }
-  return preserveGeneratedObjectAuthorOffsets(intent, isDynamicsConversation(context)
-    ? conversationBaselineForPrompt(context, safePrompt)
-    : previousPlan);
+  return intent;
 }
 
 function dynamicsCandidateCanBeRepaired(error) {
@@ -530,19 +539,36 @@ export function removeMotionPlanFromStore(currentStore, payload, now = new Date(
   assertExpectedRevision(store, payload?.expectedRevision);
   const scene = requireSceneContext(payload?.sceneContext);
   const plansByScene = { ...store.plansByScene };
-  const existed = Object.prototype.hasOwnProperty.call(plansByScene, scene.sceneKey);
+  const removedPlan = Object.hasOwn(plansByScene, scene.sceneKey);
+  const conversationsByScene = { ...store.conversationsByScene };
+  const removedConversation = payload?.clearConversation === true
+    && Boolean(conversationsByScene[scene.sceneKey]?.messages?.length);
   delete plansByScene[scene.sceneKey];
-  if (!existed) return { store, removedSceneKey: scene.sceneKey, removed: false };
+  if (!removedPlan && !removedConversation) {
+    return { store, removedSceneKey: scene.sceneKey, removed: false, removedPlan: false, removedConversation: false };
+  }
+  if (payload?.clearConversation === true) {
+    // Retain only a reset revision so clearing cannot make a reply generated
+    // against older empty history valid again.
+    const previous = normalizeDynamicsConversation(conversationsByScene[scene.sceneKey]);
+    conversationsByScene[scene.sceneKey] = {
+      ...normalizeDynamicsConversation(null),
+      revision: previous.revision + 1,
+      updatedAt: now.toISOString(),
+    };
+  }
   return {
     store: {
       schemaVersion: PROCEDURAL_DYNAMICS_SCHEMA_VERSION,
-      revision: store.revision + 1,
-      updatedAt: now.toISOString(),
+      revision: store.revision + (removedPlan ? 1 : 0),
+      updatedAt: removedPlan ? now.toISOString() : store.updatedAt,
       plansByScene,
-      conversationsByScene: store.conversationsByScene,
+      conversationsByScene,
     },
     removedSceneKey: scene.sceneKey,
     removed: true,
+    removedPlan,
+    removedConversation,
   };
 }
 
@@ -2381,8 +2407,16 @@ function assertPromptActionFidelity(plan, prompt, permissions = null) {
 }
 
 function assertPromptTargetCoverage(plan, allowedTargets, prompt, context = null) {
-  if (isDynamicsConversation(context)
-    && (context.conversation.previousPlan || (!plan.actors.length && !plan.generatedObjects.length))) return;
+  if (isDynamicsConversation(context)) {
+    if (!plan.actors.length && !plan.generatedObjects.length) return;
+    if (context.conversation.needsClarification === true
+      && conversationPlanSignature(plan) === conversationPlanSignature(context.conversation.previousPlan)) return;
+    const delta = conversationDeltaIntent(context, prompt);
+    const requestsAction = ["path", "rotation", "scale", "visibility", "appearance", "clip", "generatedEffect"]
+      .some((action) => delta.requested[action]);
+    if (context.conversation.previousPlan && !requestsAction) return;
+    prompt = delta.source;
+  }
   const actorEntityIds = new Set(
     (Array.isArray(plan?.actors) ? plan.actors : []).map((actor) => actor?.entityId).filter(Boolean),
   );

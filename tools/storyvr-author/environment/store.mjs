@@ -12,6 +12,14 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import {
+  appendEnvironmentConversationTurn,
+  environmentConversationForScene,
+  environmentConversationSceneKey,
+  normalizeEnvironmentConversation,
+  normalizeEnvironmentConversations,
+  validateEnvironmentConversationTurn,
+} from "./conversation.mjs";
 
 export const ENVIRONMENT_STORE_SCHEMA_VERSION = "storyvr-environment-enhancement/v1";
 export const MAX_ENVIRONMENT_GENERATED_ASSET_BYTES = 120 * 1024 * 1024;
@@ -127,6 +135,13 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
       }
       const previousAssignment = editableAssignmentForScene(previous, beatId, variantOptionId);
       const normalized = normalizeGeneratedAsset(generation);
+      const conversation = environmentConversationForScene(previous, { beatId, variantOptionId });
+      const conversationTurn = generation?.conversationTurn == null ? null : validateEnvironmentConversationTurn(
+        generation.conversationTurn,
+        conversation,
+        normalized.candidate.provenance?.prompt,
+      );
+      if (conversationTurn && !beatId) throw new TypeError("A background conversation requires beatId.");
       return installGeneratedPair(previous, normalized, (sourcePath) => writeAssetToFile(
         normalized.body,
         sourcePath,
@@ -137,6 +152,8 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
         variantOptionId,
         previousAssignment,
         groundInput: generation?.ground,
+        conversation,
+        conversationTurn,
       });
     });
   }
@@ -146,6 +163,8 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
     variantOptionId = null,
     previousAssignment = editableAssignmentForScene(previous, beatId, variantOptionId),
     groundInput = null,
+    conversation = null,
+    conversationTurn = null,
   } = {}) {
     await mkdir(assetRoot, { recursive: true });
 
@@ -276,8 +295,8 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
           },
           dependencies: [groundTexture],
         },
-        transform: deepMerge({}, DEFAULT_TRANSFORM, candidate.transform),
-        rendering: deepMerge({}, DEFAULT_RENDERING, candidate.rendering),
+        transform: deepMerge({}, DEFAULT_TRANSFORM, conversationTurn ? previousAssignment.transform : null, candidate.transform),
+        rendering: deepMerge({}, DEFAULT_RENDERING, conversationTurn ? previousAssignment.rendering : null, candidate.rendering),
         movementCue,
         performance: deepMerge({}, candidate.metrics, candidate.performance, {
           generatedBytes: source.bytes,
@@ -291,6 +310,14 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
         skipped: false,
       });
       const next = assignEnvironment(previous, beatId, variantOptionId, assignment, now);
+      if (conversationTurn) {
+        next.conversationsByScene = {
+          ...previous.conversationsByScene,
+          [environmentConversationSceneKey({ beatId, variantOptionId })]: appendEnvironmentConversationTurn(
+            conversation, conversationTurn, assignment, now,
+          ),
+        };
+      }
 
       await installStagingDirectory(stagingRoot, destination, () => writeStateAtomic(manifestPath, next));
       // Asset bundles are intentionally retained. More than one beat may point
@@ -416,6 +443,61 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
     });
   }
 
+  function appendConversationTurn({ beatId, variantOptionId = null, conversationTurn, prompt } = {}) {
+    return serializeMutation(async () => {
+      const previous = await readState(manifestPath);
+      const context = {
+        beatId: requireBeatId(beatId, "beatId"),
+        variantOptionId: optionalVariantOptionId(variantOptionId),
+      };
+      const conversation = environmentConversationForScene(previous, context);
+      const turn = validateEnvironmentConversationTurn(conversationTurn, conversation, prompt);
+      const next = {
+        ...previous,
+        conversationsByScene: {
+          ...previous.conversationsByScene,
+          [environmentConversationSceneKey(context)]: appendEnvironmentConversationTurn(
+            conversation, turn, effectiveEnvironmentAssignment(previous, context.beatId, context.variantOptionId),
+          ),
+        },
+      };
+      await writeStateAtomic(manifestPath, next);
+      return jsonClone(next);
+    });
+  }
+
+  function clearConversation({ beatId, variantOptionId = null, expectedRevision } = {}) {
+    return serializeMutation(async () => {
+      const previous = await readState(manifestPath);
+      if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+        throw new TypeError("expectedRevision must be a non-negative integer.");
+      }
+      if (previous.revision !== expectedRevision) {
+        throw Object.assign(new Error("The background changed before its conversation was cleared."), {
+          code: "ENVIRONMENT_REVISION_CONFLICT", statusCode: 409,
+        });
+      }
+      const context = {
+        beatId: requireBeatId(beatId, "beatId"),
+        variantOptionId: optionalVariantOptionId(variantOptionId),
+      };
+      const conversation = environmentConversationForScene(previous, context);
+      const next = {
+        ...previous,
+        conversationsByScene: {
+          ...previous.conversationsByScene,
+          [environmentConversationSceneKey(context)]: {
+            ...normalizeEnvironmentConversation(null),
+            revision: conversation.revision + 1,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      };
+      await writeStateAtomic(manifestPath, next);
+      return jsonClone(next);
+    });
+  }
+
   function reconcileBeatAssignments(currentBeatIds, currentVariantScenes = undefined) {
     return serializeMutation(async () => {
       const retainedBeatIds = new Set(uniqueBeatIds(currentBeatIds, "currentBeatIds"));
@@ -439,8 +521,17 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
             || (retainedSceneKeys && !retainedSceneKeys.has(sceneKey));
         })
         .map(([sceneKey]) => sceneKey);
+      const conversationEntries = Object.entries(previous.conversationsByScene);
+      const removedConversationKeys = conversationEntries.filter(([key]) => {
+        // Ordinary scene keys are the beat id, while variants use the same
+        // explicit key as assignmentsByScene. Tombstones survive reconciliation.
+        if (retainedBeatIds.has(key)) return false;
+        const context = environmentContextFromAssignmentKey(key);
+        return !context || !retainedBeatIds.has(context.beatId)
+          || (retainedSceneKeys && !retainedSceneKeys.has(key));
+      }).map(([key]) => key);
 
-      if (!removedBeatIds.length && !removedSceneKeys.length) {
+      if (!removedBeatIds.length && !removedSceneKeys.length && !removedConversationKeys.length) {
         return {
           removedBeatIds: [],
           removedSceneKeys: [],
@@ -454,7 +545,14 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
       const assignmentsByScene = Object.fromEntries(
         sceneAssignmentEntries.filter(([sceneKey]) => !removedSceneKeys.includes(sceneKey)),
       );
-      const next = touch(previous, { assignmentsByBeat, assignmentsByScene });
+      const patch = {
+        assignmentsByBeat,
+        assignmentsByScene,
+        conversationsByScene: Object.fromEntries(conversationEntries
+          .filter(([key]) => !removedConversationKeys.includes(key))),
+      };
+      const next = removedBeatIds.length || removedSceneKeys.length
+        ? touch(previous, patch) : { ...previous, ...patch };
       await writeStateAtomic(manifestPath, next);
       return {
         removedBeatIds,
@@ -500,6 +598,8 @@ export function createEnvironmentStore({ repoRoot, storyFolder } = {}) {
     importGenerated,
     updateDraft,
     applyAssignment,
+    appendConversationTurn,
+    clearConversation,
     reconcileBeatAssignments,
     assetPathFromUrl,
     paths: Object.freeze({ assetRoot, manifestPath, storyRoot }),
@@ -584,6 +684,7 @@ function emptyState() {
     defaultAssignment: null,
     assignmentsByBeat: {},
     assignmentsByScene: {},
+    conversationsByScene: {},
   };
 }
 
@@ -630,6 +731,7 @@ async function readState(manifestPath) {
     defaultAssignment,
     assignmentsByBeat,
     assignmentsByScene,
+    conversationsByScene: normalizeEnvironmentConversations(value.conversationsByScene),
   };
 }
 

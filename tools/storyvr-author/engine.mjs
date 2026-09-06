@@ -32,6 +32,13 @@ import {
   validateDynamicsConversationTurn,
 } from "./dynamics-conversation.mjs";
 import {
+  appendTransitionsConversationTurn,
+  createTransitionsConversationTurn,
+  transitionsConversationForBoundary,
+  transitionsStoreForReader,
+  validateTransitionsConversationTurn,
+} from "./transitions-conversation.mjs";
+import {
   attachGenerativeUsage,
   generativeUsageFromCodexJsonl,
   generativeUsageFromOpenAIResponse,
@@ -56,6 +63,7 @@ import {
   createFallbackTransitionPlan,
   generateProceduralTransitionIntent,
   normalizeProceduralTransitionCandidate,
+  normalizeAuthorProceduralTransitionsStore,
   removeProceduralTransitionPlanFromStore,
 } from "./procedural-transitions.mjs";
 import {
@@ -64,7 +72,6 @@ import {
   emptyProceduralTransitionsStore,
   normalizeProceduralTransitionPlan,
   normalizeProceduralTransitionSubjectEntityIds,
-  normalizeProceduralTransitionsStore,
   proceduralTransitionBoundaryKey,
 } from "./procedural-transitions-runtime.js";
 import {
@@ -341,6 +348,7 @@ const STORYVR_TEXT_LAYOUT_CONTRACT_MARKER = `const STORYVR_TEXT_LAYOUT_CONTRACT_
 const STORYVR_TEXT_LAYOUT_CSS_CONTRACT_MARKER = `/* STORYVR_TEXT_LAYOUT_CONTRACT_VERSION: ${STORYVR_TEXT_LAYOUT_CONTRACT_VERSION} */`;
 const STORYVR_PROCEDURAL_TRANSITIONS_READER_CONTRACT_MARKER = `const STORYVR_PROCEDURAL_TRANSITION_MIDDLE_CONTRACT_VERSION = "${PROCEDURAL_TRANSITION_MIDDLE_SCHEMA_VERSION}";`;
 const STORYVR_TRANSITION_SUBJECT_TARGETS_CONTRACT_VERSION = "storyvr-transition-subject-targets/v1";
+const STORYVR_TRANSITION_PROPERTY_TRACKS_CONTRACT_VERSION = "storyvr-transition-property-tracks/v1";
 const STORYVR_PROCEDURAL_DYNAMICS_FEATURE_CONTRACT_VERSION = "storyvr-procedural-dynamics-declarative/v2";
 const STORYVR_PROCEDURAL_DYNAMICS_READER_CONTRACT_MARKER = `const STORYVR_PROCEDURAL_DYNAMICS_FEATURE_CONTRACT_VERSION = "${STORYVR_PROCEDURAL_DYNAMICS_FEATURE_CONTRACT_VERSION}";`;
 const READER_DIST_BUILD_SCRIPT = fileURLToPath(new URL("./build-reader-dist.mjs", import.meta.url));
@@ -1335,14 +1343,20 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
     || visibleSignature(projection.candidate) !== visibleSignature(comparisonCandidate);
   projection.candidate.impact.materiallyChanged = materiallyChanged;
   if (conversational) {
+    if (needsClarification && materiallyChanged) {
+      throw attachGenerativeUsage(Object.assign(new Error("A clarification must preserve the saved animation and effects."), {
+        statusCode: 400,
+      }), ...usageSources);
+    }
     const hasMotion = projection.candidate.scenePatch.motionPlan.actors.length
       || projection.candidate.scenePatch.motionPlan.generatedObjects.length;
     assistantMessage ||= materiallyChanged && (hasMotion || storedPlan)
       ? hasMotion ? "Updated the animation using your message and the current scene." : "Removed the generated animation and effects."
       : "The animation is unchanged.";
     projection.candidate.conversationTurn = createDynamicsConversationTurn(conversation, request.prompt, assistantMessage, {
-      needsClarification: needsClarification && (!materiallyChanged || (!hasMotion && !storedPlan)),
+      needsClarification,
     });
+    projection.candidate.conversationTurn.subjectEntityIds = [...(projection.candidate.subjectEntityIds || [])];
   }
   if (!materiallyChanged) {
     projection.candidate.impact.warnings = uniqueStrings([
@@ -1473,6 +1487,12 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
   if (submitted.conversationTurn) {
     conversation = dynamicsConversationForScene(state.proceduralDynamics, state.context.scene.sceneKey, storedPlan);
     conversationTurn = validateDynamicsConversationTurn(submitted.conversationTurn, conversation, submitted.prompt);
+    if (!Array.isArray(submitted.conversationTurn.subjectEntityIds)
+      || JSON.stringify(submittedSubjectEntityIds)
+        !== JSON.stringify(uniqueStrings(submitted.conversationTurn.subjectEntityIds).sort())) {
+      throw Object.assign(new Error("The animation message's selected objects changed after generation."), { statusCode: 409 });
+    }
+    conversationTurn.subjectEntityIds = [...submitted.conversationTurn.subjectEntityIds];
     state.dynamicsConversationContext = {
       previousPlan: storedPlan,
       messages: conversation.messages,
@@ -1522,6 +1542,9 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
   const now = new Date().toISOString();
   const visibleSignature = conversationTurn ? dynamicsConversationVisibleSignature : dynamicsSceneCandidateVisibleSignature;
   const changed = visibleSignature(submitted) !== visibleSignature(currentDynamicsSceneCandidate(state));
+  if (conversationTurn?.needsClarification && changed) {
+    throw Object.assign(new Error("A clarification must preserve the saved animation and effects."), { statusCode: 400 });
+  }
   const hasMotion = projection.candidate.scenePatch.motionPlan.actors.length
     || projection.candidate.scenePatch.motionPlan.generatedObjects.length;
   let { store, plan } = conversationTurn && !changed
@@ -1542,7 +1565,6 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
   );
 
   if (conversationTurn) {
-    if (changed && (hasMotion || storedPlan)) delete conversationTurn.needsClarification;
     store = {
       ...store,
       conversationsByScene: {
@@ -1849,7 +1871,7 @@ export function dynamicsSceneCandidateVisibleSignature(candidate) {
     || (Array.isArray(candidate?.actors) ? candidate : null);
   return dynamicsJsonSignature({
     motion: motionPlan ? {
-      subjectEntityIds: [...(motionPlan.subjectEntityIds || [])],
+      subjectEntityIds: [...(motionPlan.subjectEntityIds || [])].sort(),
       actors: (motionPlan.actors || []).map((actor) => ({
         entityId: actor.entityId,
         assetId: actor.assetId,
@@ -1901,23 +1923,16 @@ export async function removeProceduralDynamicsPlan(options, request = {}) {
   const state = await proceduralDynamicsRequestState(options, request.sceneContext);
   const result = removeMotionPlanFromStore(
     state.proceduralDynamics,
-    { ...request, sceneContext: state.context.scene },
+    { ...request, sceneContext: state.context.scene, clearConversation: true },
   );
   if (result.removed) {
-    const previousPlan = state.proceduralDynamics.plansByScene[state.context.scene.sceneKey] || null;
-    const conversation = dynamicsConversationForScene(state.proceduralDynamics, state.context.scene.sceneKey, previousPlan);
-    const turn = createDynamicsConversationTurn(conversation,
-      "Remove the generated animation and effects from this scene.",
-      "Removed the generated animation and effects. The conversation is kept for future edits.");
-    result.store.conversationsByScene = {
-      ...result.store.conversationsByScene,
-      [state.context.scene.sceneKey]: appendDynamicsConversationTurn(conversation, turn, null),
-    };
-    await writeJson(state.paths.proceduralDynamicsPath, result.store);
-    await markProceduralDynamicsDecisionDraft(state.paths, result.store);
+    if (result.removedPlan) await markProceduralDynamicsDecisionDraft(state, result.store);
+    else await writeAuthorJsonTransaction(state.paths, [[state.paths.proceduralDynamicsPath, result.store]]);
   }
   return {
     removed: result.removed,
+    removedPlan: result.removedPlan,
+    removedConversation: result.removedConversation,
     removedSceneKey: result.removedSceneKey,
     proceduralDynamics: result.store,
   };
@@ -1929,7 +1944,12 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
   const previousCandidate = request.previousCandidate && typeof request.previousCandidate === "object"
     ? request.previousCandidate
     : null;
-  const previousPlan = previousCandidate?.transitionPlan
+  const conversational = request.conversation === true;
+  const storedPlan = state.proceduralTransitions.plansByBoundary[state.boundary.boundaryKey] || null;
+  const conversation = conversational
+    ? transitionsConversationForBoundary(state.proceduralTransitions, state.boundary.boundaryKey, storedPlan)
+    : null;
+  const previousPlan = conversational ? storedPlan : previousCandidate?.transitionPlan
     || request.previousPlan
     || state.proceduralTransitions.plansByBoundary[state.boundary.boundaryKey]
     || null;
@@ -1939,20 +1959,29 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
   );
   const usageSources = [];
   let engine = { provider: "codex-cli" };
+  let assistantMessage = "";
+  let needsClarification = false;
+  const captureReply = (generated) => {
+    const reply = generated?.assistantMessage ?? generated?.reply;
+    assistantMessage = typeof reply === "string" ? reply.trim().slice(0, 4000) : "";
+    needsClarification = generated?.needsClarification === true && Boolean(assistantMessage);
+    return generated;
+  };
   let candidate;
   try {
     candidate = await generateProceduralTransitionIntent({
       boundaryContext: state.boundary,
       prompt: request.prompt,
       previousPlan,
-      previousCandidate,
+      previousCandidate: conversational ? null : previousCandidate,
+      conversation,
       transitionContext: proceduralTransitionGenerationContext(state),
       subjectEntityIds,
       generateJson: async (prompt) => {
         if (options.proceduralTransitionGenerateJson) {
           const generated = await options.proceduralTransitionGenerateJson(prompt);
           usageSources.push(generated);
-          return generated;
+          return captureReply(generated);
         }
         if (options.aiProvider === "openai") throw new Error("Codex provider is not available for this request.");
         const codexBin = resolveStoryvrCodexBin(options.codexBin);
@@ -1964,13 +1993,14 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
         usageSources.push(result);
         engine = { provider: "codex-cli", codexBin };
         try {
-          return parseJsonObject(extractCodexFinalText(result.stdout) || result.stdout);
+          return captureReply(parseJsonObject(extractCodexFinalText(result.stdout) || result.stdout));
         } catch (error) {
           throw attachGenerativeUsage(error, result);
         }
       },
     });
   } catch (error) {
+    if (conversational) throw attachGenerativeUsage(error, ...usageSources);
     usageSources.push(error);
     const transitionPlan = createFallbackTransitionPlan(state.boundary, request.prompt, previousPlan, {
       subjectEntityIds,
@@ -1986,6 +2016,15 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
       provider: "deterministic-fallback",
       reason: String(error?.message || "Codex scene transition generation failed."),
     };
+  }
+  if (conversational) {
+    assistantMessage ||= candidate.impact.materiallyChanged
+      ? candidate.transitionPlan ? "Updated the scene transition." : "Removed the generated scene transition."
+      : "The saved scene transition is unchanged.";
+    candidate.conversationTurn = createTransitionsConversationTurn(conversation, candidate.prompt, assistantMessage, {
+      needsClarification,
+    });
+    candidate.conversationTurn.subjectEntityIds = [...subjectEntityIds];
   }
   return attachGenerativeUsage({
     candidate: {
@@ -2038,24 +2077,61 @@ export async function applyProceduralTransitionPlan(options, request = {}) {
     expectedRevision,
   );
   const previousPlan = state.proceduralTransitions.plansByBoundary[state.boundary.boundaryKey] || null;
+  const conversation = submitted.conversationTurn
+    ? transitionsConversationForBoundary(state.proceduralTransitions, state.boundary.boundaryKey, previousPlan)
+    : null;
+  const conversationTurn = conversation
+    ? validateTransitionsConversationTurn(submitted.conversationTurn, conversation, submitted.prompt)
+    : null;
+  if (conversationTurn && JSON.stringify(uniqueStrings(submitted.subjectEntityIds || []).sort())
+    !== JSON.stringify(uniqueStrings(submitted.conversationTurn.subjectEntityIds || []).sort())) {
+    throw Object.assign(new Error("The transition message's selected objects changed after generation."), { statusCode: 409 });
+  }
   const candidate = normalizeProceduralTransitionCandidate(submitted, state.boundary, {
     prompt: submitted.prompt,
     previousPlan,
+    conversation,
+    requireGeneratedTracks: Boolean(conversationTurn),
+    transitionContext: proceduralTransitionGenerationContext(state),
+    ...(conversationTurn ? { subjectEntityIds: submitted.conversationTurn.subjectEntityIds || [] } : {}),
     ...(requestHasSubjects ? { subjectEntityIds: requestSubjectEntityIds } : {}),
     eligibleSubjectEntityIds: state.eligibleSubjectEntityIds,
   });
-  if (submitted.impact?.materiallyChanged === false || candidate.impact.materiallyChanged === false) {
+  if (!conversationTurn && (submitted.impact?.materiallyChanged === false || candidate.impact.materiallyChanged === false)) {
     throw Object.assign(new Error("This transition preview has no material visible change. Revise the description and regenerate."), {
       statusCode: 409,
     });
   }
-  const result = applyProceduralTransitionPlanToStore(state.proceduralTransitions, {
+  if (conversationTurn?.needsClarification && candidate.impact.materiallyChanged) {
+    throw Object.assign(new Error("A clarification must preserve the saved transition."), { statusCode: 400 });
+  }
+  const conversationOnly = Boolean(conversationTurn && !candidate.impact.materiallyChanged);
+  const result = conversationOnly
+    ? { store: state.proceduralTransitions, plan: previousPlan, transitionPlan: previousPlan, boundaryKey: state.boundary.boundaryKey }
+    : conversationTurn && !candidate.transitionPlan
+      ? { ...removeProceduralTransitionPlanFromStore(state.proceduralTransitions, {
+        boundaryContext: state.boundary, expectedRevision,
+      }), plan: null, transitionPlan: null }
+      : applyProceduralTransitionPlanToStore(state.proceduralTransitions, {
     boundaryContext: state.boundary,
     expectedRevision,
     candidate,
+    conversation,
     eligibleSubjectEntityIds: state.eligibleSubjectEntityIds,
   });
-  await writeProceduralTransitionMutation(state, result.store, {
+  if (conversationTurn) {
+    candidate.conversationTurn = { ...conversationTurn, subjectEntityIds: submitted.conversationTurn.subjectEntityIds || [] };
+    result.store = {
+      ...result.store,
+      conversationsByBoundary: {
+        ...result.store.conversationsByBoundary,
+        [state.boundary.boundaryKey]: appendTransitionsConversationTurn(conversation, conversationTurn, result.plan),
+      },
+    };
+  }
+  if (conversationOnly) {
+    await writeAuthorJsonTransaction(state.paths, [[state.paths.proceduralTransitionsPath, result.store]]);
+  } else await writeProceduralTransitionMutation(state, result.store, {
     boundaryKey: result.boundaryKey,
     candidate,
   });
@@ -2064,6 +2140,7 @@ export async function applyProceduralTransitionPlan(options, request = {}) {
     transitionPlan: result.transitionPlan,
     boundaryKey: result.boundaryKey,
     candidate,
+    conversationOnly,
     proceduralTransitions: result.store,
   };
 }
@@ -2073,15 +2150,19 @@ export async function removeProceduralTransitionPlan(options, request = {}) {
   const result = removeProceduralTransitionPlanFromStore(state.proceduralTransitions, {
     boundaryContext: state.boundary,
     expectedRevision: request.expectedRevision,
+    clearConversation: true,
   });
   if (result.removed) {
-    await writeProceduralTransitionMutation(state, result.store, {
+    if (result.removedPlan) await writeProceduralTransitionMutation(state, result.store, {
       boundaryKey: result.boundaryKey,
       removed: true,
     });
+    else await writeAuthorJsonTransaction(state.paths, [[state.paths.proceduralTransitionsPath, result.store]]);
   }
   return {
     removed: result.removed,
+    removedPlan: result.removedPlan,
+    removedConversation: result.removedConversation,
     removedBoundaryKey: result.boundaryKey,
     boundaryKey: result.boundaryKey,
     proceduralTransitions: result.store,
@@ -3985,15 +4066,8 @@ export function inferVariantInteractionControlByEdge(graph, runtime) {
     graphVariantGroups.length ? graphVariantGroups : runtime?.variantGroups,
   );
   if (!variantGroups.length) return [];
-  const beats = Array.isArray(graph?.beats) && graph.beats.length
-    ? graph.beats
-    : Array.isArray(runtime?.contentUnits) ? runtime.contentUnits : [];
   const groupsById = new Map(variantGroups.map((group) => [group.id, group]));
-  const sourceEdges = Array.isArray(graph?.edges)
-    ? graph.edges
-    : implicitVariantInteractionSourceGraphEdges(beats, variantGroups);
-  const edges = normalizeSourceGraphTransitionEdges(sourceEdges, beats, variantGroups)
-    .filter((edge) => variantInteractionSourceGraphEdge(edge));
+  const edges = sourceGraphVariantInteractionEdges(graph, runtime, variantGroups);
 
   return edges.map((edge) => {
     const group = groupsById.get(edge.from.variantGroupId);
@@ -4049,6 +4123,22 @@ export function inferVariantInteractionControlByEdge(graph, runtime) {
       }),
     };
   });
+}
+
+function sourceGraphVariantInteractionEdges(graph, runtime, variantGroupsInput = null) {
+  const variantGroups = variantGroupsInput || normalizeSourceVariantGroups(
+    Array.isArray(graph?.variantGroups) && graph.variantGroups.length
+      ? graph.variantGroups
+      : runtime?.variantGroups,
+  );
+  const beats = Array.isArray(graph?.beats) && graph.beats.length
+    ? graph.beats
+    : Array.isArray(runtime?.contentUnits) ? runtime.contentUnits : [];
+  const sourceEdges = Array.isArray(graph?.edges)
+    ? graph.edges
+    : implicitVariantInteractionSourceGraphEdges(beats, variantGroups);
+  return normalizeSourceGraphTransitionEdges(sourceEdges, beats, variantGroups)
+    .filter((edge) => variantInteractionSourceGraphEdge(edge));
 }
 
 function implicitVariantInteractionSourceGraphEdges(beats, variantGroups) {
@@ -5333,12 +5423,12 @@ export async function compileAuthorRuntime(options) {
     spatialRelationsDecision.spatialRelations,
     inferSpatialRelationsContract(graph, runtime, decisions),
   );
-  const proceduralTransitions = await readProceduralTransitionsStore(
+  const proceduralTransitions = transitionsStoreForReader(await readProceduralTransitionsStore(
     paths,
     graph,
     runtime,
     spatialRelations,
-  );
+  ));
   assertStoredProceduralTransitionsEligible(
     graph,
     runtime,
@@ -5965,6 +6055,15 @@ function runtimeUsesProceduralTransitionSubjectTargets(runtime) {
   ));
 }
 
+function runtimeUsesProceduralTransitionTracks(runtime) {
+  return Object.values(runtime?.proceduralTransitions?.plansByBoundary || {}).some((plan) => (
+    plan?.style === "generated"
+    || (Array.isArray(plan?.middle?.actions) && plan.middle.actions.some((action) => (
+      Array.isArray(action?.tracks) && action.tracks.length > 0
+    )))
+  ));
+}
+
 async function assertReaderProceduralTransitionsContract(paths, runtime) {
   if (!proceduralTransitionPlanCount(runtime)) return;
   const readerMainPath = path.join(paths.storyFolder, "webxr-adaptation", "src", "main.js");
@@ -5983,20 +6082,36 @@ async function assertReaderProceduralTransitionsContract(paths, runtime) {
       }],
     });
   }
-  if (!runtimeUsesProceduralTransitionSubjectTargets(runtime)
-    || readerMainSource.includes(STORYVR_TRANSITION_SUBJECT_TARGETS_CONTRACT_VERSION)) return;
-  throw Object.assign(new Error(
-    `Reader source ${toPosix(path.relative(REPO_ROOT, readerMainPath))} does not support selected destination-object transition targets; merge the pending managed Reader template before building.`,
-  ), {
-    statusCode: 409,
-    diagnostics: [{
-      severity: "error",
-      code: "READER_TRANSITION_SUBJECT_TARGETS_CONTRACT_MISSING",
-      component: "inter-beat-dynamics",
-      path: toPosix(path.relative(REPO_ROOT, readerMainPath)),
-      message: `Selected transition subjects require the ${STORYVR_TRANSITION_SUBJECT_TARGETS_CONTRACT_VERSION} Reader playback contract.`,
-    }],
-  });
+  if (runtimeUsesProceduralTransitionSubjectTargets(runtime)
+    && !readerMainSource.includes(STORYVR_TRANSITION_SUBJECT_TARGETS_CONTRACT_VERSION)) {
+    throw Object.assign(new Error(
+      `Reader source ${toPosix(path.relative(REPO_ROOT, readerMainPath))} does not support selected destination-object transition targets; merge the pending managed Reader template before building.`,
+    ), {
+      statusCode: 409,
+      diagnostics: [{
+        severity: "error",
+        code: "READER_TRANSITION_SUBJECT_TARGETS_CONTRACT_MISSING",
+        component: "inter-beat-dynamics",
+        path: toPosix(path.relative(REPO_ROOT, readerMainPath)),
+        message: `Selected transition subjects require the ${STORYVR_TRANSITION_SUBJECT_TARGETS_CONTRACT_VERSION} Reader playback contract.`,
+      }],
+    });
+  }
+  if (runtimeUsesProceduralTransitionTracks(runtime)
+    && !readerMainSource.includes(STORYVR_TRANSITION_PROPERTY_TRACKS_CONTRACT_VERSION)) {
+    throw Object.assign(new Error(
+      `Reader source ${toPosix(path.relative(REPO_ROOT, readerMainPath))} does not support ${STORYVR_TRANSITION_PROPERTY_TRACKS_CONTRACT_VERSION}; merge the pending managed Reader template before building generated property tracks.`,
+    ), {
+      statusCode: 409,
+      diagnostics: [{
+        severity: "error",
+        code: "READER_TRANSITION_PROPERTY_TRACKS_CONTRACT_MISSING",
+        component: "inter-beat-dynamics",
+        path: toPosix(path.relative(REPO_ROOT, readerMainPath)),
+        message: `Generated property tracks require the ${STORYVR_TRANSITION_PROPERTY_TRACKS_CONTRACT_VERSION} Reader playback contract.`,
+      }],
+    });
+  }
 }
 
 function runtimeUsesExpandedProceduralDynamics(runtime) {
@@ -6174,6 +6289,12 @@ export async function buildReaderDist(paths, options = {}) {
       `Reader source ${toPosix(path.relative(repoRoot, readerMainPath))} is missing the ${STORYVR_TRANSITION_SUBJECT_TARGETS_CONTRACT_VERSION} selected transition-target playback contract.`,
     );
   }
+  if (runtimeUsesProceduralTransitionTracks(compiledRuntime)
+    && !readerMainSource.includes(STORYVR_TRANSITION_PROPERTY_TRACKS_CONTRACT_VERSION)) {
+    throw new Error(
+      `Reader source ${toPosix(path.relative(repoRoot, readerMainPath))} is missing the ${STORYVR_TRANSITION_PROPERTY_TRACKS_CONTRACT_VERSION} generated property-track playback contract.`,
+    );
+  }
   if (runtimeUsesExpandedProceduralDynamics(compiledRuntime)
     && !readerMainSource.includes(STORYVR_PROCEDURAL_DYNAMICS_READER_CONTRACT_MARKER)) {
     throw new Error(
@@ -6342,6 +6463,7 @@ function isKnownLegacyManagedReaderTemplate(target, currentContent, desiredConte
     "proceduralTransitionEasedProgress,",
     "proceduralTransitionMiddleSample,",
     "proceduralTransitionPlanForBoundary,",
+    "proceduralTransitionTrackSample,",
     '} from "./procedural-transitions-runtime.js";',
   ]);
   if (importLines.some((line) => !knownImports.has(line.trim()))) return false;
@@ -6871,7 +6993,14 @@ async function readProceduralDynamicsStore(paths, graph, runtime, contextsInput 
 
 function proceduralTransitionBoundaries(graph, runtime) {
   const beatsById = new Map((graph?.beats || []).filter((beat) => beat?.id).map((beat) => [beat.id, beat]));
-  return sourceGraphNarrativeProgressionEdges(graph || {}, runtime || {}).flatMap((edge) => {
+  // Choice arrows change their exact saved scene even while staying within one
+  // story part. Keep them eligible without changing narrative progression or
+  // the separate reader-action policies for choice selection.
+  const edges = [
+    ...sourceGraphNarrativeProgressionEdges(graph || {}, runtime || {}),
+    ...sourceGraphVariantInteractionEdges(graph || {}, runtime || {}),
+  ];
+  return edges.flatMap((edge) => {
     const edgeId = String(edge?.id || "").trim();
     const fromContext = sourceGraphTransitionRouteContext(edge?.from);
     const toContext = sourceGraphTransitionRouteContext(edge?.to);
@@ -6896,7 +7025,7 @@ function proceduralTransitionBoundaryIndex(graph, runtime) {
 }
 
 function normalizeProceduralTransitionsForBoundaries(value, boundariesByKey) {
-  const normalized = normalizeProceduralTransitionsStore(value || emptyProceduralTransitionsStore());
+  const normalized = normalizeAuthorProceduralTransitionsStore(value || emptyProceduralTransitionsStore());
   const plansByBoundary = {};
   for (const [boundaryKey, rawPlan] of Object.entries(normalized.plansByBoundary || {})) {
     const boundary = boundariesByKey.get(boundaryKey);
@@ -6910,6 +7039,8 @@ function normalizeProceduralTransitionsForBoundaries(value, boundariesByKey) {
   return {
     ...normalized,
     plansByBoundary,
+    conversationsByBoundary: Object.fromEntries(Object.entries(normalized.conversationsByBoundary)
+      .filter(([key]) => boundariesByKey.has(key))),
   };
 }
 
@@ -6936,19 +7067,32 @@ function assertStoredProceduralTransitionsEligible(
   void proceduralTransitions;
 }
 
-async function markProceduralDynamicsDecisionDraft(paths, store) {
+async function markProceduralDynamicsDecisionDraft(state, store) {
+  const { paths, decisions } = state;
   const componentId = "dynamic-geometry";
+  const now = new Date().toISOString();
   const decisionPath = path.join(paths.decisionsRoot, `${componentId}.json`);
-  const current = await readJsonIfExists(decisionPath);
+  const current = decisions[componentId];
+  const entries = [[paths.proceduralDynamicsPath, store]];
   if (current) {
-    await writeJson(decisionPath, decisionWithStatus({
+    entries.push([decisionPath, decisionWithStatus({
       ...current,
       proceduralDynamicsRevision: store.revision,
       proceduralDynamicsSceneKeys: Object.keys(store.plansByScene).sort(),
       requiresReview: true,
-    }, "draft", null));
+    }, "draft", null)]);
   }
-  await markDownstreamDecisionsStale(paths, componentId);
+  for (const component of DECISION_COMPONENTS.slice(
+    DECISION_COMPONENTS.findIndex((item) => item.id === componentId) + 1,
+  )) {
+    const existing = decisions[component.id];
+    if (!existing) continue;
+    entries.push([
+      path.join(paths.decisionsRoot, `${component.id}.json`),
+      decisionWithStatus({ ...existing, invalidatedBy: componentId, requiresReview: true, staleAt: now }, "stale", existing.savedAt ?? null),
+    ]);
+  }
+  await writeAuthorJsonTransaction(paths, entries);
 }
 
 export function resolveAuthorPaths(options) {
