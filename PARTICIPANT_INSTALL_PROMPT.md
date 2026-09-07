@@ -5,6 +5,13 @@ study-story folder or ZIP can be supplied before or during the setup. Codex
 installs the StoryVR core and builds the study logger; the final response gives
 the facilitator the Chrome steps that must be completed manually.
 
+Release baseline reviewed September 7, 2026. The immutable runtime revisions
+below include the current conversational authoring interface; the portable
+revision also includes Windows support for long background-generation prompts.
+Later documentation-only commits do not change these runtime pins. This prompt
+creates a new recorded installation; it is not an in-place update procedure for
+an existing participant workspace.
+
 ```text
 Act as a cautious local setup agent. Install and validate StoryVR on this
 participant's computer. Perform the setup instead of only explaining it.
@@ -14,9 +21,9 @@ Approved source and platform channels
 - Native Windows 11 PowerShell: branch codex/native-windows
 - macOS: branch main
 - Native Linux: branch codex/native-windows
-- Approved macOS revision: 820ef7dfecb43a081936027b5655fe4ec6ced59b
+- Approved macOS revision: 4a081d129af6b6d95de943f6f4079845355fc942
 - Approved portable Windows/Linux revision:
-  ed6e84ab06e992d7c87d71e5eb19a7850b651ae3
+  1e42ed47e17424b4f7be469362c3bea702e7e389
 - Never substitute another repository, fork, mirror, branch, or downloaded
   archive unless the study facilitator explicitly supplies it.
 
@@ -425,6 +432,13 @@ arguments only and never override `selectedCommandPath`. Render every real path
 with the shell-native single-quote escaping rules in Successful final response;
 the angle-bracket tokens below are labels, not text to execute.
 
+Set STORYVR_PYTHON only in the setup/launch process environment to the recorded
+absolute Python 3 interpreter executable. If discovery used py -3, resolve its
+sys.executable, verify that executable directly, and record it as the selected
+Python command; the launcher override accepts an executable path, not the
+multiword command py -3. Verify Python through tools/run-python.mjs on every
+platform so StoryVR uses the same interpreter that was checked.
+
 Native Windows 11 PowerShell:
 - Use git.exe, node.exe, and npm.cmd. Do not invoke npm.ps1 or change the
   execution policy.
@@ -436,7 +450,7 @@ Native Windows 11 PowerShell:
     git clone --branch codex/native-windows --single-branch https://github.com/ISTHATDISTANCE/StoryVR-Editor.git '<PowerShell-literal-absolute-marked-empty-StoryVR-Editor-entryPath>'
 - Before running any project script, enter StoryVR-Editor and pin the approved
   portable revision:
-    git checkout --detach ed6e84ab06e992d7c87d71e5eb19a7850b651ae3
+    git checkout --detach 1e42ed47e17424b4f7be469362c3bea702e7e389
 - From StoryVR-Editor, run:
     npm.cmd ci
 - Python may be exposed as py -3, python3, or python. Always verify it through
@@ -453,11 +467,11 @@ macOS:
     git clone --branch main --single-branch https://github.com/ISTHATDISTANCE/StoryVR-Editor.git '<POSIX-literal-absolute-marked-empty-StoryVR-Editor-entryPath>'
 - Before running any project script, enter StoryVR-Editor and pin the approved
   macOS revision:
-    git checkout --detach 820ef7dfecb43a081936027b5655fe4ec6ced59b
+    git checkout --detach 4a081d129af6b6d95de943f6f4079845355fc942
 - From StoryVR-Editor, run:
     npm ci
-- Branch main currently requires the exact python3 command. Verify it with:
-    python3 --version
+- Verify the selected Python through the repository launcher:
+    node tools/run-python.mjs --version
 
 Native Linux:
 - Before bootstrap, select a short, user-owned Linux workspace path, preferably
@@ -466,7 +480,7 @@ Native Linux:
     git clone --branch codex/native-windows --single-branch https://github.com/ISTHATDISTANCE/StoryVR-Editor.git '<POSIX-literal-absolute-marked-empty-StoryVR-Editor-entryPath>'
 - Before running any project script, enter StoryVR-Editor and pin the approved
   portable revision:
-    git checkout --detach ed6e84ab06e992d7c87d71e5eb19a7850b651ae3
+    git checkout --detach 1e42ed47e17424b4f7be469362c3bea702e7e389
 - From StoryVR-Editor, run:
     npm ci
 - Verify Python through the portable launcher:
@@ -484,9 +498,10 @@ For every platform:
    created, identity-marked, empty StoryVR-Editor directory. Git may populate
    that directory, but no command may delete, recreate, replace, or rename it.
 4. Require package-lock.json and use npm ci or npm.cmd ci. Never copy
-   node_modules from another computer or operating system. The portable branch
-   installs its cross-platform image runtime through npm; macOS main uses the
-   operating system's built-in sips. Do not install ImageMagick.
+   node_modules from another computer or operating system. The lockfile installs
+   the cross-platform process and image runtimes. Windows/Linux image processing
+   uses the installed sharp package; macOS uses the built-in sips. Do not install
+   ImageMagick or attempt to install sips on Windows/Linux.
 5. Before `npm ci`, require `git rev-parse HEAD` to equal the approved revision
    for the detected OS exactly. Stop on any mismatch. Record the absolute
    repository path, absolute story path, selected release channel, and commit.
@@ -496,7 +511,17 @@ Codex setup
    https://learn.chatgpt.com/docs/auth. On Windows, resolve either codex.exe or
    codex.cmd with `Get-Command codex.exe,codex.cmd -ErrorAction
    SilentlyContinue | Select-Object -First 1`, require one result, and reuse its
-   `.Source` path for every Codex command. On other platforms use `codex`.
+   `.Source` path for every Codex command. On other platforms resolve and record
+   the exact Codex executable too. Set CODEX_BIN only in the setup/launch
+   process environment to that recorded path. This prevents StoryVR from
+   selecting a different desktop-bundled CLI or PATH entry after verification.
+   Run that executable's --version and exec --help checks. On macOS, StoryVR
+   requires codex-cli 0.144.1 or newer for image generation. On every platform,
+   require support for the release's exec flags, including --ignore-user-config
+   and --ephemeral. The pinned release selects gpt-5.6-sol and uses the bundled
+   image-generation capability. If the selected CLI or study-approved account
+   cannot support these features, follow the incompatible-prerequisite rule;
+   do not change StoryVR's model, source, or pins to hide the incompatibility.
 2. Run the matching `codex login status` command. If sign-in is required, run
    the standard `codex login` command and let the participant complete the
    browser flow with the study-approved account or sign-in method. Use
@@ -600,15 +625,24 @@ All platforms:
   detected OS.
 - git branch -r --contains HEAD includes the expected origin release branch.
 - node --version reports 24.0.0 or newer.
-- On the portable branch, StoryVR's Python launcher reports Python 3. On branch
-  main, python3 --version reports Python 3.
+- StoryVR's Python launcher reports Python 3 using the recorded STORYVR_PYTHON
+  interpreter on every platform.
 - The appropriate npm ls --depth=0 command succeeds.
 - The appropriate npm run check command succeeds.
+- The appropriate npm run verify:native-runtime command succeeds on every
+  platform. It uses disposable synthetic story fixtures, checks the platform's
+  process/image/link/Python behavior, and builds an assembled Reader. It must
+  not be pointed at the assigned participant story. The portable revision also
+  checks long Unicode prompts through the native Codex command shim using a
+  fake worker. These checks do not call an AI service, validate live generation,
+  or start study data collection.
 - git diff --exit-code -- package.json package-lock.json succeeds.
 - git status --short has no unexpected tracked or untracked files.
 - Google Chrome reports version 114 or newer. Do not substitute Edge or another
   Chromium browser for this study's extension-required setup.
-- The Codex version and login-status checks succeed.
+- The Codex version, exec-help compatibility, and login-status checks succeed
+  for the exact executable selected by CODEX_BIN. Do not claim that an offline
+  runtime check or successful login proves live image/model access.
 - The participant story copy contains captures/active and is writable.
 - `npm run storyvr:study-extension` (or `npm.cmd` on Windows) succeeded and the
   complete static extension-artifact verification above passed.
@@ -672,9 +706,10 @@ Use these native Linux portable-branch forms where applicable:
 Use these macOS main-branch forms where applicable:
     node --version
     npm --version
-    python3 --version
+    node tools/run-python.mjs --version
     npm ls --depth=0
     npm run check
+    npm run verify:native-runtime
     codex --version
     codex login status
 
@@ -709,6 +744,8 @@ StoryVR core is installed and ready. The study logger build is verified; one man
 Run in PowerShell:
 Set-Location -LiteralPath '<PowerShell-literal-absolute-path-to-StoryVR-Editor>'
 $env:PATH = '<PowerShell-literal-absolute-selected-Node-directory>;' + $env:PATH
+$env:CODEX_BIN = '<PowerShell-literal-absolute-path-to-selected-Codex-executable>'
+$env:STORYVR_PYTHON = '<PowerShell-literal-absolute-path-to-selected-Python-interpreter>'
 & '<PowerShell-literal-absolute-path-to-selected-npm.cmd>' run storyvr:author -- --story-folder '<PowerShell-literal-absolute-path-to-assigned-story>'
 
 Keep this terminal open. Open http://127.0.0.1:5188/ only in the dedicated study Chrome profile during step 6 below. After any collection session, never stop the terminal or close StoryVR/Chrome until Data collection is Off, StoryVR says Saved, the logger popup confirms the file was finalized, and the exact complete JSON is preserved. At other times, stop StoryVR with Ctrl+C.
@@ -739,7 +776,7 @@ StoryVR core is installed and ready. The study logger build is verified; one man
 
 Run:
 cd -- '<POSIX-literal-absolute-path-to-StoryVR-Editor>'
-PATH='<POSIX-literal-absolute-selected-Node-directory>':"$PATH" '<POSIX-literal-absolute-path-to-selected-npm>' run storyvr:author -- --story-folder '<POSIX-literal-absolute-path-to-assigned-story>'
+PATH='<POSIX-literal-absolute-selected-Node-directory>':"$PATH" CODEX_BIN='<POSIX-literal-absolute-path-to-selected-Codex-executable>' STORYVR_PYTHON='<POSIX-literal-absolute-path-to-selected-Python-interpreter>' '<POSIX-literal-absolute-path-to-selected-npm>' run storyvr:author -- --story-folder '<POSIX-literal-absolute-path-to-assigned-story>'
 
 Keep this terminal open. Open http://127.0.0.1:5188/ only in the dedicated study Chrome profile during step 6 below. After any collection session, never stop the terminal or close StoryVR/Chrome until Data collection is Off, StoryVR says Saved, the logger popup confirms the file was finalized, and the exact complete JSON is preserved. At other times, stop StoryVR with Ctrl+C.
 Cleanup record: "<absolute-path-to-storyvr-study-install.json>"

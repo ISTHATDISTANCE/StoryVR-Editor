@@ -19,6 +19,12 @@ explicitly registered in its provenance records. Participant data or external
 logs created later without a valid marker are preserved, not guessed or
 claimed removed.
 
+This prompt also supports older installations whose original records satisfy
+the validation below. Do not require their recorded release revision to equal
+the current install prompt. Never pull, switch, reset, reinstall, rebuild, or
+run dependency/runtime checks merely to prepare for cleanup. Do not replace or
+rewrite installer evidence to match a newer release.
+
 Non-negotiable safety boundary
 1. This is a provenance-based uninstall, not a filename search. Require the
    installer-created `.storyvr-study-install-marker.json`, the fixed sibling
@@ -231,11 +237,16 @@ Preserve participant work and the original story
    move, edit, trash, or overwrite it.
 2. Before proposing removal, inspect the participant story copy for all files,
    including hidden files, captures, saved checkpoints, builds, exports,
-   screenshots, notes, logs, and untracked files. Also inspect StoryVR-Editor
-   for modified and untracked files that could be participant-created.
+   screenshots, notes, logs, and ignored or untracked files. Include saved
+   background conversations and assignments in
+   `analysis/storyvr/environment-enhancement.json` and generated panoramas and
+   ground textures in `webxr-adaptation/public/environment-enhancement/` when
+   present in that copy. Also inspect StoryVR-Editor for modified, ignored, and
+   untracked files that could be participant-created.
 3. Preserve the complete participant story working copy, not only files whose
    names look important. If StoryVR-Editor contains modified or untracked files,
-   preserve those separately as well.
+   preserve those separately as well, together with participant-created work
+   in ignored files.
 4. Ask for an export destination when participant-created work exists and no
    safe destination was supplied. It must be a new participant-chosen path
    outside every cleanup target. Never overwrite or merge into an existing
@@ -278,8 +289,20 @@ Study logger finalization and manual browser removal
    participant manually open StoryVR in the study Chrome profile. If StoryVR
    is closed, first give the participant the exact OS-native launch command
    reconstructed from the recorded literal repository, selected npm/Node, and
-   assigned-story paths, then have them open `http://127.0.0.1:5188/` in that
-   same profile. Inspect the Data collection switch itself. Click it exactly
+   participant-copy paths. Use `run storyvr:author -- --story-folder` with the
+   recorded participant copy. Prepend the selected Node directory only to the
+   launch process's PATH, and set process-local `CODEX_BIN` and
+   `STORYVR_PYTHON` to the recorded exact Codex and Python executable paths.
+   On native Windows, use `Set-Location -LiteralPath`, the call operator `&`,
+   and the exact recorded `npm.cmd`; never substitute `npm.ps1` or change
+   execution policy. Use PowerShell single-quoted literals, doubling embedded
+   single quotes. On macOS/Linux/WSL, use POSIX single-quoted literals and
+   encode an embedded single quote with the standard `'"'"'` sequence. Do not
+   concatenate unquoted recorded values into shell commands or persist these
+   environment settings. If a needed recorded executable is unavailable, keep
+   the installation in place for facilitator review. Then have them open
+   `http://127.0.0.1:5188/` in that same profile. Inspect the Data collection
+   switch itself. Click it exactly
    once only when it visibly or accessibly reports **On**. If it reports Off or
    is disabled while Writing, Saving, finishing, paused, or retrying, do not
    click it; keep StoryVR open and wait for **Saved**. If it reaches an error or
@@ -443,6 +466,11 @@ Codex sign-out and removal
    before uninstalling it.
 5. Never manually delete `~/.codex`, its Windows equivalent, credential-store
    entries, configuration, memories, chats, API keys, tokens, or browser data.
+   KEEP the effective `CODEX_HOME` and its `generated_images` contents as
+   shared Codex data, including when `CODEX_HOME` uses a custom location.
+   StoryVR copies generated images into the participant story; those saved
+   copies belong in the participant-work export, and do not make the original
+   Codex artifacts uninstall targets.
    Do not claim that local logout revoked any remote key, grant, or account
    session. Direct the participant to official account or workspace guidance if
    remote revocation is required.
