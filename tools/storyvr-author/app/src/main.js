@@ -86,6 +86,7 @@ import {
   proceduralTransitionPlanForBoundary,
   proceduralTransitionTrackSample,
 } from "../../procedural-transitions-runtime.js";
+import { createProceduralTransitionAnimationPlayer } from "../../procedural-transition-animation.js";
 import {
   augmentGltfLoaderWithStoryVrPointClouds,
   updateStoryVrPointCloudEffects,
@@ -374,6 +375,7 @@ function updateAuthorPreviewEmbeddedAnimations(viewer, deltaSeconds) {
   for (const playback of viewer.authorPreviewEmbeddedAnimations || []) {
     if (
       !playback?.mixer
+      || playback.entry?.proceduralTransitionAnimationPlayer
       || (playback.entry?.sourcePartFrozen && !steadySpatialPreview)
       || playback.entry?.spatialTransitionPlaying
       || playback.entry?.interactionTransitionPlaying
@@ -1664,7 +1666,7 @@ function finalizeActiveStoryvrCanvasGesture() {
 }
 
 async function synchronizeActiveStoryvrAuthoringControl() {
-  if (state.busy || authorHistory.busy) {
+  if (state.busy || authorHistory.busy || authorHistoryInteractionBusy) {
     throw new Error("Wait for the current authoring change to finish before leaving this page.");
   }
   if (state.activeId === "environment-enhancement") {
@@ -6777,12 +6779,14 @@ function selectedDynamicSceneObjectRecords(records = dynamicSceneObjectRecords()
 function selectedDynamicGenerationSubjectEntityIds(
   sceneContext = activeDynamicSceneContext(),
   records = dynamicSceneObjectRecords(),
+  selectedEntityIds = state.selectedDynamicEntityIds,
 ) {
+  const selectedIds = new Set(selectedEntityIds || []);
   const eligibleEntityIds = new Set(
     proceduralDynamicsLockedSceneTargets(sceneContext).map((entity) => entity.id),
   );
-  return selectedDynamicSceneObjectRecords(records)
-    .filter((record) => record.kind === "saved"
+  return records
+    .filter((record) => selectedIds.has(record.id) && record.kind === "saved"
       && ["glb", "image-plane"].includes(spatialEntityType(record.entity))
       && eligibleEntityIds.has(record.entity.id))
     .map((record) => record.entity.id);
@@ -7237,8 +7241,6 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
   const generatedAdjustmentDirty = state.dynamicGeneratedEditScenes[sceneKey] === "dirty";
   const canGenerate = ready
     && !busy
-    && !state.dynamicSpatialDraftDirty
-    && !generatedAdjustmentDirty
     && Boolean(prompt.trim());
   return `
     <section
@@ -7263,9 +7265,9 @@ function renderProceduralDynamicsAuthoring(sceneContext, ready) {
       </label>
       <p class="procedural-dynamics-composer-hint" id="procedural-dynamics-composer-hint">Each message uses this scene’s conversation and current saved dynamics. Cmd/Ctrl + Enter to send.</p>
       ${state.dynamicSpatialDraftDirty
-        ? `<p class="procedural-dynamics-message">Save this scene's object placement before generating or adjusting runtime-only objects.</p>`
+        ? `<p class="procedural-dynamics-message">Your object placement will be saved before sending this update.</p>`
         : generatedAdjustmentDirty
-          ? `<p class="procedural-dynamics-message">Save the generated-object adjustment before regenerating animation and effects.</p>`
+          ? `<p class="procedural-dynamics-message">Your generated-object adjustments will be saved before sending this update.</p>`
           : ""}
       <div class="procedural-dynamics-actions">
         <button
@@ -10142,10 +10144,14 @@ function clearInstalledEnvironmentComposer(context, sentPrompt) {
 }
 
 function environmentGenerationActivityTitle() {
+  const reply = state.environmentUi.generationResult?.conversationOnly === true;
   if (state.environmentUi.generationPhase === "generating") return "Creating setting";
-  if (state.environmentUi.generationPhase === "waiting") return "Setting is ready to install";
-  if (state.environmentUi.generationPhase === "installing") return "Installing setting";
-  if (state.environmentUi.generationPhase === "ready") return "Setting ready";
+  if (state.environmentUi.generationPhase === "waiting") return reply ? "Reply ready to save" : "Setting is ready to install";
+  if (state.environmentUi.generationPhase === "installing") return reply ? "Saving reply" : "Installing setting";
+  if (state.environmentUi.generationPhase === "ready") {
+    if (reply) return state.environmentUi.generationResult.needsClarification ? "Clarification needed" : "Reply saved";
+    return "Setting ready";
+  }
   if (state.environmentUi.generationPhase === "error") return "Setting needs attention";
   return "Setting";
 }
@@ -13403,8 +13409,6 @@ function bindProceduralDynamicsAuthoringEvents() {
     const ready = Boolean(state.data?.readiness?.["dynamic-geometry"]?.canGenerate);
     if (generate) generate.disabled = !ready
       || state.proceduralDynamicsUi.busyByScene[sceneKey]
-      || state.dynamicSpatialDraftDirty
-      || state.dynamicGeneratedEditScenes[sceneKey] === "dirty"
       || !prompt.value.trim();
     if (generate && !state.proceduralDynamicsUi.busyByScene[sceneKey]) {
       generate.textContent = proceduralDynamicsConversationForScene(sceneContext).length
@@ -13537,30 +13541,56 @@ async function generateProceduralDynamicsPreview(sceneContext) {
   const sceneKey = scope.sceneKey;
   const prompt = proceduralDynamicsPromptForScene(sceneContext).trim();
   if (!prompt || state.proceduralDynamicsUi.busyByScene[sceneKey]) return;
-  if (state.dynamicSpatialDraftDirty) {
-    state.proceduralDynamicsUi.errorsByScene[sceneKey] = "Save this scene's object placement before generating animation or effects.";
-    renderPreservingScroll();
-    return;
-  }
-  if (state.dynamicGeneratedEditScenes[sceneKey] === "dirty") {
-    state.proceduralDynamicsUi.errorsByScene[sceneKey] = "Save the generated-object adjustment before regenerating animation or effects.";
-    renderPreservingScroll();
-    return;
-  }
-  const selectedRecords = selectedDynamicSceneObjectRecords();
-  const subjectEntityIds = selectedDynamicGenerationSubjectEntityIds(sceneContext);
-  if (selectedRecords.length && subjectEntityIds.length !== selectedRecords.length) {
-    state.proceduralDynamicsUi.errorsByScene[sceneKey] = "To use scene selection as generation subjects, select only saved 3D models or images.";
-    renderPreservingScroll();
-    return;
-  }
+  // Reserve the send before awaiting the active gesture or field commit so a
+  // second click cannot start another placement save or generation request.
   setProceduralDynamicsBusy(sceneContext, true);
-  state.proceduralDynamicsUi.pendingMessagesByScene[sceneKey] = prompt;
-  state.proceduralDynamicsUi.conversationScrollByScene[sceneKey] = { top: 0, atBottom: true };
-  delete state.proceduralDynamicsUi.errorsByScene[sceneKey];
-  state.proceduralDynamicsUi.statusByScene[sceneKey] = "Updating and saving animation and effects…";
-  renderPreservingScroll();
+  let preparingPlacement = true;
+  const sceneStillActive = () => {
+    const activeScene = activeDynamicSceneContext();
+    return state.activeId === "dynamic-geometry" && activeScene
+      && proceduralDynamicsSceneKey(activeScene) === sceneKey;
+  };
   try {
+    // Finalize focused transform inputs before a rerender can discard them.
+    await synchronizeActiveStoryvrAuthoringControl();
+    if (!sceneStillActive()) return;
+    const selectedRecords = selectedDynamicSceneObjectRecords();
+    const generatedAdjustmentScenes = dynamicDirtyGeneratedSceneContexts();
+    const hasAdjustments = state.dynamicSpatialDraftDirty || generatedAdjustmentScenes.length || sourceMotionHasUnsavedChanges();
+    delete state.proceduralDynamicsUi.errorsByScene[sceneKey];
+    state.proceduralDynamicsUi.pendingMessagesByScene[sceneKey] = prompt;
+    state.proceduralDynamicsUi.conversationScrollByScene[sceneKey] = { top: 0, atBottom: true };
+    state.proceduralDynamicsUi.statusByScene[sceneKey] = hasAdjustments
+      ? "Saving object adjustments before updating animation…"
+      : "Updating and saving animation and effects…";
+    renderPreservingScroll();
+    if (hasAdjustments) {
+      await withAuthorHistory("Save object adjustments", async () => {
+        // A Spatial save invalidates generated edit candidates, so persist
+        // every pending generated adjustment against its original baseline first.
+        for (const adjustmentScene of generatedAdjustmentScenes) {
+          await persistDynamicGeneratedAdjustments(adjustmentScene);
+        }
+        if (Object.values(state.dynamicGeneratedEditScenes || {}).includes("dirty")) {
+          throw new Error("A generated-object adjustment lost its scene context. Reopen that Dynamics scene before sending an update.");
+        }
+        if (sourceMotionHasUnsavedChanges()) await persistSourceMotionLinks({ silent: true });
+        await persistDynamicSpatialAdjustments();
+      }, { persistent: true, componentId: "dynamic-geometry", rollbackOnError: false });
+    }
+    if (!sceneStillActive()) {
+      state.proceduralDynamicsUi.statusByScene[sceneKey] = "Object adjustments saved. Return to this scene to send your message.";
+      return;
+    }
+    const subjectEntityIds = selectedDynamicGenerationSubjectEntityIds(
+      sceneContext, selectedRecords, selectedRecords.map((record) => record.id),
+    );
+    if (selectedRecords.length && subjectEntityIds.length !== selectedRecords.length) {
+      throw new Error("To use scene selection as generation subjects, select only saved 3D models or images.");
+    }
+    preparingPlacement = false;
+    state.proceduralDynamicsUi.statusByScene[sceneKey] = "Updating and saving animation and effects…";
+    renderPreservingScroll();
     const response = await api.post("/api/dynamics/generate", {
       sceneContext: scope,
       prompt,
@@ -13606,7 +13636,9 @@ async function generateProceduralDynamicsPreview(sceneContext) {
       state.dynamicPreviewRestartToken += 1;
     }
   } catch (error) {
-    state.proceduralDynamicsUi.errorsByScene[sceneKey] = `Could not generate and save animation or effects: ${error.message}`;
+    state.proceduralDynamicsUi.errorsByScene[sceneKey] = preparingPlacement
+      ? `Could not prepare object adjustments; your update was not sent: ${error.message}`
+      : `Could not generate and save animation or effects: ${error.message}`;
     delete state.proceduralDynamicsUi.statusByScene[sceneKey];
   } finally {
     delete state.proceduralDynamicsUi.pendingMessagesByScene[sceneKey];
@@ -13740,8 +13772,8 @@ async function persistDynamicSpatialAdjustments() {
   });
   if (!state.data.decisions) state.data.decisions = {};
   state.data.decisions[SPATIAL_RELATIONS_COMPONENT_ID] = saved;
-  state.dynamicSpatialDraftDirty = false;
   await refresh(false);
+  state.dynamicSpatialDraftDirty = false;
   const discardedCandidateKeys = Object.keys(state.proceduralDynamicsUi.candidatesByScene || {});
   const discardedCandidateCount = discardedCandidateKeys.length;
   for (const sceneKey of discardedCandidateKeys) {
@@ -14952,6 +14984,11 @@ async function generateEnvironmentFromUi() {
     });
     if (requestId !== state.environmentUi.generationRequestId) return;
     if (!staged?.generationToken) throw new Error("Setting generation did not return an installable result.");
+    state.environmentUi.generationResult = {
+      conversationOnly: staged.generation?.conversationOnly === true,
+      needsClarification: staged.generation?.needsClarification === true,
+      unchanged: staged.generation?.unchanged === true,
+    };
     state.environmentUi.generationPhase = "waiting";
     state.environmentUi.generationStatus = staged.generation?.conversationOnly
       ? "Your reply is ready. StoryVR will save it as soon as the current edit is finished."
@@ -14966,7 +15003,7 @@ async function generateEnvironmentFromUi() {
       : "The generated 360° setting and matching ground are ready. StoryVR is installing them now…";
     updateEnvironmentGenerationDom();
 
-    await withAuthorHistory("Generate setting image", async () => {
+    await withAuthorHistory(staged.generation?.conversationOnly ? "Save setting reply" : "Generate setting image", async () => {
       const installed = await api.post("/api/environment-enhancement/install-generated", {
         generationToken: staged.generationToken,
       });
@@ -14990,15 +15027,25 @@ async function generateEnvironmentFromUi() {
       }
       const manifest = environmentManifest(generationSceneContext);
       const source = manifest.assetSource || manifest.selectedSource || {};
+      const conversationOnly = installed.conversationOnly === true;
+      const needsClarification = conversationOnly && (installed.needsClarification === true
+        || installed.generation?.needsClarification === true || staged.generation?.needsClarification === true);
+      const replyStatus = needsClarification
+        ? "Reply to the clarification to continue. The setting is unchanged."
+        : "The reply was saved. The setting is unchanged.";
       state.environmentUi.generationResult = {
         ...(installed.generation || {}),
-        title: installed.conversationOnly === true ? "Conversation saved"
+        conversationOnly,
+        needsClarification,
+        unchanged: conversationOnly && (installed.unchanged === true
+          || installed.generation?.unchanged === true || staged.generation?.unchanged === true),
+        title: conversationOnly ? needsClarification ? "Clarification needed" : "Reply saved"
           : installed.generation?.title || environmentCandidateTitle(source) || "Generated 360° setting and ground ready",
-        description: installed.assistantMessage || installed.generation?.description
-          || "The generated 360° setting and matching ground are installed as requested.",
+        description: installed.assistantMessage || (conversationOnly ? replyStatus : installed.generation?.description
+          || "The generated 360° setting and matching ground are installed as requested."),
       };
       state.environmentUi.generationStatus = installed.assistantMessage
-        || (installed.conversationOnly === true ? "Your conversation was saved."
+        || (conversationOnly ? replyStatus
           : `Generated 360° setting and matching ground installed for ${spatialSceneBeat(generationSceneContext)?.title || generationSceneContext.beatId}. Open that scene to inspect the alignment, then save the scene.`);
       state.environmentUi.generationError = false;
       state.environmentUi.generationPhase = "ready";
@@ -26698,7 +26745,10 @@ function updateFinalReviewTransitionExecution(viewer, delta) {
   }
   const progress = previewCycleProgress(viewer);
   const completed = progress >= 1;
-  applyInterBeatExactSceneVisibility(viewer, progress);
+  if (viewer.generatedTransitionPlan?.middle?.actions?.some((action) => action.animation)
+    || viewer.proceduralTransitionAnimationEntries?.size) {
+    prepareProceduralTransitionAnimations(viewer, progress);
+  }
   const canvas = viewer.renderer?.domElement;
   if (canvas) {
     canvas.dataset.finalReviewTransitionProgress = progress.toFixed(4);
@@ -26710,6 +26760,7 @@ function updateFinalReviewTransitionExecution(viewer, delta) {
     ...(viewer.swapGroups || []),
   ];
   for (const entry of entries) {
+    if (entry?.proceduralTransitionAnimationPlayer) continue;
     if (entry?.sourcePlayback) {
       updateSourceTransitionPlayback(viewer, entry);
       continue;
@@ -26724,6 +26775,7 @@ function updateFinalReviewTransitionExecution(viewer, delta) {
     const duration = Math.max(Number(entry.sourceMotionDuration) || 0, 0.001);
     entry.mixer.setTime(duration * THREE.MathUtils.lerp(start, end, progress));
   }
+  applyInterBeatExactSceneVisibility(viewer, progress);
   if (completed) viewer.transitionPlaying = false;
   return true;
 }
@@ -32739,6 +32791,7 @@ function loadDynamicAsset(viewer, assetLink, index, total, active, finishAsset) 
         });
         authorWrapper.add(gltf.scene);
         dynamicEntry.sourceScene = gltf.scene;
+        dynamicEntry.sourceAnimations = gltf.animations || [];
         attachSourceDynamicsPreviewAnimation(viewer, dynamicEntry, gltf);
         attachProceduralDynamicsPreviewMotion(viewer, dynamicEntry, gltf);
         attachFinalReviewSourcePlayback(viewer, dynamicEntry, gltf);
@@ -33308,6 +33361,7 @@ function animateDynamicGeometry(viewer) {
     item.wrapper.position.copy(item.basePosition);
     item.wrapper.rotation.set(0, 0, 0);
     item.wrapper.scale.setScalar(item.spatialTransformApplied ? 1 : item.active ? item.baseScale : 0.92);
+    if (item.proceduralTransitionAnimationPlayer) continue;
     if (!updateSourceTransitionPlayback(viewer, item) && item.mixer && !item.sourcePartFrozen) {
       const duration = Math.max(Number(item.sourceMotionDuration) || 0, 0.001);
       const sourceTime = viewer.componentId === "inter-beat-dynamics"
@@ -33331,7 +33385,7 @@ function animateProceduralDynamicsPreview(viewer, time = viewer?.elapsed || 0) {
     : 1 / 60;
   if (viewer) viewer.proceduralPreviewPreviousTime = time;
   for (const item of viewer?.proceduralPreviewEntries || []) {
-    if (item.proceduralMixer) {
+    if (item.proceduralMixer && !item.proceduralTransitionAnimationPlayer) {
       const duration = Math.max(Number(item.proceduralSourceMotionDuration) || 0, 0.001);
       item.proceduralMixer.setTime(
         time * (Number(item.proceduralAnimationTimeScale) || 1)
@@ -34366,6 +34420,7 @@ function seekSourceTransitionPlayback(entry, progress, clockSeconds = 0) {
 }
 
 function updateSourceTransitionPlayback(viewer, entry) {
+  if (entry?.proceduralTransitionAnimationPlayer) return true;
   const runtime = entry?.sourcePlayback;
   if (!runtime) return false;
   runtime.clockSeconds = Number(viewer?.elapsed) || 0;
@@ -34394,6 +34449,9 @@ function attachFinalReviewSourcePlayback(viewer, entry, gltf) {
 
 function sourcePlaybackSceneVisibleForViewer(viewer, entry, contractActive) {
   if (contractActive === true) return true;
+  // Generated transitions address the saved entity directly. A missing source
+  // timeline window cannot hide the model inside its transition-owned wrapper.
+  if (viewer?.generatedTransitionPlan && entry?.entityId) return true;
   // Transition owns appearance while it is actively presenting a boundary.
   // Every other authoring preview inherits scene membership from Spatial
   // Relations, so an absent motion window may pause a model but cannot remove
@@ -34472,7 +34530,7 @@ function attachSourceTransitionPlayback(viewer, entry, gltf) {
     sourcePlaybackDiagnostic(runtime, "timeline-duration-unavailable", asset.assetId);
     return true;
   }
-  if (viewer.sourcePlaybackSummary?.assetId === asset.assetId) {
+  if (!viewer.generatedTransitionPlan && viewer.sourcePlaybackSummary?.assetId === asset.assetId) {
     const sourceCycleSeconds = sourcePlaybackScrubCycleSeconds(
       asset,
       windowState,
@@ -34950,6 +35008,10 @@ function animateDynamicEffectOverlays(effects, kind, time) {
 function animateInterBeatDynamics(viewer) {
   const cycleProgress = previewCycleProgress(viewer);
   const progress = interBeatTransitionProgress(viewer);
+  if (viewer.generatedTransitionPlan?.middle?.actions?.some((action) => action.animation)
+    || viewer.proceduralTransitionAnimationEntries?.size) {
+    prepareProceduralTransitionAnimations(viewer, progress);
+  }
   const smooth = progress * progress * (3 - 2 * progress);
   const completed = viewer.playOnce && cycleProgress >= 1;
   applyInterBeatSourcePartMasks(viewer, progress >= 1 ? "destination" : "transition");
@@ -35270,6 +35332,40 @@ function transitionMiddleTargetAnchorPosition(viewer, action) {
   return viewer.root?.worldToLocal ? viewer.root.worldToLocal(center) : center;
 }
 
+function prepareProceduralTransitionAnimations(viewer, progress) {
+  const sample = viewer?.generatedTransitionPlan
+    ? proceduralTransitionMiddleSample(viewer.generatedTransitionPlan, progress)
+    : { actions: [] };
+  const targets = new Map();
+  for (const action of sample.actions) {
+    if (!action.animation) continue;
+    for (const item of transitionMiddleTargetObjects(viewer, action)) {
+      if (item.sourceScene && item.sourceAnimations?.length) targets.set(item, action);
+    }
+  }
+  if (!viewer.proceduralTransitionAnimationEntries) viewer.proceduralTransitionAnimationEntries = new Map();
+  for (const [item, playback] of viewer.proceduralTransitionAnimationEntries) {
+    if (targets.has(item) && playback.root === item.sourceScene) continue;
+    playback.player.dispose();
+    item.proceduralTransitionAnimationPlayer = null;
+    viewer.proceduralTransitionAnimationEntries.delete(item);
+  }
+  for (const [item, action] of targets) {
+    const existing = viewer.proceduralTransitionAnimationEntries.get(item);
+    if (existing) {
+      existing.action = action;
+      continue;
+    }
+    const player = createProceduralTransitionAnimationPlayer({
+      THREE,
+      root: item.sourceScene,
+      animations: item.sourceAnimations,
+    });
+    item.proceduralTransitionAnimationPlayer = player;
+    viewer.proceduralTransitionAnimationEntries.set(item, { root: item.sourceScene, player, action });
+  }
+}
+
 function applyProceduralTransitionTracks(viewer, action) {
   const values = proceduralTransitionTrackSample(action, action.localProgress);
   for (const item of transitionMiddleTargetObjects(viewer, action)) {
@@ -35304,8 +35400,14 @@ function applyProceduralTransitionTracks(viewer, action) {
 
 function applyProceduralTransitionMiddle(viewer, progress) {
   const plan = viewer?.generatedTransitionPlan;
-  if (!plan) return false;
+  if (!plan) {
+    if (viewer?.proceduralTransitionAnimationEntries?.size) disposeProceduralTransitionMiddle(viewer);
+    return false;
+  }
   const sample = proceduralTransitionMiddleSample(plan, progress);
+  if (sample.actions.some((action) => action.animation) || viewer.proceduralTransitionAnimationEntries?.size) {
+    prepareProceduralTransitionAnimations(viewer, progress);
+  }
   if (viewer.renderer?.domElement) {
     viewer.renderer.domElement.dataset.proceduralTransitionMiddleProgress = Number(sample.progress || 0).toFixed(4);
     viewer.renderer.domElement.dataset.proceduralTransitionMiddleActions = String(sample.actions.length);
@@ -35318,11 +35420,26 @@ function applyProceduralTransitionMiddle(viewer, progress) {
     if (sample.endpoint === "to") disposeProceduralTransitionMiddle(viewer);
     return false;
   }
+  // Clips affect the model's own bones, morphs, and node transforms. Property
+  // tracks run afterwards so their authored wrapper offsets and fades win.
+  // As with Reader playback, the last clip action targeting an entity wins.
+  // Selecting it before sampling prevents overlapping actions from rebuilding
+  // the model's mixer twice on every frame.
+  for (const [item, playback] of viewer.proceduralTransitionAnimationEntries || []) {
+    const action = playback.action;
+    const elapsedSeconds = action.localProgress
+      * (action.endProgress - action.startProgress) * plan.durationSeconds;
+    if (playback.player.sample(action.animation, elapsedSeconds)
+      && item.transitionSceneRole === "to") {
+      setDynamicPreviewObjectOpacity(item, 1);
+    }
+  }
   for (const action of sample.actions) {
     if (action.tracks?.length) {
       applyProceduralTransitionTracks(viewer, action);
       continue;
     }
+    if (action.animation) continue;
     const local = proceduralTransitionEasedProgress(action.easing || "linear", action.localProgress);
     const envelope = Math.sin(Math.PI * Math.max(0, Math.min(1, local)));
     const kind = String(action.kind || "").toLowerCase();
@@ -35419,6 +35536,11 @@ function applyProceduralTransitionMiddle(viewer, progress) {
 }
 
 function disposeProceduralTransitionMiddle(viewer) {
+  for (const [item, playback] of viewer?.proceduralTransitionAnimationEntries || []) {
+    playback.player.dispose();
+    item.proceduralTransitionAnimationPlayer = null;
+  }
+  if (viewer) viewer.proceduralTransitionAnimationEntries = new Map();
   for (const entry of viewer?.proceduralTransitionMiddleEntries?.values?.() || []) {
     entry.root?.removeFromParent?.();
     disposeObject(entry.root);

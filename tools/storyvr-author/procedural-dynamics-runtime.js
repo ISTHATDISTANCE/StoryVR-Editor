@@ -1385,8 +1385,14 @@ function vectorLerp(left, right, progress) {
 }
 
 function playbackProgress(elapsed, duration, loopMode = "repeat", phase = 0, direction = 1) {
-  const raw = finiteNumber(phase, 0) + (direction < 0 ? -1 : 1) * (finiteNumber(elapsed, 0) / Math.max(0.001, duration));
-  if (normalizedLoopMode(loopMode) === "once") return clamp01(raw);
+  const elapsedProgress = finiteNumber(elapsed, 0) / Math.max(0.001, duration);
+  if (normalizedLoopMode(loopMode) === "once") {
+    // Phase is progress already consumed in the chosen travel direction. A
+    // reverse one-shot starts at the path's end instead of clamping at zero.
+    const progress = clamp01(finiteNumber(phase, 0) + elapsedProgress);
+    return direction < 0 ? 1 - progress : progress;
+  }
+  const raw = finiteNumber(phase, 0) + (direction < 0 ? -1 : 1) * elapsedProgress;
   if (normalizedLoopMode(loopMode) === "ping-pong") {
     const cycle = positiveModulo(raw, 2);
     return cycle <= 1 ? cycle : 2 - cycle;

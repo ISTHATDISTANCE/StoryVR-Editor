@@ -36,6 +36,7 @@ import {
   generateStoryCanvasSegmentsWithCodex,
   loadAuthorProject,
   prepareProceduralDynamicsEditCandidate,
+  prepareStoryGenerationMemory,
   regenerateStoryGraph,
   removeProceduralDynamicsPlan,
   removeProceduralTransitionPlan,
@@ -49,11 +50,13 @@ import {
   saveSpatialRelationsDecisionDraft,
   saveStoryGraph,
   saveSourceMotionLinks,
+  selectStoryMemoryReferences,
 } from "./engine.mjs";
 import {
   decodeEnvironmentGenerationReferenceImages,
   generateEnvironmentImageWithCodex,
   generateMatchingGroundTextureWithCodex,
+  loadStoryMemoryBackgroundReferences,
   sanitizeEnvironmentGenerationPrompt,
 } from "./environment/generator.mjs";
 import {
@@ -113,6 +116,7 @@ const readStoryBuildInputSignature = createStoryBuildInputSignatureReader({
   paths: environmentPaths,
   environmentAssetRoot: environmentStore.paths.assetRoot,
   repositoryRoot: REPO_ROOT,
+  referenceStoryFolder: environmentPaths.storyFolder,
 });
 const pendingEnvironmentGenerations = new Map();
 const PENDING_ENVIRONMENT_GENERATION_TTL_MS = 30 * 60 * 1000;
@@ -330,14 +334,29 @@ async function handleApi(req, res) {
         const previousEnvironment = conversation
           ? await environmentGenerationPreviousResult(baselineEnvironment, sceneContext)
           : null;
+        const storyMemory = await prepareStoryGenerationMemory(authorOptions(), {
+          operation: "background", prompt, sceneContext, conversation, referenceIds: body.referenceIds,
+        }, {
+          graph: projectState.graph,
+          runtime: projectState.runtime,
+          spatialRelations: projectState.spatialRelations,
+          environment: baselineEnvironment,
+        });
+        const storyReferenceImages = await loadStoryMemoryBackgroundReferences({
+          storyMemory, storyFolder: environmentPaths.storyFolder, prompt, referenceImages, previousEnvironment, conversation,
+          selectReferences: (selectionPrompt) => selectStoryMemoryReferences(authorOptions(), selectionPrompt),
+        });
         const generated = await generateEnvironmentImageWithCodex({
           prompt,
           referenceImages,
           conversation,
           previousEnvironment,
+          storyMemory,
+          storyReferenceImages,
+          diagnosticsRoot: path.resolve(environmentPaths.analysisRoot, "generation-diagnostics"),
           codexBin: CODEX_BIN,
           codexVersion: codexStatus.version,
-        });
+        }).catch((error) => { throw attachGenerativeUsage(error, storyMemory, storyReferenceImages); });
         let ground = null;
         try {
           if (!generated.conversationOnly) ground = await generateMatchingGroundTextureWithCodex({
@@ -345,6 +364,9 @@ async function handleApi(req, res) {
             referenceImage: generated.image,
             conversation,
             previousEnvironment,
+            storyMemory,
+            storyReferenceImages,
+            diagnosticsRoot: path.resolve(environmentPaths.analysisRoot, "generation-diagnostics"),
             codexBin: CODEX_BIN,
             codexVersion: codexStatus.version,
           });
@@ -416,7 +438,12 @@ async function handleApi(req, res) {
             conversationTurn,
             prompt: generated.prompt,
           });
-          return { environmentEnhancement: decorateEnvironmentState(environmentState), conversationOnly: true };
+          return {
+            environmentEnhancement: decorateEnvironmentState(environmentState),
+            conversationOnly: true,
+            needsClarification: generated.needsClarification === true,
+            unchanged: generated.unchanged === true,
+          };
         }
         const candidate = createGeneratedEnvironmentCandidate(generated);
         const environmentState = await environmentStore.importGenerated({
@@ -740,6 +767,9 @@ async function handleApi(req, res) {
     writeJsonResponse(res, error.statusCode || environmentErrorStatus(error), attachGenerativeUsage({
       error: error.message,
       diagnostics: error.diagnostics || [],
+      ...(error.diagnosticPath ? {
+        generationDiagnostics: path.relative(environmentPaths.storyFolder, error.diagnosticPath).split(path.sep).join("/"),
+      } : {}),
       ...(Array.isArray(error.unmetRequirements) ? { unmetRequirements: error.unmetRequirements } : {}),
       ...(error.referenceResolution ? { referenceResolution: error.referenceResolution } : {}),
     }, error));
@@ -1789,6 +1819,7 @@ function environmentGenerationMetadata(generated, ground) {
     ...(generated.conversationOnly ? {
       conversationOnly: true,
       needsClarification: generated.needsClarification === true,
+      unchanged: generated.unchanged === true,
       assistantMessage: generated.assistantMessage,
     } : {}),
     ground: ground ? {

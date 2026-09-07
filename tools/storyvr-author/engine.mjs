@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { parseCodexJsonObject as parseJsonObject } from "../codex-json.mjs";
 import { REPO_ROOT, importFetchedStoryResources } from "../storyvr-adapter/storyvr-adapter.mjs";
 import { normalizeEnvironmentMovementCue } from "./environment/store.mjs";
+import { loadSharedStoryMemory, prepareSharedStoryMemory } from "./shared-story-memory.mjs";
 import {
   resolveStoryvrCodexBin,
   STORYVR_CODEX_PLANNING_ARGS,
@@ -60,7 +61,6 @@ import {
 import {
   PROCEDURAL_TRANSITION_CANDIDATE_SCHEMA_VERSION,
   applyProceduralTransitionPlanToStore,
-  createFallbackTransitionPlan,
   generateProceduralTransitionIntent,
   normalizeProceduralTransitionCandidate,
   normalizeAuthorProceduralTransitionsStore,
@@ -313,6 +313,7 @@ const READER_TEMPLATE_FILES = [
   { source: "reader-template/src/main.js", target: "src/main.js" },
   { source: "procedural-dynamics-runtime.js", target: "src/procedural-dynamics-runtime.js" },
   { source: "procedural-transitions-runtime.js", target: "src/procedural-transitions-runtime.js" },
+  { source: "procedural-transition-animation.js", target: "src/procedural-transition-animation.js" },
   { source: "ground-movement-cue.js", target: "src/ground-movement-cue.js" },
   { source: "point-cloud-runtime.js", target: "src/point-cloud-runtime.js" },
   { source: "reader-template/src/styles.css", target: "src/styles.css" },
@@ -349,6 +350,7 @@ const STORYVR_TEXT_LAYOUT_CSS_CONTRACT_MARKER = `/* STORYVR_TEXT_LAYOUT_CONTRACT
 const STORYVR_PROCEDURAL_TRANSITIONS_READER_CONTRACT_MARKER = `const STORYVR_PROCEDURAL_TRANSITION_MIDDLE_CONTRACT_VERSION = "${PROCEDURAL_TRANSITION_MIDDLE_SCHEMA_VERSION}";`;
 const STORYVR_TRANSITION_SUBJECT_TARGETS_CONTRACT_VERSION = "storyvr-transition-subject-targets/v1";
 const STORYVR_TRANSITION_PROPERTY_TRACKS_CONTRACT_VERSION = "storyvr-transition-property-tracks/v1";
+const STORYVR_TRANSITION_EMBEDDED_CLIPS_CONTRACT_VERSION = "storyvr-transition-embedded-clips/v1";
 const STORYVR_PROCEDURAL_DYNAMICS_FEATURE_CONTRACT_VERSION = "storyvr-procedural-dynamics-declarative/v2";
 const STORYVR_PROCEDURAL_DYNAMICS_READER_CONTRACT_MARKER = `const STORYVR_PROCEDURAL_DYNAMICS_FEATURE_CONTRACT_VERSION = "${STORYVR_PROCEDURAL_DYNAMICS_FEATURE_CONTRACT_VERSION}";`;
 const READER_DIST_BUILD_SCRIPT = fileURLToPath(new URL("./build-reader-dist.mjs", import.meta.url));
@@ -1257,6 +1259,71 @@ export async function generateComponentProposals(options, componentId, request =
   return attachGenerativeUsage(proposalBundle, usageSources);
 }
 
+export async function selectStoryMemoryReferences(options, prompt) {
+  if (typeof options.storyMemorySelectJson === "function") {
+    return options.storyMemorySelectJson(prompt);
+  }
+  if (options.aiProvider === "openai") throw new Error("Codex provider is not available for story reference selection.");
+  const result = await runCodexExec(resolveStoryvrCodexBin(options.codexBin), prompt, {
+    cwd: options.codexWorkspace || REPO_ROOT,
+    requestLabel: "Codex story reference selection",
+    usageOperation: "story-memory",
+  });
+  try {
+    return attachGenerativeUsage(parseJsonObject(extractCodexFinalText(result.stdout) || result.stdout), result);
+  } catch (error) {
+    throw attachGenerativeUsage(error, result);
+  }
+}
+
+export async function prepareStoryGenerationMemory(options, request = {}, inputs = {}) {
+  const paths = resolveAuthorPaths(options);
+  const graph = inputs.graph || await readRequiredJson(paths.storyGraphPath,
+    "Generate Story order before using shared story memory.");
+  const runtime = inputs.runtime || await importFetchedStoryResources(paths.resourceFolder, "dev", {
+    repoRoot: REPO_ROOT, storyFolder: paths.storyFolder,
+  });
+  const spatialRelations = inputs.spatialRelations
+    || (await readJsonIfExists(path.join(paths.decisionsRoot, "spatial-relations.json")))?.spatialRelations
+    || null;
+  const [rawDynamics, rawTransitions] = await Promise.all([
+    inputs.dynamics !== undefined ? inputs.dynamics : readJsonIfExists(paths.proceduralDynamicsPath),
+    inputs.transitions !== undefined ? inputs.transitions : readJsonIfExists(paths.proceduralTransitionsPath),
+  ]);
+  // Cross-phase references obey the same current-scene and exact-route checks
+  // as the generator that owns them. Stale on-disk plans are never resurrected
+  // merely because another phase asks for shared knowledge.
+  const dynamics = normalizeProceduralDynamicsStore(rawDynamics || emptyProceduralDynamicsStore(),
+    proceduralDynamicsContexts(graph, runtime, spatialRelations));
+  const boundaries = proceduralTransitionBoundaryIndex(graph, runtime);
+  const transitions = normalizeProceduralTransitionsForBoundaries(rawTransitions, boundaries);
+  const memory = await loadSharedStoryMemory({
+    ...inputs,
+    storyFolder: paths.storyFolder,
+    graph, runtime, spatialRelations, dynamics, transitions,
+    validBoundaryKeys: [...boundaries.keys()],
+  });
+  const usageSources = [];
+  try {
+    const context = await prepareSharedStoryMemory(memory, {
+      operation: request.operation,
+      sceneContext: request.sceneContext,
+      boundaryContext: request.boundaryContext,
+      prompt: request.prompt,
+      conversation: request.conversation,
+      referenceIds: request.referenceIds,
+      selectReferences: async (prompt) => {
+        const result = await selectStoryMemoryReferences(options, prompt);
+        usageSources.push(result);
+        return result;
+      },
+    });
+    return attachGenerativeUsage(context, usageSources);
+  } catch (error) {
+    throw attachGenerativeUsage(error, usageSources);
+  }
+}
+
 export async function generateProceduralDynamicsPlan(options, request = {}) {
   const state = await proceduralDynamicsRequestState(options, request.sceneContext);
   const conversational = request.conversation === true;
@@ -1281,12 +1348,20 @@ export async function generateProceduralDynamicsPlan(options, request = {}) {
     ?? null;
   const libraryContext = dynamicsLibraryContext(state);
   const previousPlan = conversational ? storedPlan : normalizePreviousDynamicsPlan(previousPlanInput, libraryContext);
+  const sharedStoryMemory = await prepareStoryGenerationMemory(options, {
+    operation: "dynamics", prompt: request.prompt, sceneContext: state.context.scene,
+    conversation, referenceIds: request.referenceIds,
+  }, {
+    graph: state.graph, runtime: state.runtime, spatialRelations: state.spatialRelations,
+    dynamics: state.proceduralDynamics,
+  });
   const generationContext = {
     ...libraryContext,
     subjectEntityIds: request.subjectEntityIds,
+    sharedStoryMemory,
   };
   const imagePaths = dynamicsSceneImageAttachmentPaths(libraryContext.sceneImages);
-  const usageSources = [];
+  const usageSources = [sharedStoryMemory];
   let engine = { provider: "codex-cli" };
   let assistantMessage = "";
   let needsClarification = false;
@@ -1426,6 +1501,7 @@ export async function applyProceduralDynamicsPlan(options, request = {}) {
     "scenePatch",
     "impact",
     "conversationTurn",
+    "restoreFromMessageId",
   ].includes(key));
   if (extraCandidateKeys.length
     || ![
@@ -1732,6 +1808,7 @@ function projectDynamicsSceneCandidate(state, intent, options = {}) {
       ...(state.context.scene.variantOptionId ? { variantOptionId: state.context.scene.variantOptionId } : {}),
     },
     prompt: motionPlan.prompt,
+    ...(intent.restoreFromMessageId ? { restoreFromMessageId: intent.restoreFromMessageId } : {}),
     subjectEntityIds: [...(motionPlan.subjectEntityIds || [])],
     baseline: dynamicsSceneBaseline(state),
     scenePatch: {
@@ -1859,8 +1936,11 @@ function dynamicsSpatialSceneVisibleSignature(scene) {
 function dynamicsConversationVisibleSignature(candidate) {
   const plan = candidate?.scenePatch?.motionPlan || candidate?.motionPlan || candidate?.plan;
   const hasMotion = plan?.actors?.length || plan?.generatedObjects?.length;
-  return dynamicsSceneCandidateVisibleSignature({
-    scenePatch: { motionPlan: hasMotion ? { ...plan, subjectEntityIds: [] } : null },
+  return dynamicsJsonSignature({
+    motion: dynamicsSceneCandidateVisibleSignature({
+      scenePatch: { motionPlan: hasMotion ? { ...plan, subjectEntityIds: [] } : null },
+    }),
+    seed: hasMotion ? plan.seed : null,
   });
 }
 
@@ -1957,7 +2037,14 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
     state,
     request.subjectEntityIds,
   );
-  const usageSources = [];
+  const sharedStoryMemory = await prepareStoryGenerationMemory(options, {
+    operation: "transition", prompt: request.prompt, boundaryContext: state.boundary,
+    conversation, referenceIds: request.referenceIds,
+  }, {
+    graph: state.graph, runtime: state.runtime, spatialRelations: state.spatialRelations,
+    transitions: state.proceduralTransitions,
+  });
+  const usageSources = [sharedStoryMemory];
   let engine = { provider: "codex-cli" };
   let assistantMessage = "";
   let needsClarification = false;
@@ -1975,7 +2062,7 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
       previousPlan,
       previousCandidate: conversational ? null : previousCandidate,
       conversation,
-      transitionContext: proceduralTransitionGenerationContext(state),
+      transitionContext: { ...proceduralTransitionGenerationContext(state), sharedStoryMemory },
       subjectEntityIds,
       generateJson: async (prompt) => {
         if (options.proceduralTransitionGenerateJson) {
@@ -2000,22 +2087,7 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
       },
     });
   } catch (error) {
-    if (conversational) throw attachGenerativeUsage(error, ...usageSources);
-    usageSources.push(error);
-    const transitionPlan = createFallbackTransitionPlan(state.boundary, request.prompt, previousPlan, {
-      subjectEntityIds,
-      eligibleSubjectEntityIds: state.eligibleSubjectEntityIds,
-    });
-    candidate = normalizeProceduralTransitionCandidate({ transitionPlan }, state.boundary, {
-      prompt: transitionPlan.prompt,
-      previousPlan,
-      subjectEntityIds,
-      eligibleSubjectEntityIds: state.eligibleSubjectEntityIds,
-    });
-    engine = {
-      provider: "deterministic-fallback",
-      reason: String(error?.message || "Codex scene transition generation failed."),
-    };
+    throw attachGenerativeUsage(error, ...usageSources);
   }
   if (conversational) {
     assistantMessage ||= candidate.impact.materiallyChanged
@@ -2117,6 +2189,7 @@ export async function applyProceduralTransitionPlan(options, request = {}) {
     expectedRevision,
     candidate,
     conversation,
+    transitionContext: proceduralTransitionGenerationContext(state),
     eligibleSubjectEntityIds: state.eligibleSubjectEntityIds,
   });
   if (conversationTurn) {
@@ -2263,7 +2336,7 @@ function proceduralTransitionSubjectEntityIdsForRequest(state, value) {
   return subjectEntityIds;
 }
 
-function proceduralTransitionGenerationContext(state) {
+export function proceduralTransitionGenerationContext(state) {
   const summarizeEntity = (entity) => ({
     entityId: String(entity?.id || entity?.entityId || "").trim() || null,
     assetId: String(entity?.assetId || "").trim() || null,
@@ -2287,6 +2360,8 @@ function proceduralTransitionGenerationContext(state) {
     ...(state.fromSpatialScene?.entities || []),
     ...(state.toSpatialScene?.entities || []),
   ].map((entity) => String(entity?.assetId || "").trim()).filter(Boolean));
+  const animationLibrary = new Map(proceduralDynamicsLibraryAssets(state.graph, state.runtime)
+    .map((asset) => [asset.assetId, asset.clips]));
   const availableAssets = (state.runtime?.assets || [])
     .filter((asset) => endpointAssetIds.has(String(asset?.id || "")))
     .map((asset) => ({
@@ -2294,12 +2369,8 @@ function proceduralTransitionGenerationContext(state) {
       kind: spatialVisualAssetKind(asset),
       label: proceduralDynamicsAssetLabel(asset, asset.id),
       role: asset.role || asset.type || null,
-      hasEmbeddedAnimation: Boolean(
-        asset.hasEmbeddedAnimation
-        || asset.animationCount
-        || asset.animations?.length
-        || asset.clips?.length
-      ),
+      clips: animationLibrary.get(asset.id) || [],
+      hasEmbeddedAnimation: Boolean(animationLibrary.get(asset.id)?.length),
     }));
   return {
     boundary: {
@@ -6112,6 +6183,22 @@ async function assertReaderProceduralTransitionsContract(paths, runtime) {
       }],
     });
   }
+  if (Object.values(runtime?.proceduralTransitions?.plansByBoundary || {}).some((plan) => (
+    plan?.middle?.actions?.some((action) => action.animation)
+  )) && !readerMainSource.includes(STORYVR_TRANSITION_EMBEDDED_CLIPS_CONTRACT_VERSION)) {
+    throw Object.assign(new Error(
+      `Reader source ${toPosix(path.relative(REPO_ROOT, readerMainPath))} does not support ${STORYVR_TRANSITION_EMBEDDED_CLIPS_CONTRACT_VERSION}; merge the pending managed Reader template before building embedded transition clips.`,
+    ), {
+      statusCode: 409,
+      diagnostics: [{
+        severity: "error",
+        code: "READER_TRANSITION_EMBEDDED_CLIPS_CONTRACT_MISSING",
+        component: "inter-beat-dynamics",
+        path: toPosix(path.relative(REPO_ROOT, readerMainPath)),
+        message: `Embedded transition clips require the ${STORYVR_TRANSITION_EMBEDDED_CLIPS_CONTRACT_VERSION} Reader playback contract.`,
+      }],
+    });
+  }
 }
 
 function runtimeUsesExpandedProceduralDynamics(runtime) {
@@ -6295,6 +6382,13 @@ export async function buildReaderDist(paths, options = {}) {
       `Reader source ${toPosix(path.relative(repoRoot, readerMainPath))} is missing the ${STORYVR_TRANSITION_PROPERTY_TRACKS_CONTRACT_VERSION} generated property-track playback contract.`,
     );
   }
+  if (Object.values(compiledRuntime?.proceduralTransitions?.plansByBoundary || {}).some((plan) => (
+    plan?.middle?.actions?.some((action) => action.animation)
+  )) && !readerMainSource.includes(STORYVR_TRANSITION_EMBEDDED_CLIPS_CONTRACT_VERSION)) {
+    throw new Error(
+      `Reader source ${toPosix(path.relative(repoRoot, readerMainPath))} is missing the ${STORYVR_TRANSITION_EMBEDDED_CLIPS_CONTRACT_VERSION} embedded transition-clip playback contract.`,
+    );
+  }
   if (runtimeUsesExpandedProceduralDynamics(compiledRuntime)
     && !readerMainSource.includes(STORYVR_PROCEDURAL_DYNAMICS_READER_CONTRACT_MARKER)) {
     throw new Error(
@@ -6453,6 +6547,7 @@ function isKnownLegacyManagedReaderTemplate(target, currentContent, desiredConte
     'import { createGroundMovementCue, normalizeGroundMovementCue } from "./ground-movement-cue.js";',
     'import { clampProceduralDynamicsPlan, expandProceduralDynamicsInstances, proceduralDynamicsPlansForScene, sampleProceduralDynamicsTransform } from "./procedural-dynamics-runtime.js";',
     'import { proceduralTransitionEasedProgress, proceduralTransitionPlanForBoundary } from "./procedural-transitions-runtime.js";',
+    'import { createProceduralTransitionAnimationPlayer } from "./procedural-transition-animation.js";',
     "import {",
     "clampProceduralDynamicsPlan,",
     "expandProceduralDynamicsGeneratedObjects,",
@@ -16763,9 +16858,9 @@ async function resolveReaderRun(paths) {
   const distReady = await exists(path.join(directReaderStoryFolder, "dist-webxr-adaptation", "index.html"));
   const devPort = 5177;
   const instanceBuildScript = path.join(directReaderSource, "tools", "build-story-instance.mjs");
-  const storyIsOutsideRepo = hostingLayout.hostingRoot !== REPO_ROOT;
   const distFolder = path.join(directReaderStoryFolder, "dist-webxr-adaptation");
   const buildBase = `/${distPath}/`;
+  const storyIsOutsideRepo = hostingLayout.hostingRoot !== REPO_ROOT;
   const commands = readerRunCommands({
     repositoryRoot: REPO_ROOT,
     readerDistBuildScript: READER_DIST_BUILD_SCRIPT,
