@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +19,12 @@ import {
   directoryLinkType,
   readerRunCommands,
 } from "./storyvr-author/platform-commands.mjs";
+import {
+  buildCodexEnvironmentGenerationPrompt,
+  buildCodexMatchingGroundPrompt,
+  generateEnvironmentImageWithCodex,
+  generateMatchingGroundTextureWithCodex,
+} from "./storyvr-author/environment/generator.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
 const temporaryParent = path.dirname(repositoryRoot) || os.tmpdir();
@@ -30,6 +36,7 @@ try {
   verifyReaderCommands();
   verifyPythonLauncher();
   if (process.platform === "win32") await verifyWindowsCommandShim();
+  await verifyEnvironmentPromptTransport();
   await verifyStoryBuildPipeline();
   console.log(`StoryVR native runtime verified on ${process.platform}/${process.arch}.`);
 } finally {
@@ -117,6 +124,78 @@ async function verifyWindowsCommandShim() {
   });
   assert.equal(result.status, 0, `${result.stdout || ""}${result.stderr || ""}`.trim());
   assert.match(result.stdout || "", /storyvr-cmd-ok/i);
+}
+
+async function verifyEnvironmentPromptTransport() {
+  const workerRoot = path.join(temporaryRoot, "codex worker");
+  await mkdir(workerRoot, { recursive: true });
+  const workerPath = path.join(workerRoot, "worker.mjs");
+  const capturedPath = path.join(workerRoot, "received.json");
+  const workerSource = [
+    "#!/usr/bin/env node",
+    'import { writeFile } from "node:fs/promises";',
+    "const chunks = [];",
+    "for await (const chunk of process.stdin) chunks.push(chunk);",
+    "const input = Buffer.concat(chunks).toString('utf8');",
+    "await writeFile(new URL('./received.json', import.meta.url), JSON.stringify({",
+    "  args: process.argv.slice(2), cwd: process.cwd(), input,",
+    "}));",
+    'process.stderr.write("storyvr-worker-rejection\\n");',
+    "process.exitCode = 23;",
+  ].join("\n");
+  await writeFile(workerPath, workerSource, "utf8");
+  let codexBin = workerPath;
+  if (process.platform === "win32") {
+    codexBin = path.join(workerRoot, "codex.cmd");
+    await writeFile(codexBin, `@echo off\r\n"${process.execPath}" "%~dp0worker.mjs" %*\r\n`, "utf8");
+  } else {
+    await chmod(workerPath, 0o700);
+  }
+
+  const prompt = 'Retain the ocean: 海洋 🌊 & | < > ^ %PATH% ! "quoted" \\shore\nKeep the horizon.';
+  const conversation = {
+    messages: Array.from({ length: 16 }, (_, index) => ({
+      role: index % 2 ? "assistant" : "user",
+      content: `${index}: ${prompt.repeat(20)}`,
+    })),
+  };
+  const referenceImage = await sharp({
+    create: { width: 2, height: 1, channels: 4, background: "navy" },
+  }).png().toBuffer();
+  const options = {
+    prompt, conversation, codexBin, codexHome: path.join(workerRoot, "home"),
+    temporaryRoot, timeoutMs: 10_000,
+  };
+
+  for (const ground of [false, true]) {
+    // Deliberately reject after reading stdin: no AI service or image artifact
+    // is needed to check both real subprocess paths and their error reporting.
+    await assert.rejects(
+      ground
+        ? generateMatchingGroundTextureWithCodex({ ...options, referenceImage })
+        : generateEnvironmentImageWithCodex(options),
+      /storyvr-worker-rejection/,
+    );
+    const received = JSON.parse(await readFile(capturedPath, "utf8"));
+    const expected = ground
+      ? buildCodexMatchingGroundPrompt(prompt, path.join(received.cwd, "panorama-reference.png"), { conversation })
+      : buildCodexEnvironmentGenerationPrompt(prompt, [], { conversation });
+    assert.ok(expected.length > 8191, "Exercise the Windows command-line limit.");
+    assert.equal(received.input, expected, "Preserve the complete UTF-8 prompt on stdin.");
+    assert.equal(received.args.at(-1), "-");
+    assert.ok(received.args.join(" ").length < 2048, "Keep conversation text out of command arguments.");
+  }
+
+  // A CLI can reject its flags before it consumes stdin. Preserve that failure
+  // even when the pipe closes while the long prompt is still being written.
+  await writeFile(workerPath, [
+    "#!/usr/bin/env node",
+    'process.stderr.write("storyvr-worker-early-exit\\n", () => process.exit(23));',
+  ].join("\n"), "utf8");
+  await assert.rejects(generateEnvironmentImageWithCodex({
+    ...options,
+    conversation: { messages: Array.from({ length: 128 }, () => ({ role: "assistant", content: prompt.repeat(40) })) },
+  }), /storyvr-worker-early-exit/);
 }
 
 async function verifyStoryBuildPipeline() {

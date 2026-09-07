@@ -138,15 +138,16 @@ export async function generateEnvironmentImageWithCodex({
       "--json",
       "--output-last-message",
       outputMessagePath,
-      buildCodexEnvironmentGenerationPrompt(sceneDescription, referenceImagePaths, {
-        conversation, previousEnvironment, previousPanoramaPath, previousGroundPath,
-      }),
+      "-",
     ];
     const execution = await commandRunner(codexBin, args, {
       cwd: workspace,
       env: codexImageGenerationEnvironment(resolvedCodexHome),
       timeoutMs,
       maxOutputBytes: MAX_COMMAND_OUTPUT_BYTES,
+      input: buildCodexEnvironmentGenerationPrompt(sceneDescription, referenceImagePaths, {
+        conversation, previousEnvironment, previousPanoramaPath, previousGroundPath,
+      }),
     });
     usageSource = generativeUsageFromCodexJsonl(execution?.stdout, {
       operation: "environment-panorama",
@@ -339,13 +340,14 @@ export async function generateMatchingGroundTextureWithCodex({
       "--json",
       "--output-last-message",
       outputMessagePath,
-      buildCodexMatchingGroundPrompt(sceneDescription, referencePath, { conversation, previousEnvironment }),
+      "-",
     ];
     const execution = await commandRunner(codexBin, args, {
       cwd: workspace,
       env: codexImageGenerationEnvironment(resolvedCodexHome),
       timeoutMs,
       maxOutputBytes: MAX_COMMAND_OUTPUT_BYTES,
+      input: buildCodexMatchingGroundPrompt(sceneDescription, referencePath, { conversation, previousEnvironment }),
     });
     usageSource = generativeUsageFromCodexJsonl(execution?.stdout, {
       operation: "environment-ground",
@@ -979,13 +981,15 @@ function runSpawnedCommand(command, args, {
   env,
   timeoutMs,
   maxOutputBytes,
+  input = null,
 } = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd,
       env,
       shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
+      // Conversation prompts can exceed the Windows .cmd command-line limit.
+      stdio: [input == null ? "ignore" : "pipe", "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";
@@ -995,6 +999,7 @@ function runSpawnedCommand(command, args, {
     let settled = false;
     let forceKillTimer = null;
     let timeout = null;
+    let inputError = null;
 
     const append = (current, chunk, currentBytes) => {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -1028,10 +1033,18 @@ function runSpawnedCommand(command, args, {
       error: error.message,
     }));
     child.once("close", (code, signal) => finish({
-      ok: code === 0 && !timedOut,
+      ok: code === 0 && !timedOut && !inputError,
       code,
       signal,
+      ...(inputError ? { error: inputError } : {}),
     }));
+
+    if (child.stdin) {
+      // A rejected CLI invocation may close stdin before the prompt is written.
+      // Keep collecting its exit status and stderr instead of crashing on EPIPE.
+      child.stdin.on("error", (error) => { inputError = error.message; });
+      child.stdin.end(input, "utf8");
+    }
 
     timeout = setTimeout(() => {
       timedOut = true;
