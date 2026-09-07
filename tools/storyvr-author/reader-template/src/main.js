@@ -25,6 +25,7 @@ import {
   proceduralTransitionPlanForBoundary,
   proceduralTransitionTrackSample,
 } from "./procedural-transitions-runtime.js";
+import { createProceduralTransitionAnimationPlayer } from "./procedural-transition-animation.js";
 import {
   augmentGltfLoaderWithStoryVrPointClouds,
   updateStoryVrPointCloudEffects,
@@ -7320,7 +7321,7 @@ function updateProceduralDynamics(delta) {
         entry.originalMaterialState?.[materialIndex],
       );
     }
-    entry.mixer?.update(delta);
+    if (!runtimeTransitionOwnsEmbeddedAnimation(entry.model)) entry.mixer?.update(delta);
   }
 }
 
@@ -7550,12 +7551,16 @@ function activeRuntimeAutoInterpolationEntries() {
       asset: activeModelAsset,
       entity: activeModelSpatialEntity,
       root: modelAuthorTransformRoot,
+      model: activeModel,
+      animations: activeModelAnimations,
     }] : []),
     ...activeSupplementalModelEntries.map((entry) => ({
       kind: "model",
       asset: entry.asset,
       entity: entry.entity,
       root: entry.authorTransformRoot,
+      model: entry.model,
+      animations: entry.animations || [],
     })),
     ...activeSpatialImageEntries.map((entry) => ({
       kind: "image",
@@ -7619,10 +7624,25 @@ function cloneRuntimeAutoInterpolationEntry(entry) {
   }
   return {
     ...entry,
+    model: runtimeTransitionSnapshotModel(entry, snapshotRoot),
     snapshotRoot,
     ownedMaterials,
     ownedGeometries,
   };
+}
+
+function runtimeTransitionSnapshotModel(entry, snapshotRoot) {
+  if (!entry.model || !entry.root) return null;
+  const childIndexes = [];
+  let node = entry.model;
+  while (node !== entry.root) {
+    if (!node.parent) return null;
+    const childIndex = node.parent.children.indexOf(node);
+    if (childIndex < 0) return null;
+    childIndexes.unshift(childIndex);
+    node = node.parent;
+  }
+  return childIndexes.reduce((parent, index) => parent?.children?.[index], snapshotRoot) || null;
 }
 
 function runtimeAutoInterpolationSourceInstanceId(entry) {
@@ -7817,6 +7837,7 @@ function beginRuntimeAutoInterpolation(fromIndex, toIndex, route, options, loadR
     unmatchedIncoming: [],
     generatedTransitionPlan: selectedEligibility.transitionPlan || null,
     transitionMiddleEntries: new Map(),
+    transitionAnimationPlayers: new Map(),
     startedAtMs: null,
     durationMs: (Number(selectedEligibility.transitionPlan?.durationSeconds) || AUTO_INTERPOLATION_SECONDS) * 1000,
   };
@@ -8112,6 +8133,50 @@ function applyRuntimeTransitionTracks(state, action) {
   }
 }
 
+function runtimeTransitionOwnsEmbeddedAnimation(model) {
+  return Boolean(model && activeRuntimeAutoInterpolation?.transitionAnimationPlayers?.has(model));
+}
+
+function disposeRuntimeTransitionAnimations(state) {
+  for (const entry of state?.transitionAnimationPlayers?.values?.() || []) entry.player.dispose();
+  state?.transitionAnimationPlayers?.clear?.();
+}
+
+function applyRuntimeTransitionAnimations(state, sample) {
+  // storyvr-transition-embedded-clips/v1
+  const requested = new Map();
+  for (const action of sample.actions) {
+    if (!action.animation) continue;
+    for (const target of runtimeTransitionMiddleTargets(state, action)) {
+      const model = target.entry?.model;
+      const animations = target.entry?.animations;
+      if (!model || !animations?.length) continue;
+      requested.set(model, { target, action, animations });
+    }
+  }
+  state.transitionAnimationPlayers ||= new Map();
+  for (const [model, entry] of state.transitionAnimationPlayers) {
+    if (requested.has(model)) continue;
+    entry.player.dispose();
+    state.transitionAnimationPlayers.delete(model);
+  }
+  for (const [model, { target, action, animations }] of requested) {
+    let entry = state.transitionAnimationPlayers.get(model);
+    if (!entry) {
+      entry = { player: createProceduralTransitionAnimationPlayer({ THREE, root: model, animations }) };
+      state.transitionAnimationPlayers.set(model, entry);
+    }
+    const elapsed = action.localProgress * (action.endProgress - action.startProgress)
+      * state.generatedTransitionPlan.durationSeconds;
+    if (!entry.player.sample(action.animation, elapsed)) {
+      entry.player.dispose();
+      state.transitionAnimationPlayers.delete(model);
+      continue;
+    }
+    if (target.role === "to") setRuntimeAutoInterpolationOpacity(target.root, 1);
+  }
+}
+
 function updateRuntimeTransitionMiddle(state, progress) {
   const plan = state?.generatedTransitionPlan;
   if (!plan) return false;
@@ -8119,16 +8184,19 @@ function updateRuntimeTransitionMiddle(state, progress) {
   const activeIds = new Set(sample.actions.map((action) => action.id));
   for (const entry of state.transitionMiddleEntries.values()) entry.root.visible = activeIds.has(entry.actionId);
   if (sample.endpoint) {
+    disposeRuntimeTransitionAnimations(state);
     restoreRuntimeTransitionMiddleTargets(state);
     if (sample.endpoint === "to") disposeRuntimeTransitionMiddle(state);
     return false;
   }
   restoreRuntimeTransitionMiddleTargets(state);
+  applyRuntimeTransitionAnimations(state, sample);
   for (const action of sample.actions) {
     if (action.tracks?.length) {
       applyRuntimeTransitionTracks(state, action);
       continue;
     }
+    if (action.animation) continue;
     const local = proceduralTransitionEasedProgress(action.easing || "linear", action.localProgress);
     const envelope = Math.sin(Math.PI * Math.max(0, Math.min(1, local)));
     const kind = String(action.kind || "").toLowerCase();
@@ -8220,6 +8288,7 @@ function updateRuntimeTransitionMiddle(state, progress) {
 }
 
 function disposeRuntimeTransitionMiddle(state) {
+  disposeRuntimeTransitionAnimations(state);
   restoreRuntimeTransitionMiddleTargets(state);
   for (const entry of state?.transitionMiddleEntries?.values?.() || []) {
     entry.root?.removeFromParent?.();
@@ -11976,7 +12045,7 @@ function createLegacySourceAnimationPlayback(root, clips, asset, beat, transitio
 function updateSupplementalSourceAnimations(delta, frameTime = performance.now()) {
   for (const entry of activeSupplementalModelEntries) {
     const playback = entry.playback;
-    if (!playback) continue;
+    if (!playback || runtimeTransitionOwnsEmbeddedAnimation(entry.model)) continue;
     if (playback.sharedTimeline) {
       playback.clockSeconds = (Number(playback.clockSeconds) || 0) + delta;
       if (playback.mode !== "segment") applySharedTimelineClockBindings(playback, playback.currentProgress ?? 0);
@@ -12002,7 +12071,7 @@ function updateSupplementalSourceAnimations(delta, frameTime = performance.now()
 
 function updateSourceAnimation(delta, frameTime = performance.now()) {
   updateSupplementalSourceAnimations(delta, frameTime);
-  if (!activeSourceAnimation) return;
+  if (!activeSourceAnimation || runtimeTransitionOwnsEmbeddedAnimation(activeModel)) return;
   if (activeSourceAnimation.sharedTimeline) {
     activeSourceAnimation.clockSeconds = (Number(activeSourceAnimation.clockSeconds) || 0) + delta;
     if (activeSourceAnimation.mode !== "segment") {

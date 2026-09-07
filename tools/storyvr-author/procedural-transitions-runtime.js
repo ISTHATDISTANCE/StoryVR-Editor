@@ -83,7 +83,7 @@ export function normalizeProceduralTransitionPlan(value, boundaryContext = null)
   const arcHeightMeters = style === "interpolate"
     ? nonNegativeFiniteNumber(source.arcHeightMeters, 0)
     : 0;
-  const prompt = requiredSafeText(source.prompt, 2000, "The procedural transition plan requires its author prompt.");
+  const prompt = requiredText(source.prompt, 2000, "The procedural transition plan requires its author prompt.");
   const subjectEntityIds = normalizeProceduralTransitionSubjectEntityIds(source.subjectEntityIds);
   const summary = safeGeneratedText(
     source.summary,
@@ -94,8 +94,8 @@ export function normalizeProceduralTransitionPlan(value, boundaryContext = null)
   const middle = normalizeProceduralTransitionMiddle(
     source.middle || source.middleSequence || source.transientMiddle,
   );
-  if (style === "generated" && !middle.actions.some((action) => action.tracks?.length)) {
-    throw transitionContractError("A generated procedural transition requires explicit property tracks.");
+  if (style === "generated" && !middle.actions.some((action) => action.tracks?.length || action.animation)) {
+    throw transitionContractError("A generated procedural transition requires explicit property tracks or an embedded animation action.");
   }
   assertSelectedTransitionSubjectScope(subjectEntityIds, middle);
 
@@ -186,7 +186,7 @@ export function proceduralTransitionMiddleSample(planOrMiddle, progress) {
   }
   const actions = middle.actions.flatMap((action) => {
     if (normalizedProgress < action.startProgress
-      || (normalizedProgress > action.endProgress && !action.tracks?.length)) return [];
+      || (normalizedProgress > action.endProgress && !action.tracks?.length && !action.animation)) return [];
     const span = action.endProgress - action.startProgress;
     const localProgress = span > 0
       ? clampUnitInterval((normalizedProgress - action.startProgress) / span)
@@ -204,6 +204,38 @@ export function proceduralTransitionMiddleSample(planOrMiddle, progress) {
 export function proceduralTransitionHasTracks(plan) {
   const actions = plan?.middle?.actions;
   return Array.isArray(actions) && actions.some((action) => Array.isArray(action?.tracks) && action.tracks.length > 0);
+}
+
+export function normalizeProceduralTransitionAnimation(value) {
+  if (value === undefined || value === null) return null;
+  const source = objectValue(value);
+  if (!source || Object.keys(source).some((key) => ![
+    "clipIndex", "clipName", "loopMode", "playbackRate", "startTimeSeconds",
+  ].includes(key))) {
+    throw transitionContractError("A transition animation must contain only clipIndex, clipName, loopMode, playbackRate, and startTimeSeconds.");
+  }
+  if (!Number.isInteger(source.clipIndex) || source.clipIndex < 0) {
+    throw transitionContractError("A transition animation requires an available non-negative integer clipIndex.");
+  }
+  const loopMode = source.loopMode ?? "repeat";
+  if (!["once", "repeat", "ping-pong"].includes(loopMode)) {
+    throw transitionContractError("A transition animation loopMode must be once, repeat, or ping-pong.");
+  }
+  const playbackRate = source.playbackRate ?? 1;
+  const startTimeSeconds = source.startTimeSeconds ?? 0;
+  if (typeof playbackRate !== "number" || !Number.isFinite(playbackRate) || playbackRate <= 0
+    || typeof startTimeSeconds !== "number" || !Number.isFinite(startTimeSeconds) || startTimeSeconds < 0) {
+    throw transitionContractError("A transition animation requires a positive finite playbackRate and a non-negative finite startTimeSeconds.");
+  }
+  const clipName = source.clipName === undefined || source.clipName === null
+    ? null : requiredSafeText(source.clipName, 240, "A transition animation clipName must identify the supplied clip.");
+  return {
+    clipIndex: source.clipIndex,
+    ...(clipName !== null ? { clipName } : {}),
+    loopMode,
+    playbackRate,
+    startTimeSeconds,
+  };
 }
 
 export function normalizeProceduralTransitionTracks(value) {
@@ -487,8 +519,12 @@ function normalizeTransientMiddleAction(value, index) {
     `middle action ${index + 1} parameters`,
   );
   const tracks = source.tracks === undefined ? null : normalizeProceduralTransitionTracks(source.tracks);
-  if (tracks?.length && (!objectValue(target) || !["from", "to", "both"].includes(target.scope))) {
+  const animation = normalizeProceduralTransitionAnimation(source.animation);
+  if ((tracks?.length || animation) && (!objectValue(target) || !["from", "to", "both"].includes(target.scope))) {
     throw transitionContractError("A procedural transition track action requires an explicit from, to, or both target scope.");
+  }
+  if (animation && (typeof target.entityId !== "string" || !target.entityId.trim())) {
+    throw transitionContractError("A transition animation action requires an exact endpoint entityId.");
   }
   return {
     id,
@@ -499,6 +535,7 @@ function normalizeTransientMiddleAction(value, index) {
     target,
     parameters,
     ...(tracks ? { tracks } : {}),
+    ...(animation ? { animation } : {}),
     cleanup: "restore-endpoint",
   };
 }
@@ -545,6 +582,7 @@ function transientActionParameters(source) {
     "payload",
     "cleanup",
     "tracks",
+    "animation",
   ].includes(key)));
 }
 
@@ -633,9 +671,14 @@ function normalizedOptionalIdentity(value) {
   return normalizedIdentity(value) || null;
 }
 
-function requiredSafeText(value, maximumLength, errorMessage) {
+function requiredText(value, maximumLength, errorMessage) {
   const text = cleanText(value, maximumLength);
   if (!text) throw transitionContractError(errorMessage);
+  return text;
+}
+
+function requiredSafeText(value, maximumLength, errorMessage) {
+  const text = requiredText(value, maximumLength, errorMessage);
   if (UNSAFE_TEXT_PATTERN.test(text)) {
     throw transitionContractError("Procedural transition text cannot contain code, URLs, or executable content.");
   }

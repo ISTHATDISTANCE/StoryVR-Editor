@@ -257,7 +257,9 @@ and matching ground while preserving prior visual intent and tuning. Successful
 image updates save with the exchange atomically; clarification-only and
 unchanged replies keep the current setting and Reader build valid. Clearing a
 scene's conversation keeps its installed images, and author-only conversation
-metadata is excluded from the compiled Reader and build signatures.
+metadata is excluded from the compiled Reader and build signatures. Failed image
+generation keeps the previous setting and records bounded, sanitized diagnostics
+under the story's `analysis/storyvr/generation-diagnostics/` folder.
 
 Object movement exposes the complete saved Reader, GLB, and image roster plus
 runtime-generated objects. Codex can animate exact-scene GLBs and image planes
@@ -267,7 +269,10 @@ plan, so follow-ups such as “make it slower” can refine, add, remove, or sto
 behavior without restating the original request. Successful turns and plan
 updates save atomically; clarification-only or no-change replies can be kept
 without invalidating the Reader build, while failures leave the prior result
-intact. Select saved GLBs or image planes in the scene to make them the exact
+intact. Codex interprets the complete request and conversation instead of local
+keyword rules. An exact restoration can reuse an accepted assistant plan snapshot
+while preserving its seed, timing, and manual generated-object offsets. Select
+saved GLBs or image planes in the scene to make them the exact
 subjects for the next message; unselected animation remains unchanged. With no
 selection, Codex derives subjects from the request and saved scene, and Reader
 is never selected automatically. Plans validate each track against its target,
@@ -294,11 +299,22 @@ latest saved transition while preserving effects outside the current selection.
 Validated messages save the route-scoped plan and conversation atomically, and
 clarifications can be retained without invalidating an unchanged Reader build.
 New transition actions use explicit property keyframes for visibility,
-saved-relative transforms, material color, and emissive effects; the Author and
-Reader share the same sampler while preserving the exact saved endpoints.
+saved-relative transforms, material color, and emissive effects, and can bind a
+verified embedded GLB clip to an exact endpoint object. The Author and Reader
+share the same progress-driven sampler while preserving the exact saved endpoints,
+including during pause and backwards scrubbing. Provider failures remain errors
+instead of becoming keyword-derived fallback transitions.
 Clearing a connection removes its generated transition and conversation as one
 Undoable change. Conversation text remains author-only and is excluded from the
 compiled Reader.
+
+Set the scene, Object movement, and Scene changes share a derived story-memory
+index built from the latest saved scenes, choices, exact object identities,
+available clips, settings, and accepted plans. This lets an author refer to prior
+work naturally—for example, to reuse another scene's background or movement—while
+keeping the referenced source unchanged and rebinding the result to the current
+scene. The derived `analysis/storyvr/shared-memory.json` file is excluded from
+Reader builds and authoring-history signatures.
 
 Guide attention runs after Scene changes so focus markers are inferred from the
 saved scene composition and movement state. It can target a visible GLB, named

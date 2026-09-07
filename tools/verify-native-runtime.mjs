@@ -159,11 +159,23 @@ async function verifyEnvironmentPromptTransport() {
       content: `${index}: ${prompt.repeat(20)}`,
     })),
   };
+  const storyMemory = {
+    schemaVersion: "storyvr-shared-story-memory/v1",
+    story: { id: "portable-smoke", title: "Portable smoke" },
+    scenes: [],
+    assets: [],
+    catalog: [],
+    references: [],
+    pendingConversations: [],
+    currentContext: {},
+    retrievalRequired: false,
+    fingerprint: "portable-smoke",
+  };
   const referenceImage = await sharp({
     create: { width: 2, height: 1, channels: 4, background: "navy" },
   }).png().toBuffer();
   const options = {
-    prompt, conversation, codexBin, codexHome: path.join(workerRoot, "home"),
+    prompt, conversation, storyMemory, codexBin, codexHome: path.join(workerRoot, "home"),
     temporaryRoot, timeoutMs: 10_000,
   };
 
@@ -178,10 +190,13 @@ async function verifyEnvironmentPromptTransport() {
     );
     const received = JSON.parse(await readFile(capturedPath, "utf8"));
     const expected = ground
-      ? buildCodexMatchingGroundPrompt(prompt, path.join(received.cwd, "panorama-reference.png"), { conversation })
-      : buildCodexEnvironmentGenerationPrompt(prompt, [], { conversation });
+      ? buildCodexMatchingGroundPrompt(prompt, path.join(received.cwd, "panorama-reference.png"), {
+        conversation, storyMemory,
+      })
+      : buildCodexEnvironmentGenerationPrompt(prompt, [], { conversation, storyMemory });
     assert.ok(expected.length > 8191, "Exercise the Windows command-line limit.");
     assert.equal(received.input, expected, "Preserve the complete UTF-8 prompt on stdin.");
+    assert.match(received.input, /Shared story memory JSON:/, "Preserve shared story memory on stdin.");
     assert.equal(received.args.at(-1), "-");
     assert.ok(received.args.join(" ").length < 2048, "Keep conversation text out of command arguments.");
   }
