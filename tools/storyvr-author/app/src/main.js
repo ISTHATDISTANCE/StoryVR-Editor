@@ -9,6 +9,12 @@ import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import { VRButton } from "three/examples/jsm/webxr/VRButton.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { clone as cloneSkinnedObject } from "three/examples/jsm/utils/SkeletonUtils.js";
+import {
+  createDirectDestinationVisual,
+  updateDirectDestinationVisual,
+  directDestinationVisualBounds,
+  disposeDirectDestinationVisual,
+} from "./interaction-destination-visuals.js";
 import { cumulativePreviewLayerIds, cumulativePreviewLayerMap } from "./cumulative-preview-layers.js";
 import {
   variantAssetIdsForBeat,
@@ -86,7 +92,7 @@ import {
   proceduralTransitionPlanForBoundary,
   proceduralTransitionTrackSample,
 } from "../../procedural-transitions-runtime.js";
-import { createProceduralTransitionAnimationPlayer } from "../../procedural-transition-animation.js";
+import { createProceduralTransitionAnimationPlayer, blendProceduralTransitionHandoffTransform, applyProceduralTransitionPathOrientation } from "../../procedural-transition-animation.js";
 import {
   augmentGltfLoaderWithStoryVrPointClouds,
   updateStoryVrPointCloudEffects,
@@ -521,6 +527,7 @@ const state = {
   selectedInterBeatTransitionIndex: 0,
   selectedInterBeatBeatIndex: 0,
   interBeatPreviewPlaying: true,
+  interBeatDynamicsStartSeconds: 0,
   interBeatPreviewSpeed: 1,
   interBeatPreviewRestartToken: 0,
   interBeatViewerCameraState: null,
@@ -625,6 +632,7 @@ const state = {
   interactionManipulationOffset: { x: 0, y: 0, z: 0 },
   interactionSelectedDirectTargetKey: null,
   interactionDestinationTransformMode: "translate",
+  interactionDestinationLockRatio: true,
   interactionInBeatInteractions: [],
   interactionInBeatInteractionsInitialized: false,
   interactionSelectedInBeatTargetKey: null,
@@ -8461,6 +8469,10 @@ function renderInterBeatPreview(proposal, sceneContext = activeInterBeatSceneCon
             ${[0.5, 1, 1.5, 2].map((speed) => `<option value="${speed}" ${Number(state.interBeatPreviewSpeed) === speed ? "selected" : ""}>${speed}x</option>`).join("")}
           </select>
         </label>
+        ${proceduralDynamicsStoredPlan(context.fromSceneContext) ? `<label>
+          Start dynamics at (seconds)
+          <input data-inter-beat-dynamics-start type="number" min="0" step="0.5" value="${Number(state.interBeatDynamicsStartSeconds) || 0}" />
+        </label>` : ""}
       </div>
       <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell dynamic-viewer-shell inter-beat-viewer-shell storyvr-spatial-viewer" data-inter-beat-viewer="${escapeHtml(proposal.optionId)}" tabindex="0" role="application" aria-label="Interactive 3D scene-change preview">
         <div class="topology-viewer-status">Loading scene-change preview...</div>
@@ -11916,7 +11928,7 @@ function renderInteractionTransformInputs(transform, prefix, options = {}) {
 function renderInteractionSpatialScene(editorContext, heading, hint) {
   const selectedTarget = editorContext.kind === "direct"
     ? editorContext.configuration.targets.find((target) => interactionDirectTargetKey(target) === state.interactionSelectedDirectTargetKey)
-      || editorContext.configuration.targets[0]
+      || (!state.interactionSelectedDirectTargetKey ? editorContext.configuration.targets[0] : null)
       || null
     : null;
   const allowedModes = editorContext.kind !== "direct"
@@ -11934,8 +11946,10 @@ function renderInteractionSpatialScene(editorContext, heading, hint) {
       <div class="visual-card-head storyvr-spatial-surface-head"><div><h3>${escapeHtml(heading)}</h3><p class="muted">Previous scene · ${escapeHtml(editorContext.fromLabel)}</p></div><span>${interactionDirectSceneTargets(editorContext.sceneContext).length} interactive object${interactionDirectSceneTargets(editorContext.sceneContext).length === 1 ? "" : "s"}</span></div>
       <div class="interaction-editor-toolbar interaction-transform-toolbar storyvr-spatial-toolbar" role="toolbar" aria-label="Destination transform tool">
         ${[["translate", "Move"], ["rotate", "Rotate"], ["scale", "Scale"]].map(([mode, label]) => `<button type="button" data-interaction-destination-transform-mode="${mode}" class="${state.interactionDestinationTransformMode === mode ? "selected" : ""}" aria-pressed="${state.interactionDestinationTransformMode === mode}" ${allowedModes.includes(mode) ? "" : "disabled"}>${label}</button>`).join("")}
+        ${editorContext.kind === "direct" ? `<button type="button" class="interaction-frame-target" data-interaction-frame-direct-target ${selectedTarget ? "" : "disabled"}>Frame original + target</button>` : ""}
       </div>
       <div class="topology-viewer-shell text-viewer-shell spatial-viewer-shell interaction-viewer-shell storyvr-spatial-viewer" data-interaction-viewer="${escapeHtml(editorContext.targetId)}" tabindex="0" role="application" aria-label="${escapeHtml(heading)}"><div class="topology-viewer-status">Loading previous story-part scene...</div></div>
+      ${editorContext.kind === "direct" ? `<div class="interaction-direct-legend" aria-label="Object goal preview legend"><span><i class="original" aria-hidden="true"></i>Original</span><span><i class="target" aria-hidden="true"></i>Target</span><span><i class="range" aria-hidden="true"></i>Movement range</span><span><i class="tolerance" aria-hidden="true"></i>Position tolerance</span></div>` : ""}
       <p class="topology-viewer-hint storyvr-spatial-footer">${escapeHtml(hint)} Use WASD after focusing the scene.</p>
     </section>`;
 }
@@ -11969,6 +11983,37 @@ function renderInteractionLocomotionEditor(editorContext) {
     </div>`;
 }
 
+function interactionDirectObjectLabel(target) {
+  const readableName = (value) => String(value || "")
+    .replace(/\.(?:glb|gltf|obj|fbx|png|jpe?g|webp)$/i, "")
+    .replace(/^[a-f0-9]{8,64}[-_\s]+/i, "")
+    .replace(/[-_\s]+[a-f0-9]{8,64}$/i, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const label = readableName(target?.label || target?.assetId) || "Object";
+  const part = readableName(String(target?.nodePath || "").split("/").filter(Boolean).at(-1));
+  return part && part.toLowerCase() !== label.toLowerCase() ? `${label} · ${part}` : label;
+}
+
+function interactionDirectDestinationFeedback(target) {
+  if (!target) return { status: "unconfigured", message: "Choose an object to set its target." };
+  const rangeMessage = interactionDirectDestinationRangeMessage(target);
+  if (rangeMessage) return { status: "outside-range", message: rangeMessage };
+  if (target.destinationAuthored === false) {
+    return { status: "unconfigured", message: "Move, rotate, or resize the ghost model to set the goal." };
+  }
+  return { status: "ready", message: "Target is reachable with this object's allowed actions." };
+}
+
+function updateInteractionDirectDestinationFeedback(target) {
+  const feedback = interactionDirectDestinationFeedback(target);
+  for (const element of document.querySelectorAll("[data-interaction-direct-feedback]")) {
+    element.dataset.status = feedback.status;
+    element.textContent = feedback.message;
+  }
+}
+
 function renderInteractionDirectEditor(editorContext) {
   const configuration = editorContext.configuration;
   const available = interactionDirectSceneTargets(editorContext.sceneContext);
@@ -11981,12 +12026,14 @@ function renderInteractionDirectEditor(editorContext) {
   const selectedTarget = configuration.targets.find((target) => interactionDirectTargetKey(target) === selectedKey) || null;
   const suggestions = interactionMappedTransformSuggestions(editorContext).filter((suggestion) => !configuration.targets.some((target) => interactionDirectTargetKey(target) === interactionDirectTargetKey(suggestion)));
   const activeTriggerComponents = new Set(configuration.targets.flatMap((target) => interactionDirectTriggerComponents(target)));
+  const feedback = interactionDirectDestinationFeedback(selectedTarget);
+  const completionTiming = configuration.completionTiming || { mode: "immediate", holdSeconds: 0.5 };
   return `
     <div class="interaction-option-editor direct" data-interaction-option-editor="direct-manipulation">
       <div class="interaction-editor-toolbar"><div><strong>Object goal</strong><span>The story continues when every selected object reaches its destination.</span></div><span class="interaction-default-pill">${configuration.targets.length} object${configuration.targets.length === 1 ? "" : "s"} required</span></div>
       ${suggestions.length ? `<div class="source-graph-status interaction-transform-suggestion"><span>${suggestions.length} placement-only destination${suggestions.length === 1 ? " is" : "s are"} available from the mapped scene change.</span><button type="button" data-interaction-apply-transform-suggestions>Use suggestions</button></div>` : ""}
       <div class="interaction-option-editor-grid">
-        ${renderInteractionSpatialScene(editorContext, "Object destination", "Select an object, then move its translucent destination shape.")}
+        ${renderInteractionSpatialScene(editorContext, "Object target", "Drag the gizmo to move, rotate, or resize the ghost model. It shows the target transform, and the destination numbers update as you drag.")}
         <aside class="interaction-config-card">
           <h3>Choose objects</h3>
           <div class="interaction-direct-target-list">
@@ -11995,43 +12042,53 @@ function renderInteractionDirectEditor(editorContext) {
               const configuredTarget = configuration.targets.find((entry) => interactionDirectTargetKey(entry) === targetKey) || null;
               const included = Boolean(configuredTarget);
               const outsideRange = configuredTarget ? !interactionDirectDestinationIsReachable(configuredTarget) : false;
-              const label = target.nodePath ? `${target.label} · ${target.nodePath}` : target.label;
+              const label = interactionDirectObjectLabel(target);
               const capability = [
                 target.oneHandGrabbable ? "grab" : "",
                 target.elasticDragging ? "elastic" : "",
                 target.twoHandScalable ? "scale" : "",
               ].filter(Boolean).join(" + ");
               const triggerSummary = configuredTarget
-                ? ` · checks ${interactionDirectTriggerComponents(configuredTarget).join(" + ")}`
+                ? ` · matches ${interactionDirectTriggerComponents(configuredTarget).join(" + ")}`
                 : "";
-              return `<label class="${targetKey === selectedKey ? "selected" : ""} ${outsideRange ? "outside-range" : ""}"><input type="checkbox" data-interaction-direct-target="${escapeHtml(targetKey)}" data-interaction-direct-entity-id="${escapeHtml(target.entityId)}" ${target.nodePath ? `data-interaction-direct-node-path="${escapeHtml(target.nodePath)}"` : ""} ${target.nodeIndex != null ? `data-interaction-direct-node-index="${target.nodeIndex}"` : ""} ${included ? "checked" : ""}/><button type="button" data-interaction-select-direct-target="${escapeHtml(targetKey)}"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(`${target.assetId} · ${capability}${triggerSummary}${outsideRange ? " · outside range" : ""}`)}</small></button></label>`;
+              return `<label class="${targetKey === selectedKey ? "selected" : ""} ${outsideRange ? "outside-range" : ""}"><input type="checkbox" data-interaction-direct-target="${escapeHtml(targetKey)}" data-interaction-direct-entity-id="${escapeHtml(target.entityId)}" ${target.nodePath ? `data-interaction-direct-node-path="${escapeHtml(target.nodePath)}"` : ""} ${target.nodeIndex != null ? `data-interaction-direct-node-index="${target.nodeIndex}"` : ""} ${included ? "checked" : ""}/><button type="button" data-interaction-select-direct-target="${escapeHtml(targetKey)}" title="${escapeHtml(target.nodePath || target.assetId)}"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(`${capability}${triggerSummary}${outsideRange ? " · outside range" : ""}`)}</small></button></label>`;
             }).join("") || `<p class="muted">This source scene has no objects with reader actions. Return to its story-part card and add one before using Move an object.</p>`}
           </div>
           ${selectedTarget ? `
             <fieldset class="interaction-direct-trigger-components">
-              <legend>What must match</legend>
-              <p>Choose what readers must change to reach the destination.</p>
+              <legend>Reader's goal</legend>
+              <p>Choose the actions needed to match the target.</p>
               <div>
                 ${[
-                  ["position", "Position", selectedTarget.oneHandGrabbable],
-                  ["rotation", "Rotation", selectedTarget.oneHandGrabbable],
-                  ["scale", "Scale", selectedTarget.twoHandScalable],
+                  ["position", "Move to position", selectedTarget.oneHandGrabbable],
+                  ["rotation", "Rotate to orientation", selectedTarget.oneHandGrabbable],
+                  ["scale", "Resize", selectedTarget.twoHandScalable],
                 ].map(([component, label, available]) => `<label class="${available ? "" : "disabled"}"><input type="checkbox" data-interaction-direct-trigger-component="${component}" ${interactionDirectUsesTriggerComponent(selectedTarget, component) ? "checked" : ""} ${available ? "" : "disabled"}/> ${label}</label>`).join("")}
+                <label class="${interactionDirectUsesTriggerComponent(selectedTarget, "scale") ? "" : "disabled"}" title="Keep the target's current proportions when resizing with the gizmo or numeric fields"><input type="checkbox" data-interaction-direct-lock-ratio ${state.interactionDestinationLockRatio !== false ? "checked" : ""} ${interactionDirectUsesTriggerComponent(selectedTarget, "scale") ? "" : "disabled"}/> Lock ratio</label>
               </div>
             </fieldset>
-            <h3>Destination</h3>
-            ${selectedTarget.destinationAuthored === false ? `<p class="blocked-note compact">Adjust an enabled trigger component or apply a mapped suggestion to author this destination.</p>` : ""}
-            ${interactionDirectDestinationRangeMessage(selectedTarget) ? `<p class="blocked-note compact interaction-direct-range-warning" role="status">${escapeHtml(interactionDirectDestinationRangeMessage(selectedTarget))}</p>` : ""}
+            <div class="interaction-direct-target-heading"><h3>Target transform</h3><button type="button" data-interaction-reset-direct-target title="Return the target to this object's original transform">Reset target</button></div>
+            <p class="interaction-direct-feedback" data-interaction-direct-feedback data-status="${feedback.status}" role="status" aria-live="polite">${escapeHtml(feedback.message)}</p>
             <div class="interaction-transform-grid" data-interaction-direct-transform="${escapeHtml(selectedKey)}">${renderInteractionTransformInputs(selectedTarget.destinationTransform, "direct", { enabledParts: interactionDirectTriggerComponents(selectedTarget), rotationReference: interactionRotationRangeReference(selectedTarget.constraints?.rotation) })}</div>
           ` : `<p class="muted">Select an interactive object to edit its destination.</p>`}
           <details class="facilitator-details interaction-tolerance-details">
-            <summary>Match tolerance for facilitator</summary>
-            <p>The story part changes as soon as all selected objects enter the reasonable-error range. Select one or more transform components; unselected components do not need to match.</p>
+            <summary>Match tolerance</summary>
+            <p>Allow a small difference from the exact target. Only the selected goals need to match.</p>
             <div class="interaction-transform-grid compact">
               <label class="${activeTriggerComponents.has("position") ? "" : "disabled"}">Position (m)<input type="number" min="0.01" max="2" step="0.01" data-interaction-direct-tolerance="positionMeters" value="${formatNumber(configuration.tolerance.positionMeters)}" ${activeTriggerComponents.has("position") ? "" : "disabled"}/></label>
               <label class="${activeTriggerComponents.has("rotation") ? "" : "disabled"}">Rotation (°)<input type="number" min="0.5" max="180" step="0.5" data-interaction-direct-tolerance="rotationDegrees" value="${formatNumber(configuration.tolerance.rotationDegrees)}" ${activeTriggerComponents.has("rotation") ? "" : "disabled"}/></label>
-              <label class="${activeTriggerComponents.has("scale") ? "" : "disabled"}">Scale ratio<input type="number" min="0.01" max="1" step="0.01" data-interaction-direct-tolerance="scaleRatio" value="${formatNumber(configuration.tolerance.scaleRatio)}" ${activeTriggerComponents.has("scale") ? "" : "disabled"}/></label>
+              <label class="${activeTriggerComponents.has("scale") ? "" : "disabled"}">Size (%)<input type="number" min="1" max="100" step="1" data-interaction-direct-tolerance="scaleRatio" data-interaction-tolerance-percent value="${formatNumber(configuration.tolerance.scaleRatio * 100)}" ${activeTriggerComponents.has("scale") ? "" : "disabled"}/></label>
             </div>
+          </details>
+          <details class="facilitator-details interaction-completion-details">
+            <summary>Completion timing</summary>
+            <label>Continue to the next scene<select data-interaction-direct-completion-mode>
+              <option value="immediate" ${completionTiming.mode === "immediate" ? "selected" : ""}>As soon as all objects match</option>
+              <option value="hold" ${completionTiming.mode === "hold" ? "selected" : ""}>After holding the match</option>
+              <option value="release" ${completionTiming.mode === "release" ? "selected" : ""}>After matching and letting go</option>
+            </select></label>
+            <label data-interaction-direct-hold-field ${completionTiming.mode === "hold" ? "" : "hidden"}>Hold duration (seconds)<input type="number" min="0.1" max="10" step="0.1" data-interaction-direct-hold-seconds value="${formatNumber(completionTiming.holdSeconds)}" /></label>
+            <p>All selected objects must match together. A hold restarts if an object leaves its tolerance; letting go requires releasing every selected object.</p>
           </details>
         </aside>
       </div>
@@ -14251,6 +14308,25 @@ function bindInteractionOptionEditorEvents() {
     bindInteractionInBeatEditorEvents(root);
     return;
   }
+  root.querySelector("[data-interaction-direct-lock-ratio]")?.addEventListener("change", (event) => {
+    state.interactionDestinationLockRatio = event.currentTarget.checked;
+  });
+  root.querySelector("[data-interaction-frame-direct-target]")?.addEventListener("click", () => {
+    frameInteractionDirectDestination(interactionViewer);
+  });
+  root.querySelector("[data-interaction-reset-direct-target]")?.addEventListener("click", () => {
+    state.interactionViewerCameraState = captureInteractionViewerCameraState();
+    commitInteractionEditorMutation("Reset object target", (configuration) => {
+      const target = configuration.targets.find((candidate) => (
+        interactionDirectTargetKey(candidate) === state.interactionSelectedDirectTargetKey
+      ));
+      if (!target) return;
+      target.destinationTransform = cloneJson(target.initialTransform);
+      target.destinationAuthored = false;
+      target.suggested = false;
+      target.source = "author";
+    });
+  });
   for (const button of root.querySelectorAll("[data-interaction-destination-transform-mode]")) {
     button.addEventListener("click", () => {
       state.interactionDestinationTransformMode = button.dataset.interactionDestinationTransformMode;
@@ -14302,6 +14378,7 @@ function bindInteractionOptionEditorEvents() {
   for (const input of root.querySelectorAll("[data-interaction-transform-input]")) {
     input.addEventListener("change", () => {
       const prefix = input.dataset.interactionTransformInput;
+      state.interactionViewerCameraState = captureInteractionViewerCameraState();
       commitInteractionEditorMutation(
         prefix === "direct" ? "Edit manipulation destination" : "Edit locomotion destination",
         (configuration) => {
@@ -14309,14 +14386,25 @@ function bindInteractionOptionEditorEvents() {
             ? configuration.targets.find((target) => interactionDirectTargetKey(target) === state.interactionSelectedDirectTargetKey)
             : null;
           const transform = directTarget?.destinationTransform || configuration.destination?.transform;
-          if (transform) setInteractionTransformComponent(
-            transform,
-            input.dataset.interactionTransformPart,
-            input.dataset.interactionTransformAxis,
-            input.value,
-            interactionRotationRangeReference(directTarget?.constraints?.rotation),
-          );
-          if (directTarget) directTarget.destinationAuthored = true;
+          if (transform) {
+            if (directTarget && input.dataset.interactionTransformPart === "scale"
+              && state.interactionDestinationLockRatio !== false) {
+              transform.scale = spatialLockedScaleForAxis(
+                transform.scale, Number(input.dataset.interactionTransformAxis), input.value,
+              );
+            } else setInteractionTransformComponent(
+              transform,
+              input.dataset.interactionTransformPart,
+              input.dataset.interactionTransformAxis,
+              input.value,
+              interactionRotationRangeReference(directTarget?.constraints?.rotation),
+            );
+          }
+          if (directTarget) {
+            directTarget.destinationAuthored = true;
+            directTarget.suggested = false;
+            directTarget.source = "author";
+          }
         },
       );
     });
@@ -14360,11 +14448,34 @@ function bindInteractionOptionEditorEvents() {
   }
   for (const input of root.querySelectorAll("[data-interaction-direct-tolerance]")) {
     input.addEventListener("change", () => {
+      state.interactionViewerCameraState = captureInteractionViewerCameraState();
       commitInteractionEditorMutation("Edit direct-manipulation tolerance", (configuration) => {
-        configuration.tolerance[input.dataset.interactionDirectTolerance] = Number(input.value);
+        configuration.tolerance[input.dataset.interactionDirectTolerance] = Number(input.value)
+          / (input.hasAttribute("data-interaction-tolerance-percent") ? 100 : 1);
       });
     });
   }
+  root.querySelector("[data-interaction-direct-completion-mode]")?.addEventListener("change", (event) => {
+    state.interactionViewerCameraState = captureInteractionViewerCameraState();
+    const mode = event.currentTarget.value;
+    commitInteractionEditorMutation("Edit object goal completion timing", (configuration) => {
+      configuration.completionTiming = {
+        mode,
+        holdSeconds: configuration.completionTiming?.holdSeconds ?? 0.5,
+      };
+    }, { rerender: false });
+    const holdField = root.querySelector("[data-interaction-direct-hold-field]");
+    if (holdField) holdField.hidden = mode !== "hold";
+  });
+  root.querySelector("[data-interaction-direct-hold-seconds]")?.addEventListener("change", (event) => {
+    commitInteractionEditorMutation("Edit object goal hold duration", (configuration) => {
+      configuration.completionTiming = {
+        mode: configuration.completionTiming?.mode || "hold",
+        holdSeconds: Number(event.currentTarget.value),
+      };
+    }, { rerender: false });
+    event.currentTarget.value = formatNumber(interactionEditorContextFromState()?.configuration?.completionTiming?.holdSeconds ?? 0.5);
+  });
   for (const checkbox of root.querySelectorAll("[data-interaction-direct-target]")) {
     checkbox.addEventListener("change", () => {
       const targetKey = checkbox.dataset.interactionDirectTarget;
@@ -14408,6 +14519,7 @@ function bindInteractionOptionEditorEvents() {
   }
   for (const button of root.querySelectorAll("[data-interaction-select-direct-target]")) {
     button.addEventListener("click", () => {
+      state.interactionViewerCameraState = captureInteractionViewerCameraState();
       state.interactionSelectedDirectTargetKey = button.dataset.interactionSelectDirectTarget;
       renderPreservingScroll();
     });
@@ -15744,6 +15856,24 @@ function bindEvents() {
       if (interBeatViewer) interBeatViewer.speed = state.interBeatPreviewSpeed;
     });
   }
+
+  const dynamicsStartInput = document.querySelector("[data-inter-beat-dynamics-start]");
+  dynamicsStartInput?.addEventListener("input", (event) => {
+    state.interBeatDynamicsStartSeconds = Math.max(0, Number(event.target.value) || 0);
+  });
+  dynamicsStartInput?.addEventListener("change", (event) => {
+    state.interBeatDynamicsStartSeconds = Math.max(0, Number(event.target.value) || 0);
+    state.interBeatPreviewPlaying = true;
+    if (interBeatViewer) {
+      interBeatViewer.dynamicsStartSeconds = state.interBeatDynamicsStartSeconds;
+      interBeatViewer.elapsed = 0;
+      resetPreviewCycle(interBeatViewer);
+      interBeatViewer.playing = interBeatViewer.previewAssetsReady !== false;
+      interBeatViewer.previewAutoplayPending = true;
+      requestInterBeatDynamicsAnimation(interBeatViewer);
+    }
+    if (interBeatPlayButton) interBeatPlayButton.textContent = "Pause";
+  });
 
   for (const fold of document.querySelectorAll("[data-motion-linking-fold]")) {
     fold.addEventListener("toggle", () => {
@@ -20159,6 +20289,9 @@ function authoringSpatialSceneBounds(viewer) {
     object.updateWorldMatrix(true, true);
     bounds.expandByObject(object);
   }
+  for (const visual of viewer?.directDestinationVisuals?.values?.() || []) {
+    bounds.union(directDestinationVisualBounds(visual, { includeOriginal: false }));
+  }
   const readerPose = authoredReaderPoseForViewer(viewer);
   if (readerPose?.position) {
     const eye = readerPose.position;
@@ -21621,6 +21754,101 @@ function frameInterBeatSourcePlaybackAsset(viewer) {
   return true;
 }
 
+function initializeInterBeatProceduralDynamicsPreview(viewer, boundary) {
+  viewer.proceduralDynamicsByRole = {};
+  viewer.dynamicsStartSeconds = Math.max(0, Number(state.interBeatDynamicsStartSeconds) || 0);
+  for (const [role, sceneContext] of [["from", boundary.fromSceneContext], ["to", boundary.toSceneContext]]) {
+    const plan = proceduralDynamicsStoredPlan(sceneContext);
+    if (!plan) continue;
+    const scoped = {
+      scene: viewer.scene, root: viewer.root, sceneContext,
+      proceduralPlan: plan,
+      proceduralInstances: expandProceduralDynamicsInstances(plan, { xrPresenting: true }),
+      proceduralGeneratedObjects: expandProceduralDynamicsGeneratedObjects(plan, { xrPresenting: true }),
+      proceduralAnchorPosition: proceduralDynamicsReaderAnchorForScene(sceneContext),
+      proceduralPreviewEntries: [], proceduralGeneratedEntries: [], dynamicObjects: [],
+      authoringSpatialObjects: new Map(),
+    };
+    viewer.proceduralDynamicsByRole[role] = scoped;
+    attachProceduralDynamicsGeneratedObjects(scoped);
+  }
+}
+
+function animateInterBeatProceduralDynamics(viewer) {
+  const progress = interBeatTransitionProgress(viewer);
+  const hold = Math.max(0, Number(viewer.transitionEndpointHoldSeconds) || 0);
+  const duration = Math.max(0, Number(viewer.transitionAnimationSeconds) || 0);
+  const elapsed = Math.max(0, Number(viewer.transitionDynamicsElapsedSeconds ?? viewer.elapsed) || 0);
+  if (Number(viewer.proceduralBoundaryPreviousElapsed) > elapsed) {
+    disposeProceduralTransitionMiddle(viewer);
+    for (const scoped of Object.values(viewer.proceduralDynamicsByRole || {})) {
+      scoped.proceduralPreviewPreviousTime = undefined;
+      for (const item of scoped.proceduralPreviewEntries) {
+        item.proceduralClipTimeOffset = 0;
+        item.proceduralTransitionBaseTransform = null;
+        item.proceduralTransitionMotionTransform = null;
+        item.proceduralTransformInitialized = false;
+        item.proceduralMotionRoot?.position.set(0, 0, 0);
+        item.proceduralMotionRoot?.quaternion.identity();
+        item.proceduralMotionRoot?.scale.set(1, 1, 1);
+      }
+    }
+  }
+  viewer.proceduralBoundaryPreviousElapsed = elapsed;
+  const middle = progress > 0 && progress < 1;
+  for (const [role, scoped] of Object.entries(viewer.proceduralDynamicsByRole || {})) {
+    const time = role === "from"
+      ? viewer.dynamicsStartSeconds + Math.min(elapsed, hold)
+      : Math.max(0, elapsed - hold - duration);
+    scoped.elapsed = time;
+    scoped.dynamicObjects = (viewer.dynamicObjects || []).filter((item) => item.transitionSceneRole === role);
+    for (const item of scoped.proceduralPreviewEntries) {
+      if (!middle && item.proceduralTransitionBaseTransform) {
+        const pose = item.proceduralTransitionMotionTransform;
+        if (pose) {
+          item.proceduralMotionRoot.position.copy(pose.position);
+          item.proceduralMotionRoot.quaternion.copy(pose.quaternion);
+          item.proceduralMotionRoot.scale.copy(pose.scale);
+        }
+        item.proceduralTransitionBaseTransform = null;
+        item.proceduralTransitionMotionTransform = null;
+      }
+    }
+    animateProceduralDynamicsPreview(scoped, time);
+    for (const item of scoped.proceduralPreviewEntries) {
+      item.proceduralDynamicsElapsed = time;
+      if (!middle || item.proceduralTransitionBaseTransform) continue;
+      // Keep the sampled motion as the transition's pose, in the same parent
+      // space as authored offsets. Canonical saved transforms remain untouched.
+      const motion = item.proceduralMotionRoot;
+      const saved = item.authoredTransform;
+      if (!motion || !saved) continue;
+      item.proceduralTransitionMotionTransform = {
+        position: motion.position.clone(), quaternion: motion.quaternion.clone(), scale: motion.scale.clone(),
+      };
+      motion.updateMatrix();
+      const matrix = motion.matrix.clone().multiply(new THREE.Matrix4().compose(
+        saved.position, saved.quaternion, saved.scale,
+      ));
+      const pose = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), scale: new THREE.Vector3() };
+      matrix.decompose(pose.position, pose.quaternion, pose.scale);
+      item.proceduralTransitionBaseTransform = pose;
+      motion.position.set(0, 0, 0);
+      motion.quaternion.identity();
+      motion.scale.set(1, 1, 1);
+    }
+    const visible = role === "from" ? progress < 1 : progress >= 1;
+    for (const entry of scoped.proceduralGeneratedEntries) entry.root.visible &&= visible;
+  }
+  if (viewer.renderer?.domElement) {
+    const data = viewer.renderer.domElement.dataset;
+    data.transitionDynamicsSourceTime = String(viewer.proceduralDynamicsByRole?.from?.elapsed ?? "");
+    data.transitionDynamicsDestinationTime = String(viewer.proceduralDynamicsByRole?.to?.elapsed ?? "");
+    data.transitionDynamicsActors = String(Object.values(viewer.proceduralDynamicsByRole || {})
+      .reduce((count, scoped) => count + scoped.proceduralPreviewEntries.length, 0));
+  }
+}
+
 function initializeInterBeatDynamicsViewer(active) {
   if (active?.id !== "inter-beat-dynamics") return;
   const editorSceneContext = activeInterBeatSceneContext();
@@ -21876,6 +22104,7 @@ function initializeInterBeatDynamicsViewer(active) {
     } : null;
   }
   if (!thumbnailMode) configureAuthoringSpatialCameraViewer(viewer, beatContext.toSceneContext || sceneContext);
+  initializeInterBeatProceduralDynamicsPreview(viewer, beatContext);
   interBeatViewer = viewer;
   if (!thumbnailMode) {
     syncInterBeatSceneObjectSelection(sceneContext, proposal);
@@ -23140,6 +23369,24 @@ function initializeLegacyContextLayeringViewer(active) {
   viewer.animationId = requestAnimationFrame(animate);
 }
 
+function initializeInteractionProceduralDynamicsPreview(viewer, sceneContext) {
+  const plan = proceduralDynamicsStoredPlan(sceneContext);
+  viewer.proceduralPlan = plan;
+  viewer.proceduralInstances = plan ? expandProceduralDynamicsInstances(plan, { xrPresenting: true }) : [];
+  viewer.proceduralGeneratedObjects = plan ? expandProceduralDynamicsGeneratedObjects(plan, { xrPresenting: true }) : [];
+  viewer.proceduralAnchorPosition = proceduralDynamicsReaderAnchorForScene(sceneContext);
+  viewer.proceduralPreviewEntries = [];
+  viewer.proceduralGeneratedEntries = [];
+  viewer.dynamicObjects = [];
+  viewer.hasProceduralMotion = viewer.proceduralInstances.length > 0 || viewer.proceduralGeneratedObjects.length > 0;
+  attachProceduralDynamicsGeneratedObjects(viewer);
+  for (const entry of viewer.proceduralGeneratedEntries) {
+    const entityId = dynamicGeneratedSelectionId(entry.instance?.objectId || entry.instance?.id);
+    viewer.spatialObjects.set(entityId, entry.root);
+    viewer.authoringSpatialObjects.set(entityId, entry.root);
+  }
+}
+
 function initializeInteractionControlViewer(active) {
   if (active?.id !== "interaction-control") return;
   const container = document.querySelector("[data-interaction-viewer]");
@@ -23360,9 +23607,10 @@ function initializeInteractionControlViewer(active) {
   interactionViewer = viewer;
   viewer.resolveSourcePlaybackWindow = (asset) => spatialPlaybackWindowForAsset(viewer.upstreamBeatState, asset);
   attachLockedEnvironmentToViewer(viewer);
+  initializeInteractionProceduralDynamicsPreview(viewer, editorContext.sceneContext);
   const canRestoreCameraState = restoreAuthoringSpatialCameraState(viewer);
 
-  viewer.effects = !usesInheritedSourcePlayback && dynamicKind ? addDynamicEffectOverlays(root, dynamicKind, activePosition, {
+  viewer.effects = !viewer.hasProceduralMotion && !usesInheritedSourcePlayback && dynamicKind ? addDynamicEffectOverlays(root, dynamicKind, activePosition, {
     ...beat,
     title: `Geometry: ${dynamicGeometryKindLabel(dynamicKind)}`,
   }) : null;
@@ -23378,9 +23626,11 @@ function initializeInteractionControlViewer(active) {
     if (pendingAssets <= 0 && !viewer.disposed) {
       if (cumulativeContext) viewer.swapReady = true;
       viewer.sourcePlaybackReady = true;
+      viewer.spatialPlaybackReady = true;
       viewer.sourceElapsed = 0;
-      if (!canRestoreCameraState) fitAuthoringSpatialCameraOnLoad(viewer);
+      animateProceduralDynamicsPreview(viewer, viewer.elapsed);
       initializeInteractionConfigurationGizmo(viewer);
+      if (!canRestoreCameraState) fitAuthoringSpatialCameraOnLoad(viewer);
       initializeInteractionInBeatViewportPicking(viewer);
       refreshInteractionInBeatTargetPicker(viewer);
       const selectedCandidate = viewer.interactionTargetCandidates.get(state.interactionSelectedInBeatTargetKey);
@@ -23391,8 +23641,10 @@ function initializeInteractionControlViewer(active) {
   if (!assetLinks.length) requestAnimationFrame(() => {
     if (viewer.disposed) return;
     viewer.sourcePlaybackReady = true;
-    if (!canRestoreCameraState) fitAuthoringSpatialCameraOnLoad(viewer);
+    viewer.spatialPlaybackReady = true;
+    animateProceduralDynamicsPreview(viewer, viewer.elapsed);
     initializeInteractionConfigurationGizmo(viewer);
+    if (!canRestoreCameraState) fitAuthoringSpatialCameraOnLoad(viewer);
     initializeInteractionInBeatViewportPicking(viewer);
     refreshInteractionInBeatTargetPicker(viewer);
     syncSpatialSelectionHelpers(viewer, []);
@@ -23514,11 +23766,16 @@ function initializeInteractionControlViewer(active) {
     if (viewer.disposed) return;
     const delta = Math.min((now - viewer.lastFrameAt) / 1000, 0.05);
     viewer.lastFrameAt = now;
-    viewer.elapsed += delta;
-    updateAuthorPreviewEmbeddedAnimations(viewer, delta);
+    const previewPaused = Boolean(viewer.transformControls?.dragging || viewer.destinationHistoryStarted);
+    if (!previewPaused) viewer.elapsed += delta;
     moveTextViewerCamera(viewer, delta);
-    if (viewer.usesInheritedSourcePlayback) updateInteractionUpstreamPlayback(viewer, delta);
-    else if (animateNarrativeSingleAnchorViewer(viewer, delta)) return;
+    if (!previewPaused) {
+      if (viewer.usesInheritedSourcePlayback) updateSpatialUpstreamPlayback(viewer, delta);
+      else if (!viewer.hasProceduralMotion && animateNarrativeSingleAnchorViewer(viewer, delta)) return;
+      updateAuthorPreviewEmbeddedAnimations(viewer, delta);
+      animateProceduralDynamicsPreview(viewer, viewer.elapsed);
+    }
+    updateInteractionDirectDestinationGhosts(viewer);
     animateInteractionControlViewer(viewer, viewer.elapsed);
     controls.update();
     renderer.render(scene, camera);
@@ -23830,7 +24087,9 @@ function initializeFinalReviewViewer(active) {
   }
   resetFinalReviewReaderLookAnchor(viewer);
   attachLockedEnvironmentToViewer(viewer);
-  attachProceduralDynamicsGeneratedObjects(viewer);
+  if (!initializeFinalReviewTransitionDynamics(viewer, transitionPlayback)) {
+    attachProceduralDynamicsGeneratedObjects(viewer);
+  }
   addFinalReviewTextPanel(viewer, beat, region);
   configureFinalReviewXrTextPanel(viewer);
   addFinalReviewTransitionEffects(
@@ -24803,6 +25062,7 @@ function loadFinalReviewAsset(viewer, asset, finishAsset) {
         }
         group.add(gltf.scene);
         viewer.finalReviewAssetEntry.sourceScene = gltf.scene;
+        viewer.finalReviewAssetEntry.sourceAnimations = gltf.animations || [];
         attachProceduralDynamicsPreviewMotion(viewer, viewer.finalReviewAssetEntry, gltf);
         attachFinalReviewSourcePlayback(viewer, viewer.finalReviewAssetEntry, gltf);
         attachAuthorPreviewEmbeddedAnimation(viewer, viewer.finalReviewAssetEntry, gltf);
@@ -25480,13 +25740,28 @@ function finalReviewObjectWorldTransform(root) {
   return { position, quaternion: quaternion.normalize(), scale };
 }
 
-function finalReviewDirectDestinationWorldTransform(root, target) {
+function finalReviewDirectCueSourceTransform(root, target, referenceParent = root?.parent) {
+  if (!root) return null;
+  if (target?.coordinateSpace !== "local") return finalReviewObjectWorldTransform(root);
+  root.updateWorldMatrix(true, false);
+  const matrix = root.matrixWorld.clone();
+  if (referenceParent) {
+    referenceParent.updateWorldMatrix(true, false);
+    matrix.premultiply(referenceParent.matrixWorld.clone().invert());
+  }
+  const position = new THREE.Vector3();
+  const quaternion = new THREE.Quaternion();
+  const scale = new THREE.Vector3();
+  matrix.decompose(position, quaternion, scale);
+  return { position, quaternion: quaternion.normalize(), scale };
+}
+
+function finalReviewDirectDestinationWorldTransform(root, target, referenceParent = root?.parent, start = null, progress = 1) {
   if (!root || !target?.destinationTransform) return null;
   const transform = normalizeSpatialTransform(target.destinationTransform);
   const local = target.coordinateSpace === "local";
-  const current = local
-    ? { position: root.position.clone(), quaternion: root.quaternion.clone(), scale: root.scale.clone() }
-    : finalReviewObjectWorldTransform(root);
+  const current = finalReviewDirectCueSourceTransform(root, target, referenceParent);
+  const amount = THREE.MathUtils.clamp(progress, 0, 1);
   const position = interactionDirectUsesTriggerComponent(target, "position")
     ? new THREE.Vector3().fromArray(transform.position)
     : current.position.clone();
@@ -25496,13 +25771,18 @@ function finalReviewDirectDestinationWorldTransform(root, target) {
   const scale = interactionDirectUsesTriggerComponent(target, "scale")
     ? new THREE.Vector3().fromArray(transform.scale)
     : current.scale.clone();
+  if (start) {
+    if (interactionDirectUsesTriggerComponent(target, "position")) position.lerpVectors(start.position, position.clone(), amount);
+    if (interactionDirectUsesTriggerComponent(target, "rotation")) quaternion.slerpQuaternions(start.quaternion, quaternion.clone(), amount);
+    if (interactionDirectUsesTriggerComponent(target, "scale")) scale.lerpVectors(start.scale, scale.clone(), amount);
+  }
   const matrix = new THREE.Matrix4().compose(position, quaternion, scale);
-  if (local && root.parent) {
-    root.parent.updateWorldMatrix(true, false);
-    matrix.premultiply(root.parent.matrixWorld);
+  if (local && referenceParent) {
+    referenceParent.updateWorldMatrix(true, false);
+    matrix.premultiply(referenceParent.matrixWorld);
   }
   matrix.decompose(position, quaternion, scale);
-  return { position, quaternion: quaternion.normalize(), scale };
+  return { position, quaternion: quaternion.normalize(), scale, matrix };
 }
 
 function finalReviewDirectGhostTravelSeconds(distanceMeters) {
@@ -25538,6 +25818,7 @@ function createFinalReviewDirectGhostMaterial(sourceMaterial) {
 function createFinalReviewDirectGhostModel(root) {
   if (!root) return null;
   const ghost = cloneSkinnedObject(root);
+  const poseBindings = finalReviewDirectGhostPoseBindings(root, ghost);
   const materials = [];
   ghost.name = `StoryVR manipulation ghost · Final Review · ${root.name || root.uuid}`;
   ghost.userData = { ...ghost.userData, storyvrDirectManipulationGhost: true };
@@ -25559,30 +25840,71 @@ function createFinalReviewDirectGhostModel(root) {
     node.material = Array.isArray(node.material) ? ghostMaterials : ghostMaterials[0];
     node.castShadow = false;
     node.receiveShadow = false;
+    node.frustumCulled = false;
     node.renderOrder = (Number(node.renderOrder) || 0) + 2;
   });
-  return { ghost, materials };
+  return { ghost, materials, poseBindings };
+}
+
+function finalReviewDirectGhostPoseBindings(source, ghost) {
+  const bindings = [];
+  const visit = (sourceNode, ghostNode) => {
+    if (!sourceNode || !ghostNode) return;
+    bindings.push({ source: sourceNode, ghost: ghostNode });
+    sourceNode.children.forEach((child, index) => visit(child, ghostNode.children[index]));
+  };
+  visit(source, ghost);
+  return bindings;
+}
+
+function syncFinalReviewDirectGhostSourcePose(cue) {
+  for (const { source, ghost } of cue?.poseBindings || []) {
+    if (source !== cue.root) {
+      ghost.visible = source.visible && !source.isCamera && !source.isLight && !source.isAudio;
+      ghost.position.copy(source.position);
+      ghost.quaternion.copy(source.quaternion);
+      ghost.scale.copy(source.scale);
+      ghost.matrixAutoUpdate = source.matrixAutoUpdate;
+      ghost.matrix.copy(source.matrix);
+    }
+    if (ghost.isSkinnedMesh) {
+      ghost.boundingBox = null;
+      ghost.boundingSphere = null;
+    }
+    if (source.morphTargetInfluences && ghost.morphTargetInfluences) {
+      for (let index = 0; index < source.morphTargetInfluences.length; index += 1) {
+        ghost.morphTargetInfluences[index] = source.morphTargetInfluences[index];
+      }
+    }
+  }
 }
 
 function applyFinalReviewDirectGhostTransform(object, transform) {
   if (!object || !transform) return;
-  object.position.copy(transform.position);
-  object.quaternion.copy(transform.quaternion);
-  object.scale.copy(transform.scale);
+  const matrix = transform.matrix?.clone() || new THREE.Matrix4().compose(transform.position, transform.quaternion, transform.scale);
+  if (object.parent) {
+    object.parent.updateWorldMatrix(true, false);
+    matrix.premultiply(object.parent.matrixWorld.clone().invert());
+  }
+  object.matrixAutoUpdate = false;
+  object.matrix.copy(matrix);
+  matrix.decompose(object.position, object.quaternion, object.scale);
   object.updateMatrixWorld(true);
 }
 
 function startFinalReviewDirectManipulationCue(viewer, cue, startedAt = viewer?.directManipulationCueElapsed || 0) {
   const start = finalReviewObjectWorldTransform(cue?.root);
-  const destination = finalReviewDirectDestinationWorldTransform(cue?.root, cue?.target);
+  const destination = finalReviewDirectDestinationWorldTransform(cue?.root, cue?.target, cue?.referenceParent);
   if (!cue?.ghost || !start || !destination) return false;
   cue.start = start;
+  cue.startCoordinates = finalReviewDirectCueSourceTransform(cue.root, cue.target, cue.referenceParent);
   cue.destination = destination;
   cue.travelSeconds = finalReviewDirectGhostTravelSeconds(start.position.distanceTo(destination.position));
   cue.phase = "travel";
   cue.phaseStartedAt = startedAt;
   cue.ghost.visible = true;
-  applyFinalReviewDirectGhostTransform(cue.ghost, start);
+  syncFinalReviewDirectGhostSourcePose(cue);
+  applyFinalReviewDirectGhostTransform(cue.ghost, finalReviewDirectDestinationWorldTransform(cue.root, cue.target, cue.referenceParent, cue.startCoordinates, 0));
   return true;
 }
 
@@ -25592,8 +25914,10 @@ function createFinalReviewDirectManipulationCue(viewer, root, target) {
   const cue = {
     root,
     target,
+    referenceParent: root.parent,
     ghost: result.ghost,
     materials: result.materials,
+    poseBindings: result.poseBindings,
     phase: "idle",
     phaseStartedAt: viewer.directManipulationCueElapsed,
     start: null,
@@ -25611,6 +25935,7 @@ function disposeFinalReviewDirectManipulationCue(cue) {
   if (cue) {
     cue.ghost = null;
     cue.materials = [];
+    cue.poseBindings = [];
   }
 }
 
@@ -25653,6 +25978,19 @@ function updateFinalReviewDirectManipulationCues(viewer) {
   const now = viewer?.directManipulationCueElapsed || 0;
   for (const cue of viewer?.directManipulationCues || []) {
     if (!cue.ghost) continue;
+    syncFinalReviewDirectGhostSourcePose(cue);
+    if (viewer.xrDirectManipulationGrab?.root === cue.root) {
+      cue.phase = "interaction";
+      cue.phaseStartedAt = now;
+      cue.ghost.visible = true;
+      cue.destination = finalReviewDirectDestinationWorldTransform(cue.root, cue.target, cue.referenceParent);
+      applyFinalReviewDirectGhostTransform(cue.ghost, cue.destination);
+      continue;
+    }
+    if (cue.phase === "interaction") {
+      cue.phase = "hold";
+      cue.phaseStartedAt = now;
+    }
     if (cue.phase === "idle") {
       if (now - cue.phaseStartedAt >= FINAL_REVIEW_DIRECT_GHOST_INACTIVITY_REPLAY_SECONDS) {
         startFinalReviewDirectManipulationCue(viewer, cue, now);
@@ -25662,16 +26000,18 @@ function updateFinalReviewDirectManipulationCues(viewer) {
     if (cue.phase === "travel") {
       const progress = THREE.MathUtils.clamp((now - cue.phaseStartedAt) / cue.travelSeconds, 0, 1);
       const eased = THREE.MathUtils.smootherstep(progress, 0, 1);
-      cue.ghost.position.lerpVectors(cue.start.position, cue.destination.position, eased);
-      cue.ghost.quaternion.slerpQuaternions(cue.start.quaternion, cue.destination.quaternion, eased);
-      cue.ghost.scale.lerpVectors(cue.start.scale, cue.destination.scale, eased);
-      cue.ghost.updateMatrixWorld(true);
+      const transform = finalReviewDirectDestinationWorldTransform(cue.root, cue.target, cue.referenceParent, cue.startCoordinates, eased);
+      applyFinalReviewDirectGhostTransform(cue.ghost, transform);
       if (progress >= 1) {
-        applyFinalReviewDirectGhostTransform(cue.ghost, cue.destination);
+        cue.destination = transform;
         cue.phase = "hold";
         cue.phaseStartedAt = now;
       }
       continue;
+    }
+    if (cue.phase === "hold") {
+      cue.destination = finalReviewDirectDestinationWorldTransform(cue.root, cue.target, cue.referenceParent);
+      applyFinalReviewDirectGhostTransform(cue.ghost, cue.destination);
     }
     if (cue.phase === "hold" && now - cue.phaseStartedAt >= FINAL_REVIEW_DIRECT_GHOST_DESTINATION_HOLD_SECONDS) {
       cue.ghost.visible = false;
@@ -26736,19 +27076,99 @@ function finalReviewRenderCamera(viewer) {
   return readerCamera;
 }
 
+function captureFinalReviewDynamicsHandoff(viewer) {
+  if (!viewer) return null;
+  const scoped = viewer.proceduralDynamicsByRole?.to || viewer;
+  const entries = (scoped.proceduralPreviewEntries || []).flatMap((item) => {
+    const authored = item.proceduralAuthoredRoot || item.authorWrapper;
+    const motion = item.proceduralMotionRoot;
+    if (!authored || !motion) return [];
+    authored.updateMatrix();
+    motion.updateMatrix();
+    const matrix = motion.matrix.clone().multiply(authored.matrix);
+    const position = new THREE.Vector3();
+    const quaternion = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    matrix.decompose(position, quaternion, scale);
+    const clip = item.proceduralAction?.getClip?.();
+    const playback = item.proceduralTransitionAnimationPlayer?.getPlaybackState?.();
+    return [{
+      entityId: item.entityId, assetId: item.assetId,
+      position: position.toArray(), quaternion: quaternion.toArray(), scale: scale.toArray(),
+      opacity: item.proceduralDynamicsOpacity ?? 1, visible: item.proceduralDynamicsVisible !== false,
+      clipIndex: playback?.clipIndex ?? (clip ? item.sourceAnimations?.indexOf(clip) : -1),
+      clipTimeSeconds: playback?.timeSeconds ?? item.proceduralAction?.time ?? 0,
+    }];
+  });
+  return { elapsedSeconds: Math.max(0, Number(scoped.elapsed) || 0), entries };
+}
+
+function initializeFinalReviewTransitionDynamics(viewer, playback) {
+  const boundary = playback?.boundary;
+  if (!playback?.generatedTransitionPlan || !boundary?.fromSceneContext || !boundary?.toSceneContext) return false;
+  initializeInterBeatProceduralDynamicsPreview(viewer, boundary);
+  viewer.dynamicsStartSeconds = Math.max(0, Number(playback.sourceDynamicsHandoff?.elapsedSeconds) || 0);
+  viewer.finalReviewSourceDynamicsHandoff = playback.sourceDynamicsHandoff || null;
+  viewer.transitionEndpointHoldSeconds = 0;
+  viewer.transitionAnimationSeconds = playback.generatedTransitionPlan.durationSeconds;
+  viewer.transitionDynamicsElapsedSeconds = 0;
+  viewer.transitionPreviewAvailable = true;
+  return true;
+}
+
+function animateFinalReviewTransitionDynamics(viewer) {
+  animateInterBeatProceduralDynamics(viewer);
+  for (const item of viewer.proceduralDynamicsByRole?.from?.proceduralPreviewEntries || []) {
+    const saved = viewer.finalReviewSourceDynamicsHandoff?.entries?.find((entry) => (
+      entry.entityId === item.entityId && entry.assetId === item.assetId
+    ));
+    if (!saved || !item.proceduralMotionRoot) continue;
+    item.proceduralTransitionBaseTransform = {
+      position: new THREE.Vector3().fromArray(saved.position),
+      quaternion: new THREE.Quaternion().fromArray(saved.quaternion),
+      scale: new THREE.Vector3().fromArray(saved.scale),
+    };
+    item.proceduralMotionRoot.position.set(0, 0, 0);
+    item.proceduralMotionRoot.quaternion.identity();
+    item.proceduralMotionRoot.scale.set(1, 1, 1);
+    item.proceduralDynamicsOpacity = saved.opacity;
+    item.proceduralDynamicsVisible = saved.visible;
+    const clip = item.proceduralAction?.getClip?.();
+    if (!item.proceduralTransitionAnimationPlayer && clip && item.sourceAnimations?.[saved.clipIndex] === clip) {
+      resumeInterBeatDynamicsClip(item, { getPlaybackState: () => ({
+        clipIndex: saved.clipIndex, timeSeconds: saved.clipTimeSeconds,
+      }) });
+      item.proceduralMixer.setTime(
+        item.proceduralDynamicsElapsed * (Number(item.proceduralAnimationTimeScale) || 1)
+        + Math.max(Number(item.proceduralSourceMotionDuration) || 0, 0.001) * (Number(item.proceduralAnimationPhase01) || 0)
+        + item.proceduralClipTimeOffset,
+      );
+    }
+  }
+}
+
 function updateFinalReviewTransitionExecution(viewer, delta) {
   if (!viewer?.finalReviewTransitionPlayback) return false;
   const cycleSeconds = Math.max(previewAnimationCycleSeconds(viewer), 0.001);
-  if (viewer.transitionPlaying) {
+  const handoffPaused = viewer.proceduralDynamicsByRole && viewer.playing === false;
+  if (viewer.transitionPlaying && !handoffPaused) {
     const playbackDelta = Math.max(0, Number(delta) || 0) * Math.max(Number(viewer.speed) || 1, 0.001);
     viewer.sourceElapsed = Math.min(cycleSeconds, (Number(viewer.sourceElapsed) || 0) + playbackDelta);
   }
   const progress = previewCycleProgress(viewer);
   const completed = progress >= 1;
+  if (viewer.proceduralDynamicsByRole) {
+    if (viewer.transitionStarted && !handoffPaused) viewer.transitionDynamicsElapsedSeconds += Math.max(0, Number(delta) || 0)
+      * Math.max(Number(viewer.speed) || 1, 0.001);
+    animateFinalReviewTransitionDynamics(viewer);
+  }
   if (viewer.generatedTransitionPlan?.middle?.actions?.some((action) => action.animation)
     || viewer.proceduralTransitionAnimationEntries?.size) {
     prepareProceduralTransitionAnimations(viewer, progress);
   }
+  // Clip disposal restores its bindings; apply the resumed Dynamics clip before
+  // rendering the exact destination frame, including a paused endpoint.
+  if (viewer.proceduralDynamicsByRole && completed) animateFinalReviewTransitionDynamics(viewer);
   const canvas = viewer.renderer?.domElement;
   if (canvas) {
     canvas.dataset.finalReviewTransitionProgress = progress.toFixed(4);
@@ -26760,7 +27180,8 @@ function updateFinalReviewTransitionExecution(viewer, delta) {
     ...(viewer.swapGroups || []),
   ];
   for (const entry of entries) {
-    if (entry?.proceduralTransitionAnimationPlayer) continue;
+    if (entry?.proceduralTransitionAnimationPlayer
+      || (viewer.proceduralDynamicsByRole && entry?.proceduralMixer)) continue;
     if (entry?.sourcePlayback) {
       updateSourceTransitionPlayback(viewer, entry);
       continue;
@@ -26788,7 +27209,7 @@ function animateFinalReviewViewer(viewer, delta = 0) {
     updateSourceTransitionPlayback(viewer, sourcePlaybackEntry);
     updateSourcePlaybackAnnotations(sourcePlaybackEntry.sourcePlayback);
   }
-  animateProceduralDynamicsPreview(viewer, time);
+  if (!viewer.proceduralDynamicsByRole) animateProceduralDynamicsPreview(viewer, time);
   updateFinalReviewDirectManipulationCues(viewer);
   if (viewer.activeAssetGroup && sourcePlaybackEntry !== viewer.finalReviewAssetEntry) {
     viewer.activeAssetGroup.position.set(0, Math.sin(time * 1.7) * 0.055, 0);
@@ -27083,44 +27504,132 @@ function makeInteractionLocomotionDestination(configuration, readerRig) {
 
 function makeInteractionDirectDestination(target, selected, viewer = null) {
   const outsideRange = !interactionDirectDestinationIsReachable(target);
-  const accent = outsideRange ? 0xb12e4b : selected ? 0xc75f1f : 0x007f73;
-  const group = new THREE.Group();
-  group.name = `StoryVR manipulation destination · ${target.entityId}`;
-  group.userData.interactionDestinationKind = "direct";
-  group.userData.interactionEntityId = target.entityId;
-  group.userData.interactionNodePath = target.nodePath || "";
-  group.userData.interactionNodeIndex = target.nodeIndex ?? null;
-  const box = new THREE.Mesh(
-    new THREE.BoxGeometry(0.7, 0.7, 0.7),
-    new THREE.MeshStandardMaterial({
-      color: accent,
-      emissive: accent,
-      emissiveIntensity: outsideRange ? 0.2 : 0.08,
-      transparent: true,
-      opacity: outsideRange ? 0.32 : selected ? 0.25 : 0.13,
-      wireframe: true,
-      depthWrite: false,
-    }),
-  );
-  const label = makeTextSprite(
-    outsideRange
-      ? `Outside range · ${target.nodePath || target.assetId || "object"}`
-      : target.nodePath ? `Destination · ${target.nodePath}` : "Object destination",
-    {
-      fontSize: 42,
-      background: "rgba(255,253,244,0.94)",
-      color: outsideRange ? "#9d2440" : selected ? "#a84416" : "#007f73",
-      padding: 10,
-    },
-  );
-  label.position.set(0, 0.55, 0);
-  label.scale.set(0.78, 0.2, 1);
-  group.add(box, label);
-  const candidate = viewer?.interactionTargetCandidates?.get?.(interactionDirectTargetKey(target));
-  applyInteractionTransformToObject(group, candidate
-    ? interactionWorldTransformForLocal(candidate.object.parent, target.destinationTransform)
-    : target.destinationTransform);
-  return group;
+  const key = interactionDirectTargetKey(target);
+  const candidate = viewer?.interactionTargetCandidates?.get?.(key);
+  const sceneTarget = interactionDirectSceneTargets(viewer?.sceneContext)
+    .find((entry) => interactionDirectTargetKey(entry) === key) || target;
+  const visual = createDirectDestinationVisual({
+    sourceObject: candidate?.object,
+    target,
+    selected,
+    label: interactionDirectObjectLabel(sceneTarget),
+    positionTolerance: viewer?.interactionConfiguration?.tolerance?.positionMeters,
+    outsideRange,
+  });
+  const object = visual.object;
+  object.name = `StoryVR manipulation destination · ${target.entityId}`;
+  object.userData.interactionDestinationKind = "direct";
+  object.userData.interactionTargetKey = key;
+  object.userData.interactionEntityId = target.entityId;
+  object.userData.interactionNodePath = target.nodePath || "";
+  object.userData.interactionNodeIndex = target.nodeIndex ?? null;
+  candidate?.object?.parent?.updateWorldMatrix(true, false);
+  // Keep the exact source parent matrix, including nonuniform scale. Decomposing
+  // a sheared world matrix into a ghost's TRS would change untouched goal channels.
+  const transformParent = new THREE.Group();
+  transformParent.name = `StoryVR target coordinate space · ${target.entityId}`;
+  transformParent.matrixAutoUpdate = false;
+  if (candidate?.object?.parent) transformParent.matrix.copy(candidate.object.parent.matrixWorld);
+  transformParent.add(object);
+  object.userData.interactionDestinationLocal = true;
+  applyInteractionTransformToObject(object, target.destinationTransform);
+  visual.transformParent = transformParent;
+  updateDirectDestinationVisual(visual, {
+    sourceParentMatrix: candidate?.object?.parent?.matrixWorld,
+    followSource: true,
+  });
+  if (viewer) {
+    viewer.directDestinationVisuals ||= new Map();
+    viewer.directDestinationVisuals.set(key, visual);
+    viewer.scene.add(transformParent, visual.overlay);
+  }
+  return object;
+}
+
+function interactionDestinationObjectKey(object) {
+  return object?.userData?.interactionTargetKey || interactionDirectTargetKey({
+    entityId: object?.userData?.interactionEntityId,
+    nodePath: object?.userData?.interactionNodePath,
+    nodeIndex: object?.userData?.interactionNodeIndex,
+  });
+}
+
+function refreshInteractionDirectDestinationVisual(viewer, target) {
+  if (!viewer || !target) return;
+  const key = interactionDirectTargetKey(target);
+  const visual = viewer.directDestinationVisuals?.get(key);
+  if (!visual) return;
+  const candidate = viewer.interactionTargetCandidates?.get(key);
+  candidate?.object?.parent?.updateWorldMatrix(true, false);
+  if (candidate?.object?.parent && visual.transformParent) {
+    visual.transformParent.matrix.copy(candidate.object.parent.matrixWorld);
+    visual.transformParent.updateMatrixWorld(true);
+  }
+  updateDirectDestinationVisual(visual, {
+    target,
+    sourceParentMatrix: candidate?.object?.parent?.matrixWorld,
+    followSource: true,
+    selected: key === state.interactionSelectedDirectTargetKey,
+    positionTolerance: viewer.interactionConfiguration?.tolerance?.positionMeters,
+    outsideRange: !interactionDirectDestinationIsReachable(target),
+  });
+}
+
+function updateInteractionDirectDestinationGhosts(viewer) {
+  if (!viewer || viewer.disposed || viewer.kind !== "direct" || !viewer.directDestinationVisuals?.size) return;
+  for (const target of viewer.interactionConfiguration?.targets || []) {
+    refreshInteractionDirectDestinationVisual(viewer, target);
+  }
+  // Animation may update the grey reference values, but must never replace a
+  // number the author is typing into an enabled target field.
+  syncInteractionDestinationInputsFromViewer(viewer, { disabledOnly: true });
+}
+
+function interactionDirectAuthoredTransform(target, displayedTransform) {
+  const authored = normalizeSpatialTransform(target.destinationTransform);
+  for (const component of interactionDirectTriggerComponents(target)) {
+    const property = component === "rotation" ? "quaternion" : component;
+    authored[property] = [...displayedTransform[property]];
+  }
+  return authored;
+}
+
+function frameInteractionDirectDestination(viewer) {
+  if (!viewer || viewer.disposed || viewer.kind !== "direct") return false;
+  const key = state.interactionSelectedDirectTargetKey;
+  const visual = viewer.directDestinationVisuals?.get(key);
+  if (!visual) return false;
+  const bounds = directDestinationVisualBounds(visual, { includeOriginal: true, includeRange: false });
+  if (bounds.isEmpty()) return false;
+  const sphere = bounds.getBoundingSphere(new THREE.Sphere());
+  const radius = Math.max(sphere.radius, 0.3);
+  const verticalFov = THREE.MathUtils.degToRad(viewer.camera.fov);
+  const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * Math.max(viewer.camera.aspect, 0.1));
+  const distance = radius / Math.sin(Math.min(verticalFov, horizontalFov) / 2) * 1.35;
+  const direction = viewer.camera.position.clone().sub(viewer.controls.target);
+  if (direction.lengthSq() < 1e-8) direction.set(1, 0.5, 1);
+  direction.normalize();
+  viewer.controls.target.copy(sphere.center);
+  viewer.camera.position.copy(sphere.center).addScaledVector(direction, distance);
+  viewer.camera.near = Math.max(radius / 250, 0.01);
+  viewer.camera.far = Math.max(distance + radius * 12, 100);
+  viewer.controls.minDistance = Math.max(radius * 0.04, 0.02);
+  viewer.controls.maxDistance = Math.max(distance * 5, 20);
+  viewer.camera.updateProjectionMatrix();
+  viewer.camera.lookAt(sphere.center);
+  viewer.controls.update();
+  captureAuthoringSpatialCameraState(viewer);
+  state.interactionViewerCameraState = captureInteractionViewerCameraState();
+  return true;
+}
+
+function clearInteractionDirectDestinationVisuals(viewer) {
+  for (const visual of viewer?.directDestinationVisuals?.values?.() || []) {
+    if (viewer.transformControls?.object === visual.object) viewer.transformControls.detach();
+    disposeDirectDestinationVisual(visual);
+    visual.transformParent?.removeFromParent();
+  }
+  viewer?.directDestinationVisuals?.clear();
 }
 
 function interactionInBeatCandidateForObject(viewer, object) {
@@ -27999,10 +28508,10 @@ function initializeInteractionConfigurationGizmo(viewer) {
     for (const target of configuration.targets) {
       const selected = interactionDirectTargetKey(target) === state.interactionSelectedDirectTargetKey;
       const destination = makeInteractionDirectDestination(target, selected, viewer);
-      viewer.root.add(destination);
-      const key = `${target.entityId}|${target.nodePath || ""}`;
+      if (!destination.parent) viewer.root.add(destination);
+      const key = interactionDirectTargetKey(target);
       viewer.destinationObjects.set(key, destination);
-      if (selected || !selectedObject) selectedObject = destination;
+      if (selected || (!state.interactionSelectedDirectTargetKey && !selectedObject)) selectedObject = destination;
     }
   }
   if (!selectedObject) return;
@@ -28021,8 +28530,21 @@ function initializeInteractionConfigurationGizmo(viewer) {
   transformControls.addEventListener("mouseDown", () => {
     viewer.navigationTransformFinalized = false;
     viewer.destinationHistoryStarted = beginAuthorHistory("Edit object destination", "interaction-control");
+    viewer.destinationScaleStart = transformControls.object?.scale?.clone?.() || null;
+    viewer.destinationScaleDriverIndex = null;
   });
   transformControls.addEventListener("objectChange", () => {
+    if (viewer.kind === "direct" && transformControls.mode === "scale"
+      && state.interactionDestinationLockRatio !== false && viewer.destinationScaleStart) {
+      const start = viewer.destinationScaleStart.toArray();
+      const current = transformControls.object.scale.toArray();
+      const driverIndex = spatialLockedScaleDriverIndex(
+        start, current, transformControls.axis, viewer.destinationScaleDriverIndex,
+      );
+      viewer.destinationScaleDriverIndex = driverIndex;
+      transformControls.object.scale.fromArray(spatialLockedScaleForAxis(start, driverIndex, current[driverIndex]));
+      transformControls.object.updateMatrixWorld(true);
+    }
     if (viewer.kind === "embodied-control") syncInteractionLocomotionFloorCue(transformControls.object);
     syncInteractionDestinationInputsFromViewer(viewer);
   });
@@ -28034,12 +28556,11 @@ function initializeInteractionConfigurationGizmo(viewer) {
     const editorContext = interactionEditorContextFromState();
     const object = transformControls.object;
     if (!editorContext || !object) return;
-    const candidate = viewer.interactionTargetCandidates.get(interactionDirectTargetKey({
-      entityId: object.userData.interactionEntityId,
-      nodePath: object.userData.interactionNodePath || "",
-      nodeIndex: object.userData.interactionNodeIndex,
-    }));
-    const transform = candidate
+    const objectKey = interactionDestinationObjectKey(object);
+    const candidate = viewer.interactionTargetCandidates.get(objectKey);
+    const transform = object.userData.interactionDestinationLocal
+      ? interactionObjectTransform(object)
+      : candidate
       ? interactionLocalTransformForWorld(candidate.object.parent, object)
       : interactionObjectTransform(object);
     const changed = mutateInteractionOptionConfiguration(editorContext, (next) => {
@@ -28048,16 +28569,9 @@ function initializeInteractionConfigurationGizmo(viewer) {
         next.destination.transform = transform;
       }
       else {
-        const target = next.targets.find((candidate) => (
-          candidate.entityId === object.userData.interactionEntityId
-          && interactionDirectTargetKey(candidate) === interactionDirectTargetKey({
-            entityId: object.userData.interactionEntityId,
-            nodePath: object.userData.interactionNodePath || "",
-            nodeIndex: object.userData.interactionNodeIndex,
-          })
-        ));
+        const target = next.targets.find((candidate) => interactionDirectTargetKey(candidate) === objectKey);
         if (target) {
-          target.destinationTransform = transform;
+          target.destinationTransform = interactionDirectAuthoredTransform(target, transform);
           target.destinationAuthored = true;
           target.suggested = false;
           target.source = "author";
@@ -28066,6 +28580,8 @@ function initializeInteractionConfigurationGizmo(viewer) {
     });
     if (viewer.destinationHistoryStarted && changed) commitAuthorHistory();
     viewer.destinationHistoryStarted = false;
+    viewer.destinationScaleStart = null;
+    viewer.destinationScaleDriverIndex = null;
     if (viewer.kind === "direct") {
       state.interactionViewerCameraState = captureInteractionViewerCameraState();
       renderPreservingScroll();
@@ -28080,35 +28596,37 @@ function initializeInteractionConfigurationGizmo(viewer) {
   });
 }
 
-function syncInteractionDestinationInputsFromViewer(viewer) {
+function syncInteractionDestinationInputsFromViewer(viewer, { disabledOnly = false } = {}) {
   const object = viewer?.transformControls?.object;
   if (!object) return;
+  const objectKey = interactionDestinationObjectKey(object);
   const candidate = viewer.kind === "direct"
-    ? viewer.interactionTargetCandidates?.get?.(interactionDirectTargetKey({
-        entityId: object.userData.interactionEntityId,
-        nodePath: object.userData.interactionNodePath || "",
-        nodeIndex: object.userData.interactionNodeIndex,
-      }))
+    ? viewer.interactionTargetCandidates?.get?.(objectKey)
     : null;
-  const transform = candidate
+  const transform = object.userData.interactionDestinationLocal
+    ? interactionObjectTransform(object)
+    : candidate
     ? interactionLocalTransformForWorld(candidate.object.parent, object)
     : interactionObjectTransform(object);
   const directTarget = viewer.kind === "direct"
-    ? viewer.interactionConfiguration?.targets?.find((target) => interactionDirectTargetKey(target) === interactionDirectTargetKey({
-        entityId: object.userData.interactionEntityId,
-        nodePath: object.userData.interactionNodePath || "",
-        nodeIndex: object.userData.interactionNodeIndex,
-      }))
+    ? viewer.interactionConfiguration?.targets?.find((target) => interactionDirectTargetKey(target) === objectKey)
     : null;
   const rotation = interactionTransformEulerDegrees(
     transform,
     interactionRotationRangeReference(directTarget?.constraints?.rotation),
   );
-  for (const input of document.querySelectorAll("[data-interaction-transform-input]")) {
+  const prefix = viewer.kind === "direct" ? "direct" : "locomotion";
+  for (const input of document.querySelectorAll(`[data-interaction-transform-input="${prefix}"]`)) {
+    if (disabledOnly && !input.disabled) continue;
     const part = input.dataset.interactionTransformPart;
     const index = Number(input.dataset.interactionTransformAxis);
     const values = part === "rotation" ? rotation : transform[part];
     if (values?.[index] != null) input.value = formatNumber(values[index]);
+  }
+  if (directTarget && !disabledOnly) {
+    const previewTarget = { ...directTarget, destinationTransform: transform, destinationAuthored: true };
+    refreshInteractionDirectDestinationVisual(viewer, previewTarget);
+    updateInteractionDirectDestinationFeedback(previewTarget);
   }
 }
 
@@ -30581,7 +31099,13 @@ function attachSpatialUpstreamPlayback(viewer, entry, gltf) {
     )
     : 0;
   viewer.spatialPlaybackEntries.push(entry);
-  attachAuthorPreviewEmbeddedAnimation(viewer, entry, gltf);
+  if (viewer.componentId === "interaction-control") {
+    entry.opacityMaterials.push(...preparePreviewOpacityTarget(gltf.scene));
+    attachProceduralDynamicsPreviewMotion(viewer, entry, gltf);
+  }
+  if (viewer.componentId !== "interaction-control" || !entry.proceduralMotionBound) {
+    attachAuthorPreviewEmbeddedAnimation(viewer, entry, gltf);
+  }
   updateSpatialSourceFocus(viewer, entry);
   syncSpatialReaderRigToSourceCamera(viewer, entry);
   return attached;
@@ -30736,6 +31260,15 @@ function loadSpatialRelationsImage(viewer, assetLink, index, total, done) {
     plane.userData.spatialEntityId = entityId;
     authorWrapper.add(plane);
     viewer.spatialPickTargets.push(plane);
+    if (viewer.componentId === "interaction-control") {
+      attachProceduralDynamicsPreviewMotion(viewer, {
+        entityId,
+        assetId: assetLink.assetId,
+        authorWrapper,
+        sourceScene: plane,
+        opacityMaterials: preparePreviewOpacityTarget(plane),
+      }, null);
+    }
     done(true);
   }, undefined, () => done(false));
 }
@@ -33188,6 +33721,16 @@ function proceduralDynamicsAuthoredRoot(entry) {
 }
 
 function attachProceduralDynamicsPreviewMotion(viewer, dynamicEntry, gltf) {
+  if (viewer?.proceduralDynamicsByRole) {
+    const scoped = viewer.proceduralDynamicsByRole[dynamicEntry?.transitionSceneRole];
+    if (!scoped) return 0;
+    const result = attachProceduralDynamicsPreviewMotion(scoped, dynamicEntry, gltf);
+    if (result) {
+      scoped.authoringSpatialObjects.set(dynamicEntry.entityId, dynamicEntry.authorWrapper);
+      dynamicEntry.proceduralTransitionDynamicsBound = true;
+    }
+    return result;
+  }
   if (!viewer?.proceduralPlan || !dynamicEntry?.sourceScene) return 0;
   const entityId = String(
     dynamicEntry.entityId
@@ -33279,6 +33822,8 @@ function applyProceduralDynamicsPreviewTransform(entry, elapsedSeconds, deltaSec
   if (!instance || !motionRoot) return false;
   const sample = sampleProceduralDynamicsTransform(instance, elapsedSeconds);
   if (!sample) return false;
+  entry.proceduralDynamicsOpacity = Number.isFinite(Number(sample.opacity)) ? Number(sample.opacity) : 1;
+  entry.proceduralDynamicsVisible = sample.visible !== false;
   const sampledPosition = Array.isArray(sample.position)
     ? new THREE.Vector3().fromArray(sample.position)
     : new THREE.Vector3(
@@ -33379,6 +33924,11 @@ function animateDynamicGeometry(viewer) {
 }
 
 function animateProceduralDynamicsPreview(viewer, time = viewer?.elapsed || 0) {
+  if (viewer?.proceduralDynamicsByRole) {
+    return viewer.finalReviewTransitionPlayback
+      ? animateFinalReviewTransitionDynamics(viewer)
+      : animateInterBeatProceduralDynamics(viewer);
+  }
   const previousTime = Number(viewer?.proceduralPreviewPreviousTime);
   const deltaSeconds = Number.isFinite(previousTime)
     ? Math.max(0, Math.min(time - previousTime, 0.05))
@@ -33389,10 +33939,14 @@ function animateProceduralDynamicsPreview(viewer, time = viewer?.elapsed || 0) {
       const duration = Math.max(Number(item.proceduralSourceMotionDuration) || 0, 0.001);
       item.proceduralMixer.setTime(
         time * (Number(item.proceduralAnimationTimeScale) || 1)
-        + duration * (Number(item.proceduralAnimationPhase01) || 0),
+        + duration * (Number(item.proceduralAnimationPhase01) || 0)
+        + (Number(item.proceduralClipTimeOffset) || 0),
       );
     }
-    applyProceduralDynamicsPreviewTransform(item, time, deltaSeconds);
+    if (!item.proceduralTransitionBaseTransform && (previousTime !== time || !item.proceduralTransformInitialized)) {
+      applyProceduralDynamicsPreviewTransform(item, time, item.proceduralTransformInitialized ? deltaSeconds : 0);
+      item.proceduralTransformInitialized = true;
+    }
   }
   animateProceduralDynamicsGeneratedObjects(viewer, time);
 }
@@ -35008,6 +35562,7 @@ function animateDynamicEffectOverlays(effects, kind, time) {
 function animateInterBeatDynamics(viewer) {
   const cycleProgress = previewCycleProgress(viewer);
   const progress = interBeatTransitionProgress(viewer);
+  if (viewer.proceduralDynamicsByRole) animateInterBeatProceduralDynamics(viewer);
   if (viewer.generatedTransitionPlan?.middle?.actions?.some((action) => action.animation)
     || viewer.proceduralTransitionAnimationEntries?.size) {
     prepareProceduralTransitionAnimations(viewer, progress);
@@ -35127,9 +35682,11 @@ function applyInterBeatExactSceneVisibility(viewer, progress) {
   const interpolatedTargets = new Set();
   for (const item of viewer.dynamicObjects || []) {
     if (!item?.authorWrapper || !item?.authoredTransform) continue;
-    item.authorWrapper.position.copy(item.authoredTransform.position);
-    item.authorWrapper.quaternion.copy(item.authoredTransform.quaternion);
-    item.authorWrapper.scale.copy(item.authoredTransform.scale);
+    const pose = item.proceduralTransitionBaseTransform || item.authoredTransform;
+    item.authorWrapper.position.copy(pose.position);
+    item.authorWrapper.quaternion.copy(pose.quaternion);
+    item.authorWrapper.scale.copy(pose.scale);
+    if (item.proceduralTransitionDynamicsBound && !item.proceduralTransitionBaseTransform) item.proceduralTransitionMaterialState = null;
     if (!item.proceduralTransitionMaterialState) {
       item.proceduralTransitionMaterialState = (item.opacityMaterials || []).map((material) => ({
         color: material?.color?.clone?.() || null,
@@ -35157,21 +35714,23 @@ function applyInterBeatExactSceneVisibility(viewer, progress) {
         && String(item.entityId || "") === String(match.targetEntityId || "")
       ));
       if (!source?.sourceScene || !target?.sourceScene || !source.authoredTransform || !target.authoredTransform) continue;
+      const sourcePose = source.proceduralTransitionBaseTransform || source.authoredTransform;
+      const targetPose = target.proceduralTransitionBaseTransform || target.authoredTransform;
       target.authorWrapper.position.lerpVectors(
-        source.authoredTransform.position,
-        target.authoredTransform.position,
+        sourcePose.position,
+        targetPose.position,
         smooth,
       );
       if (generatedPlan?.style === "interpolate" && Number(generatedPlan.arcHeightMeters) > 0) {
         target.authorWrapper.position.y += Math.sin(smooth * Math.PI) * Number(generatedPlan.arcHeightMeters);
       }
-      target.authorWrapper.quaternion.copy(source.authoredTransform.quaternion).slerp(
-        target.authoredTransform.quaternion,
+      target.authorWrapper.quaternion.copy(sourcePose.quaternion).slerp(
+        targetPose.quaternion,
         smooth,
       );
       target.authorWrapper.scale.lerpVectors(
-        source.authoredTransform.scale,
-        target.authoredTransform.scale,
+        sourcePose.scale,
+        targetPose.scale,
         smooth,
       );
       interpolatedSources.add(source);
@@ -35346,6 +35905,11 @@ function prepareProceduralTransitionAnimations(viewer, progress) {
   if (!viewer.proceduralTransitionAnimationEntries) viewer.proceduralTransitionAnimationEntries = new Map();
   for (const [item, playback] of viewer.proceduralTransitionAnimationEntries) {
     if (targets.has(item) && playback.root === item.sourceScene) continue;
+    if (viewer.proceduralDynamicsByRole && progress >= 1 && playback.action?.animation) {
+      playback.player.sample(playback.action.animation,
+        (playback.action.endProgress - playback.action.startProgress) * viewer.generatedTransitionPlan.durationSeconds);
+    }
+    if (viewer.proceduralDynamicsByRole) resumeInterBeatDynamicsClip(item, playback.player);
     playback.player.dispose();
     item.proceduralTransitionAnimationPlayer = null;
     viewer.proceduralTransitionAnimationEntries.delete(item);
@@ -35360,6 +35924,10 @@ function prepareProceduralTransitionAnimations(viewer, progress) {
       THREE,
       root: item.sourceScene,
       animations: item.sourceAnimations,
+      ...(item.proceduralAction ? { initialAnimation: {
+        clipIndex: item.sourceAnimations.indexOf(item.proceduralAction.getClip()),
+        timeSeconds: item.proceduralAction.time,
+      } } : {}),
     });
     item.proceduralTransitionAnimationPlayer = player;
     viewer.proceduralTransitionAnimationEntries.set(item, { root: item.sourceScene, player, action });
@@ -35367,10 +35935,17 @@ function prepareProceduralTransitionAnimations(viewer, progress) {
 }
 
 function applyProceduralTransitionTracks(viewer, action) {
-  const values = proceduralTransitionTrackSample(action, action.localProgress);
+  const sampledValues = proceduralTransitionTrackSample(action, action.localProgress);
   for (const item of transitionMiddleTargetObjects(viewer, action)) {
+    const values = item.proceduralTransitionDynamicsBound
+      ? blendProceduralTransitionHandoffTransform(sampledValues, {
+          progress: interBeatTransitionProgress(viewer),
+          durationSeconds: viewer.generatedTransitionPlan.durationSeconds,
+          role: item.transitionSceneRole,
+        })
+      : sampledValues;
     const target = item.authorWrapper || item.wrapper;
-    const saved = item.authoredTransform;
+    const saved = item.proceduralTransitionBaseTransform || item.authoredTransform;
     if (!target || !saved) continue;
     if (values.positionOffset !== undefined) {
       target.position.copy(saved.position).add(new THREE.Vector3().fromArray(values.positionOffset));
@@ -35386,6 +35961,14 @@ function applyProceduralTransitionTracks(viewer, action) {
         ? new THREE.Vector3().fromArray(values.scaleMultiplier)
         : new THREE.Vector3().setScalar(values.scaleMultiplier);
       target.scale.copy(saved.scale).multiply(multiplier);
+    }
+    if (action.parameters?.orientation?.kind === "path-tangent") {
+      applyProceduralTransitionPathOrientation({
+        THREE, target, action, baseQuaternion: saved.quaternion,
+        progress: interBeatTransitionProgress(viewer),
+        durationSeconds: viewer.generatedTransitionPlan.durationSeconds,
+        role: item.transitionSceneRole,
+      });
     }
     if (values.opacity !== undefined) setDynamicPreviewObjectOpacity(item, values.opacity);
     for (const material of item.opacityMaterials || []) {
@@ -35535,8 +36118,19 @@ function applyProceduralTransitionMiddle(viewer, progress) {
   return sample.actions.length > 0;
 }
 
+function resumeInterBeatDynamicsClip(item, player) {
+  const playback = player?.getPlaybackState?.();
+  const clip = item.proceduralAction?.getClip?.();
+  if (!playback || !clip || item.sourceAnimations?.[playback.clipIndex] !== clip) return;
+  const time = Number(item.proceduralDynamicsElapsed) || 0;
+  item.proceduralClipTimeOffset = playback.timeSeconds
+    - time * (Number(item.proceduralAnimationTimeScale) || 1)
+    - Math.max(Number(item.proceduralSourceMotionDuration) || 0, 0.001) * (Number(item.proceduralAnimationPhase01) || 0);
+}
+
 function disposeProceduralTransitionMiddle(viewer) {
   for (const [item, playback] of viewer?.proceduralTransitionAnimationEntries || []) {
+    if (viewer.proceduralDynamicsByRole) resumeInterBeatDynamicsClip(item, playback.player);
     playback.player.dispose();
     item.proceduralTransitionAnimationPlayer = null;
   }
@@ -35581,6 +36175,9 @@ function updateCumulativeInterBeatFadeTargets(viewer, progress) {
 }
 
 function setDynamicPreviewObjectOpacity(item, opacity) {
+  if (item?.proceduralTransitionDynamicsBound) {
+    opacity *= item.proceduralDynamicsVisible === false ? 0 : (item.proceduralDynamicsOpacity ?? 1);
+  }
   const visible = Number(opacity) > 0.001;
   if (item?.wrapper) item.wrapper.visible = visible;
   setPreviewOpacityMaterials(item?.opacityMaterials, opacity);
@@ -36102,6 +36699,7 @@ function disposeInterBeatDynamicsViewer() {
   if (interBeatViewer.sourceCameraControlStartHandler) interBeatViewer.controls?.removeEventListener("start", interBeatViewer.sourceCameraControlStartHandler);
   interBeatViewer.controls?.dispose();
   disposeProceduralTransitionMiddle(interBeatViewer);
+  for (const scoped of Object.values(interBeatViewer.proceduralDynamicsByRole || {})) disposeProceduralDynamicsPreview(scoped);
   disposeLockedEnvironmentFromViewer(interBeatViewer);
   disposeAuthorPreviewEmbeddedAnimations(interBeatViewer);
   disposeObject(interBeatViewer.scene);
@@ -36186,10 +36784,16 @@ function disposeInteractionControlViewer() {
   if (interactionViewer.interactionInBeatPickPointerDownHandler) interactionViewer.renderer?.domElement?.removeEventListener("pointerdown", interactionViewer.interactionInBeatPickPointerDownHandler);
   interactionViewer.interactionInBeatPickGesture = null;
   clearInteractionConstraintGhosts(interactionViewer);
+  clearInteractionDirectDestinationVisuals(interactionViewer);
   interactionViewer.transformControls?.detach?.();
   interactionViewer.transformControls?.dispose?.();
   interactionViewer.transformHelper?.removeFromParent?.();
   interactionViewer.controls?.dispose();
+  for (const entry of interactionViewer.spatialPlaybackEntries || []) {
+    entry.sourcePlayback?.mixer?.stopAllAction?.();
+    if (entry.sourceScene) entry.sourcePlayback?.mixer?.uncacheRoot?.(entry.sourceScene);
+  }
+  disposeProceduralDynamicsPreview(interactionViewer);
   disposeLockedEnvironmentFromViewer(interactionViewer);
   disposeAuthorPreviewEmbeddedAnimations(interactionViewer);
   disposeObject(interactionViewer.scene);
@@ -36222,6 +36826,7 @@ function disposeFinalReviewViewer() {
   finalReviewViewer.controls?.dispose();
   disposeProceduralTransitionMiddle(finalReviewViewer);
   disposeProceduralDynamicsPreview(finalReviewViewer);
+  for (const scoped of Object.values(finalReviewViewer.proceduralDynamicsByRole || {})) disposeProceduralDynamicsPreview(scoped);
   disposeLockedEnvironmentFromViewer(finalReviewViewer);
   disposeAuthorPreviewEmbeddedAnimations(finalReviewViewer);
   disposeObject(finalReviewViewer.scene);
@@ -37209,7 +37814,9 @@ function finalReviewTransitionPlaybackForContext(context) {
     || !sourceGraphTransitionContextMatches(toContext, pending.toContext)
     || (playback?.canScrub !== true && playback?.canPreviewGeneratedTransition !== true)
   ) return null;
-  return playback;
+  return pending.sourceDynamicsHandoff
+    ? { ...playback, sourceDynamicsHandoff: pending.sourceDynamicsHandoff }
+    : playback;
 }
 
 function finalReviewTransitionAssetLinks(playback) {
@@ -37359,6 +37966,7 @@ async function openFinalReviewScene(targetContext) {
     edgeId: authoredTransition.edgeId || authoredTransition.key || "",
     fromContext: cloneJson(currentContext),
     toContext: cloneJson(validContext),
+    sourceDynamicsHandoff: captureFinalReviewDynamicsHandoff(finalReviewViewer),
   } : null;
   state.finalReviewViewerCameraState = captureFinalReviewViewerCameraState();
   const currentEntry = storyvrNavigationFromHistoryState(window.history.state);
@@ -40412,7 +41020,8 @@ function interactionInBeatSceneMatches(record, context) {
 function interactionInBeatTargetKey(target) {
   if (!target || typeof target !== "object") return "";
   const entityId = String(target.entityId || "");
-  if (Number.isSafeInteger(Number(target.nodeIndex)) && Number(target.nodeIndex) >= 0) {
+  if (target.nodeIndex != null && String(target.nodeIndex).trim() !== ""
+    && Number.isSafeInteger(Number(target.nodeIndex)) && Number(target.nodeIndex) >= 0) {
     return `${entityId}|node:${Number(target.nodeIndex)}`;
   }
   const nodePath = String(target.nodePath || "").trim();
@@ -40733,6 +41342,7 @@ function interactionDefaultConfiguration(kind, context = {}) {
       scaleRatio: 0.12,
     },
     completion: "all",
+    completionTiming: { mode: "immediate", holdSeconds: 0.5 },
   };
 }
 
@@ -40866,6 +41476,12 @@ function normalizeInteractionConfiguration(value, kind, context = {}) {
       scaleRatio: interactionFiniteNumber(source.tolerance?.scaleRatio, defaults.tolerance.scaleRatio, 0.01, 1),
     },
     completion: "all",
+    completionTiming: {
+      mode: ["immediate", "hold", "release"].includes(source.completionTiming?.mode)
+        ? source.completionTiming.mode
+        : "immediate",
+      holdSeconds: interactionFiniteNumber(source.completionTiming?.holdSeconds, 0.5, 0.1, 10),
+    },
   };
 }
 

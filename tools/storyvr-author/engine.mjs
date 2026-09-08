@@ -59,6 +59,10 @@ import {
   requireSceneContext,
 } from "./procedural-dynamics.mjs";
 import {
+  proceduralDynamicsPlansForScene,
+  proceduralDynamicsSceneKey,
+} from "./procedural-dynamics-runtime.js";
+import {
   PROCEDURAL_TRANSITION_CANDIDATE_SCHEMA_VERSION,
   applyProceduralTransitionPlanToStore,
   generateProceduralTransitionIntent,
@@ -2086,6 +2090,16 @@ export async function generateProceduralTransitionPlan(options, request = {}) {
         }
       },
     });
+    const currentDynamics = await readProceduralDynamicsStore(
+      state.paths,
+      state.graph,
+      state.runtime,
+      proceduralDynamicsContexts(state.graph, state.runtime, state.spatialRelations),
+    );
+    assertProceduralTransitionDynamicsBaseline(
+      proceduralTransitionDynamicsSignature(state),
+      proceduralTransitionDynamicsSignature({ ...state, proceduralDynamics: currentDynamics }),
+    );
   } catch (error) {
     throw attachGenerativeUsage(error, ...usageSources);
   }
@@ -2283,6 +2297,9 @@ async function proceduralTransitionRequestState(options, rawBoundaryContext) {
     boundary,
     spatialRelations,
     ...eligibility,
+    proceduralDynamics: await readProceduralDynamicsStore(
+      paths, graph, runtime, proceduralDynamicsContexts(graph, runtime, spatialRelations),
+    ),
     proceduralTransitions: await readProceduralTransitionsStore(paths, graph, runtime, spatialRelations),
   };
 }
@@ -2383,8 +2400,47 @@ export function proceduralTransitionGenerationContext(state) {
       from: summarizeEndpoint(state.boundary.fromContext, state.boundary.fromBeat, state.fromSpatialScene),
       to: summarizeEndpoint(state.boundary.toContext, state.boundary.toBeat, state.toSpatialScene),
     },
+    endpointDynamics: proceduralTransitionEndpointDynamicsContext(state),
     availableAssets,
   };
+}
+
+export function proceduralTransitionEndpointDynamicsContext(state) {
+  const store = state.proceduralDynamics;
+  const summarizeEndpoint = (context) => {
+    const sceneKey = proceduralDynamicsSceneKey(context);
+    const beatSceneKey = proceduralDynamicsSceneKey({ beatId: context?.beatId });
+    const plansByScene = store?.plansByScene || {};
+    const savedSceneKey = Object.hasOwn(plansByScene, sceneKey)
+      ? sceneKey
+      : Object.hasOwn(plansByScene, beatSceneKey) ? beatSceneKey : null;
+    return {
+      context: cloneJson(context),
+      sceneKey,
+      savedSceneKey,
+      inheritsBeatDynamics: Boolean(savedSceneKey && savedSceneKey !== sceneKey),
+      plans: cloneJson(proceduralDynamicsPlansForScene(store, context)),
+    };
+  };
+  return {
+    from: summarizeEndpoint(state.boundary.fromContext),
+    to: summarizeEndpoint(state.boundary.toContext),
+  };
+}
+
+function proceduralTransitionDynamicsSignature(state) {
+  // Only the two effective endpoint plans matter. A message or unrelated scene's
+  // Dynamics revision must not invalidate this exact boundary's preview.
+  return dynamicsJsonSignature(proceduralTransitionEndpointDynamicsContext(state));
+}
+
+function assertProceduralTransitionDynamicsBaseline(submitted, current) {
+  if (!submitted || submitted !== current) {
+    throw Object.assign(new Error("Saved Dynamics for this transition changed during generation or after its preview. Generate a new preview before applying."), {
+      statusCode: 409,
+      code: "transition-dynamics-changed",
+    });
+  }
 }
 
 function assertProceduralTransitionRequestEligible(state) {
@@ -2412,6 +2468,7 @@ function proceduralTransitionBaseline(state) {
     sourceMotionSignature: dynamicsJsonSignature({
       linking: sourceMotionEffectiveSignature(state.graph.sourceMotionLinking, state.graph.sourceMotionPlayback),
     }),
+    endpointDynamicsSignature: proceduralTransitionDynamicsSignature(state),
     assetInventorySignature: dynamicsJsonSignature(state.graph.assetInventory || state.runtime.assets || []),
   };
 }
@@ -2426,6 +2483,7 @@ function assertProceduralTransitionBaseline(submitted, current, expectedRevision
       statusCode: 409,
     });
   }
+  assertProceduralTransitionDynamicsBaseline(submitted.endpointDynamicsSignature, current.endpointDynamicsSignature);
   for (const key of [
     "boundarySignature",
     "sourceGraphSignature",
@@ -3155,6 +3213,15 @@ function directManipulationDestinationWithinConstraints(target) {
   ))) && directManipulationScaleDestinationIsReachable(target, transform);
 }
 
+function directManipulationCompletionTiming(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const requestedMode = String(source.mode || "").trim().toLowerCase();
+  return {
+    mode: ["immediate", "hold", "release"].includes(requestedMode) ? requestedMode : "immediate",
+    holdSeconds: interactionConfigurationNumber(source.holdSeconds ?? 0.5, 0.5, 0.1, 10),
+  };
+}
+
 function defaultInteractionControllerBindings() {
   return [
     { hand: "right", input: "a", action: "next-beat" },
@@ -3817,6 +3884,7 @@ export function sanitizeInteractionControlConfiguration(policyValue, value = nul
       targets,
       tolerance,
       completion: "all",
+      completionTiming: directManipulationCompletionTiming(source.completionTiming),
     };
   }
   return null;
@@ -3878,6 +3946,10 @@ function validInteractionControlConfiguration(policy, value, context = {}) {
     return false;
   }
   if (JSON.stringify(sanitized) === JSON.stringify(value)) return true;
+  if (sanitized.type === "direct-manipulation" && value.completionTiming === undefined) {
+    const { completionTiming: _completionTiming, ...legacyConfiguration } = sanitized;
+    return JSON.stringify(legacyConfiguration) === JSON.stringify(value);
+  }
   if (sanitized.type !== "controller-button-press") return false;
   if ([
     INTERACTION_CONTROL_CONFIGURATION_SCHEMA_VERSION,
@@ -6548,6 +6620,8 @@ function isKnownLegacyManagedReaderTemplate(target, currentContent, desiredConte
     'import { clampProceduralDynamicsPlan, expandProceduralDynamicsInstances, proceduralDynamicsPlansForScene, sampleProceduralDynamicsTransform } from "./procedural-dynamics-runtime.js";',
     'import { proceduralTransitionEasedProgress, proceduralTransitionPlanForBoundary } from "./procedural-transitions-runtime.js";',
     'import { createProceduralTransitionAnimationPlayer } from "./procedural-transition-animation.js";',
+    'import { blendProceduralTransitionHandoffTransform, createProceduralTransitionAnimationPlayer } from "./procedural-transition-animation.js";',
+    'import { applyProceduralTransitionPathOrientation, blendProceduralTransitionHandoffTransform, createProceduralTransitionAnimationPlayer } from "./procedural-transition-animation.js";',
     "import {",
     "clampProceduralDynamicsPlan,",
     "expandProceduralDynamicsGeneratedObjects,",
