@@ -25,7 +25,7 @@ import {
   proceduralTransitionPlanForBoundary,
   proceduralTransitionTrackSample,
 } from "./procedural-transitions-runtime.js";
-import { createProceduralTransitionAnimationPlayer } from "./procedural-transition-animation.js";
+import { applyProceduralTransitionPathOrientation, blendProceduralTransitionHandoffTransform, createProceduralTransitionAnimationPlayer } from "./procedural-transition-animation.js";
 import {
   augmentGltfLoaderWithStoryVrPointClouds,
   updateStoryVrPointCloudEffects,
@@ -64,7 +64,7 @@ const XR_FRAMEBUFFER_SCALE_FACTOR = 0.8;
 const XR_FIXED_FOVEATION = 1;
 const XR_TEXT_PANEL_DEFAULT_HAND = "left";
 const XR_TEXT_PANEL_WIDTH = 0.46;
-const XR_TEXT_PANEL_HEIGHT = 0.252;
+const XR_TEXT_PANEL_HEIGHT = 0.2875;
 const XR_TEXT_PANEL_RENDER_ORDER = 20_000;
 const XR_TEXT_PANEL_RAY_LENGTH = 3.2;
 const STORYVR_TEXT_LAYOUT_CONTRACT_VERSION = "storyvr-text-layout/v1";
@@ -2242,6 +2242,7 @@ function normalizeRuntimeInteractionConfiguration(value, policy) {
       targets: nonOverlappingTargets,
       tolerance: normalizedTolerance,
       completion: source.completion === "any" ? "any" : "all",
+      completionTiming: normalizeRuntimeDirectCompletionTiming(source.completionTiming),
     };
   }
   return { ...source, schemaVersion };
@@ -4983,6 +4984,15 @@ function runtimeDirectTriggerChannels(target, interactable = null) {
   };
 }
 
+function normalizeRuntimeDirectCompletionTiming(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const requestedMode = String(source.mode || "").trim().toLowerCase();
+  return {
+    mode: ["immediate", "hold", "release"].includes(requestedMode) ? requestedMode : "immediate",
+    holdSeconds: Number(finiteInteractionNumber(source.holdSeconds ?? 0.5, 0.5, 0.1, 10).toFixed(4)),
+  };
+}
+
 function runtimeDirectTransformError(root, target, interactable = null) {
   const destination = target?.destinationTransform;
   if (!root || !destination) return null;
@@ -5029,14 +5039,20 @@ function runtimeObjectWorldTransform(root) {
   return { position, quaternion: quaternion.normalize(), scale };
 }
 
-function runtimeDirectDestinationWorldTransform(root, target, interactable = null) {
+function runtimeDirectCueSourceTransform(root, target, interactable = null) {
+  if (!root) return null;
+  return target?.coordinateSpace === "local"
+    ? runtimeInteractionLogicalTransform(root, interactable)
+    : runtimeObjectWorldTransform(root);
+}
+
+function runtimeDirectDestinationWorldTransform(root, target, interactable = null, start = null, progress = 1) {
   const destination = target?.destinationTransform;
   if (!root || !destination) return null;
   const entry = runtimeInteractionEntryFor(root, interactable);
   const reachable = runtimeDirectTriggerChannels(target, entry || interactable);
-  const current = target.coordinateSpace === "local"
-    ? runtimeInteractionLogicalTransform(root, entry)
-    : runtimeObjectWorldTransform(root);
+  const current = runtimeDirectCueSourceTransform(root, target, entry);
+  const amount = THREE.MathUtils.clamp(progress, 0, 1);
   const position = reachable.position
     ? new THREE.Vector3().fromArray(destination.position)
     : current.position.clone();
@@ -5046,6 +5062,11 @@ function runtimeDirectDestinationWorldTransform(root, target, interactable = nul
   const scale = reachable.scale
     ? new THREE.Vector3().fromArray(destination.scale)
     : current.scale.clone();
+  if (start) {
+    if (reachable.position) position.lerpVectors(start.position, position.clone(), amount);
+    if (reachable.rotation) quaternion.slerpQuaternions(start.quaternion, quaternion.clone(), amount);
+    if (reachable.scale) scale.lerpVectors(start.scale, scale.clone(), amount);
+  }
   const matrix = new THREE.Matrix4().compose(position, quaternion, scale);
   if (target.coordinateSpace === "local") {
     if (entry?.usesInteractionPivot) matrix.multiply(runtimeInteractionInitialMatrix(entry).invert());
@@ -5054,7 +5075,7 @@ function runtimeDirectDestinationWorldTransform(root, target, interactable = nul
     if (referenceParent) matrix.premultiply(referenceParent.matrixWorld);
   }
   matrix.decompose(position, quaternion, scale);
-  return { position, quaternion: quaternion.normalize(), scale };
+  return { position, quaternion: quaternion.normalize(), scale, matrix };
 }
 
 function runtimeDirectGhostTravelSeconds(distanceMeters) {
@@ -5090,6 +5111,7 @@ function createRuntimeDirectGhostMaterial(sourceMaterial) {
 function createRuntimeDirectGhostModel(root) {
   if (!root) return null;
   const ghost = cloneSkinnedObject(root);
+  const poseBindings = runtimeDirectGhostPoseBindings(root, ghost);
   const materials = [];
   ghost.name = `StoryVR manipulation ghost · ${root.name || root.uuid}`;
   ghost.userData = { ...ghost.userData, storyvrDirectManipulationGhost: true };
@@ -5111,16 +5133,55 @@ function createRuntimeDirectGhostModel(root) {
     node.material = Array.isArray(node.material) ? ghostMaterials : ghostMaterials[0];
     node.castShadow = false;
     node.receiveShadow = false;
+    node.frustumCulled = false;
     node.renderOrder = (Number(node.renderOrder) || 0) + 2;
   });
-  return { ghost, materials };
+  return { ghost, materials, poseBindings };
+}
+
+function runtimeDirectGhostPoseBindings(source, ghost) {
+  const bindings = [];
+  const visit = (sourceNode, ghostNode) => {
+    if (!sourceNode || !ghostNode) return;
+    bindings.push({ source: sourceNode, ghost: ghostNode });
+    sourceNode.children.forEach((child, index) => visit(child, ghostNode.children[index]));
+  };
+  visit(source, ghost);
+  return bindings;
+}
+
+function syncRuntimeDirectGhostSourcePose(cue) {
+  for (const { source, ghost } of cue?.poseBindings || []) {
+    if (source !== cue.root) {
+      ghost.visible = source.visible && !source.isCamera && !source.isLight && !source.isAudio;
+      ghost.position.copy(source.position);
+      ghost.quaternion.copy(source.quaternion);
+      ghost.scale.copy(source.scale);
+      ghost.matrixAutoUpdate = source.matrixAutoUpdate;
+      ghost.matrix.copy(source.matrix);
+    }
+    if (ghost.isSkinnedMesh) {
+      ghost.boundingBox = null;
+      ghost.boundingSphere = null;
+    }
+    if (source.morphTargetInfluences && ghost.morphTargetInfluences) {
+      for (let index = 0; index < source.morphTargetInfluences.length; index += 1) {
+        ghost.morphTargetInfluences[index] = source.morphTargetInfluences[index];
+      }
+    }
+  }
 }
 
 function applyRuntimeDirectGhostTransform(object, transform) {
   if (!object || !transform) return;
-  object.position.copy(transform.position);
-  object.quaternion.copy(transform.quaternion);
-  object.scale.copy(transform.scale);
+  const matrix = transform.matrix?.clone() || new THREE.Matrix4().compose(transform.position, transform.quaternion, transform.scale);
+  if (object.parent) {
+    object.parent.updateWorldMatrix(true, false);
+    matrix.premultiply(object.parent.matrixWorld.clone().invert());
+  }
+  object.matrixAutoUpdate = false;
+  object.matrix.copy(matrix);
+  matrix.decompose(object.position, object.quaternion, object.scale);
   object.updateMatrixWorld(true);
 }
 
@@ -5129,12 +5190,14 @@ function startRuntimeDirectManipulationCue(cue, startedAt = elapsedSeconds) {
   const destination = runtimeDirectDestinationWorldTransform(cue?.root, cue?.target, cue?.interactable);
   if (!cue?.ghost || !start || !destination) return false;
   cue.start = start;
+  cue.startCoordinates = runtimeDirectCueSourceTransform(cue.root, cue.target, cue.interactable);
   cue.destination = destination;
   cue.travelSeconds = runtimeDirectGhostTravelSeconds(start.position.distanceTo(destination.position));
   cue.phase = "travel";
   cue.phaseStartedAt = startedAt;
   cue.ghost.visible = true;
-  applyRuntimeDirectGhostTransform(cue.ghost, start);
+  syncRuntimeDirectGhostSourcePose(cue);
+  applyRuntimeDirectGhostTransform(cue.ghost, runtimeDirectDestinationWorldTransform(cue.root, cue.target, cue.interactable, cue.startCoordinates, 0));
   return true;
 }
 
@@ -5147,6 +5210,7 @@ function createRuntimeDirectManipulationCue(root, target, interactable = null) {
     interactable,
     ghost: result.ghost,
     materials: result.materials,
+    poseBindings: result.poseBindings,
     phase: "idle",
     phaseStartedAt: elapsedSeconds,
     lastReaderInteractionAt: elapsedSeconds,
@@ -5172,12 +5236,23 @@ function runtimeDirectManipulationCueKey(root, target) {
 function suspendRuntimeDirectManipulationCue(cue, interactedAt = elapsedSeconds) {
   if (!cue) return;
   cue.lastReaderInteractionAt = interactedAt;
-  cue.phase = "idle";
+  cue.phase = "interaction";
   cue.phaseStartedAt = interactedAt;
-  if (cue.ghost) cue.ghost.visible = false;
+  const destination = runtimeDirectDestinationWorldTransform(cue.root, cue.target, cue.interactable);
+  if (cue.ghost && destination) {
+    cue.destination = destination;
+    cue.ghost.visible = true;
+    applyRuntimeDirectGhostTransform(cue.ghost, destination);
+  }
 }
 
 function markRuntimeDirectManipulationActivity(root, interactedAt = elapsedSeconds) {
+  for (const interaction of activeRuntimeDirectInteractions) {
+    if (interaction.targetEntries.some((entry) => entry.root === root)) {
+      interaction.completionState ||= { hasManipulated: false, matchStartedAt: null };
+      interaction.completionState.hasManipulated = true;
+    }
+  }
   for (const cue of activeRuntimeDirectCues) {
     if (cue.root === root) suspendRuntimeDirectManipulationCue(cue, interactedAt);
   }
@@ -5186,12 +5261,17 @@ function markRuntimeDirectManipulationActivity(root, interactedAt = elapsedSecon
 function updateRuntimeDirectManipulationCues(now = elapsedSeconds) {
   for (const cue of activeRuntimeDirectCues) {
     if (!cue.ghost) continue;
+    syncRuntimeDirectGhostSourcePose(cue);
     if (
       xrDirectManipulationGrab?.root === cue.root
       || (typeof xrDirectManipulationScale !== "undefined" && xrDirectManipulationScale?.root === cue.root)
     ) {
       suspendRuntimeDirectManipulationCue(cue, now);
       continue;
+    }
+    if (cue.phase === "interaction") {
+      cue.phase = "hold";
+      cue.phaseStartedAt = now;
     }
     if (cue.phase === "idle") {
       const inactiveSince = Math.max(cue.phaseStartedAt, cue.lastReaderInteractionAt);
@@ -5203,16 +5283,18 @@ function updateRuntimeDirectManipulationCues(now = elapsedSeconds) {
     if (cue.phase === "travel") {
       const progress = THREE.MathUtils.clamp((now - cue.phaseStartedAt) / cue.travelSeconds, 0, 1);
       const eased = THREE.MathUtils.smootherstep(progress, 0, 1);
-      cue.ghost.position.lerpVectors(cue.start.position, cue.destination.position, eased);
-      cue.ghost.quaternion.slerpQuaternions(cue.start.quaternion, cue.destination.quaternion, eased);
-      cue.ghost.scale.lerpVectors(cue.start.scale, cue.destination.scale, eased);
-      cue.ghost.updateMatrixWorld(true);
+      const transform = runtimeDirectDestinationWorldTransform(cue.root, cue.target, cue.interactable, cue.startCoordinates, eased);
+      applyRuntimeDirectGhostTransform(cue.ghost, transform);
       if (progress >= 1) {
-        applyRuntimeDirectGhostTransform(cue.ghost, cue.destination);
+        cue.destination = transform;
         cue.phase = "hold";
         cue.phaseStartedAt = now;
       }
       continue;
+    }
+    if (cue.phase === "hold") {
+      cue.destination = runtimeDirectDestinationWorldTransform(cue.root, cue.target, cue.interactable);
+      applyRuntimeDirectGhostTransform(cue.ghost, cue.destination);
     }
     if (cue.phase === "hold" && now - cue.phaseStartedAt >= DIRECT_GHOST_DESTINATION_HOLD_SECONDS) {
       cue.ghost.visible = false;
@@ -5228,6 +5310,7 @@ function disposeRuntimeDirectManipulationCue(cue) {
   if (cue) {
     cue.ghost = null;
     cue.materials = [];
+    cue.poseBindings = [];
   }
 }
 
@@ -5280,8 +5363,9 @@ function configureRuntimeDirectManipulation() {
     activeRuntimeDirectInteractions.push({
       ...interaction,
       configuration,
-      targetCount: targetEntries.length,
+      targetCount: targets.length,
       targetEntries,
+      completionState: { hasManipulated: false, matchStartedAt: null },
     });
   }
 }
@@ -5619,10 +5703,36 @@ function runtimeDirectInteractionComplete(interaction) {
   return interaction.configuration?.completion === "any" ? matches.some(Boolean) : matches.every(Boolean);
 }
 
-function evaluateRuntimeDirectManipulationCompletion() {
+function runtimeDirectCompletionTimingReady(interaction, matches, held, now) {
+  const state = interaction.completionState ||= { hasManipulated: false, matchStartedAt: null };
+  if (!matches) {
+    state.matchStartedAt = null;
+    return false;
+  }
+  const timing = normalizeRuntimeDirectCompletionTiming(interaction.configuration?.completionTiming);
+  if (timing.mode === "immediate") return true;
+  if (!state.hasManipulated) return false;
+  if (timing.mode === "release") return !held;
+  if (state.matchStartedAt === null || now < state.matchStartedAt) state.matchStartedAt = now;
+  return now - state.matchStartedAt + 1e-6 >= timing.holdSeconds;
+}
+
+function evaluateRuntimeDirectManipulationCompletion(options = {}) {
   if (activeRuntimeAutoInterpolation) return false;
   if (runtimeNavigationPending) return false;
-  const interaction = activeRuntimeDirectInteractions.find((candidate) => runtimeDirectInteractionComplete(candidate));
+  const interaction = activeRuntimeDirectInteractions.find((candidate) => {
+    const timing = normalizeRuntimeDirectCompletionTiming(candidate.configuration?.completionTiming);
+    if (options.timedOnly && timing.mode === "immediate") return false;
+    const held = candidate.targetEntries.some((entry) => (
+      xrDirectManipulationGrab?.root === entry.root || xrDirectManipulationScale?.root === entry.root
+    ));
+    return runtimeDirectCompletionTimingReady(
+      candidate,
+      runtimeDirectInteractionComplete(candidate),
+      held,
+      elapsedSeconds,
+    );
+  });
   if (!interaction) return false;
   if (interaction.kind === "variant") {
     return activateRuntimeVariantOption(interaction.variantGroup, interaction.toVariantOptionId, interaction.record);
@@ -5756,16 +5866,21 @@ function updateReaderGuidance() {
   }
   const outgoing = runtimeInteractionForBoundary(activeIndex, activeIndex + 1);
   if (isDirectManipulationInteraction(outgoing)) {
-    const targets = runtimeInteractionConfiguration(outgoing)?.targets || [];
+    const configuration = runtimeInteractionConfiguration(outgoing);
+    const targets = configuration?.targets || [];
     const canMove = targets.some((target) => target.oneHandGrabbable === true);
     const canResize = targets.some((target) => target.twoHandScalable === true);
     const action = canMove && canResize
       ? "move or resize the highlighted object until it matches the glowing guide"
       : canResize ? "resize the highlighted object until it matches the glowing guide"
         : "move the highlighted object until it matches the glowing guide";
+    const timing = normalizeRuntimeDirectCompletionTiming(configuration?.completionTiming);
+    const completionHint = timing.mode === "hold"
+      ? ` Keep all targets matched for ${timing.holdSeconds} seconds to continue.`
+      : timing.mode === "release" ? " Release Grip with all targets matched to continue." : "";
     readerGuidanceText.textContent = activeReaderStoryGuidance.key === "shark"
-      ? `For the shark activity, hold Grip in a headset to ${action}. On desktop, select Next.`
-      : `${activeReaderStoryGuidance.context} In a headset, hold Grip to ${action}. On desktop, select Next.`;
+      ? `For the shark activity, hold Grip in a headset to ${action}.${completionHint} On desktop, select Next.`
+      : `${activeReaderStoryGuidance.context} In a headset, hold Grip to ${action}.${completionHint} On desktop, select Next.`;
     return;
   }
   if (isPhysicalLocomotionBoundary(outgoing)) {
@@ -6813,6 +6928,11 @@ async function showProceduralDynamicsForBeat(beat, variantOption, loadRevision, 
     loadedCount += 1;
   }
   updateProceduralDynamics(0);
+  if (activeRuntimeAutoInterpolation) {
+    for (const entry of activeProceduralDynamicsEntries) {
+      if (entry.generatedObjectBinding) setRuntimeAutoInterpolationOpacity(entry.wrapper, 0);
+    }
+  }
   return { loaded: loadedCount, failed: failedCount };
 }
 
@@ -6985,6 +7105,7 @@ function bindProceduralDynamicsToAuthoredTarget(target, instance, anchorPosition
     materials,
     originalMaterialState: materials.map((material) => ({
       opacity: Number.isFinite(Number(material.opacity)) ? Number(material.opacity) : 1,
+      dynamicsOpacity: material.userData?.storyvrDynamicsOpacity,
       transparent: material.transparent === true,
       color: material.color?.clone?.() || null,
       emissive: material.emissive?.clone?.() || null,
@@ -7246,8 +7367,7 @@ function updateProceduralDynamicsGeneratedEntry(entry, localTime) {
   entry.wrapper.visible = entry.instance.appearance?.visible !== false && sample.visible !== false && Number(sample.opacity) > 0.001;
   const opacity = Math.max(0, Math.min(1, Number(entry.instance.appearance?.opacity ?? 1) * Number(sample.opacity ?? 1)));
   for (const [materialIndex, material] of entry.materials.entries()) {
-    material.opacity = opacity;
-    material.transparent = material.transparent || opacity < 1;
+    setRuntimeProceduralDynamicsOpacity(material, opacity);
     applyRuntimeProceduralMaterialSample(material, sample, entry.materialStates?.[materialIndex]);
   }
   if (entry.light) {
@@ -7262,6 +7382,16 @@ function updateProceduralDynamicsGeneratedEntry(entry, localTime) {
 
 function updateProceduralDynamics(delta) {
   for (const entry of activeProceduralDynamicsEntries) {
+    // Keep the destination's sampled pose stable while transition tracks own
+    // its authored child. Freeze its clock too, so resuming cannot skip ahead.
+    if (activeRuntimeAutoInterpolation) {
+      if (Number.isFinite(entry.transitionPausedAtSeconds)) continue;
+      entry.transitionPausedAtSeconds = elapsedSeconds;
+    } else if (Number.isFinite(entry.transitionPausedAtSeconds)) {
+      entry.startedAtSeconds += elapsedSeconds - entry.transitionPausedAtSeconds;
+      delete entry.transitionPausedAtSeconds;
+      if (entry.generatedObjectBinding) delete entry.wrapper.userData.storyvrTransitionGeneratedBaseVisible;
+    }
     const localTime = Math.max(0, elapsedSeconds - entry.startedAtSeconds);
     if (entry.generatedObjectBinding) {
       updateProceduralDynamicsGeneratedEntry(entry, localTime);
@@ -7313,8 +7443,7 @@ function updateProceduralDynamics(delta) {
     for (const [materialIndex, material] of (entry.materials || []).entries()) {
       const baseOpacity = Number(entry.originalMaterialState?.[materialIndex]?.opacity ?? 1);
       const opacity = Math.max(0, Math.min(1, baseOpacity * Number(sample.opacity ?? 1)));
-      material.opacity = opacity;
-      material.transparent = material.transparent || opacity < 1;
+      setRuntimeProceduralDynamicsOpacity(material, opacity);
       applyRuntimeProceduralMaterialSample(
         material,
         sample,
@@ -7350,6 +7479,8 @@ function disposeProceduralDynamicsEntry(entry) {
   for (const [index, material] of (entry.materials || []).entries()) {
     const original = entry.originalMaterialState?.[index];
     if (!original) continue;
+    if (original.dynamicsOpacity === undefined) delete material.userData.storyvrDynamicsOpacity;
+    else material.userData.storyvrDynamicsOpacity = original.dynamicsOpacity;
     material.opacity = original.opacity;
     material.transparent = original.transparent;
     if (original.color && material.color) material.color.copy(original.color);
@@ -7568,7 +7699,31 @@ function activeRuntimeAutoInterpolationEntries() {
       entity: entry.entity,
       root: entry.authorTransformRoot,
     })),
-  ].filter((entry) => entry.root?.parent);
+    ...activeProceduralDynamicsEntries.filter((entry) => entry.generatedObjectBinding).map((entry) => ({
+      kind: "generated-object",
+      entity: { id: entry.instance.objectId },
+      root: entry.wrapper,
+    })),
+  ].filter((entry) => entry.root?.parent).map((entry) => {
+    const dynamicsEntry = activeProceduralDynamicsEntries.find((candidate) => (
+      candidate.authorTransformRoot === entry.root || (candidate.generatedObjectBinding && candidate.wrapper === entry.root)
+    ));
+    const clipIndex = dynamicsEntry?.action
+      ? (entry.animations || []).indexOf(dynamicsEntry.action.getClip())
+      : -1;
+    return {
+      ...entry,
+      // Capture the complete pose, including the outer generated-motion root.
+      transitionStartTransform: runtimeAutoInterpolationTransformRelativeTo(entry.root, modelRoot),
+      dynamicsEntry: dynamicsEntry || null,
+      hasProceduralDynamics: Boolean(dynamicsEntry),
+      proceduralAnimation: clipIndex >= 0 ? {
+        clipIndex,
+        timeSeconds: dynamicsEntry.action.time,
+        direction: 1,
+      } : null,
+    };
+  });
 }
 
 function cloneRuntimeAutoInterpolationMaterials(root, { snapshot = false } = {}) {
@@ -7613,9 +7768,14 @@ function disposeRuntimeAutoInterpolationMaterialClones(root) {
 function cloneRuntimeAutoInterpolationEntry(entry) {
   if (!entry?.root) return null;
   const snapshotRoot = cloneSkinnedObject(entry.root);
+  if (entry.transitionStartTransform) {
+    snapshotRoot.position.copy(entry.transitionStartTransform.position);
+    snapshotRoot.quaternion.copy(entry.transitionStartTransform.quaternion);
+    snapshotRoot.scale.copy(entry.transitionStartTransform.scale);
+  }
   const ownedMaterials = cloneRuntimeAutoInterpolationMaterials(snapshotRoot, { snapshot: true });
   const ownedGeometries = new Set();
-  if (entry.kind === "image") {
+  if (entry.kind === "image" || entry.kind === "generated-object") {
     snapshotRoot.traverse((node) => {
       if (!node.geometry?.clone) return;
       node.geometry = node.geometry.clone();
@@ -7624,6 +7784,8 @@ function cloneRuntimeAutoInterpolationEntry(entry) {
   }
   return {
     ...entry,
+    // A snapshot must never resume or mutate the disposed source Dynamics.
+    dynamicsEntry: null,
     model: runtimeTransitionSnapshotModel(entry, snapshotRoot),
     snapshotRoot,
     ownedMaterials,
@@ -7749,6 +7911,12 @@ function pairRuntimeAutoInterpolationEntries(outgoing, incoming) {
 
 function setRuntimeAutoInterpolationOpacity(root, opacity) {
   const value = normalizedProgress(opacity, 1);
+  if (root?.userData?.storyvrGeneratedObjectId) {
+    // Lights have no opacity material; visibility also prevents destination
+    // effects mounted directly in the scene from appearing during asset load.
+    root.userData.storyvrTransitionGeneratedBaseVisible ??= root.visible;
+    root.visible = root.userData.storyvrTransitionGeneratedBaseVisible !== false && value > 0;
+  }
   const materials = new Set();
   root?.traverse?.((node) => {
     const nodeMaterials = Array.isArray(node.material) ? node.material : [node.material].filter(Boolean);
@@ -7885,7 +8053,9 @@ function startRuntimeAutoInterpolation(loadRevision) {
   const interpolateObjects = !state.generatedTransitionPlan
     || state.generatedTransitionPlan.style === "interpolate";
   state.pairs = (interpolateObjects ? pairing.pairs : []).flatMap((pair) => {
-    const start = runtimeAutoInterpolationTransformRelativeTo(pair.outgoing.snapshotRoot, modelRoot);
+    const start = runtimeAutoInterpolationTransformRelativeTo(
+      pair.outgoing.snapshotRoot, pair.incoming.root.parent || modelRoot,
+    );
     if (!start) return [];
     const end = {
       position: pair.incoming.root.position.clone(),
@@ -8104,9 +8274,16 @@ function restoreRuntimeTransitionMiddleTargets(state) {
 
 function applyRuntimeTransitionTracks(state, action) {
   // storyvr-transition-property-tracks/v1
-  const values = proceduralTransitionTrackSample(action, action.localProgress);
+  const trackValues = proceduralTransitionTrackSample(action, action.localProgress);
   for (const target of runtimeTransitionMiddleTargets(state, action)) {
     if (!target.root) continue;
+    const values = target.entry?.hasProceduralDynamics
+      ? blendProceduralTransitionHandoffTransform(trackValues, {
+        progress: state.transitionProgress,
+        durationSeconds: state.generatedTransitionPlan?.durationSeconds,
+        role: target.role,
+      })
+      : trackValues;
     if (values.positionOffset !== undefined) {
       target.root.position.copy(target.basePosition).add(new THREE.Vector3().fromArray(values.positionOffset));
     }
@@ -8121,6 +8298,13 @@ function applyRuntimeTransitionTracks(state, action) {
         ? new THREE.Vector3().fromArray(values.scaleMultiplier)
         : new THREE.Vector3().setScalar(values.scaleMultiplier);
       target.root.scale.copy(target.baseScale).multiply(multiplier);
+    }
+    if (action.parameters?.orientation?.kind === "path-tangent") {
+      applyProceduralTransitionPathOrientation({
+        THREE, target: target.root, action, baseQuaternion: target.baseQuaternion,
+        progress: state.transitionProgress, durationSeconds: state.generatedTransitionPlan?.durationSeconds,
+        role: target.role,
+      });
     }
     if (values.opacity !== undefined) setRuntimeAutoInterpolationOpacity(target.root, values.opacity);
     for (const material of target.materials || []) {
@@ -8137,8 +8321,21 @@ function runtimeTransitionOwnsEmbeddedAnimation(model) {
   return Boolean(model && activeRuntimeAutoInterpolation?.transitionAnimationPlayers?.has(model));
 }
 
-function disposeRuntimeTransitionAnimations(state) {
-  for (const entry of state?.transitionAnimationPlayers?.values?.() || []) entry.player.dispose();
+function disposeRuntimeTransitionAnimations(state, { resumeDynamics = false } = {}) {
+  for (const entry of state?.transitionAnimationPlayers?.values?.() || []) {
+    const playback = resumeDynamics ? entry.player.getPlaybackState?.() : null;
+    entry.player.dispose();
+    const dynamics = entry.target?.role === "to" ? entry.target.entry?.dynamicsEntry : null;
+    const clip = playback && entry.target.entry?.animations?.[playback.clipIndex];
+    if (dynamics?.action && clip === dynamics.action.getClip()) {
+      // Restore the destination mixer at the final compatible transition phase,
+      // after disposing the temporary mixer restores its original bindings.
+      dynamics.action.time = playback.timeSeconds;
+      dynamics.action.enabled = true;
+      dynamics.action.paused = false;
+      dynamics.mixer?.update(0);
+    }
+  }
   state?.transitionAnimationPlayers?.clear?.();
 }
 
@@ -8163,7 +8360,9 @@ function applyRuntimeTransitionAnimations(state, sample) {
   for (const [model, { target, action, animations }] of requested) {
     let entry = state.transitionAnimationPlayers.get(model);
     if (!entry) {
-      entry = { player: createProceduralTransitionAnimationPlayer({ THREE, root: model, animations }) };
+      entry = { target, player: createProceduralTransitionAnimationPlayer({
+        THREE, root: model, animations, initialAnimation: target.entry?.proceduralAnimation,
+      }) };
       state.transitionAnimationPlayers.set(model, entry);
     }
     const elapsed = action.localProgress * (action.endProgress - action.startProgress)
@@ -8181,10 +8380,16 @@ function updateRuntimeTransitionMiddle(state, progress) {
   const plan = state?.generatedTransitionPlan;
   if (!plan) return false;
   const sample = proceduralTransitionMiddleSample(plan, progress);
+  state.transitionProgress = sample.progress;
   const activeIds = new Set(sample.actions.map((action) => action.id));
   for (const entry of state.transitionMiddleEntries.values()) entry.root.visible = activeIds.has(entry.actionId);
   if (sample.endpoint) {
-    disposeRuntimeTransitionAnimations(state);
+    if (sample.endpoint === "to") {
+      // The final frame may cross the endpoint by a whole frame interval. Sample
+      // the ending clip time before transferring it back to the Dynamics mixer.
+      applyRuntimeTransitionAnimations(state, proceduralTransitionMiddleSample(plan, 1 - Number.EPSILON));
+    }
+    disposeRuntimeTransitionAnimations(state, { resumeDynamics: sample.endpoint === "to" });
     restoreRuntimeTransitionMiddleTargets(state);
     if (sample.endpoint === "to") disposeRuntimeTransitionMiddle(state);
     return false;
@@ -8721,8 +8926,8 @@ function createRuntimeHandTextPanel() {
   contentMesh.userData.storyvrTextPanelAction = "scroll";
   expandedRoot.add(contentMesh);
 
-  const minimizeButton = makeRuntimeTextPanelControl("\u2212", "minimize", 0.052);
-  minimizeButton.position.set((XR_TEXT_PANEL_WIDTH / 2) - 0.034, (XR_TEXT_PANEL_HEIGHT / 2) - 0.034, 0.004);
+  const minimizeButton = makeRuntimeTextPanelControl("\u2212", "minimize", 0.036);
+  minimizeButton.position.set((XR_TEXT_PANEL_WIDTH / 2) - 0.031, (XR_TEXT_PANEL_HEIGHT / 2) - 0.027, 0.004);
   expandedRoot.add(minimizeButton);
 
   const variantControlRoot = new THREE.Group();
@@ -8737,7 +8942,7 @@ function createRuntimeHandTextPanel() {
 
   const minimizedRoot = new THREE.Group();
   minimizedRoot.name = "storyvr-hand-text-panel-minimized";
-  const restoreButton = makeRuntimeTextPanelControl("Aa", "restore", 0.105);
+  const restoreButton = makeRuntimeTextPanelControl("Aa", "restore", 0.072);
   minimizedRoot.add(restoreButton);
   minimizedRoot.visible = false;
 
@@ -8760,18 +8965,22 @@ function makeRuntimeTextPanelControl(label, action, size) {
   canvas.height = 192;
   const context = canvas.getContext("2d");
   context.clearRect(0, 0, canvas.width, canvas.height);
-  context.fillStyle = "rgba(8, 22, 19, 0.98)";
+  context.fillStyle = label === "Aa" ? "#172832" : "#293b45";
   context.beginPath();
-  context.arc(96, 96, 82, 0, Math.PI * 2);
+  context.roundRect(10, 10, 172, 172, 48);
   context.fill();
-  context.lineWidth = 10;
-  context.strokeStyle = "rgba(110, 216, 194, 0.96)";
+  context.lineWidth = 3;
+  context.strokeStyle = "rgba(219, 237, 243, 0.22)";
   context.stroke();
-  context.fillStyle = "#f6f2e7";
-  context.font = label === "Aa" ? "800 66px sans-serif" : "800 108px sans-serif";
+  context.fillStyle = "#edf4f5";
   context.textAlign = "center";
   context.textBaseline = "middle";
-  context.fillText(label, 96, label === "Aa" ? 100 : 88);
+  if (label === "Aa") {
+    context.font = "600 64px sans-serif";
+    context.fillText(label, 96, 100);
+  } else {
+    context.fillRect(61, 92, 70, 8);
+  }
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   const mesh = new THREE.Mesh(
@@ -8810,33 +9019,50 @@ function makeRuntimeTextPanelButton(label, action) {
   return mesh;
 }
 
-function makeRuntimeTextPanelButtonTexture(label) {
+function makeRuntimeTextPanelButtonTexture(label, aspect = 3.2, action = "") {
   const canvas = document.createElement("canvas");
-  canvas.width = 512;
-  canvas.height = 160;
+  canvas.width = 640;
+  // Match the texture to its world-space button: labels must not be squeezed in XR.
+  canvas.height = Math.max(96, Math.round(canvas.width / Math.max(1, aspect)));
   const context = canvas.getContext("2d");
+  const isNext = action === "variant-next";
   context.clearRect(0, 0, canvas.width, canvas.height);
-  context.fillStyle = "rgba(8, 22, 19, 0.98)";
-  context.fillRect(8, 8, canvas.width - 16, canvas.height - 16);
-  context.lineWidth = 10;
-  context.strokeStyle = "rgba(110, 216, 194, 0.96)";
-  context.strokeRect(8, 8, canvas.width - 16, canvas.height - 16);
-  context.fillStyle = "#f6f2e7";
+  context.fillStyle = isNext ? "#c5e7df" : "#293e49";
+  context.beginPath();
+  context.roundRect(3, 3, canvas.width - 6, canvas.height - 6, Math.min(24, canvas.height * 0.2));
+  context.fill();
+  context.lineWidth = 2;
+  context.strokeStyle = isNext ? "rgba(235, 255, 249, 0.4)" : "rgba(207, 229, 237, 0.18)";
+  context.stroke();
+  context.fillStyle = isNext ? "#152e30" : "#edf4f5";
   const labelLayout = runtimeBoundedCanvasTextLayout(context, String(label || "Select"), {
-    maxWidth: canvas.width - 64,
+    maxWidth: canvas.width - 124,
     maxLines: 2,
-    maxFontSize: 58,
+    maxFontSize: Math.min(48, Math.floor(canvas.height * 0.33)),
     minFontSize: 20,
-    fontWeight: 800,
-    lineHeightRatio: 1.04,
+    fontWeight: 600,
+    lineHeightRatio: 1.16,
   });
   context.textAlign = "center";
   context.textBaseline = "middle";
-  const centerY = (canvas.height / 2) + 3;
+  const centerY = canvas.height / 2;
   labelLayout.lines.forEach((line, index) => {
     const lineY = centerY + (index - ((labelLayout.lines.length - 1) / 2)) * labelLayout.lineHeight;
     context.fillText(line, canvas.width / 2, lineY);
   });
+  if (action === "variant-previous" || isNext) {
+    const arrowX = isNext ? canvas.width - 35 : 35;
+    const direction = isNext ? 1 : -1;
+    context.strokeStyle = context.fillStyle;
+    context.lineWidth = 4;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.beginPath();
+    context.moveTo(arrowX - direction * 7, centerY - 10);
+    context.lineTo(arrowX + direction * 3, centerY);
+    context.lineTo(arrowX - direction * 7, centerY + 10);
+    context.stroke();
+  }
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   return texture;
@@ -8927,7 +9153,7 @@ function runtimeSafeTextPanelVariantPresentations(
 ) {
   const normalize = (presentation, fallbackX) => {
     const size = finiteInteractionArray(presentation?.size, 2, [0.32, 0.08]);
-    const widthRatio = THREE.MathUtils.clamp(size[0], 0.08, 0.42);
+    const widthRatio = THREE.MathUtils.clamp(size[0], 0.28, 0.42);
     const heightRatio = THREE.MathUtils.clamp(size[1], 0.06, 0.08);
     const position = finiteInteractionArray(presentation?.position, 2, [fallbackX, 0.85]);
     return {
@@ -8959,8 +9185,8 @@ function applyRuntimeTextPanelButtonPresentation(control, presentation) {
   const label = String(presentation.label || "Select").trim();
   const position = finiteInteractionArray(presentation.position, 2, [0.5, 0.85]);
   const size = finiteInteractionArray(presentation.size, 2, [0.32, 0.08]);
-  const widthRatio = THREE.MathUtils.clamp(size[0], 0.08, 0.42);
-  const heightRatio = THREE.MathUtils.clamp(size[1], 0.06, 0.08);
+  const widthRatio = THREE.MathUtils.clamp(size[0], 0.28, 0.42);
+  const heightRatio = THREE.MathUtils.clamp(size[1], 0.12, 0.14);
   const x = THREE.MathUtils.clamp(position[0], 0.04 + (widthRatio / 2), 0.96 - (widthRatio / 2));
   const y = 0.85;
   const signature = JSON.stringify([label, x, y, widthRatio, heightRatio]);
@@ -8971,7 +9197,11 @@ function applyRuntimeTextPanelButtonPresentation(control, presentation) {
       XR_TEXT_PANEL_WIDTH * widthRatio,
       XR_TEXT_PANEL_HEIGHT * heightRatio,
     );
-    control.material.map = makeRuntimeTextPanelButtonTexture(label);
+    control.material.map = makeRuntimeTextPanelButtonTexture(
+      label,
+      (XR_TEXT_PANEL_WIDTH * widthRatio) / (XR_TEXT_PANEL_HEIGHT * heightRatio),
+      control.userData.storyvrTextPanelAction,
+    );
     control.material.needsUpdate = true;
     previousGeometry?.dispose?.();
     previousTexture?.dispose?.();
@@ -9733,86 +9963,123 @@ function runtimeSpatialAnchorFallback() {
 function runtimeTextPanelVariantLayout(canvasHeight) {
   const height = Number.isFinite(Number(canvasHeight)) && Number(canvasHeight) > 0
     ? Number(canvasHeight)
-    : 560;
+    : 800;
   return {
-    bodyMaxLines: 5,
-    statusBaseline: Math.round(height * 0.68),
-    footerBaseline: Math.round(height * 0.745),
-    controlBandTop: Math.round(height * 0.77),
+    bodyBottom: Math.round(height * 0.625),
+    footerBaseline: Math.round(height * 0.68),
+    statusBaseline: Math.round(height * 0.735),
+    controlBandTop: Math.round(height * 0.765),
   };
 }
 
 function makeRuntimeTextPanelTexture(title, text, placement, variantState = null, requestedScrollLine = 0) {
   const canvas = document.createElement("canvas");
-  canvas.width = 1024;
-  canvas.height = 560;
+  canvas.width = 1280;
+  canvas.height = 800;
   const context = canvas.getContext("2d");
   const variantLayout = variantState ? runtimeTextPanelVariantLayout(canvas.height) : null;
-  context.fillStyle = "rgba(8, 22, 19, 1)";
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  context.strokeStyle = "rgba(110, 216, 194, 0.9)";
-  context.lineWidth = 10;
-  context.strokeRect(12, 12, canvas.width - 24, canvas.height - 24);
-  context.fillStyle = "#6ed8c2";
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  // Opaque ink-blue reading surface, with transparent rounded corners.
+  context.fillStyle = "rgba(19, 34, 44, 1)";
+  context.beginPath();
+  context.roundRect(6, 6, canvas.width - 12, canvas.height - 12, 40);
+  context.fill();
+  context.strokeStyle = "rgba(216, 234, 240, 0.22)";
+  context.lineWidth = 2;
+  context.stroke();
+
   context.textAlign = "left";
   context.textBaseline = "alphabetic";
+  context.fillStyle = "#a9c9ce";
+  context.font = "600 25px sans-serif";
+  const eyebrow = variantState
+    ? `EXPLORE  /  ${String(variantState.selectedIndex + 1).padStart(2, "0")} OF ${String(variantState.group.options.length).padStart(2, "0")}`
+    : "STORY";
+  context.fillText(eyebrow, 64, 76);
+
+  context.fillStyle = "#f1f5f4";
   const titleLayout = runtimeBoundedCanvasTextLayout(context, String(title || "Story part"), {
-    maxWidth: 816,
+    maxWidth: 1056,
     maxLines: 2,
-    maxFontSize: 46,
-    minFontSize: 28,
-    fontWeight: 700,
-    lineHeightRatio: 1.08,
+    maxFontSize: 52,
+    minFontSize: 38,
+    fontWeight: 600,
+    lineHeightRatio: 1.15,
   });
   titleLayout.lines.forEach((line, index) => {
-    context.fillText(line, 54, 78 + index * titleLayout.lineHeight);
+    context.fillText(line, 64, 148 + index * titleLayout.lineHeight);
   });
-  context.fillStyle = "#f6f2e7";
-  context.font = "34px sans-serif";
-  const titleUsesSecondLine = titleLayout.lines.length > 1;
-  const bodyStartY = titleUsesSecondLine ? 174 : 142;
-  const bodyMaxLines = Math.max(1, (variantLayout?.bodyMaxLines || 8) - (titleUsesSecondLine ? 1 : 0));
+  context.fillStyle = "#e0e9ec";
+  context.font = "400 44px sans-serif";
+  const bodyStartY = 148 + (titleLayout.lines.length - 1) * titleLayout.lineHeight + 70;
+  const bodyBottom = variantLayout?.bodyBottom || 646;
+  const lineHeight = 60;
+  const bodyMaxLines = Math.max(1, Math.floor((bodyBottom - bodyStartY) / lineHeight) + 1);
   const pagination = drawRuntimeWrappedText(
     context,
     String(text || ""),
-    54,
+    64,
     bodyStartY,
-    916,
-    48,
+    1112,
+    lineHeight,
     bodyMaxLines,
     requestedScrollLine,
   );
-  if (variantState) {
-    context.fillStyle = "rgba(246, 242, 231, 0.72)";
-    context.font = "700 22px sans-serif";
+  const footerBaseline = variantLayout?.footerBaseline || 706;
+  if (pagination.maxScrollLine > 0) {
+    context.fillStyle = "#a9bdc7";
+    context.font = "24px sans-serif";
+    context.fillText("Hold Trigger and move vertically to scroll", 64, footerBaseline);
+    context.textAlign = "right";
     context.fillText(
-      runtimeEllipsizeCanvasText(
-        context,
-        `${variantState.selectedOption.label} \u00b7 ${variantState.selectedIndex + 1} of ${variantState.group.options.length}`,
-        916,
-      ),
-      54,
+      `${pagination.scrollLine + 1}–${Math.min(pagination.lineCount, pagination.scrollLine + pagination.maxLines)} / ${pagination.lineCount}`,
+      1216,
+      footerBaseline,
+    );
+    context.textAlign = "left";
+    const trackTop = bodyStartY - 34;
+    const trackHeight = bodyBottom - trackTop + 8;
+    const thumbHeight = Math.max(32, trackHeight * pagination.maxLines / pagination.lineCount);
+    const thumbY = trackTop + (trackHeight - thumbHeight) * pagination.scrollLine / pagination.maxScrollLine;
+    context.fillStyle = "#304550";
+    context.beginPath();
+    context.roundRect(1212, trackTop, 5, trackHeight, 2.5);
+    context.fill();
+    context.fillStyle = "#b5d7d5";
+    context.beginPath();
+    context.roundRect(1212, thumbY, 5, thumbHeight, 2.5);
+    context.fill();
+  }
+  if (variantState) {
+    context.fillStyle = "#bed4db";
+    context.font = "500 28px sans-serif";
+    context.fillText(
+      runtimeEllipsizeCanvasText(context, variantState.selectedOption.label, 1128),
+      64,
       variantLayout.statusBaseline,
     );
-    context.strokeStyle = "rgba(110, 216, 194, 0.24)";
-    context.lineWidth = 2;
-    context.beginPath();
-    context.moveTo(54, variantLayout.controlBandTop);
-    context.lineTo(canvas.width - 54, variantLayout.controlBandTop);
-    context.stroke();
   }
-  context.fillStyle = "rgba(246, 242, 231, 0.58)";
-  context.font = variantLayout ? "18px sans-serif" : "24px sans-serif";
-  const footer = pagination.maxScrollLine > 0
-    ? `Hold Trigger and move vertically to scroll \u00b7 lines ${pagination.scrollLine + 1}\u2013${Math.min(pagination.lineCount, pagination.scrollLine + pagination.maxLines)} of ${pagination.lineCount} \u00b7 A Next \u00b7 X Previous`
-    : "Trigger selects buttons \u00b7 Grip grabs objects \u00b7 A Next \u00b7 X Previous";
-  context.fillText(
-    runtimeEllipsizeCanvasText(context, footer, 916),
-    54,
-    variantLayout?.footerBaseline || 526,
-  );
+  context.strokeStyle = "rgba(216, 234, 240, 0.14)";
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(64, variantLayout?.controlBandTop || 732);
+  context.lineTo(canvas.width - 64, variantLayout?.controlBandTop || 732);
+  context.stroke();
+  // Keep only the navigation reminders relevant to this reading surface.
+  context.fillStyle = "#9db4bf";
+  context.font = "24px sans-serif";
+  const navigationBaseline = variantState ? 764 : 774;
+  if (configuredControllerActionForInput("left", "x") === "previous-beat") {
+    context.fillText("X  Previous part", 64, navigationBaseline);
+  }
+  if (configuredControllerActionForInput("right", "a") === "next-beat") {
+    context.textAlign = "right";
+    context.fillText("A  Next part", canvas.width - 64, navigationBaseline);
+  }
+
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   texture.needsUpdate = true;
   texture.userData.storyvrTextPanelPagination = pagination;
   return texture;
@@ -10046,6 +10313,7 @@ function render(frameTime = performance.now(), xrFrame = null) {
   updateProceduralDynamics(delta);
   updateRuntimeAutoInterpolation(frameTime);
   updateRuntimeDirectManipulation();
+  evaluateRuntimeDirectManipulationCompletion({ timedOnly: true });
   updateSpatialTextPanelPose(frameTime);
   updateXrControllerVisuals();
   updateXrTextPanelInteractionRays();
@@ -11347,6 +11615,21 @@ function applySharedTimelineMaterialUniform(playback, binding, value) {
   if (!applied) addSharedTimelineDiagnostic(playback, `material-uniform binding could not resolve ${uniformName}`);
 }
 
+function setRuntimeProceduralDynamicsOpacity(material, opacity) {
+  prepareSharedTimelineMaterial(material);
+  const data = material.userData;
+  const otherOpacity = data.storyvrBaseOpacity
+    * normalizedProgress(data.storyvrPreviewOpacity, 1)
+    * normalizedProgress(data.storyvrSourceBindingOpacity, 1);
+  // Dynamics currently supplies an effective material opacity. Preserve it as
+  // a separate factor, so a transition fade never discards it or rewrites the
+  // canonical source/preview opacity channels. Zero source visibility wins.
+  data.storyvrDynamicsOpacity = otherOpacity > 0
+    ? Math.max(0, Math.min(1, Number(opacity) || 0)) / otherOpacity
+    : 1;
+  updateSharedTimelineMaterialOpacity(material);
+}
+
 function prepareSharedTimelineMaterial(material) {
   if (!material) return;
   const userData = material.userData || {};
@@ -11360,6 +11643,7 @@ function prepareSharedTimelineMaterial(material) {
     storyvrPreviewOpacity: Number.isFinite(userData.storyvrPreviewOpacity) ? userData.storyvrPreviewOpacity : 1,
     storyvrSourceBindingOpacity: Number.isFinite(userData.storyvrSourceBindingOpacity) ? userData.storyvrSourceBindingOpacity : 1,
     storyvrTransitionOpacity: Number.isFinite(userData.storyvrTransitionOpacity) ? userData.storyvrTransitionOpacity : 1,
+    storyvrDynamicsOpacity: Number.isFinite(userData.storyvrDynamicsOpacity) ? Math.max(0, userData.storyvrDynamicsOpacity) : 1,
   };
 }
 
@@ -11372,13 +11656,15 @@ function updateSharedTimelineMaterialOpacity(material) {
   const previewOpacity = normalizedProgress(material.userData.storyvrPreviewOpacity, 1);
   const sourceOpacity = normalizedProgress(material.userData.storyvrSourceBindingOpacity, 1);
   const transitionOpacity = normalizedProgress(material.userData.storyvrTransitionOpacity, 1);
-  const nextOpacity = baseOpacity * previewOpacity * sourceOpacity * transitionOpacity;
+  const dynamicsOpacity = material.userData.storyvrDynamicsOpacity;
+  const nextOpacity = Math.min(1, baseOpacity * previewOpacity * sourceOpacity * dynamicsOpacity * transitionOpacity);
   const nextTransparent = baseTransparent
     || baseOpacity < 0.999
     || previewOpacity < 0.999
     || sourceOpacity < 0.999
+    || dynamicsOpacity < 0.999
     || transitionOpacity < 0.999;
-  const nextDepthWrite = previewOpacity >= 0.999 && sourceOpacity >= 0.999 && transitionOpacity >= 0.999
+  const nextDepthWrite = previewOpacity >= 0.999 && sourceOpacity >= 0.999 && dynamicsOpacity >= 0.999 && transitionOpacity >= 0.999
     ? baseDepthWrite
     : false;
   const transparentChanged = material.transparent !== nextTransparent;

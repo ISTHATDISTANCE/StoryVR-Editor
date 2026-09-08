@@ -301,8 +301,13 @@ clarifications can be retained without invalidating an unchanged Reader build.
 New transition actions use explicit property keyframes for visibility,
 saved-relative transforms, material color, and emissive effects, and can bind a
 verified embedded GLB clip to an exact endpoint object. The Author and Reader
-share the same progress-driven sampler while preserving the exact saved endpoints,
-including during pause and backwards scrubbing. Provider failures remain errors
+share the same progress-driven sampler. Transitions capture the source's live
+Dynamics pose, hold the destination Dynamics pose until arrival, and continue
+compatible embedded clips without restarting their phase. Generated travel paths
+can control the actor's heading. Saved scene transforms remain unchanged, and
+**Start dynamics at (seconds)** lets authors preview different departure phases.
+If either endpoint's effective saved Dynamics changes during generation or after
+a preview, that preview must be regenerated before it can be applied. Provider failures remain errors
 instead of becoming keyword-derived fallback transitions.
 Clearing a connection removes its generated transition and conversation as one
 Undoable change. Conversation text remains author-only and is excluded from the
@@ -335,6 +340,17 @@ right stick for 45-degree snap turns, ground-plane teleport on Up, and a
 180-degree turn on Down. Locomotion stays on directional stick inputs; Trigger
 and Grip remain reserved for UI rays and grabbing, while Menu can be assigned
 only to non-locomotion StoryVR navigation.
+
+Reader actions previews the scene's saved Object movement while authors set
+object goals. The target ghost follows live animation and preserves any transform
+channels outside the selected goal. Use **Frame original + target**, **Reset
+target**, and **Lock ratio** to edit goals with visible movement ranges and
+position tolerance. **Completion timing** can advance immediately on a match,
+after holding all targets within tolerance, or after matching and releasing them.
+Hold and release modes require reader manipulation first.
+
+The Reader's hand-mounted text panel separates scrollable text from choice
+controls and shows A/X navigation reminders only for assigned actions.
 
 Reader locomotion keeps physical walking dwell-gated and treats virtual
 teleport as route-scoped: entering the exact visible target from outside—by
